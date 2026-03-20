@@ -480,7 +480,8 @@ const App = () => {
 
     const newId = String(Date.now());
     await setDoc(getDocRef('app_users', newId), { ...newUser, id: newId });
-    addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`, null, null, { collectionName: 'app_users', docId: newId, action: 'create', previousData: null });
+    // Aquí NO pasamos revertInfo para evitar que los usuarios/contraseñas se puedan revertir o ver
+    addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`);
     setNewUser({ username: '', password: '', role: 'Editor' });
     showToast("Usuario añadido exitosamente.");
   };
@@ -519,7 +520,8 @@ const App = () => {
     if (currentUser.id === editingUser.id) {
       setCurrentUser({ ...currentUser, username: editingUser.username, password: editingUser.newPassword, role: editingUser.role });
     }
-    if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_users', docId: String(editingUser.id), action: 'update', previousData: originalUser });
+    // Aquí NO pasamos revertInfo
+    if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
     
     setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
     showToast("Usuario actualizado.");
@@ -535,7 +537,8 @@ const App = () => {
     }
 
     await deleteDoc(getDocRef('app_users', String(id)));
-    addLog('Gestión de Usuarios', `Eliminó al usuario: ${username}`, null, null, { collectionName: 'app_users', docId: String(id), action: 'delete', previousData: userToDelete });
+    // Aquí NO pasamos revertInfo
+    addLog('Gestión de Usuarios', `Eliminó al usuario: ${username}`);
     showToast("Usuario eliminado.");
   };
 
