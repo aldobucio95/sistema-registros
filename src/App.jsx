@@ -853,7 +853,6 @@ const App = () => {
                 <option value="Administrador">Administrador</option>
                 <option value="Editor">Editor</option>
                 <option value="Lector">Lector</option>
-                <option value="SuperUsuario">SuperUsuario</option>
               </select>
             </div>
             <div className="flex items-end h-full"><button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 text-sm rounded-lg transition-all shadow-md active:scale-95 flex justify-center items-center gap-2"><Plus size={18} /> Añadir Usuario</button></div>
@@ -1094,14 +1093,23 @@ const App = () => {
                 <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Usuario</label><input type="text" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.username} onChange={e => setEditingUser({ ...editingUser, username: e.target.value })} /></div>
                 <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Rol</label>
                   <select className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.role} onChange={e => setEditingUser({ ...editingUser, role: e.target.value })}>
+                    {editingUser.role === 'SuperUsuario' && <option value="SuperUsuario">SuperUsuario</option>}
                     <option value="Administrador">Administrador</option>
                     <option value="Editor">Editor</option>
                     <option value="Lector">Lector</option>
-                    <option value="SuperUsuario">SuperUsuario</option>
                   </select>
                 </div>
                 <div className="border-t border-slate-100 pt-4 mt-2 space-y-4">
-                  <p className="text-xs font-bold text-slate-800">Cambio de Contraseña</p>
+      {/* Edit User Modal scoped safely to end */}
+      {editingUser.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95">
+            <h3 className="text-lg font-bold mb-1">Editar Usuario</h3>
+            <form onSubmit={handleUpdateUser} className="space-y-4 mt-6">
+              <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Usuario</label><input type="text" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none text-sm font-semibold" value={editingUser.username} onChange={e => setEditingUser({ ...editingUser, username: e.target.value })} /></div>
+              <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Rol</label><select className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none text-sm font-semibold" value={editingUser.role} onChange={e => setEditingUser({ ...editingUser, role: e.target.value })}>{editingUser.role === 'SuperUsuario' && <option value="SuperUsuario">SuperUsuario</option>}<option value="Administrador">Administrador</option><option value="Editor">Editor</option><option value="Lector">Lector</option></select></div>
+              <div className="border-t border-slate-100 pt-4 mt-2 space-y-4">
+                <p className="text-xs font-bold text-slate-800">Cambio de Contraseña</p>
                   <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Contraseña Actual</label><input type="password" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.currentPasswordInput} onChange={e => setEditingUser({ ...editingUser, currentPasswordInput: e.target.value })} /></div>
                   <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Nueva Contraseña</label><input type="password" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.newPassword} onChange={e => setEditingUser({ ...editingUser, newPassword: e.target.value })} /></div>
                   <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Confirmar Nueva Contraseña</label><input type="password" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.confirmPassword} onChange={e => setEditingUser({ ...editingUser, confirmPassword: e.target.value })} /></div>
