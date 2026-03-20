@@ -58,15 +58,19 @@ const App = () => {
     setTimeout(() => setToast(''), 4000);
   }, []);
 
+  const hasAdminRights = ['Administrador', 'SuperUsuario'].includes(currentUser?.role);
+  const isSuperUser = currentUser?.role === 'SuperUsuario';
+
   const [events, setEvents] = useState([]);
   const [globalLocations, setGlobalLocations] = useState([]);
   const [selectedEventId, setSelectedEventId] = useState(null);
-  // Reemplazamos showSystemUsers por un estado más flexible
   const [systemView, setSystemView] = useState('events'); // 'events' | 'users' | 'logs'
   const [isAddEventModalOpen, setIsAddEventModalOpen] = useState(false);
   const [deleteEventModal, setDeleteEventModal] = useState({ isOpen: false, id: null, name: '' });
   const [draggedEventId, setDraggedEventId] = useState(null);
-  const [newEventData, setNewEventData] = useState({ name: '', type: 'Campa', date: '' });
+  const [newEventData, setNewEventData] = useState({ name: '', type: 'Campa', date: '', baseCost: '' });
+  
+  const [renameModal, setRenameModal] = useState({ isOpen: false, id: null, name: '' });
 
   const currentEvent = useMemo(() => events.find(e => e.id === selectedEventId) || null, [events, selectedEventId]);
   const sortedEvents = useMemo(() => [...events].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)), [events]);
@@ -103,7 +107,6 @@ const App = () => {
   const [isAddLocModalOpen, setIsAddLocModalOpen] = useState(false);
   const [newLocationName, setNewLocationName] = useState('');
   const [locError, setLocError] = useState('');
-  const [tempEventName, setTempEventName] = useState("");
   const [tempEventDate, setTempEventDate] = useState("");
   const [tempDeposit, setTempDeposit] = useState("");
 
@@ -125,7 +128,6 @@ const App = () => {
 
   useEffect(() => {
     if (currentEvent) {
-      setTempEventName(currentEvent.name);
       setTempEventDate(currentEvent.date || "");
       setTempDeposit(currentEvent.minDeposit);
       setNewEntry(EMPTY_ENTRY);
@@ -189,7 +191,7 @@ const App = () => {
       if (!snap.empty) {
         setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       } else {
-        const initialUser = { username: 'admin', password: '123', role: 'Administrador' };
+        const initialUser = { username: 'admin', password: '123', role: 'SuperUsuario' };
         setDoc(getDocRef('app_users', '1'), initialUser);
       }
     }, console.error);
@@ -223,7 +225,6 @@ const App = () => {
     return currentEvent ? currentEvent.regStatus?.[loc] !== false : false;
   }, [currentEvent]);
 
-  // Actualizado para permitir pasar un targetEvent desde el selector de eventos
   const addLog = useCallback(async (action, details, overrideUsername = null, targetEvent = null) => {
     const username = overrideUsername || currentUser?.username;
     if (!username) return;
@@ -284,12 +285,10 @@ const App = () => {
 
     const resetTimer = () => {
       clearTimeout(timeoutId);
-      // 10 minutos = 10 * 60 * 1000 milisegundos
       timeoutId = setTimeout(performLogout, 10 * 60 * 1000); 
     };
 
     const handleActivity = () => {
-      // Limitar la recarga del timer a 1 vez por segundo para mejor rendimiento
       if (throttleTimeoutId) return;
       throttleTimeoutId = setTimeout(() => {
         throttleTimeoutId = null;
@@ -299,7 +298,7 @@ const App = () => {
 
     const activityEvents = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
     
-    resetTimer(); // Iniciar inmediatamente al loguearse
+    resetTimer();
     activityEvents.forEach(e => window.addEventListener(e, handleActivity));
 
     return () => {
@@ -316,14 +315,28 @@ const App = () => {
       name: newEventData.name.trim(),
       eventType: newEventData.type,
       date: newEventData.date,
-      pricingType: 'fixed', globalCost: 0, serverCost: 0, dynamicPrices: [],
+      pricingType: 'fixed', 
+      globalCost: Number(newEventData.baseCost) || 0, 
+      serverCost: 0, 
+      dynamicPrices: [],
       minDeposit: 0, locations: defaultLocations, regStatus: defaultRegStatus,
       customFields: [], order: events.length
     };
     await setDoc(getDocRef('app_events', newEvt.id), newEvt);
-    addLog('Gestión de Eventos', `Creó un nuevo evento (${newEvt.eventType}): ${newEvt.name}`, null, newEvt);
+    addLog('Gestión de Eventos', `Creó un nuevo evento (${newEvt.eventType}): ${newEvt.name} con base de $${newEvt.globalCost}`, null, newEvt);
     setIsAddEventModalOpen(false);
-    setNewEventData({ name: '', type: 'Campa', date: '' });
+    setNewEventData({ name: '', type: 'Campa', date: '', baseCost: '' });
+  };
+
+  const handleRenameEvent = async () => {
+    if (!renameModal.name.trim() || !renameModal.id) return;
+    const ev = events.find(e => e.id === renameModal.id);
+    if (ev && ev.name !== renameModal.name.trim()) {
+      await updateDoc(getDocRef('app_events', ev.id), { name: renameModal.name.trim() });
+      addLog('Gestión de Eventos', `Renombró evento: "${ev.name}" -> "${renameModal.name.trim()}"`, null, ev);
+      showToast("Nombre del evento actualizado.");
+    }
+    setRenameModal({ isOpen: false, id: null, name: '' });
   };
 
   const confirmDeleteEvent = async () => {
@@ -390,9 +403,15 @@ const App = () => {
 
   const handleAddUser = async (e) => {
     e.preventDefault();
-    if (currentUser?.role !== 'Administrador') { showToast("Permisos insuficientes."); return; }
+    if (!hasAdminRights) { showToast("Permisos insuficientes."); return; }
     if (!newUser.username.trim() || !newUser.password.trim()) return;
     if (users.some(u => u.username === newUser.username)) { showToast("El usuario ya existe."); return; }
+    
+    if (newUser.role === 'SuperUsuario' && users.some(u => u.role === 'SuperUsuario')) {
+      showToast("Solo puede haber un SuperUsuario en el sistema.");
+      return;
+    }
+
     const newId = String(Date.now());
     await setDoc(getDocRef('app_users', newId), { ...newUser, id: newId });
     addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`);
@@ -402,9 +421,14 @@ const App = () => {
 
   const handleUpdateUser = async (e) => {
     e.preventDefault();
-    if (currentUser?.role !== 'Administrador') return;
+    if (!hasAdminRights) return;
     if (!editingUser.username.trim() || !editingUser.newPassword.trim()) return;
     
+    if (editingUser.role === 'SuperUsuario' && users.some(u => u.role === 'SuperUsuario' && String(u.id) !== String(editingUser.id))) {
+      showToast("Solo puede haber un SuperUsuario en el sistema.");
+      return;
+    }
+
     const originalUser = users.find(u => String(u.id) === String(editingUser.id));
     const existingUser = users.find(u => u.username === editingUser.username && String(u.id) !== String(editingUser.id));
     if (existingUser) { showToast("El usuario ya existe."); return; }
@@ -436,15 +460,21 @@ const App = () => {
   };
 
   const handleDeleteUser = async (id, username) => {
-    if (currentUser?.role !== 'Administrador') { showToast("Permisos insuficientes."); return; }
+    if (!hasAdminRights) { showToast("Permisos insuficientes."); return; }
     if (currentUser.id === id) { showToast("No puedes eliminar tu propia cuenta."); return; }
+    
+    const userToDelete = users.find(u => String(u.id) === String(id));
+    if (userToDelete?.role === 'SuperUsuario' && currentUser.role !== 'SuperUsuario') {
+      showToast("Solo otro SuperUsuario puede eliminar a un SuperUsuario."); return;
+    }
+
     await deleteDoc(getDocRef('app_users', String(id)));
     addLog('Gestión de Usuarios', `Eliminó al usuario: ${username}`);
     showToast("Usuario eliminado.");
   };
 
   const handleCleanLogs = () => {
-    if (currentUser?.role !== 'Administrador') return;
+    if (!hasAdminRights) return;
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
     const now = Date.now();
     const logsToDelete = logs.filter(log => (now - log.id) > thirtyDaysMs);
@@ -454,6 +484,20 @@ const App = () => {
       showToast(`Se eliminaron ${logsToDelete.length} registros antiguos.`);
     } else {
       showToast("No hay registros con más de 30 días de antigüedad.");
+    }
+  };
+
+  const handleCleanRecentLogs = () => {
+    if (!isSuperUser) return;
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const logsToDelete = logs.filter(log => (now - log.id) <= thirtyDaysMs);
+    if (logsToDelete.length > 0) {
+      logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
+      addLog('Limpieza de Logs', `El SuperUsuario eliminó ${logsToDelete.length} registros recientes (< 30 días).`);
+      showToast(`Se eliminaron ${logsToDelete.length} registros recientes.`);
+    } else {
+      showToast("No hay registros recientes para eliminar.");
     }
   };
 
@@ -676,7 +720,7 @@ const App = () => {
     let updatedHistory = editedPerson.paymentHistory || [];
     let finalRegisteredCost = editedPerson.registeredCost;
 
-    if (currentUser?.role === 'Administrador' && newPaid !== originalPaid) {
+    if (hasAdminRights && newPaid !== originalPaid) {
       updatedHistory = [...updatedHistory, {
         id: Date.now(), date: new Date().toLocaleString('es-MX'),
         amount: newPaid - originalPaid, registeredBy: currentUser?.username, isManualAdjustment: true
@@ -712,7 +756,7 @@ const App = () => {
   };
 
   const toggleRegStatus = async (loc) => {
-    if (currentUser?.role !== 'Administrador') {
+    if (!hasAdminRights) {
       showToast("Permisos insuficientes. Solo administradores pueden cambiar el estado.");
       return;
     }
@@ -800,11 +844,18 @@ const App = () => {
     <div className="p-6 space-y-8 animate-in fade-in duration-500">
       <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
         <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2"><UserCog className="text-indigo-500" /> Gestión de Usuarios</h2>
-        {currentUser?.role === 'Administrador' ? (
+        {hasAdminRights ? (
           <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8 bg-slate-50 p-4 rounded-xl border border-slate-100 items-end">
             <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Usuario</label><input type="text" required placeholder="Nuevo usuario" className="w-full p-2.5 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} /></div>
             <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Contraseña</label><input type="password" required placeholder="••••••••" className="w-full p-2.5 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} /></div>
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Rol</label><select className="w-full p-2.5 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}><option value="Administrador">Administrador</option><option value="Editor">Editor</option><option value="Lector">Lector</option></select></div>
+            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Rol</label>
+              <select className="w-full p-2.5 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}>
+                <option value="Administrador">Administrador</option>
+                <option value="Editor">Editor</option>
+                <option value="Lector">Lector</option>
+                <option value="SuperUsuario">SuperUsuario</option>
+              </select>
+            </div>
             <div className="flex items-end h-full"><button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 text-sm rounded-lg transition-all shadow-md active:scale-95 flex justify-center items-center gap-2"><Plus size={18} /> Añadir Usuario</button></div>
           </form>
         ) : (
@@ -817,10 +868,10 @@ const App = () => {
               {users.map(u => (
                 <tr key={u.id} className="hover:bg-slate-50/50">
                   <td className="px-6 py-4 font-bold text-slate-700">{u.username}{currentUser.id === u.id && <span className="text-[10px] text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full ml-2">Tú</span>}</td>
-                  <td className="px-6 py-4"><span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${u.role === 'Administrador' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>{u.role}</span></td>
+                  <td className="px-6 py-4"><span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${u.role === 'SuperUsuario' ? 'bg-amber-100 text-amber-700 border border-amber-200' : u.role === 'Administrador' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>{u.role}</span></td>
                   <td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2">
-                    <button onClick={() => setEditingUser({ isOpen: true, id: u.id, username: u.username, role: u.role, currentPasswordInput: '', newPassword: '', confirmPassword: '' })} disabled={currentUser.role !== 'Administrador'} className={`p-2 rounded-lg transition-all ${currentUser.role !== 'Administrador' ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'}`}><Edit3 size={18} /></button>
-                    <button onClick={() => handleDeleteUser(u.id, u.username)} disabled={currentUser.id === u.id || currentUser.role !== 'Administrador'} className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || currentUser.role !== 'Administrador' ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}><Trash2 size={18} /></button>
+                    <button onClick={() => setEditingUser({ isOpen: true, id: u.id, username: u.username, role: u.role, currentPasswordInput: '', newPassword: '', confirmPassword: '' })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'}`}><Edit3 size={18} /></button>
+                    <button onClick={() => handleDeleteUser(u.id, u.username)} disabled={currentUser.id === u.id || !hasAdminRights} className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || !hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}><Trash2 size={18} /></button>
                   </div></td>
                 </tr>
               ))}
@@ -837,7 +888,8 @@ const App = () => {
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><History className="text-indigo-500" /> Registro de Actividad</h2>
           <div className="flex items-center gap-4">
-            {currentUser?.role === 'Administrador' && <button onClick={handleCleanLogs} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
+            {hasAdminRights && <button onClick={handleCleanLogs} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
+            {isSuperUser && <button onClick={handleCleanRecentLogs} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-500 text-white hover:bg-red-600 border border-red-600 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200"><Trash2 size={14} /> Limpiar &lt; 30 días</button>}
             <span className="bg-slate-100 text-slate-500 text-xs font-bold px-3 py-1 rounded-full">{logs.length} eventos</span>
           </div>
         </div>
@@ -890,7 +942,7 @@ const App = () => {
                   <LayoutDashboard size={14} /> Eventos
                 </button>
               )}
-              {currentUser.role === 'Administrador' && systemView !== 'users' && (
+              {hasAdminRights && systemView !== 'users' && (
                 <button onClick={() => setSystemView('users')} className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl font-bold hover:bg-indigo-100 transition-colors text-xs flex items-center gap-2">
                   <UserCog size={14} /> Usuarios
                 </button>
@@ -916,45 +968,31 @@ const App = () => {
                 return (
                   <div
                     key={ev.id}
-                    draggable={currentUser.role === 'Administrador'}
-                    onDragStart={(e) => { if (currentUser.role === 'Administrador') { setDraggedEventId(ev.id); e.dataTransfer.effectAllowed = "move"; } }}
+                    draggable={hasAdminRights}
+                    onDragStart={(e) => { if (hasAdminRights) { setDraggedEventId(ev.id); e.dataTransfer.effectAllowed = "move"; } }}
                     onDragOver={handleDragOver}
                     onDrop={(e) => handleDrop(e, ev.id)}
                     onDragEnd={() => setDraggedEventId(null)}
-                    className={`bg-white rounded-3xl p-6 shadow-sm border border-slate-200 hover:shadow-lg hover:border-indigo-300 transition-all relative group flex flex-col justify-between ${currentUser.role === 'Administrador' ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} ${draggedEventId === ev.id ? 'opacity-40 scale-95' : 'opacity-100 scale-100'}`}
+                    className={`bg-white rounded-3xl p-6 shadow-sm border border-slate-200 hover:shadow-lg hover:border-indigo-300 transition-all relative group flex flex-col justify-between ${hasAdminRights ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} ${draggedEventId === ev.id ? 'opacity-40 scale-95' : 'opacity-100 scale-100'}`}
                     onClick={() => { setSelectedEventId(ev.id); setActiveTab("Summary"); }}
                   >
-                    {currentUser.role === 'Administrador' && <div className="absolute top-4 right-4 text-slate-200 opacity-0 group-hover:opacity-100 transition-opacity"><GripVertical size={20} /></div>}
+                    {hasAdminRights && <div className="absolute top-4 right-4 text-slate-200 opacity-0 group-hover:opacity-100 transition-opacity"><GripVertical size={20} /></div>}
                     <div>
                       <div className="bg-indigo-50 text-indigo-600 w-12 h-12 rounded-2xl flex items-center justify-center mb-4"><CalendarRange size={24} /></div>
                       
-                      {/* EDICIÓN RÁPIDA DE NOMBRE DESDE EL SELECTOR DE EVENTOS */}
-                      {currentUser.role === 'Administrador' ? (
-                        <input
-                          type="text"
-                          defaultValue={ev.name}
-                          onClick={(e) => e.stopPropagation()}
-                          onBlur={async (e) => {
-                            const newVal = e.target.value.trim();
-                            if (newVal && newVal !== ev.name) {
-                              await updateDoc(getDocRef('app_events', ev.id), { name: newVal });
-                              addLog('Gestión de Eventos', `Renombró evento: "${ev.name}" -> "${newVal}"`, null, ev);
-                            } else {
-                              e.target.value = ev.name;
-                            }
-                          }}
-                          className="text-lg font-bold text-slate-800 mb-1 pr-8 leading-tight w-full bg-transparent border-b-2 border-transparent hover:border-indigo-300 focus:border-indigo-500 outline-none truncate transition-colors cursor-text"
-                          title="Clic para editar nombre"
-                        />
-                      ) : (
-                        <h3 className="text-lg font-bold text-slate-800 mb-1 pr-8 leading-tight">{ev.name}</h3>
-                      )}
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <h3 className="text-lg font-bold text-slate-800 leading-tight pr-2">{ev.name}</h3>
+                        {hasAdminRights && (
+                          <button onClick={(e) => { e.stopPropagation(); setRenameModal({isOpen: true, id: ev.id, name: ev.name}); }} className="text-slate-300 hover:text-indigo-600 p-1 flex-shrink-0">
+                            <Edit3 size={16} />
+                          </button>
+                        )}
+                      </div>
 
                       <div className="flex items-center gap-2 mt-2">
                         <span className="text-[10px] font-black uppercase text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">{ev.eventType}</span>
                         
-                        {/* EDICIÓN RÁPIDA DE FECHA DESDE EL SELECTOR DE EVENTOS */}
-                        {currentUser.role === 'Administrador' ? (
+                        {hasAdminRights ? (
                           <input
                             type="date"
                             defaultValue={ev.date || ''}
@@ -984,13 +1022,13 @@ const App = () => {
                         <p className="text-sm font-bold text-slate-700">{ev.locations ? ev.locations.length : 0}</p>
                       </div>
                     </div>
-                    {currentUser.role === 'Administrador' && (
+                    {hasAdminRights && (
                       <button onClick={(e) => { e.stopPropagation(); setDeleteEventModal({ isOpen: true, id: ev.id, name: ev.name }); }} className="absolute bottom-6 right-6 p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl opacity-0 group-hover:opacity-100 transition-all z-10"><Trash2 size={18} /></button>
                     )}
                   </div>
                 );
               })}
-              {currentUser.role === 'Administrador' && (
+              {hasAdminRights && (
                 <div className="bg-blue-50/50 rounded-3xl p-6 border-2 border-dashed border-blue-200 flex flex-col justify-center items-center text-blue-500 hover:bg-blue-50 hover:border-blue-400 cursor-pointer transition-all min-h-[200px]" onClick={() => setIsAddEventModalOpen(true)}>
                   <div className="bg-white p-3 rounded-full shadow-sm mb-3"><Plus size={24} className="text-blue-600" /></div>
                   <span className="font-bold text-sm">Crear Nuevo Evento</span>
@@ -1025,6 +1063,10 @@ const App = () => {
                   <input type="text" autoFocus className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 font-bold text-slate-700 text-sm" placeholder="Ej. Campamento Jóvenes 2027" value={newEventData.name} onChange={e => setNewEventData({ ...newEventData, name: e.target.value })} />
                 </div>
                 <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Costo Base ($) Inicial</label>
+                  <input type="number" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 font-bold text-slate-700 text-sm" placeholder="Ej. 150" value={newEventData.baseCost} onChange={e => setNewEventData({ ...newEventData, baseCost: e.target.value })} />
+                </div>
+                <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Fecha del Evento (Opcional)</label>
                   <input type="date" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 font-bold text-slate-700 text-sm" value={newEventData.date} onChange={e => setNewEventData({ ...newEventData, date: e.target.value })} />
                 </div>
@@ -1035,7 +1077,7 @@ const App = () => {
                   </select>
                 </div>
                 <div className="flex gap-3 pt-4">
-                  <button onClick={() => { setIsAddEventModalOpen(false); setNewEventData({ name: '', type: 'Campa', date: '' }); }} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
+                  <button onClick={() => { setIsAddEventModalOpen(false); setNewEventData({ name: '', type: 'Campa', date: '', baseCost: '' }); }} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
                   <button onClick={handleCreateEvent} disabled={!newEventData.name.trim()} className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white font-bold rounded-xl transition-colors text-sm flex justify-center items-center gap-2 shadow-lg shadow-blue-200"><Plus size={18} /> Crear</button>
                 </div>
               </div>
@@ -1050,7 +1092,14 @@ const App = () => {
               <p className="text-sm text-slate-500 mb-6">Modifica los datos del usuario.</p>
               <form onSubmit={handleUpdateUser} className="space-y-4">
                 <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Usuario</label><input type="text" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.username} onChange={e => setEditingUser({ ...editingUser, username: e.target.value })} /></div>
-                <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Rol</label><select className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.role} onChange={e => setEditingUser({ ...editingUser, role: e.target.value })}><option value="Administrador">Administrador</option><option value="Editor">Editor</option><option value="Lector">Lector</option></select></div>
+                <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Rol</label>
+                  <select className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.role} onChange={e => setEditingUser({ ...editingUser, role: e.target.value })}>
+                    <option value="Administrador">Administrador</option>
+                    <option value="Editor">Editor</option>
+                    <option value="Lector">Lector</option>
+                    <option value="SuperUsuario">SuperUsuario</option>
+                  </select>
+                </div>
                 <div className="border-t border-slate-100 pt-4 mt-2 space-y-4">
                   <p className="text-xs font-bold text-slate-800">Cambio de Contraseña</p>
                   <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Contraseña Actual</label><input type="password" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.currentPasswordInput} onChange={e => setEditingUser({ ...editingUser, currentPasswordInput: e.target.value })} /></div>
@@ -1062,6 +1111,23 @@ const App = () => {
                   <button type="submit" className="flex-1 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-colors text-sm flex justify-center items-center gap-2 shadow-lg shadow-indigo-200">Guardar</button>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* Modal to rename event directly */}
+        {renameModal.isOpen && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
+              <h3 className="text-lg font-bold text-slate-800 mb-1">Renombrar Evento</h3>
+              <p className="text-sm text-slate-500 mb-6">Ingresa el nuevo nombre para este evento.</p>
+              <div className="space-y-4">
+                <input type="text" autoFocus className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" placeholder="Nombre del Evento" value={renameModal.name} onChange={e => setRenameModal({...renameModal, name: e.target.value})} onKeyDown={e => e.key === 'Enter' && handleRenameEvent()} />
+                <div className="flex gap-3 pt-2">
+                  <button onClick={() => setRenameModal({isOpen: false, id: null, name: ''})} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
+                  <button onClick={handleRenameEvent} disabled={!renameModal.name.trim()} className="flex-1 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold rounded-xl transition-colors text-sm flex justify-center items-center gap-2">Guardar</button>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -1143,7 +1209,7 @@ const App = () => {
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2"><div className="bg-blue-100 p-2 rounded-lg text-blue-600"><CalendarRange size={18} /></div><span className="text-xs font-bold text-slate-500">Fecha Evento</span></div>
-              {currentUser?.role === 'Administrador' && (
+              {hasAdminRights && (
                 <label className="relative flex items-center justify-center p-2 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer" title="Modificar fecha">
                   <CalendarRange size={16} className="relative z-10 pointer-events-none" />
                   <input type="date" value={tempEventDate} onChange={(e) => setTempEventDate(e.target.value)}
@@ -1166,7 +1232,7 @@ const App = () => {
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2"><div className="bg-indigo-100 p-2 rounded-lg text-indigo-600"><BarChart3 size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Base</span></div>
-              {currentUser?.role === 'Administrador' && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
+              {hasAdminRights && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
             </div>
             <div className="flex items-center text-2xl font-black text-slate-800">{showMoney ? `$${currentPricing.global}` : '$***'}</div>
             {currentEvent.pricingType === 'dynamic' && <p className="text-[10px] text-indigo-500 font-bold mt-1 uppercase">Precio Dinámico</p>}
@@ -1176,7 +1242,7 @@ const App = () => {
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2"><div className="bg-amber-100 p-2 rounded-lg text-amber-600"><Users size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Servidor (Ambos)</span></div>
-                {currentUser?.role === 'Administrador' && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
+                {hasAdminRights && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
               </div>
               <div className="flex items-center text-2xl font-black text-slate-800">{showMoney ? `$${currentPricing.server}` : '$***'}</div>
             </div>
@@ -1341,7 +1407,7 @@ const App = () => {
           <div><h2 className="text-2xl font-bold text-slate-800">Sede {loc}</h2><div className="flex items-center gap-2"><div className={`w-2 h-2 rounded-full ${isLocOpen(loc) ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} /><p className="text-xs font-bold uppercase text-slate-400">Registro {isLocOpen(loc) ? 'Abierto' : 'Cerrado'}</p></div></div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {currentUser?.role === 'Administrador' && (
+          {hasAdminRights && (
             <button onClick={() => toggleRegStatus(loc)} className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm transition-all border ${isLocOpen(loc) ? 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100' : 'bg-green-50 text-green-600 border-green-100 hover:bg-green-100'}`}><Power size={16} />{isLocOpen(loc) ? 'Desactivar Registro' : 'Activar Registro'}</button>
           )}
         </div>
@@ -1351,7 +1417,7 @@ const App = () => {
         <div className={`bg-white p-6 rounded-2xl shadow-sm border border-slate-100 transition-opacity ${!isLocOpen(loc) ? 'opacity-50 pointer-events-none' : ''}`}>
           <div className="flex justify-between items-center mb-6">
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2"><Plus size={14} /> Nuevo Registro</h3>
-            {isGeneral && currentUser?.role === 'Administrador' && (
+            {isGeneral && hasAdminRights && (
               <button onClick={() => setCustomFieldsModal({ isOpen: true })} className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg border border-indigo-100 hover:bg-indigo-100 transition-colors"><ListPlus size={14} /> Configurar Campos Extra</button>
             )}
           </div>
@@ -1609,26 +1675,22 @@ const App = () => {
           <div className="flex items-start gap-3 mb-2">
             <div className="bg-indigo-600 p-2 rounded-xl shadow-lg shadow-indigo-500/20 mt-1"><Edit3 size={20} /></div>
             <div className="w-full">
-              <textarea
-                value={tempEventName}
-                disabled={currentUser?.role === 'Lector'}
-                onChange={(e) => setTempEventName(e.target.value)}
-                onBlur={async (e) => {
-                  const newVal = e.target.value;
-                  if (newVal !== currentEvent.name) {
-                    await updateEventConfig({ name: newVal });
-                    addLog('Evento', `Nombre: "${currentEvent.name}" -> "${newVal}"`);
-                  }
-                }}
-                className="bg-transparent border-b border-dashed border-slate-600 text-white font-black text-lg leading-tight w-full focus:outline-none focus:border-indigo-400 transition-colors pb-1 resize-none overflow-hidden"
-                placeholder="Nombre del Evento" rows={2}
-              />
-              <div className="flex items-center gap-2 mt-2">
+              <div className="flex items-start gap-2 pr-2">
+                <h2 className="text-white font-black text-lg leading-tight w-full" style={{ wordBreak: 'break-word' }}>
+                  {currentEvent?.name}
+                </h2>
+                {hasAdminRights && (
+                  <button onClick={() => setRenameModal({isOpen: true, id: currentEvent.id, name: currentEvent.name})} className="text-slate-400 hover:text-indigo-300 mt-1 flex-shrink-0 transition-colors" title="Renombrar Evento">
+                    <Edit3 size={16} />
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 mt-3">
                 <CalendarRange size={14} className="text-white" />
                 <input
                   type="date"
                   value={tempEventDate}
-                  disabled={currentUser?.role === 'Lector'}
+                  disabled={!hasAdminRights}
                   onChange={(e) => setTempEventDate(e.target.value)}
                   onBlur={async (e) => {
                     const newVal = e.target.value;
@@ -1637,12 +1699,12 @@ const App = () => {
                       addLog('Evento', `Fecha: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`);
                     }
                   }}
-                  className="bg-transparent border-b border-dashed border-slate-600 text-indigo-200 text-xs font-bold focus:outline-none focus:border-indigo-400 transition-colors pb-0.5 cursor-pointer [color-scheme:dark]"
+                  className={`bg-transparent border-b border-dashed border-slate-600 text-indigo-200 text-xs font-bold focus:outline-none focus:border-indigo-400 transition-colors pb-0.5 [color-scheme:dark] ${hasAdminRights ? 'cursor-pointer' : 'cursor-default border-transparent'}`}
                 />
               </div>
             </div>
           </div>
-          <div className="flex items-center justify-between mt-2">
+          <div className="flex items-center justify-between mt-4">
             <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1">Registros Vida Nueva</p>
             <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-500/30 uppercase font-bold">{currentEvent.eventType}</span>
           </div>
@@ -1658,7 +1720,7 @@ const App = () => {
           <button onClick={() => setActiveTab("Summary")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-4 ${activeTab === 'Summary' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><BarChart3 size={20} className={activeTab === 'Summary' ? 'text-indigo-400' : ''} /><span className="font-bold">Resumen General</span></div>{activeTab === 'Summary' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
           <div className="flex items-center justify-between py-2 px-4 border-t border-slate-800/50 pt-4">
             <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Sedes Disponibles</span>
-            {currentUser?.role !== 'Lector' && <button onClick={() => setIsAddLocModalOpen(true)} className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 p-1 rounded transition-colors" title="Añadir Sede"><Plus size={14} /></button>}
+            {hasAdminRights && <button onClick={() => setIsAddLocModalOpen(true)} className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 p-1 rounded transition-colors" title="Añadir Sede"><Plus size={14} /></button>}
           </div>
           {(currentEvent?.locations || []).map(loc => (
             <div key={loc} className="flex flex-col mb-1">
@@ -1667,14 +1729,13 @@ const App = () => {
                 <div className="flex items-center gap-2">
                   {!isLocOpen(loc) && <span className="text-[8px] bg-red-500/20 text-red-400 px-1.5 rounded uppercase font-bold border border-red-500/30">Cerrada</span>}
                   <div className={`text-[10px] px-2 py-0.5 rounded-full font-black ${activeTab === loc ? 'bg-indigo-500 text-white' : 'bg-slate-800 text-slate-500'}`}>{(data[loc] || []).length}</div>
-                  {currentUser?.role !== 'Lector' && <div onClick={(e) => { e.stopPropagation(); handleDeleteLocation(loc); }} className={`p-1.5 rounded-lg transition-colors ${activeTab === loc ? 'hover:bg-indigo-500 text-indigo-200 hover:text-white' : 'text-slate-600 hover:bg-slate-800 hover:text-red-400'}`} title="Eliminar Sede"><Trash2 size={14} /></div>}
+                  {hasAdminRights && <div onClick={(e) => { e.stopPropagation(); handleDeleteLocation(loc); }} className={`p-1.5 rounded-lg transition-colors ${activeTab === loc ? 'hover:bg-indigo-500 text-indigo-200 hover:text-white' : 'text-slate-600 hover:bg-slate-800 hover:text-red-400'}`} title="Eliminar Sede"><Trash2 size={14} /></div>}
                 </div>
               </button>
               {locError === loc && <span className="text-[10px] text-red-400 font-bold px-4 pt-1 animate-in slide-in-from-top-1 text-left">Sede con registros.</span>}
             </div>
           ))}
           <div className="pt-6 pb-2 px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.2em] border-t border-slate-800/50 mt-4">Sistema</div>
-          {/* Se añadió navegación para ver usuarios o logs desde dentro de un evento */}
           <button onClick={() => { setSelectedEventId(null); setSystemView('users'); }} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><UserCog size={20} /><span className="font-bold">Usuarios Globales</span></div></button>
           <button onClick={() => { setSelectedEventId(null); setSystemView('logs'); }} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><History size={20} /><span className="font-bold">Logs de Actividad</span></div></button>
         </nav>
@@ -1686,22 +1747,17 @@ const App = () => {
 
       <main className="flex-1 overflow-y-auto bg-[#f8fafc]">
         <header className="sticky top-0 z-10 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 md:px-8 py-4 flex items-center justify-between lg:justify-end">
-          <div className="lg:hidden flex items-center gap-3 flex-1 mr-4">
-            <input
-              type="text"
-              value={tempEventName}
-              onChange={(e) => setTempEventName(e.target.value)}
-              onBlur={async (e) => {
-                const newVal = e.target.value;
-                if (newVal !== currentEvent.name) {
-                  await updateEventConfig({ name: newVal });
-                  addLog('Evento', `Nombre: "${currentEvent.name}" -> "${newVal}"`);
-                }
-              }}
-              className="bg-transparent border-b border-dashed border-slate-300 text-slate-800 font-black text-base w-full focus:outline-none focus:border-indigo-500 truncate"
-            />
+          <div className="lg:hidden flex items-center gap-3 flex-1 mr-4 min-w-0">
+            <h2 className="text-slate-800 font-black text-base truncate flex-1">
+              {currentEvent?.name}
+            </h2>
+            {hasAdminRights && (
+              <button onClick={() => setRenameModal({isOpen: true, id: currentEvent.id, name: currentEvent.name})} className="text-slate-400 hover:text-indigo-600 p-1 flex-shrink-0">
+                <Edit3 size={16} />
+              </button>
+            )}
           </div>
-          <div className="flex items-center gap-2 md:gap-4">
+          <div className="flex items-center gap-2 md:gap-4 flex-shrink-0">
             <div className="hidden lg:flex items-center gap-2 mr-4 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
             <button onClick={() => setShowMoney(!showMoney)} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors">{showMoney ? <EyeOff size={14} /> : <Eye size={14} />}<span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span></button>
             <div className="bg-slate-100 rounded-full p-1 hidden sm:flex"><button onClick={() => setActiveTab("Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button></div>
@@ -1795,9 +1851,9 @@ const App = () => {
               <div className="p-6 bg-slate-50 rounded-2xl border border-slate-100">
                 <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] border-b border-slate-200 pb-2 mb-4 flex items-center justify-between">
                   <span>Costo Fijado (Total a Cobrar)</span>
-                  {currentUser?.role !== 'Administrador' && <span className="flex items-center gap-1 text-amber-500 normal-case tracking-normal text-[9px]"><Lock size={10} /> Solo Administrador</span>}
+                  {!hasAdminRights && <span className="flex items-center gap-1 text-amber-500 normal-case tracking-normal text-[9px]"><Lock size={10} /> Solo Administrador</span>}
                 </h4>
-                {currentUser?.role === 'Administrador' ? (
+                {hasAdminRights ? (
                   <div className="relative max-w-xs">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold text-slate-400">$</span>
                     <input type="number" className="w-full pl-8 pr-4 py-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500 text-slate-800 font-bold"
