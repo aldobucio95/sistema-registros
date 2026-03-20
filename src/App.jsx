@@ -2296,188 +2296,174 @@ const App = () => {
         </div>
       )}
 
-      {currentUser?.role !== 'Lector' ? (
-        <>
-          <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col xl:flex-row gap-4 justify-between items-center">
-            <div className="relative w-full xl:w-1/4"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} /><input type="text" placeholder="Buscar..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div>
-            <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
-              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><ArrowUpDown size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="none">Ordenar...</option><option value="name-asc">Nombre (A-Z)</option><option value="name-desc">Nombre (Z-A)</option><option value="debt-asc">Deuda (Menor a Mayor)</option><option value="debt-desc">Deuda (Mayor a Menor)</option></select></div>
-              {isCampa && (
-                <>
-                  <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><MapPin size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterAssignment} onChange={e => setFilterAssignment(e.target.value)}><option value="all">Asignación: Todas</option><option value="Teens">Teens</option><option value="Jóvenes">Jóvenes</option><option value="Ambos">Ambos (Servidores)</option></select></div>
-                  <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><GraduationCap size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterScholarship} onChange={e => setFilterScholarship(e.target.value)}><option value="all">Becados/Regulares</option><option value="Sí">Becados</option><option value="No">Regulares</option></select></div>
-                  <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Filter size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterMedical} onChange={e => setFilterMedical(e.target.value)}><option value="all">Salud: Todos</option><option value="allergy">Con Alergias</option><option value="disease">Con Enfermedades</option><option value="disability">Con Discapacidades</option></select></div>
-                  <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Filter size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterSwim} onChange={e => setFilterSwim(e.target.value)}><option value="all">Nado: Todos</option><option value="Sí">Saben nadar</option><option value="No">No saben nadar</option></select></div>
-                  <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Users size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterServer} onChange={e => setFilterServer(e.target.value)}><option value="all">Servidores: Todos</option><option value="Sí">Servidores</option><option value="No">Camperos</option><option value="Teens">Asig. Teens</option><option value="Jóvenes">Asig. Jóvenes</option><option value="Ambos">Asig. Ambos</option></select></div>
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                    <th className="px-4 py-4">Participante</th>
-                    {isCampa ? <th className="px-4 py-4">Salud y Nado</th> : <th className="px-4 py-4">Detalles</th>}
-                    <th className="px-4 py-4">Finanzas</th>
-                    <th className="px-4 py-4 text-center">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {(() => {
-                    let processedData = [...(data[loc] || [])];
-                    if (searchTerm) processedData = processedData.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
-                    if (isCampa) {
-                      if (filterAssignment !== 'all') {
-                        processedData = processedData.filter(p => {
-                          const assign = p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment;
-                          return assign === filterAssignment;
-                        });
-                      }
-                      if (filterSwim !== 'all') processedData = processedData.filter(p => p.canSwim === filterSwim);
-                      if (filterScholarship !== 'all') processedData = processedData.filter(p => p.isScholarship === filterScholarship);
-                      if (filterServer === 'Sí') processedData = processedData.filter(p => p.isServer === 'Sí');
-                      else if (filterServer === 'No') processedData = processedData.filter(p => p.isServer !== 'Sí');
-                      else if (filterServer === 'Teens') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Teens');
-                      else if (filterServer === 'Jóvenes') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes');
-                      else if (filterServer === 'Ambos') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Ambos');
-                      if (filterMedical === 'allergy') processedData = processedData.filter(p => p.hasAllergy === 'Sí');
-                      else if (filterMedical === 'disease') processedData = processedData.filter(p => p.hasDisease === 'Sí');
-                      else if (filterMedical === 'disability') processedData = processedData.filter(p => p.hasDisability === 'Sí');
-                    }
-                    const getDebt = (p) => p.isScholarship === 'Sí' ? 0 : (p.registeredCost != null ? Number(p.registeredCost) : getPersonCost(p, currentPricing)) - parseFloat(p.paid || 0);
-                    if (sortBy === 'name-asc') processedData.sort((a, b) => a.name.localeCompare(b.name));
-                    if (sortBy === 'name-desc') processedData.sort((a, b) => b.name.localeCompare(a.name));
-                    if (sortBy === 'debt-asc') processedData.sort((a, b) => getDebt(a) - getDebt(b));
-                    if (sortBy === 'debt-desc') processedData.sort((a, b) => getDebt(b) - getDebt(a));
-                    if (processedData.length === 0) return <tr><td colSpan="4" className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay registros para mostrar en {loc}.</td></tr>;
-
-                    return processedData.map((person) => {
-                      const isExpanded = expandedRows.has(person.id);
-                      const isBecado = isCampa && person.isScholarship === 'Sí';
-                      const baseCost = person.registeredCost != null ? Number(person.registeredCost) : getPersonCost(person, currentPricing);
-                      const balance = isBecado ? 0 : baseCost - parseFloat(person.paid || 0);
-                      const payHistory = person.paymentHistory || [];
-
-                      return (
-                        <React.Fragment key={person.id}>
-                          <tr className={`hover:bg-slate-50/50 transition-colors group ${isExpanded ? 'bg-slate-50/50' : ''}`}>
-                            <td className="px-4 py-4 align-top">
-                              <div className="space-y-1">
-                                <div className="flex items-center flex-wrap gap-2">
-                                  <p className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
-                                    {person.name}
-                                    {person._isDebug && person._debugSessionId === globalConfig?.debugSessionId && (
-                                      <Bug size={14} className="text-orange-500 inline-block" title="Cambio no permanente" />
-                                    )}
-                                  </p>
-                                  {isBecado && <span className="bg-purple-100 text-purple-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><GraduationCap size={10} /> Becado</span>}
-                                  {person.isServer === 'Sí' ? (
-                                    <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>
-                                  ) : (
-                                    isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes')}</span>
-                                  )}
-                                </div>
-                                <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1"><span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone}</span></div>
-                              </div>
-                            </td>
-                            {isCampa ? (
-                              <td className="px-4 py-4 align-top"><div className="flex flex-col gap-2 text-xs"><div className="flex flex-wrap items-center gap-2"><span className="px-2 py-0.5 bg-red-50 text-red-600 rounded font-black border border-red-100 uppercase text-[10px]">Sangre: {person.bloodType}</span><span className={`px-2 py-0.5 rounded font-bold text-[10px] border flex items-center gap-1 ${person.canSwim === 'Sí' ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>{person.canSwim === 'Sí' ? <CheckCircle2 size={12} /> : <XCircle size={12} />} Nadador: {person.canSwim}</span></div></div></td>
-                            ) : (
-                              <td className="px-4 py-4 align-top">
-                                <div className="text-xs text-slate-500 space-y-0.5">
-                                  {person.age ? <p><strong className="text-slate-600">Edad:</strong> {person.age} años</p> : <p className="italic text-slate-400">Edad no provista</p>}
-                                  {person.gender ? <p><strong className="text-slate-600">Género:</strong> {person.gender}</p> : <p className="italic text-slate-400">Género no provisto</p>}
-                                  {isGeneral && person.customData && Object.keys(person.customData).length > 0 && <p className="text-[10px] mt-1 text-indigo-500 font-bold tracking-wider pt-1">+ Datos Extra ({Object.keys(person.customData).length})</p>}
-                                </div>
-                              </td>
-                            )}
-                            <td className="px-4 py-4 align-top">
-                              <div className="flex flex-col gap-2 w-full max-w-[140px]">
-                                <div className="text-left space-y-0.5">
-                                  <p className="text-xs font-black text-green-600 flex justify-between"><span>Pagado:</span> <span>{formatMoney(person.paid || 0)}</span></p>
-                                  <p className={`text-[10px] font-bold flex justify-between ${isBecado ? 'text-purple-600' : balance > 0 ? 'text-orange-500' : 'text-green-600'}`}><span>Restante:</span> <span>{isBecado ? 'No requerido' : balance > 0 ? formatMoney(balance) : 'Liquidado'}</span></p>
-                                </div>
-                                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1"><div className="h-full bg-green-50 transition-all" style={{ width: `${Math.min(((person.paid || 0) / baseCost) * 100, 100)}%` }} /></div>
-                              </div>
-                            </td>
-                            <td className="px-4 py-4 align-top text-center">
-                              <div className="flex items-center justify-center gap-2 opacity-100 lg:opacity-50 group-hover:opacity-100 transition-opacity">
-                                <button onClick={() => toggleRow(person.id)} className={`p-2 rounded-lg transition-all ${isExpanded ? 'bg-indigo-50 text-indigo-600' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`} title="Detalles">{isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
-                                {currentUser?.role !== 'Lector' && (
-                                  <>
-                                    <button onClick={() => setEditRegistryModal({ isOpen: true, loc, data: { ...person, registeredCost: baseCost, campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes') } })} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all" title="Editar Registro"><Edit3 size={18} /></button>
-                                    <button onClick={() => setPaymentModal({ isOpen: true, loc, id: person.id, personName: person.name, amount: '', currentPaid: parseFloat(person.paid || 0), error: '', isScholarship: isBecado ? 'Sí' : 'No', baseCost })} className="p-2 text-slate-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all" title="Abonar Pago"><CreditCard size={18} /></button>
-                                    <button onClick={() => removeEntry(loc, person.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all" title="Eliminar Registro"><Trash2 size={18} /></button>
-                                  </>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                          {isExpanded && (
-                            <tr className="bg-indigo-50/30 border-b border-slate-100 animate-in fade-in zoom-in-95 duration-200">
-                              <td colSpan="4" className="px-6 py-5">
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs items-start">
-                                  <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
-                                    <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Detalles Generales</p>
-                                    <p className="mb-1 text-slate-600"><strong>Edad:</strong> {person.age || 'N/A'}</p>
-                                    <p className="text-slate-600"><strong>Género:</strong> {person.gender || 'N/A'}</p>
-                                  </div>
-                                  {(isCampa || isGeneral) ? (
-                                    <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
-                                      <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Contacto de Emergencia</p>
-                                      {person.emergencyContact ? (<><p className="text-slate-700 font-semibold mb-1">{person.emergencyContact}</p><p className="flex items-center gap-1 text-slate-500 font-mono"><Phone size={10} /> {person.emergencyPhone}</p></>) : <p className="text-slate-400 italic">No provisto</p>}
-                                    </div>
-                                  ) : <div />}
-                                  {isCampa && (
-                                    <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100"><p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Condiciones Especiales</p><div className="space-y-1.5"><p className="text-slate-600"><strong>Alergias:</strong> {person.hasAllergy === 'Sí' ? <span className="text-orange-600 font-bold">{person.allergyDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Enfermedades:</strong> {person.hasDisease === 'Sí' ? <span className="text-red-600 font-bold">{person.diseaseDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Discapacidades:</strong> {person.hasDisability === 'Sí' ? <span className="text-purple-600 font-bold">{person.disabilityDetails}</span> : <span>Ninguna</span>}</p></div></div>
-                                  )}
-                                  {isGeneral && person.customData && Object.keys(person.customData).length > 0 && (
-                                    <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
-                                      <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Datos Extra</p>
-                                      <div className="space-y-1.5">{Object.entries(person.customData).map(([key, val], i) => <p key={i} className="text-slate-600"><strong>{key}:</strong> {val || <span className="italic text-slate-400">N/A</span>}</p>)}</div>
-                                    </div>
-                                  )}
-                                </div>
-                                <div className="mt-4 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-                                  <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between"><p className="font-bold text-indigo-900 uppercase tracking-wider text-[10px] flex items-center gap-2"><Receipt size={12} className="text-green-500" /> Historial de Pagos</p><span className="text-[10px] font-bold bg-green-50 text-green-600 px-2 py-0.5 rounded-full border border-green-100">{payHistory.length} {payHistory.length === 1 ? 'movimiento' : 'movimientos'}</span></div>
-                                  {payHistory.length === 0 ? <div className="px-4 py-6 text-center"><p className="text-[11px] text-slate-400 italic">Sin movimientos registrados.</p></div> : (
-                                    <div className="divide-y divide-slate-50">
-                                      {payHistory.map((pay, idx) => (
-                                        <div key={pay.id} className="px-4 py-2.5 flex items-center justify-between hover:bg-slate-50/50 transition-colors">
-                                          <div className="flex items-center gap-3"><span className="w-5 h-5 rounded-full bg-slate-100 text-slate-500 text-[9px] font-black flex items-center justify-center flex-shrink-0">{idx + 1}</span><div><p className="text-[11px] font-mono text-slate-500">{pay.date}</p><div className="flex items-center gap-1.5 mt-0.5"><UserCircle size={10} className="text-slate-400" /><p className="text-[10px] text-slate-400 font-semibold">{pay.registeredBy}</p>{pay.isManualAdjustment && <span className="text-[9px] bg-amber-50 text-amber-600 border border-amber-100 px-1.5 py-0.5 rounded font-bold uppercase">Ajuste Admin</span>}</div></div></div>
-                                          <div className="text-right"><p className={`text-sm font-black ${pay.amount < 0 ? 'text-red-500' : 'text-green-600'}`}>{pay.amount < 0 ? '-' : '+'}{formatMoney(Math.abs(pay.amount))}</p></div>
-                                        </div>
-                                      ))}
-                                      <div className="px-4 py-2.5 bg-green-50 flex items-center justify-between"><span className="text-[10px] font-black text-green-800 uppercase tracking-wider">Total acumulado</span><span className="text-sm font-black text-green-700">{formatMoney(person.paid || 0)}</span></div>
-                                    </div>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    });
-                  })()}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col items-center justify-center text-center gap-4 mt-6">
-          <div className="w-16 h-16 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center border border-slate-100">
-            <EyeOff size={32} />
-          </div>
-          <div>
-            <h3 className="text-lg font-black text-slate-700">Acceso Restringido</h3>
-            <p className="text-sm text-slate-500 max-w-sm mt-1">Tu rol actual de <strong>Lector</strong> no te permite visualizar la lista detallada de usuarios registrados ni realizar modificaciones.</p>
-          </div>
+      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col xl:flex-row gap-4 justify-between items-center">
+        <div className="relative w-full xl:w-1/4"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} /><input type="text" placeholder="Buscar..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div>
+        <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
+          <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><ArrowUpDown size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="none">Ordenar...</option><option value="name-asc">Nombre (A-Z)</option><option value="name-desc">Nombre (Z-A)</option><option value="debt-asc">Deuda (Menor a Mayor)</option><option value="debt-desc">Deuda (Mayor a Menor)</option></select></div>
+          {isCampa && (
+            <>
+              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><MapPin size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterAssignment} onChange={e => setFilterAssignment(e.target.value)}><option value="all">Asignación: Todas</option><option value="Teens">Teens</option><option value="Jóvenes">Jóvenes</option><option value="Ambos">Ambos (Servidores)</option></select></div>
+              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><GraduationCap size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterScholarship} onChange={e => setFilterScholarship(e.target.value)}><option value="all">Becados/Regulares</option><option value="Sí">Becados</option><option value="No">Regulares</option></select></div>
+              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Filter size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterMedical} onChange={e => setFilterMedical(e.target.value)}><option value="all">Salud: Todos</option><option value="allergy">Con Alergias</option><option value="disease">Con Enfermedades</option><option value="disability">Con Discapacidades</option></select></div>
+              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Filter size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterSwim} onChange={e => setFilterSwim(e.target.value)}><option value="all">Nado: Todos</option><option value="Sí">Saben nadar</option><option value="No">No saben nadar</option></select></div>
+              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Users size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterServer} onChange={e => setFilterServer(e.target.value)}><option value="all">Servidores: Todos</option><option value="Sí">Servidores</option><option value="No">Camperos</option><option value="Teens">Asig. Teens</option><option value="Jóvenes">Asig. Jóvenes</option><option value="Ambos">Asig. Ambos</option></select></div>
+            </>
+          )}
         </div>
-      )}
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                <th className="px-4 py-4">Participante</th>
+                {isCampa ? <th className="px-4 py-4">Salud y Nado</th> : <th className="px-4 py-4">Detalles</th>}
+                <th className="px-4 py-4">Finanzas</th>
+                <th className="px-4 py-4 text-center">Acciones</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {(() => {
+                let processedData = [...(data[loc] || [])];
+                if (searchTerm) processedData = processedData.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
+                if (isCampa) {
+                  if (filterAssignment !== 'all') {
+                    processedData = processedData.filter(p => {
+                      const assign = p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment;
+                      return assign === filterAssignment;
+                    });
+                  }
+                  if (filterSwim !== 'all') processedData = processedData.filter(p => p.canSwim === filterSwim);
+                  if (filterScholarship !== 'all') processedData = processedData.filter(p => p.isScholarship === filterScholarship);
+                  if (filterServer === 'Sí') processedData = processedData.filter(p => p.isServer === 'Sí');
+                  else if (filterServer === 'No') processedData = processedData.filter(p => p.isServer !== 'Sí');
+                  else if (filterServer === 'Teens') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Teens');
+                  else if (filterServer === 'Jóvenes') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes');
+                  else if (filterServer === 'Ambos') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Ambos');
+                  if (filterMedical === 'allergy') processedData = processedData.filter(p => p.hasAllergy === 'Sí');
+                  else if (filterMedical === 'disease') processedData = processedData.filter(p => p.hasDisease === 'Sí');
+                  else if (filterMedical === 'disability') processedData = processedData.filter(p => p.hasDisability === 'Sí');
+                }
+                const getDebt = (p) => p.isScholarship === 'Sí' ? 0 : (p.registeredCost != null ? Number(p.registeredCost) : getPersonCost(p, currentPricing)) - parseFloat(p.paid || 0);
+                if (sortBy === 'name-asc') processedData.sort((a, b) => a.name.localeCompare(b.name));
+                if (sortBy === 'name-desc') processedData.sort((a, b) => b.name.localeCompare(a.name));
+                if (sortBy === 'debt-asc') processedData.sort((a, b) => getDebt(a) - getDebt(b));
+                if (sortBy === 'debt-desc') processedData.sort((a, b) => getDebt(b) - getDebt(a));
+                if (processedData.length === 0) return <tr><td colSpan="4" className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay registros para mostrar en {loc}.</td></tr>;
+
+                return processedData.map((person) => {
+                  const isExpanded = expandedRows.has(person.id);
+                  const isBecado = isCampa && person.isScholarship === 'Sí';
+                  const baseCost = person.registeredCost != null ? Number(person.registeredCost) : getPersonCost(person, currentPricing);
+                  const balance = isBecado ? 0 : baseCost - parseFloat(person.paid || 0);
+                  const payHistory = person.paymentHistory || [];
+
+                  return (
+                    <React.Fragment key={person.id}>
+                      <tr className={`hover:bg-slate-50/50 transition-colors group ${isExpanded ? 'bg-slate-50/50' : ''}`}>
+                        <td className="px-4 py-4 align-top">
+                          <div className="space-y-1">
+                            <div className="flex items-center flex-wrap gap-2">
+                              <p className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                                {person.name}
+                                {person._isDebug && person._debugSessionId === globalConfig?.debugSessionId && (
+                                  <Bug size={14} className="text-orange-500 inline-block" title="Cambio no permanente" />
+                                )}
+                              </p>
+                              {isBecado && <span className="bg-purple-100 text-purple-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><GraduationCap size={10} /> Becado</span>}
+                              {person.isServer === 'Sí' ? (
+                                <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>
+                              ) : (
+                                isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes')}</span>
+                              )}
+                            </div>
+                            <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1"><span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone}</span></div>
+                          </div>
+                        </td>
+                        {isCampa ? (
+                          <td className="px-4 py-4 align-top"><div className="flex flex-col gap-2 text-xs"><div className="flex flex-wrap items-center gap-2"><span className="px-2 py-0.5 bg-red-50 text-red-600 rounded font-black border border-red-100 uppercase text-[10px]">Sangre: {person.bloodType}</span><span className={`px-2 py-0.5 rounded font-bold text-[10px] border flex items-center gap-1 ${person.canSwim === 'Sí' ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>{person.canSwim === 'Sí' ? <CheckCircle2 size={12} /> : <XCircle size={12} />} Nadador: {person.canSwim}</span></div></div></td>
+                        ) : (
+                          <td className="px-4 py-4 align-top">
+                            <div className="text-xs text-slate-500 space-y-0.5">
+                              {person.age ? <p><strong className="text-slate-600">Edad:</strong> {person.age} años</p> : <p className="italic text-slate-400">Edad no provista</p>}
+                              {person.gender ? <p><strong className="text-slate-600">Género:</strong> {person.gender}</p> : <p className="italic text-slate-400">Género no provisto</p>}
+                              {isGeneral && person.customData && Object.keys(person.customData).length > 0 && <p className="text-[10px] mt-1 text-indigo-500 font-bold tracking-wider pt-1">+ Datos Extra ({Object.keys(person.customData).length})</p>}
+                            </div>
+                          </td>
+                        )}
+                        <td className="px-4 py-4 align-top">
+                          <div className="flex flex-col gap-2 w-full max-w-[140px]">
+                            <div className="text-left space-y-0.5">
+                              <p className="text-xs font-black text-green-600 flex justify-between"><span>Pagado:</span> <span>{formatMoney(person.paid || 0)}</span></p>
+                              <p className={`text-[10px] font-bold flex justify-between ${isBecado ? 'text-purple-600' : balance > 0 ? 'text-orange-500' : 'text-green-600'}`}><span>Restante:</span> <span>{isBecado ? 'No requerido' : balance > 0 ? formatMoney(balance) : 'Liquidado'}</span></p>
+                            </div>
+                            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1"><div className="h-full bg-green-50 transition-all" style={{ width: `${Math.min(((person.paid || 0) / baseCost) * 100, 100)}%` }} /></div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-4 align-top text-center">
+                          <div className="flex items-center justify-center gap-2 opacity-100 lg:opacity-50 group-hover:opacity-100 transition-opacity">
+                            <button onClick={() => toggleRow(person.id)} className={`p-2 rounded-lg transition-all ${isExpanded ? 'bg-indigo-50 text-indigo-600' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`} title="Detalles">{isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
+                            {currentUser?.role !== 'Lector' && (
+                              <>
+                                <button onClick={() => setEditRegistryModal({ isOpen: true, loc, data: { ...person, registeredCost: baseCost, campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes') } })} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all" title="Editar Registro"><Edit3 size={18} /></button>
+                                <button onClick={() => setPaymentModal({ isOpen: true, loc, id: person.id, personName: person.name, amount: '', currentPaid: parseFloat(person.paid || 0), error: '', isScholarship: isBecado ? 'Sí' : 'No', baseCost })} className="p-2 text-slate-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all" title="Abonar Pago"><CreditCard size={18} /></button>
+                                <button onClick={() => removeEntry(loc, person.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all" title="Eliminar Registro"><Trash2 size={18} /></button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="bg-indigo-50/30 border-b border-slate-100 animate-in fade-in zoom-in-95 duration-200">
+                          <td colSpan="4" className="px-6 py-5">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs items-start">
+                              <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
+                                <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Detalles Generales</p>
+                                <p className="mb-1 text-slate-600"><strong>Edad:</strong> {person.age || 'N/A'}</p>
+                                <p className="text-slate-600"><strong>Género:</strong> {person.gender || 'N/A'}</p>
+                              </div>
+                              {(isCampa || isGeneral) ? (
+                                <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
+                                  <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Contacto de Emergencia</p>
+                                  {person.emergencyContact ? (<><p className="text-slate-700 font-semibold mb-1">{person.emergencyContact}</p><p className="flex items-center gap-1 text-slate-500 font-mono"><Phone size={10} /> {person.emergencyPhone}</p></>) : <p className="text-slate-400 italic">No provisto</p>}
+                                </div>
+                              ) : <div />}
+                              {isCampa && (
+                                <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100"><p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Condiciones Especiales</p><div className="space-y-1.5"><p className="text-slate-600"><strong>Alergias:</strong> {person.hasAllergy === 'Sí' ? <span className="text-orange-600 font-bold">{person.allergyDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Enfermedades:</strong> {person.hasDisease === 'Sí' ? <span className="text-red-600 font-bold">{person.diseaseDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Discapacidades:</strong> {person.hasDisability === 'Sí' ? <span className="text-purple-600 font-bold">{person.disabilityDetails}</span> : <span>Ninguna</span>}</p></div></div>
+                              )}
+                              {isGeneral && person.customData && Object.keys(person.customData).length > 0 && (
+                                <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
+                                  <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Datos Extra</p>
+                                  <div className="space-y-1.5">{Object.entries(person.customData).map(([key, val], i) => <p key={i} className="text-slate-600"><strong>{key}:</strong> {val || <span className="italic text-slate-400">N/A</span>}</p>)}</div>
+                                </div>
+                              )}
+                            </div>
+                            <div className="mt-4 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+                              <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between"><p className="font-bold text-indigo-900 uppercase tracking-wider text-[10px] flex items-center gap-2"><Receipt size={12} className="text-green-500" /> Historial de Pagos</p><span className="text-[10px] font-bold bg-green-50 text-green-600 px-2 py-0.5 rounded-full border border-green-100">{payHistory.length} {payHistory.length === 1 ? 'movimiento' : 'movimientos'}</span></div>
+                              {payHistory.length === 0 ? <div className="px-4 py-6 text-center"><p className="text-[11px] text-slate-400 italic">Sin movimientos registrados.</p></div> : (
+                                <div className="divide-y divide-slate-50">
+                                  {payHistory.map((pay, idx) => (
+                                    <div key={pay.id} className="px-4 py-2.5 flex items-center justify-between hover:bg-slate-50/50 transition-colors">
+                                      <div className="flex items-center gap-3"><span className="w-5 h-5 rounded-full bg-slate-100 text-slate-500 text-[9px] font-black flex items-center justify-center flex-shrink-0">{idx + 1}</span><div><p className="text-[11px] font-mono text-slate-500">{pay.date}</p><div className="flex items-center gap-1.5 mt-0.5"><UserCircle size={10} className="text-slate-400" /><p className="text-[10px] text-slate-400 font-semibold">{pay.registeredBy}</p>{pay.isManualAdjustment && <span className="text-[9px] bg-amber-50 text-amber-600 border border-amber-100 px-1.5 py-0.5 rounded font-bold uppercase">Ajuste Admin</span>}</div></div></div>
+                                      <div className="text-right"><p className={`text-sm font-black ${pay.amount < 0 ? 'text-red-500' : 'text-green-600'}`}>{pay.amount < 0 ? '-' : '+'}{formatMoney(Math.abs(pay.amount))}</p></div>
+                                    </div>
+                                  ))}
+                                  <div className="px-4 py-2.5 bg-green-50 flex items-center justify-between"><span className="text-[10px] font-black text-green-800 uppercase tracking-wider">Total acumulado</span><span className="text-sm font-black text-green-700">{formatMoney(person.paid || 0)}</span></div>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                });
+              })()}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 
