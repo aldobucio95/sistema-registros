@@ -181,7 +181,8 @@ const App = () => {
   const [allParticipants, setAllParticipants] = useState([]);
   const [activeTab, setActiveTab] = useState("Summary");
   const [showMoney, setShowMoney] = useState(true);
-  const [showChartValues, setShowChartValues] = useState(false);
+  const [showLocChartValues, setShowLocChartValues] = useState(false);
+  const [showIncChartValues, setShowIncChartValues] = useState(false);
   const [summaryView, setSummaryView] = useState("all");
   const [summaryServerView, setSummaryServerView] = useState("all");
   const [isAddLocModalOpen, setIsAddLocModalOpen] = useState(false);
@@ -1918,8 +1919,8 @@ const App = () => {
             <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100">
               <div className="flex justify-between items-start mb-2">
                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><MapPin className="text-indigo-500" size={20} /> Registrados por Sede</h3>
-                <button onClick={() => setShowChartValues(!showChartValues)} className="px-2 py-1 bg-slate-50 text-slate-500 hover:bg-slate-100 rounded-md text-[10px] font-bold transition-colors border border-slate-200">
-                  {showChartValues ? 'Ver %' : 'Ver #'}
+                <button onClick={() => setShowLocChartValues(!showLocChartValues)} className="px-2 py-1 bg-slate-50 text-slate-500 hover:bg-slate-100 rounded-md text-[10px] font-bold transition-colors border border-slate-200">
+                  {showLocChartValues ? 'Ver %' : 'Ver #'}
                 </button>
               </div>
               <p className="text-xs text-slate-400 mb-6">Proporción de inscritos totales</p>
@@ -1933,7 +1934,7 @@ const App = () => {
                     return (
                       <div key={loc} className="flex items-center justify-between text-xs">
                         <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div>
-                        <span className="font-bold text-slate-800">{showChartValues ? locCount : `${percent}%`}</span>
+                        <span className="font-bold text-slate-800">{showLocChartValues ? locCount : `${percent}%`}</span>
                       </div>
                     ); 
                   })}
@@ -1946,8 +1947,8 @@ const App = () => {
             <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100">
               <div className="flex justify-between items-start mb-2">
                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><PieChart className="text-green-500" size={20} /> Ingresos por Sede</h3>
-                <button onClick={() => setShowChartValues(!showChartValues)} className="px-2 py-1 bg-slate-50 text-slate-500 hover:bg-slate-100 rounded-md text-[10px] font-bold transition-colors border border-slate-200">
-                  {showChartValues ? 'Ver %' : 'Ver $'}
+                <button onClick={() => setShowIncChartValues(!showIncChartValues)} className="px-2 py-1 bg-slate-50 text-slate-500 hover:bg-slate-100 rounded-md text-[10px] font-bold transition-colors border border-slate-200">
+                  {showIncChartValues ? 'Ver %' : 'Ver $'}
                 </button>
               </div>
               <p className="text-xs text-slate-400 mb-6">Porcentaje de recaudación</p>
@@ -1961,7 +1962,7 @@ const App = () => {
                     return (
                       <div key={loc} className="flex items-center justify-between text-xs">
                         <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div>
-                        <span className="font-bold text-slate-800">{showChartValues ? formatMoney(locPaid) : `${percent}%`}</span>
+                        <span className="font-bold text-slate-800">{showIncChartValues ? formatMoney(locPaid) : `${percent}%`}</span>
                       </div>
                     ); 
                   })}
