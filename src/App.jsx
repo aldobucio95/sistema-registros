@@ -206,6 +206,7 @@ const App = () => {
   const [paymentModal, setPaymentModal] = useState({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0 });
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [editingUser, setEditingUser] = useState({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
+  const [deleteUserModal, setDeleteUserModal] = useState({ isOpen: false, id: null, username: '' });
   const [restoreModal, setRestoreModal] = useState({ isOpen: false, log: null, type: 'single' });
 
   // Navigation Logic
@@ -302,18 +303,18 @@ const App = () => {
       await updateDoc(getDocRef('app_data', 'config'), { isDebugMode: true, debugSessionId: newSessionId });
       
       const newLogId = Date.now() + 1;
-	  await setDoc(getDocRef('app_logs', String(newLogId)), {
-		id: newLogId,
-		eventId: 'Global',
-		eventName: 'Sistema',
-		timestamp: new Date().toLocaleString('es-MX'),
-		username: currentUser.username,
-		action: 'Modo Depuración',
-		details: `El SuperUsuario "${currentUser.username}" activó el modo de depuración. Los cambios realizados durante esta sesión serán revertidos al salir.`,
-		revertInfo: null,
-		isDebug: false,        // ← importante: este log es PERMANENTE, no se revierte
-		debugSessionId: newSessionId
-	  });
+      await setDoc(getDocRef('app_logs', String(newLogId)), {
+        id: newLogId,
+        eventId: 'Global',
+        eventName: 'Sistema',
+        timestamp: new Date().toLocaleString('es-MX'),
+        username: currentUser.username,
+        action: 'Modo Depuración',
+        details: `El SuperUsuario "${currentUser.username}" activó el modo de depuración. Los cambios realizados durante esta sesión serán revertidos al salir.`,
+        revertInfo: null,
+        isDebug: false,        // ← importante: este log es PERMANENTE, no se revierte
+        debugSessionId: newSessionId
+      });
     } else {
       const currentSession = globalConfig.debugSessionId;
       const logsToRevert = logs.filter(l => l.debugSessionId === currentSession && l.revertInfo).sort((a,b) => b.id - a.id);
@@ -817,17 +818,32 @@ const App = () => {
     showToast("Usuario actualizado.");
   };
 
-  const handleDeleteUser = async (id, username) => {
-    if (!hasAdminRights) { showToast("Permisos insuficientes."); return; }
-    if (currentUser.id === id) { showToast("No puedes eliminar tu propia cuenta."); return; }
+  const confirmDeleteUser = async () => {
+    const { id, username } = deleteUserModal;
+    if (!id) return;
+
+    if (!hasAdminRights) {
+      showToast("Permisos insuficientes.");
+      setDeleteUserModal({ isOpen: false, id: null, username: '' });
+      return;
+    }
+    
+    if (currentUser.id === id) {
+      showToast("No puedes eliminar tu propia cuenta.");
+      setDeleteUserModal({ isOpen: false, id: null, username: '' });
+      return;
+    }
     
     const userToDelete = users.find(u => String(u.id) === String(id));
     if (userToDelete?.role === 'SuperUsuario' && currentUser.role !== 'SuperUsuario') {
-      showToast("Solo otro SuperUsuario puede eliminar a un SuperUsuario."); return;
+      showToast("Solo otro SuperUsuario puede eliminar a un SuperUsuario.");
+      setDeleteUserModal({ isOpen: false, id: null, username: '' });
+      return;
     }
 
     await deleteDoc(getDocRef('app_users', String(id)));
     addLog('Gestión de Usuarios', `Eliminó al usuario: ${username}`);
+    setDeleteUserModal({ isOpen: false, id: null, username: '' });
     showToast("Usuario eliminado.");
   };
 
@@ -1320,10 +1336,12 @@ const App = () => {
                     </div>
                   </td>
                   <td className="px-6 py-4"><span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${u.role === 'SuperUsuario' ? 'bg-amber-100 text-amber-700 border border-amber-200' : u.role === 'Administrador' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>{u.role}</span></td>
-                  <td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2">
-                    <button onClick={() => setEditingUser({ isOpen: true, id: u.id, username: u.username, role: u.role, currentPasswordInput: '', newPassword: '', confirmPassword: '' })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}><Edit3 size={18} /></button>
-                    <button onClick={() => handleDeleteUser(u.id, u.username)} disabled={currentUser.id === u.id || !hasAdminRights} className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || !hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}><Trash2 size={18} /></button>
-                  </div></td>
+                  <td className="px-6 py-4 text-center">
+                    <div className="flex items-center justify-center gap-2">
+                      <button onClick={() => setEditingUser({ isOpen: true, id: u.id, username: u.username, role: u.role, currentPasswordInput: '', newPassword: '', confirmPassword: '' })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}><Edit3 size={18} /></button>
+                      <button onClick={() => setDeleteUserModal({ isOpen: true, id: u.id, username: u.username })} disabled={currentUser.id === u.id || !hasAdminRights} className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || !hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}><Trash2 size={18} /></button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1601,6 +1619,29 @@ const App = () => {
               <div className="flex gap-3">
                 <button onClick={() => setDeleteEventModal({ isOpen: false, id: null, name: '' })} className={btnSecondary}>Cancelar</button>
                 <button onClick={confirmDeleteEvent} className="flex-1 py-3 px-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-colors text-sm shadow-lg shadow-red-200">Sí, eliminar</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {deleteUserModal.isOpen && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center">
+              <div className="bg-red-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <ShieldAlert size={32} className="text-red-500" />
+              </div>
+              <h3 className="text-xl font-black text-slate-800 mb-2">Eliminar Usuario</h3>
+              <p className="text-sm text-slate-500 mb-6">
+                ¿Estás seguro de que deseas eliminar al usuario <strong>"{deleteUserModal.username}"</strong>?
+                Esta acción no se puede deshacer y perderá acceso al sistema.
+              </p>
+              <div className="flex gap-3">
+                <button onClick={() => setDeleteUserModal({ isOpen: false, id: null, username: '' })} className={btnSecondary}>
+                  Cancelar
+                </button>
+                <button onClick={confirmDeleteUser} className="flex-1 py-3 px-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-colors text-sm shadow-lg shadow-red-200">
+                  Sí, eliminar
+                </button>
               </div>
             </div>
           </div>
