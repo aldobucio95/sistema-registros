@@ -2586,10 +2586,6 @@ const App = () => {
             <button onClick={() => goTo('logs', null, "Summary")} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><History size={20} /><span className="font-bold">Logs Globales</span></div></button>
           )}
         </nav>
-        <div className="p-4 border-t border-slate-800 space-y-2">
-          <button onClick={() => goTo('events', null, "Summary")} className="w-full flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl font-bold transition-all text-sm"><LayoutDashboard size={16} /> Cambiar de Evento</button>
-          <button onClick={handleLogout} className="w-full flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-700 text-red-400 hover:bg-red-500/20 hover:text-red-300 rounded-xl font-bold transition-all text-sm"><LogOut size={16} /> Cerrar Sesión</button>
-        </div>
       </aside>
 
       <main className="flex-1 overflow-y-auto bg-[#f8fafc]">
@@ -2618,8 +2614,13 @@ const App = () => {
             </div>
           </div>
           
-          <div className="flex items-center gap-2 md:gap-4 flex-shrink-0 relative">
-            <div className="hidden lg:flex items-center gap-2 mr-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
+          <div className="flex items-center gap-1 md:gap-2 flex-shrink-0 relative">
+            <div className="hidden lg:flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
+            
+            <button onClick={() => goTo('events', null, "Summary")} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Cambiar de Evento">
+              <LayoutDashboard size={14} /><span className="hidden sm:inline">Eventos</span>
+            </button>
+
             <button onClick={exportToCSV} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors" title="Exportar a CSV"><Download size={14} /><span className="hidden sm:inline">Exportar</span></button>
             
             {hasFinancialAccess && (
@@ -2668,10 +2669,13 @@ const App = () => {
               </div>
             )}
 
-            <div className="bg-slate-100 rounded-full p-1 hidden sm:flex ml-2">
+            <div className="bg-slate-100 rounded-full p-1 hidden sm:flex ml-1">
               <button onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button>
             </div>
-            <button onClick={() => goTo('events', null, 'Summary')} className="lg:hidden bg-indigo-50 text-indigo-600 p-2 rounded-xl ml-1"><LayoutDashboard size={18} /></button>
+            
+            <button onClick={handleLogout} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-red-500 bg-red-50 hover:bg-red-100 transition-colors ml-1" title="Cerrar Sesión">
+              <LogOut size={14} /><span className="hidden sm:inline">Salir</span>
+            </button>
           </div>
         </header>
         {activeTab === "Summary" && renderSummary()}
