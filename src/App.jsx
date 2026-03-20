@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Phone, ShieldAlert, Power, BarChart3, Edit3, TableProperties,
   Eye, EyeOff, Search, Filter, ArrowUpDown, CreditCard, ChevronDown, ChevronUp,
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock,
-  UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2
+  UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -155,6 +155,7 @@ const App = () => {
   const [paymentModal, setPaymentModal] = useState({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0 });
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [editingUser, setEditingUser] = useState({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
+  const [restoreModal, setRestoreModal] = useState({ isOpen: false, log: null, type: 'single' });
 
   useEffect(() => {
     if (currentEvent) {
@@ -255,7 +256,7 @@ const App = () => {
     return currentEvent ? currentEvent.regStatus?.[loc] !== false : false;
   }, [currentEvent]);
 
-  const addLog = useCallback(async (action, details, overrideUsername = null, targetEvent = null) => {
+  const addLog = useCallback(async (action, details, overrideUsername = null, targetEvent = null, revertInfo = null) => {
     const username = overrideUsername || currentUser?.username;
     if (!username) return;
 
@@ -266,10 +267,47 @@ const App = () => {
       eventId: ev?.id || 'Global',
       eventName: ev?.name || 'Sistema',
       timestamp: new Date().toLocaleString('es-MX'),
-      username, action, details
+      username, action, details, revertInfo
     };
     await setDoc(getDocRef('app_logs', String(newLogId)), newLog);
   }, [currentUser, currentEvent]);
+
+  const applyRevert = async (revertInfo) => {
+    if (!revertInfo) return;
+    const { collectionName, docId, action, previousData } = revertInfo;
+    try {
+      if (action === 'create') {
+        await deleteDoc(getDocRef(collectionName, docId));
+      } else if (action === 'update' || action === 'delete') {
+        if (previousData) {
+          await setDoc(getDocRef(collectionName, docId), previousData);
+        }
+      }
+    } catch (err) {
+      console.error("Error al revertir:", err);
+    }
+  };
+
+  const confirmRestore = async () => {
+    if (!restoreModal.log) return;
+    const { log, type } = restoreModal;
+
+    if (type === 'single') {
+      await applyRevert(log.revertInfo);
+      addLog('Restauración', `Se deshizo el cambio específico: "${log.action}" del usuario ${log.username}.`);
+      showToast("Cambio revertido exitosamente.");
+    } else if (type === 'rollback') {
+      // Como los logs están en orden cronológico descendente (el index 0 es el más reciente), 
+      // revertir desde ese array garantiza que deshacemos desde el presente hacia el pasado ordenadamente
+      const logsToRevert = logs.filter(l => l.id >= log.id && l.revertInfo);
+      for (const l of logsToRevert) {
+        await applyRevert(l.revertInfo);
+      }
+      addLog('Restauración Masiva', `El SuperUsuario revirtió todos los cambios hasta el evento: "${log.action}" (${log.timestamp}).`);
+      showToast(`Se han revertido ${logsToRevert.length} cambios exitosamente.`);
+    }
+    setRestoreModal({ isOpen: false, log: null, type: 'single' });
+  };
 
   const updateEventConfig = useCallback(async (updates) => {
     if (!currentEvent) return;
@@ -351,7 +389,7 @@ const App = () => {
       customFields: [], order: events.length
     };
     await setDoc(getDocRef('app_events', newEvt.id), newEvt);
-    addLog('Gestión de Eventos', `Creó un nuevo evento (${newEvt.eventType}): ${newEvt.name} con base de $${newEvt.globalCost}`, null, newEvt);
+    addLog('Gestión de Eventos', `Creó un nuevo evento (${newEvt.eventType}): ${newEvt.name} con base de $${newEvt.globalCost}`, null, newEvt, { collectionName: 'app_events', docId: newEvt.id, action: 'create', previousData: null });
     setIsAddEventModalOpen(false);
     setNewEventData({ name: '', type: 'Campa', date: '', baseCost: '' });
   };
@@ -361,7 +399,7 @@ const App = () => {
     const ev = events.find(e => e.id === renameModal.id);
     if (ev && ev.name !== renameModal.name.trim()) {
       await updateDoc(getDocRef('app_events', ev.id), { name: renameModal.name.trim() });
-      addLog('Gestión de Eventos', `Renombró evento: "${ev.name}" -> "${renameModal.name.trim()}"`, null, ev);
+      addLog('Gestión de Eventos', `Renombró evento: "${ev.name}" -> "${renameModal.name.trim()}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
       showToast("Nombre del evento actualizado.");
     }
     setRenameModal({ isOpen: false, id: null, name: '' });
@@ -371,7 +409,7 @@ const App = () => {
     if (!deleteEventModal.id) return;
     const evToDelete = events.find(e => e.id === deleteEventModal.id);
     await deleteDoc(getDocRef('app_events', deleteEventModal.id));
-    addLog('Gestión de Eventos', `Eliminó el evento: ${deleteEventModal.name}`, null, evToDelete || { name: deleteEventModal.name });
+    addLog('Gestión de Eventos', `Eliminó el evento: ${deleteEventModal.name}`, null, evToDelete || { name: deleteEventModal.name }, { collectionName: 'app_events', docId: deleteEventModal.id, action: 'delete', previousData: evToDelete });
     setDeleteEventModal({ isOpen: false, id: null, name: '' });
     showToast("Evento eliminado con éxito.");
   };
@@ -425,7 +463,7 @@ const App = () => {
       dynamicPrices: sortedPhases.map(p => ({ id: p.id, dateUntil: p.dateUntil, globalCost: Number(p.globalCost) || 0, serverCost: Number(p.serverCost) || 0 }))
     });
     setPricingModal({ isOpen: false });
-    addLog('Configuración', `Actualizó la estructura de precios del evento a modalidad ${pricingForm.type}.`);
+    addLog('Configuración', `Actualizó la estructura de precios del evento a modalidad ${pricingForm.type}.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
     showToast('Precios actualizados correctamente.');
   };
 
@@ -442,7 +480,7 @@ const App = () => {
 
     const newId = String(Date.now());
     await setDoc(getDocRef('app_users', newId), { ...newUser, id: newId });
-    addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`);
+    addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`, null, null, { collectionName: 'app_users', docId: newId, action: 'create', previousData: null });
     setNewUser({ username: '', password: '', role: 'Editor' });
     showToast("Usuario añadido exitosamente.");
   };
@@ -481,7 +519,7 @@ const App = () => {
     if (currentUser.id === editingUser.id) {
       setCurrentUser({ ...currentUser, username: editingUser.username, password: editingUser.newPassword, role: editingUser.role });
     }
-    if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
+    if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_users', docId: String(editingUser.id), action: 'update', previousData: originalUser });
     
     setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
     showToast("Usuario actualizado.");
@@ -497,7 +535,7 @@ const App = () => {
     }
 
     await deleteDoc(getDocRef('app_users', String(id)));
-    addLog('Gestión de Usuarios', `Eliminó al usuario: ${username}`);
+    addLog('Gestión de Usuarios', `Eliminó al usuario: ${username}`, null, null, { collectionName: 'app_users', docId: String(id), action: 'delete', previousData: userToDelete });
     showToast("Usuario eliminado.");
   };
 
@@ -563,7 +601,7 @@ const App = () => {
     const newLocations = [...currentEvent.locations, loc];
     const newRegStatus = { ...currentEvent.regStatus, [loc]: true };
     await updateEventConfig({ locations: newLocations, regStatus: newRegStatus });
-    addLog('Gestión de Sedes', `Añadió la nueva sede: ${loc} al evento ${currentEvent.name}`);
+    addLog('Gestión de Sedes', `Añadió la nueva sede: ${loc} al evento ${currentEvent.name}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
     setNewLocationName(''); setIsAddLocModalOpen(false); setActiveTab(loc);
     showToast("Sede añadida.");
   };
@@ -576,7 +614,7 @@ const App = () => {
     const newRegStatus = { ...currentEvent.regStatus };
     delete newRegStatus[loc];
     await updateEventConfig({ locations: newLocations, regStatus: newRegStatus });
-    addLog('Gestión de Sedes', `Eliminó la sede vacía: ${loc} del evento ${currentEvent.name}`);
+    addLog('Gestión de Sedes', `Eliminó la sede vacía: ${loc} del evento ${currentEvent.name}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
     setActiveTab("Summary");
     showToast("Sede eliminada.");
   };
@@ -587,7 +625,7 @@ const App = () => {
     if (currentFields.includes(newCustomField.trim())) return;
     const updated = [...currentFields, newCustomField.trim()];
     await updateEventConfig({ customFields: updated });
-    addLog('Campos Extra', `Añadió el campo "${newCustomField.trim()}" al evento.`);
+    addLog('Campos Extra', `Añadió el campo "${newCustomField.trim()}" al evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
     setNewCustomField('');
   };
 
@@ -595,7 +633,7 @@ const App = () => {
     if (!currentEvent) return;
     const updated = (currentEvent.customFields || []).filter(f => f !== field);
     await updateEventConfig({ customFields: updated });
-    addLog('Campos Extra', `Eliminó el campo "${field}" del evento.`);
+    addLog('Campos Extra', `Eliminó el campo "${field}" del evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
   };
 
   const summary = useMemo(() => {
@@ -718,7 +756,7 @@ const App = () => {
 
     await setDoc(getDocRef('app_participants', newPersonId), personData);
     const isLiquidado = personData.isScholarship === 'No' && initialPaid >= registeredCost;
-    addLog('Nuevo Registro', `Inscribió a ${newEntry.name} en la sede ${loc}. (Pago inicial: $${initialPaid})${isLiquidado ? ' [LIQUIDADO]' : ''}`);
+    addLog('Nuevo Registro', `Inscribió a ${newEntry.name} en la sede ${loc}. (Pago inicial: $${initialPaid})${isLiquidado ? ' [LIQUIDADO]' : ''}`, null, null, { collectionName: 'app_participants', docId: newPersonId, action: 'create', previousData: null });
     setNewEntry(EMPTY_ENTRY);
     showToast("Registro añadido exitosamente.");
   };
@@ -768,7 +806,7 @@ const App = () => {
 
     if (changes.length > 0) {
       const isLiquidado = editedPerson.isScholarship === 'No' && parseFloat(editedPerson.paid) >= finalRegisteredCost;
-      addLog('Actualización de Registro', `Modificó datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`);
+      addLog('Actualización de Registro', `Modificó datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: originalPerson });
     }
     setEditRegistryModal({ isOpen: false, loc: '', data: null });
     showToast("Registro actualizado.");
@@ -778,7 +816,7 @@ const App = () => {
     const person = (data[loc] || []).find(p => String(p.id) === String(id));
     if (person) {
       await deleteDoc(getDocRef('app_participants', String(id)));
-      addLog('Eliminación de Registro', `Eliminó el registro de ${person.name} en la sede ${loc}.`);
+      addLog('Eliminación de Registro', `Eliminó el registro de ${person.name} en la sede ${loc}.`, null, null, { collectionName: 'app_participants', docId: String(id), action: 'delete', previousData: person });
       showToast("Registro eliminado.");
     }
   };
@@ -790,7 +828,7 @@ const App = () => {
     }
     const newStatus = !isLocOpen(loc);
     await updateEventConfig({ regStatus: { ...currentEvent.regStatus, [loc]: newStatus } });
-    addLog('Cambio de Estado', `${newStatus ? 'Abrió' : 'Cerró'} las inscripciones en la sede ${loc}.`);
+    addLog('Cambio de Estado', `${newStatus ? 'Abrió' : 'Cerró'} las inscripciones en la sede ${loc}.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
   };
 
   const toggleRow = (id) => {
@@ -815,7 +853,7 @@ const App = () => {
     const newPaid = parseFloat(person.paid || 0) + addedAmount;
     await updateDoc(getDocRef('app_participants', String(person.id)), { paid: newPaid, paymentHistory: [...(person.paymentHistory || []), newPaymentRecord] });
     const isLiquidado = paymentModal.isScholarship === 'No' && newPaid >= baseCost;
-    addLog('Abono Financiero', `Registró un abono de $${addedAmount} para ${paymentModal.personName} en la sede ${paymentModal.loc}. (Pagado: $${paymentModal.currentPaid} -> $${newPaid})${isLiquidado ? ' [LIQUIDADO]' : ''}`);
+    addLog('Abono Financiero', `Registró un abono de $${addedAmount} para ${paymentModal.personName} en la sede ${paymentModal.loc}. (Pagado: $${paymentModal.currentPaid} -> $${newPaid})${isLiquidado ? ' [LIQUIDADO]' : ''}`, null, null, { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person });
     setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0 });
     showToast("Abono procesado correctamente.");
   };
@@ -922,10 +960,10 @@ const App = () => {
         </div>
         <div className="overflow-x-auto border border-slate-100 rounded-xl max-h-[600px] overflow-y-auto">
           <table className="w-full text-left relative">
-            <thead className="sticky top-0 bg-slate-50 shadow-sm"><tr className="text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-200"><th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acción</th><th className="px-6 py-4">Detalles</th></tr></thead>
+            <thead className="sticky top-0 bg-slate-50 shadow-sm"><tr className="text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-200"><th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acción</th><th className="px-6 py-4">Detalles</th>{hasAdminRights && <th className="px-6 py-4 text-center">Restaurar</th>}</tr></thead>
             <tbody className="divide-y divide-slate-50">
               {logs.length === 0 ? (
-                <tr><td colSpan="5" className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay actividad registrada aún.</td></tr>
+                <tr><td colSpan={hasAdminRights ? "6" : "5"} className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay actividad registrada aún.</td></tr>
               ) : logs.map(log => (
                 <tr key={log.id} className="hover:bg-slate-50/50 transition-colors">
                   <td className="px-6 py-4 text-xs font-mono text-slate-500 whitespace-nowrap">{log.timestamp}</td>
@@ -933,6 +971,20 @@ const App = () => {
                   <td className="px-6 py-4 font-bold text-slate-700 flex items-center gap-2"><UserCircle size={14} className="text-indigo-400" />{log.username}</td>
                   <td className="px-6 py-4"><span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-2 py-1 rounded-md uppercase tracking-wider">{log.action}</span></td>
                   <td className="px-6 py-4 text-xs text-slate-600">{log.details}</td>
+                  {hasAdminRights && (
+                    <td className="px-6 py-4 text-center">
+                      {log.revertInfo ? (
+                        <div className="flex justify-center items-center gap-2">
+                          <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'single' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors" title="Restaurar este cambio específico"><Undo size={14} /></button>
+                          {isSuperUser && (
+                            <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'rollback' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Revertir todos los cambios hasta aquí"><History size={14} /></button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-[9px] text-slate-300 italic font-medium">N/D</span>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -1023,7 +1075,7 @@ const App = () => {
                               const newVal = e.target.value;
                               if (newVal !== (ev.date || '')) {
                                 await updateDoc(getDocRef('app_events', ev.id), { date: newVal });
-                                addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev);
+                                addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
                               }
                             }}
                             className="text-[10px] font-bold text-slate-500 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-200 outline-none cursor-pointer hover:border-indigo-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
@@ -1243,7 +1295,7 @@ const App = () => {
                       const newVal = e.target.value;
                       if (newVal !== (currentEvent.date || '')) {
                         await updateEventConfig({ date: newVal });
-                        addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`);
+                        addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                       }
                     }}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20" />
@@ -1284,7 +1336,7 @@ const App = () => {
                       const newVal = parseFloat(e.target.value) || 0;
                       if (newVal !== currentEvent.minDeposit) {
                         await updateEventConfig({ minDeposit: newVal });
-                        addLog('Configuración', `Apartado mín: $${currentEvent.minDeposit} -> $${newVal}`);
+                        addLog('Configuración', `Apartado mín: $${currentEvent.minDeposit} -> $${newVal}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                       }
                     }}
                     className="bg-transparent border-b-2 border-transparent hover:border-slate-200 focus:border-indigo-500 outline-none w-20 transition-colors" /></>
@@ -1719,7 +1771,7 @@ const App = () => {
                     const newVal = e.target.value;
                     if (newVal !== (currentEvent.date || '')) {
                       await updateEventConfig({ date: newVal });
-                      addLog('Evento', `Fecha: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`);
+                      addLog('Evento', `Fecha: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                     }
                   }}
                   className={`bg-transparent border-b border-dashed border-slate-600 text-indigo-200 text-xs font-bold focus:outline-none focus:border-indigo-400 transition-colors pb-0.5 [color-scheme:dark] ${hasAdminRights ? 'cursor-pointer' : 'cursor-default border-transparent'}`}
@@ -2015,6 +2067,31 @@ const App = () => {
                 <button onClick={() => { setIsAddLocModalOpen(false); setNewLocationName(''); }} className={btnSecondary}>Cancelar</button>
                 <button onClick={handleAddLocation} disabled={!newLocationName.trim()} className={btnPrimary}><Plus size={18} /> Añadir</button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* RESTORE MODAL */}
+      {restoreModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center">
+            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${restoreModal.type === 'single' ? 'bg-indigo-50 text-indigo-500' : 'bg-red-50 text-red-500'}`}>
+              {restoreModal.type === 'single' ? <Undo size={32} /> : <History size={32} />}
+            </div>
+            <h3 className="text-xl font-black text-slate-800 mb-2">
+              {restoreModal.type === 'single' ? 'Restaurar Cambio' : 'Revertir Cambios (Rollback)'}
+            </h3>
+            <p className="text-sm text-slate-500 mb-6">
+              {restoreModal.type === 'single' 
+                ? `¿Deseas deshacer la acción específica: "${restoreModal.log?.action}"?` 
+                : `¿Estás seguro de deshacer TODOS los cambios desde el evento "${restoreModal.log?.action}" hasta ahora? Esta acción revertirá múltiples operaciones.`}
+            </p>
+            <div className="flex gap-3">
+              <button onClick={() => setRestoreModal({ isOpen: false, log: null, type: 'single' })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
+              <button onClick={confirmRestore} className={`flex-1 py-3 px-4 text-white font-bold rounded-xl transition-colors text-sm shadow-lg ${restoreModal.type === 'single' ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200' : 'bg-red-500 hover:bg-red-600 shadow-red-200'}`}>
+                Sí, Confirmar
+              </button>
             </div>
           </div>
         </div>
