@@ -4,12 +4,13 @@ import {
   LayoutDashboard, Phone, ShieldAlert, Power, BarChart3, Edit3, TableProperties,
   Eye, EyeOff, Search, Filter, ArrowUpDown, CreditCard, ChevronDown, ChevronUp,
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock,
-  UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft
+  UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft,
+  SlidersHorizontal, Bug, Download, Database
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBIRKdNeMmaVVofVx4jshciPB-N9J0HqIg",
@@ -42,7 +43,25 @@ const EMPTY_ENTRY = {
   emergencyContact: '', emergencyPhone: '', canSwim: 'No', paid: '',
   hasAllergy: 'No', allergyDetails: '', hasDisease: 'No', diseaseDetails: '',
   hasDisability: 'No', disabilityDetails: '', isScholarship: 'No', isServer: 'No',
-  serverAssignment: '', customData: {}, paymentHistory: []
+  serverAssignment: '', campAssignment: '', customData: {}, paymentHistory: []
+};
+
+// Preferencias de vista por defecto
+const defaultViewPrefs = {
+  statsConfig: true,
+  chartLocations: true,
+  chartIncome: true,
+  chartPaymentStatus: true,
+  chartGender: true,
+  chartAgeBrackets: true,
+  chartBloodType: true,
+  chartScholarship: true,
+  chartSwimming: true,
+  chartMedical: true,
+  chartServers: true,
+  chartAges: true,
+  chartCustom: true,
+  tableDetails: true
 };
 
 // UI Reusable Classes
@@ -74,6 +93,22 @@ const ProgressBar = ({ label, value, max, colorClass, bgClass }) => (
   </div>
 );
 
+const formatDuration = (ms) => {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+};
+
+const escapeCSV = (str) => {
+  if (str === null || str === undefined) return '""';
+  const stringified = String(str);
+  return `"${stringified.replace(/"/g, '""')}"`;
+};
+
 const App = () => {
   const [fbUser, setFbUser] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
@@ -81,6 +116,7 @@ const App = () => {
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState('');
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'Editor' });
+  const [globalConfig, setGlobalConfig] = useState(null);
 
   const [toast, setToast] = useState('');
   const showToast = useCallback((msg) => {
@@ -104,6 +140,15 @@ const App = () => {
 
   // Navigation History Stack
   const [navHistory, setNavHistory] = useState([]);
+
+  // Preferences State
+  const [viewPrefs, setViewPrefs] = useState(defaultViewPrefs);
+  const [showViewSettings, setShowViewSettings] = useState(false);
+
+  // Debug Mode State
+  const [isDebugMode, setIsDebugMode] = useState(false);
+  const [debugSessionId, setDebugSessionId] = useState(null);
+  const [showDebugLogs, setShowDebugLogs] = useState(false);
 
   const currentEvent = useMemo(() => events.find(e => e.id === selectedEventId) || null, [events, selectedEventId]);
   const sortedEvents = useMemo(() => [...events].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)), [events]);
@@ -132,6 +177,8 @@ const App = () => {
   }, []);
 
   const [logs, setLogs] = useState([]);
+  const [logFilterContext, setLogFilterContext] = useState('all');
+  const [logSearchTerm, setLogSearchTerm] = useState('');
   const [allParticipants, setAllParticipants] = useState([]);
   const [activeTab, setActiveTab] = useState("Summary");
   const [showMoney, setShowMoney] = useState(true);
@@ -142,19 +189,20 @@ const App = () => {
   const [locError, setLocError] = useState('');
   const [tempEventDate, setTempEventDate] = useState("");
   const [tempDeposit, setTempDeposit] = useState("");
+  const [tempRealCost, setTempRealCost] = useState("");
 
   const [newEntry, setNewEntry] = useState(EMPTY_ENTRY);
   const [editRegistryModal, setEditRegistryModal] = useState({ isOpen: false, loc: '', data: null });
   const [pricingModal, setPricingModal] = useState({ isOpen: false });
   const [pricingForm, setPricingForm] = useState({ type: 'fixed', globalCost: 0, serverCost: 0, phases: [] });
   const [customFieldsModal, setCustomFieldsModal] = useState({ isOpen: false });
-  const [newCustomField, setNewCustomField] = useState('');
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState("none");
   const [filterSwim, setFilterSwim] = useState("all");
   const [filterMedical, setFilterMedical] = useState("all");
   const [filterScholarship, setFilterScholarship] = useState("all");
   const [filterServer, setFilterServer] = useState("all");
+  const [filterAssignment, setFilterAssignment] = useState("all");
   const [paymentModal, setPaymentModal] = useState({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0 });
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [editingUser, setEditingUser] = useState({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
@@ -167,6 +215,7 @@ const App = () => {
     setSystemView(view);
     setSelectedEventId(eventId);
     setActiveTab(tab);
+    setShowViewSettings(false);
   }, [systemView, selectedEventId, activeTab]);
 
   const goBack = useCallback(() => {
@@ -177,14 +226,69 @@ const App = () => {
       setSystemView(last.systemView);
       setSelectedEventId(last.selectedEventId);
       setActiveTab(last.activeTab);
+      setShowViewSettings(false);
       return newHist;
     });
   }, []);
 
+  // Load User Preferences
+  useEffect(() => {
+    if (currentUser?.id) {
+      const savedPrefs = localStorage.getItem(`vina_prefs_${currentUser.id}`);
+      if (savedPrefs) {
+        setViewPrefs({ ...defaultViewPrefs, ...JSON.parse(savedPrefs) });
+      } else {
+        setViewPrefs(defaultViewPrefs);
+      }
+    }
+  }, [currentUser?.id]);
+
+  const togglePref = (key) => {
+    setViewPrefs(prev => {
+      const next = { ...prev, [key]: !prev[key] };
+      if (currentUser?.id) {
+        localStorage.setItem(`vina_prefs_${currentUser.id}`, JSON.stringify(next));
+      }
+      return next;
+    });
+  };
+
+  // Toggle Debug Mode
+  const toggleDebugMode = async () => {
+    if (!isDebugMode) {
+      setIsDebugMode(true);
+      setDebugSessionId(Date.now());
+      showToast("Modo depuración activado. Todos los cambios estarán ocultos y se revertirán al salir.");
+      
+      const newLogId = Date.now() + 1;
+      await setDoc(getDocRef('app_logs', String(newLogId)), {
+        id: newLogId, eventId: 'Global', eventName: 'Sistema',
+        timestamp: new Date().toLocaleString('es-MX'),
+        username: currentUser.username, action: 'Sistema', details: 'Inició modo depuración.', revertInfo: null
+      });
+    } else {
+      const logsToRevert = logs.filter(l => l.debugSessionId === debugSessionId && l.revertInfo).sort((a,b) => b.id - a.id);
+      for (const l of logsToRevert) {
+        await applyRevert(l.revertInfo);
+      }
+      setIsDebugMode(false);
+      setDebugSessionId(null);
+      showToast(`Modo depuración finalizado. Se revirtieron ${logsToRevert.length} acciones.`);
+      
+      const newLogId = Date.now() + 1;
+      await setDoc(getDocRef('app_logs', String(newLogId)), {
+        id: newLogId, eventId: 'Global', eventName: 'Sistema',
+        timestamp: new Date().toLocaleString('es-MX'),
+        username: currentUser.username, action: 'Sistema', details: `Salió de depuración. Se revirtieron ${logsToRevert.length} acciones.`, revertInfo: null
+      });
+    }
+  };
+
   useEffect(() => {
     if (currentEvent) {
       setTempEventDate(currentEvent.date || "");
-      setTempDeposit(currentEvent.minDeposit);
+      setTempDeposit(currentEvent.minDeposit || 0);
+      setTempRealCost(currentEvent.realCost || 0);
       setNewEntry(EMPTY_ENTRY);
     }
   }, [currentEvent]);
@@ -220,6 +324,7 @@ const App = () => {
     const unsubConfig = onSnapshot(getDocRef('app_data', 'config'), (docSnap) => {
       if (docSnap.exists()) {
         setGlobalLocations(docSnap.data().locations || defaultLocations);
+        setGlobalConfig(docSnap.data());
       } else {
         setDoc(getDocRef('app_data', 'config'), { locations: defaultLocations });
         setGlobalLocations(defaultLocations);
@@ -231,13 +336,13 @@ const App = () => {
         const ev1 = {
           id: 'evt_campa', name: "Campa 2026: Lazos Inquebrantables",
           pricingType: 'fixed', globalCost: 3400, serverCost: 4000, dynamicPrices: [],
-          minDeposit: 500, eventType: 'Campa', date: '2026-07-20',
+          minDeposit: 500, eventType: 'Campa', date: '2026-07-20', realCost: 0,
           locations: defaultLocations, regStatus: defaultRegStatus, order: 0
         };
         const ev2 = {
           id: 'evt_alducin', name: "Desayuno Conferencia Dr. Armando Alducin Marzo 2026",
           pricingType: 'fixed', globalCost: 350, serverCost: 0, dynamicPrices: [],
-          minDeposit: 150, eventType: 'Desayuno Conferencia', date: '2026-03-14',
+          minDeposit: 150, eventType: 'Desayuno Conferencia', date: '2026-03-14', realCost: 0,
           locations: defaultLocations, regStatus: defaultRegStatus, order: 1
         };
         setDoc(getDocRef('app_events', ev1.id), ev1);
@@ -296,10 +401,11 @@ const App = () => {
       eventId: ev?.id || 'Global',
       eventName: ev?.name || 'Sistema',
       timestamp: new Date().toLocaleString('es-MX'),
-      username, action, details, revertInfo
+      username, action, details, revertInfo,
+      ...(isDebugMode ? { isDebug: true, debugSessionId } : {})
     };
     await setDoc(getDocRef('app_logs', String(newLogId)), newLog);
-  }, [currentUser, currentEvent]);
+  }, [currentUser, currentEvent, isDebugMode, debugSessionId]);
 
   const applyRevert = async (revertInfo) => {
     if (!revertInfo) return;
@@ -353,7 +459,7 @@ const App = () => {
       addLog('Restauración', `Se deshizo el cambio específico: "${log.action}" del usuario ${log.username}.`);
       showToast("Cambio revertido exitosamente.");
     } else if (type === 'rollback') {
-      const logsToRevert = logs.filter(l => l.id >= log.id && l.revertInfo);
+      const logsToRevert = logs.filter(l => l.id >= log.id && l.revertInfo && !l.isDebug).sort((a,b) => b.id - a.id);
       for (const l of logsToRevert) {
         await applyRevert(l.revertInfo);
       }
@@ -363,6 +469,30 @@ const App = () => {
       handleCleanLogs();
     } else if (type === 'cleanRecent') {
       handleCleanRecentLogs();
+    } else if (type === 'backup') {
+      try {
+        const backupSnap = await getDoc(getDocRef('app_backups', log.revertInfo.backupId));
+        if (!backupSnap.exists()) {
+          showToast("Error: No se encontró la información de la copia de seguridad.");
+          setRestoreModal({ isOpen: false, log: null, type: 'single' });
+          return;
+        }
+        const backupData = backupSnap.data();
+
+        // Limpiar registros actuales
+        await Promise.all(allParticipants.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
+        await Promise.all(events.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
+
+        // Insertar registros de backup
+        await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
+        await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+
+        addLog('Restauración de Sistema', `El SuperUsuario restauró el sistema desde la copia de seguridad del ${backupData.date}.`);
+        showToast("Sistema restaurado con éxito desde copia de seguridad.");
+      } catch (err) {
+        console.error(err);
+        showToast("Error crítico al restaurar la copia de seguridad.");
+      }
     }
     setRestoreModal({ isOpen: false, log: null, type: 'single' });
   };
@@ -372,27 +502,64 @@ const App = () => {
     await updateDoc(getDocRef('app_events', currentEvent.id), updates);
   }, [currentEvent]);
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
     const user = users.find(u => u.username === loginForm.username && u.password === loginForm.password);
     if (user) {
-      setCurrentUser(user);
+      const loginTime = Date.now();
+      setCurrentUser({ ...user, loginTime });
       setLoginError('');
       setLoginForm({ username: '', password: '' });
       addLog('Inicio de Sesión', `El usuario ${user.username} inició sesión.`, user.username);
+      await updateDoc(getDocRef('app_users', String(user.id)), { isOnline: true });
     } else {
       setLoginError('Usuario o contraseña incorrectos.');
     }
   };
 
-  const handleLogout = () => {
-    addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión.`);
+  const handleLogout = async () => {
+    if (currentUser) {
+      const activeTime = Date.now() - (currentUser.loginTime || Date.now());
+      const formattedTime = formatDuration(activeTime);
+      addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión. (Tiempo activo: ${formattedTime})`, currentUser.username);
+      await updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
+    }
     setNavHistory([]);
     setCurrentUser(null);
     setSelectedEventId(null);
     setActiveTab("Summary");
     setSystemView('events');
+    setShowViewSettings(false);
   };
+
+  // Automated Daily Backup Logic
+  useEffect(() => {
+    const performDailyBackup = async () => {
+      if (!globalConfig || !hasAdminRights || events.length === 0 || allParticipants.length === 0) return;
+
+      const now = new Date();
+      // Formato local en string para comparar
+      const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+
+      if (globalConfig.lastBackupDate !== today) {
+        try {
+          await updateDoc(getDocRef('app_data', 'config'), { lastBackupDate: today });
+          const backupData = {
+            date: today,
+            timestamp: Date.now(),
+            participants: allParticipants,
+            events: events,
+            users: users.map(u => ({...u, password: '***'})) // Ocultamos contraseña por seguridad en el backup visible
+          };
+          await setDoc(getDocRef('app_backups', today), backupData);
+          addLog('Sistema', `Copia de seguridad automática diaria (${today}) generada exitosamente.`, 'Sistema', null, { isBackup: true, backupId: today });
+        } catch (e) {
+          console.error("Backup automatico falló", e);
+        }
+      }
+    };
+    performDailyBackup();
+  }, [globalConfig, events, allParticipants, users, hasAdminRights, addLog]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -400,8 +567,17 @@ const App = () => {
     let timeoutId;
     let throttleTimeoutId;
 
-    const performLogout = () => {
-      addLog('Cierre de Sesión Automático', `Sesión finalizada por 10 minutos de inactividad.`);
+    const setOffline = () => {
+      if (currentUser?.id) {
+        updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
+      }
+    };
+
+    const performLogout = async () => {
+      const activeTime = Date.now() - (currentUser.loginTime || Date.now());
+      const formattedTime = formatDuration(activeTime);
+      addLog('Cierre de Sesión Automático', `Sesión finalizada por inactividad. (Tiempo activo: ${formattedTime})`, currentUser.username);
+      await setOffline();
       setNavHistory([]);
       setCurrentUser(null);
       setSelectedEventId(null);
@@ -426,11 +602,13 @@ const App = () => {
     const activityEvents = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
     resetTimer();
     activityEvents.forEach(e => window.addEventListener(e, handleActivity));
+    window.addEventListener('beforeunload', setOffline);
 
     return () => {
       clearTimeout(timeoutId);
       clearTimeout(throttleTimeoutId);
       activityEvents.forEach(e => window.removeEventListener(e, handleActivity));
+      window.removeEventListener('beforeunload', setOffline);
     };
   }, [currentUser, addLog, showToast]);
 
@@ -444,6 +622,7 @@ const App = () => {
       pricingType: 'fixed', 
       globalCost: Number(newEventData.baseCost) || 0, 
       serverCost: 0, 
+      realCost: 0,
       dynamicPrices: [],
       minDeposit: 0, locations: defaultLocations, regStatus: defaultRegStatus,
       customFields: [], order: events.length
@@ -671,10 +850,76 @@ const App = () => {
     addLog('Campos Extra', `Eliminó el campo "${field}" del evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
   };
 
+  const exportToCSV = () => {
+    if (!currentEvent) return;
+    const isCampa = currentEvent.eventType === 'Campa';
+    const isGeneral = currentEvent.eventType === 'General';
+    const evtParticipants = allParticipants.filter(p => p.eventId === currentEvent.id);
+
+    const headers = ['Nombre', 'Teléfono', 'Sede', 'Pagado', 'Costo Final', 'Adeudo'];
+    
+    if (isCampa) {
+      headers.push('Edad', 'Género', 'Tipo Sangre', 'Nado', 'Alergias', 'Enfermedades', 'Discapacidades', 'Contacto Emergencia', 'Tel Emergencia', 'Becado', 'Servidor', 'Asignación');
+    } else if (isGeneral) {
+      headers.push('Edad', 'Género', 'Contacto Emergencia', 'Tel Emergencia');
+      if (currentEvent.customFields) headers.push(...currentEvent.customFields);
+    } else {
+      headers.push('Edad', 'Género');
+    }
+
+    const rows = evtParticipants.map(p => {
+      const baseCost = p.registeredCost != null ? Number(p.registeredCost) : getPersonCost(p, currentPricing);
+      const isBecado = p.isScholarship === 'Sí';
+      const debt = isBecado ? 0 : baseCost - parseFloat(p.paid || 0);
+
+      const row = [
+        escapeCSV(p.name), escapeCSV(p.phone), escapeCSV(p.location),
+        p.paid || 0, baseCost, debt
+      ];
+
+      if (isCampa) {
+        row.push(
+          p.age || '', p.gender || '', p.bloodType || '', p.canSwim || '',
+          escapeCSV(p.hasAllergy === 'Sí' ? p.allergyDetails : 'No'),
+          escapeCSV(p.hasDisease === 'Sí' ? p.diseaseDetails : 'No'),
+          escapeCSV(p.hasDisability === 'Sí' ? p.disabilityDetails : 'No'),
+          escapeCSV(p.emergencyContact), escapeCSV(p.emergencyPhone),
+          p.isScholarship || 'No', p.isServer || 'No',
+          escapeCSV(p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment)
+        );
+      } else if (isGeneral) {
+        row.push(p.age || '', p.gender || '', escapeCSV(p.emergencyContact), escapeCSV(p.emergencyPhone));
+        if (currentEvent.customFields) {
+          currentEvent.customFields.forEach(f => row.push(escapeCSV(p.customData?.[f])));
+        }
+      } else {
+        row.push(p.age || '', p.gender || '');
+      }
+      return row.join(',');
+    });
+
+    const csvContent = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `Registros_${currentEvent.name.replace(/\s+/g, '_')}_${new Date().toLocaleDateString('es-MX')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const summary = useMemo(() => {
     let totalMen = 0, totalWomen = 0, totalSwimmers = 0, totalNonSwimmers = 0;
     let totalAllergies = 0, totalDiseases = 0, totalDisabilities = 0, totalServers = 0;
     let totalMinors = 0, totalAdults = 0, totalServersBoth = 0;
+    let totalPaidOff = 0, totalWithDebt = 0;
+    
+    let ageBrackets = { kids: 0, teens: 0, youngAdults: 0, adults: 0, seniors: 0 };
+
+    let bloodTypeStats = {};
+    BLOOD_TYPES.forEach(bt => bloodTypeStats[bt] = 0);
+    
     let customFieldsStats = {};
     if (currentEvent?.customFields) currentEvent.customFields.forEach(f => customFieldsStats[f] = {});
 
@@ -692,74 +937,90 @@ const App = () => {
           regular: { count: 0, paid: 0, pending: 0, expected: 0 },
           scholarship: { count: 0, paid: 0, pending: 0, expected: 0 }
         };
-        if (isLocOpen(loc)) {
-          (data[loc] || []).forEach(person => {
-            if (person.gender === 'Hombre') totalMen++;
-            else if (person.gender === 'Mujer') totalWomen++;
-            if (person.canSwim === 'Sí') totalSwimmers++; else totalNonSwimmers++;
-            if (person.hasAllergy === 'Sí') totalAllergies++;
-            if (person.hasDisease === 'Sí') totalDiseases++;
-            if (person.hasDisability === 'Sí') totalDisabilities++;
-            if (person.isServer === 'Sí') { totalServers++; stats.all.servers++; }
+        // Removed if (isLocOpen(loc)) check so it includes closed locations in summary
+        (data[loc] || []).forEach(person => {
+          if (person.gender === 'Hombre') totalMen++;
+          else if (person.gender === 'Mujer') totalWomen++;
+          if (person.canSwim === 'Sí') totalSwimmers++; else totalNonSwimmers++;
+          if (person.hasAllergy === 'Sí') totalAllergies++;
+          if (person.hasDisease === 'Sí') totalDiseases++;
+          if (person.hasDisability === 'Sí') totalDisabilities++;
+          if (person.isServer === 'Sí') { totalServers++; stats.all.servers++; }
+          
+          if (person.bloodType) {
+            bloodTypeStats[person.bloodType] = (bloodTypeStats[person.bloodType] || 0) + 1;
+          }
 
-            if (currentEvent.eventType === 'Campa') {
-              const ageNum = parseInt(person.age) || 0;
-              if (person.isServer === 'Sí') {
-                if (person.serverAssignment === 'Teens') totalMinors++;
-                else if (person.serverAssignment === 'Jóvenes') totalAdults++;
-                else if (person.serverAssignment === 'Ambos') { totalMinors++; totalAdults++; totalServersBoth++; }
-              } else {
-                if (ageNum < 18) totalMinors++; else totalAdults++;
-              }
-            }
+          const ageNum = parseInt(person.age) || 0;
+          if (ageNum > 0) {
+            if (ageNum < 13) ageBrackets.kids++;
+            else if (ageNum <= 17) ageBrackets.teens++;
+            else if (ageNum <= 25) ageBrackets.youngAdults++;
+            else if (ageNum <= 40) ageBrackets.adults++;
+            else ageBrackets.seniors++;
+          }
 
-            if (currentEvent.eventType === 'General' && currentEvent.customFields) {
-              currentEvent.customFields.forEach(field => {
-                const val = person.customData?.[field]?.trim() || 'Sin especificar';
-                customFieldsStats[field][val] = (customFieldsStats[field][val] || 0) + 1;
-              });
-            }
-
-            const paid = parseFloat(person.paid || 0);
-            const isBecado = person.isScholarship === 'Sí';
-            const baseCost = person.registeredCost != null
-              ? Number(person.registeredCost)
-              : getPersonCost(person, currentPricing);
-
-            stats.all.count++;
-            stats.all.paid += paid;
-
-            if (isBecado && currentEvent.eventType === 'Campa') {
-              stats.all.scholarship++;
-              stats.scholarship.count++;
-              stats.scholarship.paid += paid;
-              stats.scholarship.expected += paid;
+          if (currentEvent.eventType === 'Campa') {
+            if (person.isServer === 'Sí') {
+              if (person.serverAssignment === 'Teens') totalMinors++;
+              else if (person.serverAssignment === 'Jóvenes') totalAdults++;
+              else if (person.serverAssignment === 'Ambos') { totalMinors++; totalAdults++; totalServersBoth++; }
             } else {
-              stats.regular.count++;
-              stats.regular.paid += paid;
-              stats.regular.pending += (baseCost - paid);
-              stats.regular.expected += baseCost;
+              const assignment = person.campAssignment || (ageNum < 18 ? 'Teens' : 'Jóvenes');
+              if (assignment === 'Teens') totalMinors++; else totalAdults++;
             }
-          });
+          }
 
-          stats.all.pending = stats.regular.pending;
-          stats.all.expected = stats.regular.expected + stats.scholarship.expected;
+          if (currentEvent.eventType === 'General' && currentEvent.customFields) {
+            currentEvent.customFields.forEach(field => {
+              const val = person.customData?.[field]?.trim() || 'Sin especificar';
+              customFieldsStats[field][val] = (customFieldsStats[field][val] || 0) + 1;
+            });
+          }
 
-          globalStats.all.count += stats.all.count;
-          globalStats.all.scholarship += stats.all.scholarship;
-          globalStats.all.servers += stats.all.servers;
-          globalStats.all.paid += stats.all.paid;
-          globalStats.all.pending += stats.all.pending;
-          globalStats.all.expected += stats.all.expected;
-          globalStats.regular.count += stats.regular.count;
-          globalStats.regular.paid += stats.regular.paid;
-          globalStats.regular.pending += stats.regular.pending;
-          globalStats.regular.expected += stats.regular.expected;
-          globalStats.scholarship.count += stats.scholarship.count;
-          globalStats.scholarship.paid += stats.scholarship.paid;
-          globalStats.scholarship.pending += stats.scholarship.pending;
-          globalStats.scholarship.expected += stats.scholarship.expected;
-        }
+          const paid = parseFloat(person.paid || 0);
+          const isBecado = person.isScholarship === 'Sí';
+          const baseCost = person.registeredCost != null
+            ? Number(person.registeredCost)
+            : getPersonCost(person, currentPricing);
+
+          if (isBecado || paid >= baseCost) totalPaidOff++;
+          else totalWithDebt++;
+
+          stats.all.count++;
+          stats.all.paid += paid;
+
+          if (isBecado && currentEvent.eventType === 'Campa') {
+            stats.all.scholarship++;
+            stats.scholarship.count++;
+            stats.scholarship.paid += paid;
+            stats.scholarship.expected += paid;
+          } else {
+            stats.regular.count++;
+            stats.regular.paid += paid;
+            stats.regular.pending += (baseCost - paid);
+            stats.regular.expected += baseCost;
+          }
+        });
+
+        stats.all.pending = stats.regular.pending;
+        stats.all.expected = stats.regular.expected + stats.scholarship.expected;
+
+        globalStats.all.count += stats.all.count;
+        globalStats.all.scholarship += stats.all.scholarship;
+        globalStats.all.servers += stats.all.servers;
+        globalStats.all.paid += stats.all.paid;
+        globalStats.all.pending += stats.all.pending;
+        globalStats.all.expected += stats.all.expected;
+        globalStats.regular.count += stats.regular.count;
+        globalStats.regular.paid += stats.regular.paid;
+        globalStats.regular.pending += stats.regular.pending;
+        globalStats.regular.expected += stats.regular.expected;
+        globalStats.scholarship.count += stats.scholarship.count;
+        globalStats.scholarship.paid += stats.scholarship.paid;
+        globalStats.scholarship.pending += stats.scholarship.pending;
+        globalStats.scholarship.expected += stats.scholarship.expected;
+        
         locationStats[loc] = stats;
       });
     }
@@ -767,10 +1028,10 @@ const App = () => {
     return {
       totalMen, totalWomen, totalSwimmers, totalNonSwimmers,
       totalAllergies, totalDiseases, totalDisabilities, totalServers,
-      totalMinors, totalAdults, totalServersBoth,
-      customFieldsStats, locationStats, globalStats
+      totalMinors, totalAdults, totalServersBoth, totalPaidOff, totalWithDebt,
+      ageBrackets, bloodTypeStats, customFieldsStats, locationStats, globalStats
     };
-  }, [data, currentEvent, currentPricing, getPersonCost, isLocOpen]);
+  }, [data, currentEvent, currentPricing, getPersonCost]); // Removed isLocOpen dependency
 
   const handleAddEntry = async (loc) => {
     if (!isFormValid || !isLocOpen(loc)) return;
@@ -782,7 +1043,11 @@ const App = () => {
       ? currentPricing.server
       : currentPricing.global;
 
-    const personData = { ...newEntry, id: newPersonId, location: loc, eventId: currentEvent.id, paymentHistory: initialHistory, registeredCost };
+    const initialCampAssignment = currentEvent.eventType === 'Campa' && newEntry.isServer !== 'Sí' 
+      ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'Jóvenes') 
+      : '';
+
+    const personData = { ...newEntry, id: newPersonId, location: loc, eventId: currentEvent.id, paymentHistory: initialHistory, registeredCost, campAssignment: initialCampAssignment };
 
     if (currentEvent.eventType !== 'Campa') {
       personData.isScholarship = 'No'; personData.isServer = 'No'; personData.serverAssignment = '';
@@ -806,7 +1071,7 @@ const App = () => {
     const fieldsToTrack = [
       { key: 'name', label: 'Nombre' }, { key: 'phone', label: 'Teléfono' }, { key: 'paid', label: 'Monto Pagado' },
       { key: 'isScholarship', label: 'Becado' }, { key: 'isServer', label: 'Servidor' },
-      { key: 'serverAssignment', label: 'Asignación' }, { key: 'canSwim', label: 'Nado' }, { key: 'age', label: 'Edad' },
+      { key: 'serverAssignment', label: 'Asignación' }, { key: 'campAssignment', label: 'Asig. Campista' }, { key: 'canSwim', label: 'Nado' }, { key: 'age', label: 'Edad' },
       { key: 'hasAllergy', label: 'Alergia' }, { key: 'allergyDetails', label: 'Detalle Alergia' },
       { key: 'hasDisease', label: 'Enfermedad' }, { key: 'diseaseDetails', label: 'Detalle Enfermedad' },
       { key: 'hasDisability', label: 'Discapacidad' }, { key: 'disabilityDetails', label: 'Detalle Discapacidad' }
@@ -967,7 +1232,13 @@ const App = () => {
             <tbody className="divide-y divide-slate-50">
               {users.map(u => (
                 <tr key={u.id} className="hover:bg-slate-50/50">
-                  <td className="px-6 py-4 font-bold text-slate-700">{u.username}{currentUser.id === u.id && <span className="text-[10px] text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full ml-2">Tú</span>}</td>
+                  <td className="px-6 py-4 font-bold text-slate-700">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2.5 h-2.5 rounded-full ${u.isOnline ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse' : 'bg-slate-300'}`} title={u.isOnline ? 'En línea' : 'Desconectado'} />
+                      {u.username}
+                      {currentUser.id === u.id && <span className="text-[10px] text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full ml-2">Tú</span>}
+                    </div>
+                  </td>
                   <td className="px-6 py-4"><span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${u.role === 'SuperUsuario' ? 'bg-amber-100 text-amber-700 border border-amber-200' : u.role === 'Administrador' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>{u.role}</span></td>
                   <td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2">
                     <button onClick={() => setEditingUser({ isOpen: true, id: u.id, username: u.username, role: u.role, currentPasswordInput: '', newPassword: '', confirmPassword: '' })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}><Edit3 size={18} /></button>
@@ -983,20 +1254,63 @@ const App = () => {
   );
 
   const renderLogs = () => {
-    // Si estamos en la ventana de eventos, mostramos solo los del evento actual (y globales si aplica).
-    const displayedLogs = selectedEventId && activeTab === 'Logs'
-      ? logs.filter(log => log.eventId === selectedEventId || log.eventId === 'Global')
-      : logs;
+    // Filtramos globalmente basándonos en el dropdown de contexto y el término de búsqueda
+    const displayedLogs = logs.filter(log => {
+      // Ocultar logs de depuración si no se ha activado la opción (o si no es Admin)
+      if (log.isDebug) {
+        if (!hasAdminRights || !showDebugLogs) return false;
+      }
+
+      const matchContext = logFilterContext === 'all' || log.eventName === logFilterContext;
+      const matchSearch = !logSearchTerm || 
+        log.username.toLowerCase().includes(logSearchTerm.toLowerCase()) ||
+        log.action.toLowerCase().includes(logSearchTerm.toLowerCase()) ||
+        log.details.toLowerCase().includes(logSearchTerm.toLowerCase()) ||
+        log.eventName.toLowerCase().includes(logSearchTerm.toLowerCase());
+      
+      return matchContext && matchSearch;
+    });
+
+    const uniqueContexts = [...new Set(logs.map(l => l.eventName))];
 
     return (
       <div className="p-6 space-y-6 animate-in fade-in duration-500">
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 mb-6">
             <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
               <History className="text-indigo-500" /> 
-              {selectedEventId && activeTab === 'Logs' ? 'Registro de Actividad del Evento' : 'Registro de Actividad Global'}
+              Registro de Actividad Global
             </h2>
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
+                <input
+                  type="text"
+                  placeholder="Buscar en actividad..."
+                  className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-slate-600 outline-none focus:ring-2 focus:ring-indigo-500 w-full md:w-56"
+                  value={logSearchTerm}
+                  onChange={e => setLogSearchTerm(e.target.value)}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Filter size={14} className="text-slate-400" />
+                <select
+                  className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                  value={logFilterContext}
+                  onChange={e => setLogFilterContext(e.target.value)}
+                >
+                  <option value="all">Todos los contextos</option>
+                  {uniqueContexts.map(ctx => (
+                    <option key={ctx} value={ctx}>{ctx}</option>
+                  ))}
+                </select>
+              </div>
+              {hasAdminRights && (
+                <label className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg cursor-pointer hover:bg-slate-100 transition-colors">
+                  <span className="text-xs font-bold text-slate-600">Ver ocultos</span>
+                  <input type="checkbox" checked={showDebugLogs} onChange={e => setShowDebugLogs(e.target.checked)} className="accent-indigo-600" />
+                </label>
+              )}
               {hasAdminRights && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanOld', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
               {isSuperUser && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanRecent', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-500 text-white hover:bg-red-600 border border-red-600 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200"><Trash2 size={14} /> Limpiar &lt; 30 días</button>}
               <span className="bg-slate-100 text-slate-500 text-xs font-bold px-3 py-1 rounded-full">{displayedLogs.length} eventos</span>
@@ -1004,20 +1318,26 @@ const App = () => {
           </div>
           <div className="overflow-x-auto border border-slate-100 rounded-xl max-h-[600px] overflow-y-auto">
             <table className="w-full text-left relative">
-              <thead className="sticky top-0 bg-slate-50 shadow-sm"><tr className="text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-200"><th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acción</th><th className="px-6 py-4">Detalles</th>{hasAdminRights && <th className="px-6 py-4 text-center">Restaurar</th>}</tr></thead>
+              <thead className="sticky top-0 bg-slate-50 shadow-sm"><tr className="text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-200"><th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acción</th><th className="px-6 py-4">Detalles</th>{hasAdminRights && <th className="px-6 py-4 text-center">Acciones</th>}</tr></thead>
               <tbody className="divide-y divide-slate-50">
                 {displayedLogs.length === 0 ? (
-                  <tr><td colSpan={hasAdminRights ? "6" : "5"} className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay actividad registrada aún.</td></tr>
+                  <tr><td colSpan={hasAdminRights ? "6" : "5"} className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay actividad registrada para este contexto.</td></tr>
                 ) : displayedLogs.map(log => (
-                  <tr key={log.id} className="hover:bg-slate-50/50 transition-colors">
+                  <tr key={log.id} className={`hover:bg-slate-50/50 transition-colors ${log.isDebug ? 'bg-orange-50/30' : ''}`}>
                     <td className="px-6 py-4 text-xs font-mono text-slate-500 whitespace-nowrap">{log.timestamp}</td>
-                    <td className="px-6 py-4"><span className="text-[9px] bg-indigo-50 text-indigo-600 font-bold px-2 py-1 rounded border border-indigo-100 truncate max-w-[120px] block">{log.eventName}</span></td>
-                    <td className="px-6 py-4 font-bold text-slate-700 flex items-center gap-2"><UserCircle size={14} className="text-indigo-400" />{log.username}</td>
-                    <td className="px-6 py-4"><span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-2 py-1 rounded-md uppercase tracking-wider">{log.action}</span></td>
+                    <td className="px-6 py-4"><span className={`text-[9px] font-bold px-2 py-1 rounded border truncate max-w-[120px] block ${log.isDebug ? 'bg-orange-100 text-orange-700 border-orange-200' : 'bg-indigo-50 text-indigo-600 border-indigo-100'}`}>{log.eventName}</span></td>
+                    <td className="px-6 py-4 font-bold text-slate-700 flex items-center gap-2"><UserCircle size={14} className={log.isDebug ? 'text-orange-400' : 'text-indigo-400'} />{log.username}</td>
+                    <td className="px-6 py-4">
+                      <span className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${log.isDebug ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-600'}`}>
+                        {log.action} {log.isDebug && <span className="text-red-500 ml-1 font-black">(DEPURACIÓN)</span>}
+                      </span>
+                    </td>
                     <td className="px-6 py-4 text-xs text-slate-600">{log.details}</td>
                     {hasAdminRights && (
                       <td className="px-6 py-4 text-center">
-                        {log.revertInfo ? (
+                        {log.revertInfo?.isBackup ? (
+                          <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'backup' })} className="p-1.5 bg-indigo-50 text-indigo-600 hover:text-white hover:bg-indigo-600 rounded-lg transition-colors shadow-sm" title="Restaurar Copia de Seguridad Completa"><Database size={14} /></button>
+                        ) : log.revertInfo ? (
                           <div className="flex justify-center items-center gap-2">
                             <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'single' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors" title="Restaurar este cambio específico"><Undo size={14} /></button>
                             {isSuperUser && (
@@ -1063,6 +1383,11 @@ const App = () => {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-4 border-t md:border-t-0 md:border-l border-slate-100 pt-4 md:pt-0 md:pl-6">
+              {isSuperUser && (
+                <button onClick={toggleDebugMode} className={`flex items-center gap-1 md:gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-colors shadow-sm ${isDebugMode ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-500'}`} title="Modo de prueba aislada">
+                  <Bug size={14} /><span className="hidden sm:inline">{isDebugMode ? 'Salir Depuración' : 'Depurar'}</span>
+                </button>
+              )}
               {systemView !== 'events' && (
                 <button onClick={() => goTo('events', null, 'Summary')} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors text-xs flex items-center gap-2">
                   <LayoutDashboard size={14} /> Eventos
@@ -1266,24 +1591,26 @@ const App = () => {
         {restoreModal.isOpen && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center">
-              <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${restoreModal.type === 'single' ? 'bg-indigo-50 text-indigo-500' : 'bg-red-50 text-red-500'}`}>
-                {restoreModal.type === 'single' ? <Undo size={32} /> : restoreModal.type === 'rollback' ? <History size={32} /> : <Trash2 size={32} />}
+              <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${restoreModal.type === 'single' || restoreModal.type === 'backup' ? 'bg-indigo-50 text-indigo-500' : 'bg-red-50 text-red-500'}`}>
+                {restoreModal.type === 'single' ? <Undo size={32} /> : restoreModal.type === 'rollback' ? <History size={32} /> : restoreModal.type === 'backup' ? <Database size={32} /> : <Trash2 size={32} />}
               </div>
               <h3 className="text-xl font-black text-slate-800 mb-2">
-                {restoreModal.type === 'single' ? 'Restaurar Cambio' : restoreModal.type === 'rollback' ? 'Revertir Cambios' : 'Limpiar Registros'}
+                {restoreModal.type === 'single' ? 'Restaurar Cambio' : restoreModal.type === 'rollback' ? 'Revertir Cambios' : restoreModal.type === 'backup' ? 'Restaurar Copia de Seguridad' : 'Limpiar Registros'}
               </h3>
               <p className="text-sm text-slate-500 mb-6">
                 {restoreModal.type === 'single' 
                   ? `¿Deseas deshacer la acción específica: "${restoreModal.log?.action}"?` 
                   : restoreModal.type === 'rollback'
                   ? `¿Estás seguro de deshacer TODOS los cambios desde el evento "${restoreModal.log?.action}" hasta ahora? Esta acción revertirá múltiples operaciones.`
+                  : restoreModal.type === 'backup'
+                  ? `ATENCIÓN: Estás a punto de restaurar la base de datos a la versión del: ${restoreModal.log?.revertInfo?.backupId}. Esto sobrescribirá todos los participantes y eventos actuales. ¿Deseas continuar?`
                   : restoreModal.type === 'cleanOld'
                   ? `¿Estás seguro de eliminar todos los registros de actividad con más de 30 días de antigüedad? Esta acción no se puede deshacer.`
                   : `ATENCIÓN SUPERUSUARIO: ¿Estás seguro de eliminar todos los registros RECIENTES (menos de 30 días)? Esta acción es irreversible.`}
               </p>
               <div className="flex gap-3">
                 <button onClick={() => setRestoreModal({ isOpen: false, log: null, type: 'single' })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
-                <button onClick={confirmRestore} className={`flex-1 py-3 px-4 text-white font-bold rounded-xl transition-colors text-sm shadow-lg ${restoreModal.type === 'single' ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200' : 'bg-red-500 hover:bg-red-600 shadow-red-200'}`}>
+                <button onClick={confirmRestore} className={`flex-1 py-3 px-4 text-white font-bold rounded-xl transition-colors text-sm shadow-lg ${restoreModal.type === 'single' || restoreModal.type === 'backup' ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200' : 'bg-red-500 hover:bg-red-600 shadow-red-200'}`}>
                   Sí, Confirmar
                 </button>
               </div>
@@ -1306,7 +1633,7 @@ const App = () => {
     if (total === 0) return '#f1f5f9';
     let curPerc = 0;
     return `conic-gradient(${(currentEvent?.locations || []).map((loc, i) => {
-      if (!isLocOpen(loc)) return '';
+      // Removed filter here so closed locations are also in the pie chart
       const val = dataKey === 'paid' ? summary.locationStats[loc].all.paid : summary.locationStats[loc].all.count;
       const per = (val / total) * 100;
       if (per === 0) return '';
@@ -1320,6 +1647,8 @@ const App = () => {
     const totalRegs = summary.globalStats.all.count;
     const totalScholarship = summary.globalStats.all.scholarship;
     const percentScholarship = totalRegs > 0 ? (totalScholarship / totalRegs) * 100 : 0;
+    const realCostNum = Number(currentEvent?.realCost) || 0;
+    const balanceNeto = summary.globalStats.all.paid - (realCostNum * totalRegs);
 
     const getTableStats = (loc) => {
       let count = 0, scholarship = 0, servers = 0, paid = 0, pending = 0, expected = 0;
@@ -1348,7 +1677,7 @@ const App = () => {
     };
 
     const tableData = (currentEvent?.locations || [])
-      .filter(loc => isLocOpen(loc))
+      // Removed filter so all locations (even deactivated) are displayed
       .map(loc => ({ loc, stats: getTableStats(loc) }));
 
     const globalTableStats = tableData.reduce((acc, { stats }) => {
@@ -1359,112 +1688,206 @@ const App = () => {
 
     return (
       <div className="p-6 space-y-8 animate-in fade-in duration-500">
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-6">
-          <StatCard icon={Users} iconColor="text-blue-600" bgIcon="bg-blue-100" title="Registrados" value={totalRegs} />
-          {isCampa && <StatCard icon={GraduationCap} iconColor="text-purple-600" bgIcon="bg-purple-100" title="Becados" value={totalScholarship} />}
-          <StatCard icon={DollarSign} iconColor="text-green-600" bgIcon="bg-green-100" title="Recaudado" value={formatMoney(summary.globalStats.all.paid)} />
-          <StatCard icon={ShieldAlert} iconColor="text-orange-600" bgIcon="bg-orange-100" title="Pendiente" value={formatMoney(summary.globalStats.all.pending)} />
+        
+        {viewPrefs.statsConfig && (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+            <StatCard icon={Users} iconColor="text-blue-600" bgIcon="bg-blue-100" title="Registrados" value={totalRegs} />
+            {isCampa && <StatCard icon={GraduationCap} iconColor="text-purple-600" bgIcon="bg-purple-100" title="Becados" value={totalScholarship} />}
+            <StatCard icon={DollarSign} iconColor="text-green-600" bgIcon="bg-green-100" title="Recaudado" value={formatMoney(summary.globalStats.all.paid)} />
+            <StatCard icon={ShieldAlert} iconColor="text-orange-600" bgIcon="bg-orange-100" title="Pendiente" value={formatMoney(summary.globalStats.all.pending)} />
 
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2"><div className="bg-blue-100 p-2 rounded-lg text-blue-600"><CalendarRange size={18} /></div><span className="text-xs font-bold text-slate-500">Fecha Evento</span></div>
-              {hasAdminRights && (
-                <label className="relative flex items-center justify-center p-2 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer" title="Modificar fecha">
-                  <CalendarRange size={16} className="relative z-10 pointer-events-none" />
-                  <input type="date" value={tempEventDate} onChange={(e) => setTempEventDate(e.target.value)}
-                    onBlur={async (e) => {
-                      const newVal = e.target.value;
-                      if (newVal !== (currentEvent.date || '')) {
-                        await updateEventConfig({ date: newVal });
-                        addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
-                      }
-                    }}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20" />
-                </label>
-              )}
-            </div>
-            <div className="flex items-center text-lg md:text-xl font-black text-slate-800 mt-1 capitalize leading-tight">
-              {currentEvent.date ? new Date(currentEvent.date + 'T00:00:00').toLocaleDateString('es-MX', { year: 'numeric', month: 'short', day: 'numeric' }) : 'Sin fecha'}
-            </div>
-          </div>
-
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2"><div className="bg-indigo-100 p-2 rounded-lg text-indigo-600"><BarChart3 size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Base</span></div>
-              {hasAdminRights && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
-            </div>
-            <div className="flex items-center text-2xl font-black text-slate-800">{showMoney ? `$${currentPricing.global}` : '$***'}</div>
-            {currentEvent.pricingType === 'dynamic' && <p className="text-[10px] text-indigo-500 font-bold mt-1 uppercase">Precio Dinámico</p>}
-          </div>
-
-          {isCampa && (
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
               <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2"><div className="bg-amber-100 p-2 rounded-lg text-amber-600"><Users size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Servidor (Ambos)</span></div>
+                <div className="flex items-center gap-2"><div className="bg-blue-100 p-2 rounded-lg text-blue-600"><CalendarRange size={18} /></div><span className="text-xs font-bold text-slate-500">Fecha Evento</span></div>
+                {hasAdminRights && (
+                  <label className="relative flex items-center justify-center p-2 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer" title="Modificar fecha">
+                    <CalendarRange size={16} className="relative z-10 pointer-events-none" />
+                    <input type="date" value={tempEventDate} onChange={(e) => setTempEventDate(e.target.value)}
+                      onBlur={async (e) => {
+                        const newVal = e.target.value;
+                        if (newVal !== (currentEvent.date || '')) {
+                          await updateEventConfig({ date: newVal });
+                          addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                        }
+                      }}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20" />
+                  </label>
+                )}
+              </div>
+              <div className="flex items-center text-lg md:text-xl font-black text-slate-800 mt-1 capitalize leading-tight">
+                {currentEvent.date ? new Date(currentEvent.date + 'T00:00:00').toLocaleDateString('es-MX', { year: 'numeric', month: 'short', day: 'numeric' }) : 'Sin fecha'}
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2"><div className="bg-indigo-100 p-2 rounded-lg text-indigo-600"><BarChart3 size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Base</span></div>
                 {hasAdminRights && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
               </div>
-              <div className="flex items-center text-2xl font-black text-slate-800">{showMoney ? `$${currentPricing.server}` : '$***'}</div>
+              <div className="flex items-center text-2xl font-black text-slate-800">{showMoney ? `$${currentPricing.global}` : '$***'}</div>
+              {currentEvent.pricingType === 'dynamic' && <p className="text-[10px] text-indigo-500 font-bold mt-1 uppercase">Precio Dinámico</p>}
             </div>
-          )}
 
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
-            <div className="flex items-center gap-2 mb-3"><div className="bg-teal-100 p-2 rounded-lg text-teal-600"><Wallet size={18} /></div><span className="text-xs font-bold text-slate-500">Apartado Mín.</span></div>
-            <div className="flex items-center text-2xl font-black text-slate-800">
-              {showMoney ? (
-                <><span className="mr-1">$</span>
-                  <input type="number" value={tempDeposit} disabled={currentUser?.role === 'Lector'} onChange={e => setTempDeposit(e.target.value)}
-                    onBlur={async (e) => {
-                      const newVal = parseFloat(e.target.value) || 0;
-                      if (newVal !== currentEvent.minDeposit) {
-                        await updateEventConfig({ minDeposit: newVal });
-                        addLog('Configuración', `Apartado mín: $${currentEvent.minDeposit} -> $${newVal}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
-                      }
-                    }}
-                    className="bg-transparent border-b-2 border-transparent hover:border-slate-200 focus:border-indigo-500 outline-none w-20 transition-colors" /></>
-              ) : <span>$***</span>}
+            {isCampa && (
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2"><div className="bg-amber-100 p-2 rounded-lg text-amber-600"><Users size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Servidor (Ambos)</span></div>
+                  {hasAdminRights && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
+                </div>
+                <div className="flex items-center text-2xl font-black text-slate-800">{showMoney ? `$${currentPricing.server}` : '$***'}</div>
+              </div>
+            )}
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex items-center gap-2 mb-3"><div className="bg-teal-100 p-2 rounded-lg text-teal-600"><Wallet size={18} /></div><span className="text-xs font-bold text-slate-500">Apartado Mín.</span></div>
+              <div className="flex items-center text-2xl font-black text-slate-800">
+                {showMoney ? (
+                  <><span className="mr-1">$</span>
+                    <input type="number" value={tempDeposit} disabled={!hasAdminRights} onChange={e => setTempDeposit(e.target.value)}
+                      onBlur={async (e) => {
+                        const newVal = parseFloat(e.target.value) || 0;
+                        if (newVal !== currentEvent.minDeposit) {
+                          await updateEventConfig({ minDeposit: newVal });
+                          addLog('Configuración', `Apartado mín: $${currentEvent.minDeposit} -> $${newVal}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                        }
+                      }}
+                      className={`bg-transparent border-b-2 outline-none w-20 transition-colors ${!hasAdminRights ? 'border-transparent cursor-not-allowed' : 'border-transparent hover:border-slate-200 focus:border-indigo-500'}`} /></>
+                ) : <span>$***</span>}
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex items-center gap-2 mb-3"><div className="bg-red-100 p-2 rounded-lg text-red-600"><DollarSign size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Real</span></div>
+              <div className="flex items-center text-2xl font-black text-slate-800">
+                {showMoney ? (
+                  <><span className="mr-1">$</span>
+                    <input type="number" value={tempRealCost} disabled={!hasAdminRights} onChange={e => setTempRealCost(e.target.value)}
+                      onBlur={async (e) => {
+                        const newVal = parseFloat(e.target.value) || 0;
+                        if (newVal !== (currentEvent.realCost || 0)) {
+                          await updateEventConfig({ realCost: newVal });
+                          addLog('Configuración', `Costo Real: $${currentEvent.realCost || 0} -> $${newVal}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                        }
+                      }}
+                      className={`bg-transparent border-b-2 outline-none w-24 transition-colors ${!hasAdminRights ? 'border-transparent cursor-not-allowed' : 'border-transparent hover:border-slate-200 focus:border-indigo-500'}`} /></>
+                ) : <span>$***</span>}
+              </div>
+              {hasAdminRights && <p className="text-[10px] text-slate-400 font-bold mt-1">Costo real por persona</p>}
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex items-center gap-2 mb-3">
+                <div className={`p-2 rounded-lg ${balanceNeto >= 0 ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>
+                  <Activity size={18} />
+                </div>
+                <span className="text-xs font-bold text-slate-500">Balance Neto</span>
+              </div>
+              <p className={`text-2xl font-black ${balanceNeto >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                {formatMoney(balanceNeto)}
+              </p>
+              <p className="text-[10px] text-slate-400 font-bold mt-1">Recaudado - (Costo × Registrados)</p>
             </div>
           </div>
-        </div>
+        )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><MapPin className="text-indigo-500" size={20} /> Registrados por Sede</h3><p className="text-xs text-slate-400 mb-6">Proporción de inscritos totales</p><div className="flex flex-col items-center justify-center gap-6"><div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('count') }} /><div className="w-full grid grid-cols-2 gap-2">{(currentEvent?.locations || []).filter(loc => isLocOpen(loc)).map((loc) => { const i = currentEvent.locations.indexOf(loc); const locCount = summary.locationStats[loc].all.count; const percent = totalRegs > 0 ? ((locCount / totalRegs) * 100).toFixed(1) : 0; return (<div key={loc} className="flex items-center justify-between text-xs"><div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div><span className="font-bold text-slate-800">{percent}%</span></div>); })}</div></div></div>
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><PieChart className="text-green-500" size={20} /> Ingresos por Sede</h3><p className="text-xs text-slate-400 mb-6">Porcentaje de recaudación</p><div className="flex flex-col items-center justify-center gap-6"><div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('paid') }} /><div className="w-full grid grid-cols-2 gap-2">{(currentEvent?.locations || []).filter(loc => isLocOpen(loc)).map((loc) => { const i = currentEvent.locations.indexOf(loc); const locPaid = summary.locationStats[loc].all.paid; const percent = summary.globalStats.all.paid > 0 ? ((locPaid / summary.globalStats.all.paid) * 100).toFixed(1) : 0; return (<div key={loc} className="flex items-center justify-between text-xs"><div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div><span className="font-bold text-slate-800">{percent}%</span></div>); })}</div></div></div>
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Inscritos por Género</h3><p className="text-xs text-slate-400 mb-6">Comparativa de inscripciones por género</p><div className="flex-1 flex flex-col justify-center gap-6 mt-4 pb-2 w-full"><ProgressBar label="Hombres" value={summary.totalMen} max={summary.totalMen + summary.totalWomen} colorClass="text-blue-600" bgClass="bg-blue-500" /><ProgressBar label="Mujeres" value={summary.totalWomen} max={summary.totalMen + summary.totalWomen} colorClass="text-pink-600" bgClass="bg-pink-500" /></div></div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-8">
+          
+          {viewPrefs.chartLocations && (
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><MapPin className="text-indigo-500" size={20} /> Registrados por Sede</h3><p className="text-xs text-slate-400 mb-6">Proporción de inscritos totales</p><div className="flex flex-col items-center justify-center gap-6"><div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('count') }} /><div className="w-full grid grid-cols-2 gap-2">{(currentEvent?.locations || []).map((loc) => { const i = currentEvent.locations.indexOf(loc); const locCount = summary.locationStats[loc].all.count; const percent = totalRegs > 0 ? ((locCount / totalRegs) * 100).toFixed(1) : 0; return (<div key={loc} className="flex items-center justify-between text-xs"><div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div><span className="font-bold text-slate-800">{percent}%</span></div>); })}</div></div></div>
+          )}
+          
+          {viewPrefs.chartIncome && (
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><PieChart className="text-green-500" size={20} /> Ingresos por Sede</h3><p className="text-xs text-slate-400 mb-6">Porcentaje de recaudación</p><div className="flex flex-col items-center justify-center gap-6"><div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('paid') }} /><div className="w-full grid grid-cols-2 gap-2">{(currentEvent?.locations || []).map((loc) => { const i = currentEvent.locations.indexOf(loc); const locPaid = summary.locationStats[loc].all.paid; const percent = summary.globalStats.all.paid > 0 ? ((locPaid / summary.globalStats.all.paid) * 100).toFixed(1) : 0; return (<div key={loc} className="flex items-center justify-between text-xs"><div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div><span className="font-bold text-slate-800">{percent}%</span></div>); })}</div></div></div>
+          )}
+
+          {viewPrefs.chartPaymentStatus && (
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+              <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Receipt className="text-emerald-500" size={20} /> Estado de Pagos</h3>
+              <p className="text-xs text-slate-400 mb-6">Liquidados vs Con Saldo Pendiente</p>
+              <div className="space-y-5 w-full mt-2">
+                <ProgressBar label="Liquidados (o Becados)" value={summary.totalPaidOff} max={totalRegs} colorClass="text-emerald-600" bgClass="bg-emerald-500" />
+                <ProgressBar label="Con Saldo Pendiente" value={summary.totalWithDebt} max={totalRegs} colorClass="text-orange-600" bgClass="bg-orange-500" />
+              </div>
+            </div>
+          )}
+          
+          {viewPrefs.chartGender && (
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Inscritos por Género</h3><p className="text-xs text-slate-400 mb-6">Comparativa de inscripciones por género</p><div className="flex-1 flex flex-col justify-center gap-6 mt-4 pb-2 w-full"><ProgressBar label="Hombres" value={summary.totalMen} max={summary.totalMen + summary.totalWomen} colorClass="text-blue-600" bgClass="bg-blue-500" /><ProgressBar label="Mujeres" value={summary.totalWomen} max={summary.totalMen + summary.totalWomen} colorClass="text-pink-600" bgClass="bg-pink-500" /></div></div>
+          )}
+
+          {viewPrefs.chartAgeBrackets && (
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+              <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><UserCircle className="text-cyan-500" size={20} /> Rangos de Edad</h3>
+              <p className="text-xs text-slate-400 mb-6">Distribución detallada por edades</p>
+              <div className="space-y-4 w-full mt-2 max-h-64 overflow-y-auto pr-2">
+                <ProgressBar label="Niños (< 13)" value={summary.ageBrackets.kids} max={totalRegs} colorClass="text-cyan-600" bgClass="bg-cyan-500" />
+                <ProgressBar label="Adolescentes (13 - 17)" value={summary.ageBrackets.teens} max={totalRegs} colorClass="text-blue-600" bgClass="bg-blue-500" />
+                <ProgressBar label="Jóvenes (18 - 25)" value={summary.ageBrackets.youngAdults} max={totalRegs} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
+                <ProgressBar label="Adultos (26 - 40)" value={summary.ageBrackets.adults} max={totalRegs} colorClass="text-purple-600" bgClass="bg-purple-500" />
+                <ProgressBar label="Mayores (41+)" value={summary.ageBrackets.seniors} max={totalRegs} colorClass="text-pink-600" bgClass="bg-pink-500" />
+              </div>
+            </div>
+          )}
 
           {isCampa && (
             <>
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><GraduationCap className="text-purple-500" size={20} /> Estado de Beca</h3><p className="text-xs text-slate-400 mb-6">Proporción de becados vs regulares</p><div className="flex items-center justify-around gap-6"><div className="w-36 h-36 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: totalRegs > 0 ? `conic-gradient(#a855f7 0% ${percentScholarship}%, #cbd5e1 ${percentScholarship}% 100%)` : '#f1f5f9' }} /><div className="space-y-4"><div><div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-purple-500" /><span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Becados</span></div><p className="text-2xl font-black text-slate-800 mt-1">{totalScholarship}</p></div><div><div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-slate-300" /><span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Regulares</span></div><p className="text-2xl font-black text-slate-800 mt-1">{totalRegs - totalScholarship}</p></div></div></div></div>
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Droplets className="text-blue-500" size={20} /> Habilidades Acuáticas</h3><p className="text-xs text-slate-400 mb-6">Capacidad de nado de los inscritos</p><div className="space-y-5 w-full mt-2"><ProgressBar label="Saben Nadar" value={summary.totalSwimmers} max={totalRegs} colorClass="text-blue-600" bgClass="bg-blue-500" /><ProgressBar label="No Saben Nadar" value={summary.totalNonSwimmers} max={totalRegs} colorClass="text-slate-500" bgClass="bg-slate-400" /></div></div>
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Activity className="text-red-500" size={20} /> Condiciones de Salud</h3><p className="text-xs text-slate-400 mb-6">Incidencia de condiciones médicas especiales</p><div className="space-y-5 w-full mt-2"><ProgressBar label="Con Alergias" value={summary.totalAllergies} max={totalRegs} colorClass="text-orange-600" bgClass="bg-orange-500" /><ProgressBar label="Con Enfermedades" value={summary.totalDiseases} max={totalRegs} colorClass="text-red-600" bgClass="bg-red-500" /><ProgressBar label="Con Discapacidades" value={summary.totalDisabilities} max={totalRegs} colorClass="text-purple-600" bgClass="bg-purple-500" /></div></div>
-              
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
-                <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-amber-500" size={20} /> Servidores</h3>
-                <p className="text-xs text-slate-400 mb-6">Distribución de servidores por asignación</p>
-                <div className="space-y-5 w-full mt-2">
-                  <ProgressBar label="Total Servidores" value={summary.totalServers} max={totalRegs} colorClass="text-amber-600" bgClass="bg-amber-500" />
-                  <ProgressBar label="Teens" value={allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Teens').length} max={summary.totalServers} colorClass="text-indigo-600" bgClass="bg-indigo-400" />
-                  <ProgressBar label="Jóvenes" value={allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes').length} max={summary.totalServers} colorClass="text-blue-600" bgClass="bg-blue-400" />
-                  <ProgressBar label="Ambos" value={summary.totalServersBoth} max={summary.totalServers} colorClass="text-amber-600" bgClass="bg-amber-400" />
-                </div>
-              </div>
+              {viewPrefs.chartScholarship && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><GraduationCap className="text-purple-500" size={20} /> Estado de Beca</h3><p className="text-xs text-slate-400 mb-6">Proporción de becados vs regulares</p><div className="flex items-center justify-around gap-6"><div className="w-36 h-36 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: totalRegs > 0 ? `conic-gradient(#a855f7 0% ${percentScholarship}%, #cbd5e1 ${percentScholarship}% 100%)` : '#f1f5f9' }} /><div className="space-y-4"><div><div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-purple-500" /><span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Becados</span></div><p className="text-2xl font-black text-slate-800 mt-1">{totalScholarship}</p></div><div><div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-slate-300" /><span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Regulares</span></div><p className="text-2xl font-black text-slate-800 mt-1">{totalRegs - totalScholarship}</p></div></div></div></div>
+              )}
 
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
-                <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Edades y Eventos</h3>
-                <p className="text-xs text-slate-400 mb-6">Teens (&lt;18) vs Jóvenes (18+)</p>
-                <div className="space-y-5 w-full mt-2">
-                  <ProgressBar label="Teens (<18)" value={summary.totalMinors} max={summary.totalMinors + summary.totalAdults} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
-                  <ProgressBar label="Jóvenes (18+)" value={summary.totalAdults} max={summary.totalMinors + summary.totalAdults} colorClass="text-blue-500" bgClass="bg-blue-400" />
-                  {summary.totalServersBoth > 0 && (
-                    <div className="pt-4 mt-2 border-t border-slate-100">
-                      <div className="flex justify-between text-xs font-bold"><span className="text-amber-600 uppercase tracking-wider">Servidores en Ambos</span><span className="text-amber-600 font-black">{summary.totalServersBoth}</span></div>
-                    </div>
-                  )}
+              {viewPrefs.chartBloodType && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Droplets className="text-red-500" size={20} /> Tipos de Sangre</h3>
+                  <p className="text-xs text-slate-400 mb-6">Distribución de participantes por tipo de sangre</p>
+                  <div className="flex-1 flex flex-col justify-center gap-4 mt-4 pb-2 w-full max-h-64 overflow-y-auto pr-2">
+                    {Object.entries(summary.bloodTypeStats).sort((a,b)=>b[1]-a[1]).map(([bt, count]) => count > 0 && (
+                      <ProgressBar key={bt} label={bt} value={count} max={totalRegs} colorClass="text-red-600" bgClass="bg-red-500" />
+                    ))}
+                    {Object.values(summary.bloodTypeStats).every(v => v === 0) && <p className="text-xs text-slate-400 italic">No hay datos registrados aún.</p>}
+                  </div>
                 </div>
-              </div>
+              )}
+              
+              {viewPrefs.chartSwimming && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Droplets className="text-blue-500" size={20} /> Habilidades Acuáticas</h3><p className="text-xs text-slate-400 mb-6">Capacidad de nado de los inscritos</p><div className="space-y-5 w-full mt-2"><ProgressBar label="Saben Nadar" value={summary.totalSwimmers} max={totalRegs} colorClass="text-blue-600" bgClass="bg-blue-500" /><ProgressBar label="No Saben Nadar" value={summary.totalNonSwimmers} max={totalRegs} colorClass="text-slate-500" bgClass="bg-slate-400" /></div></div>
+              )}
+              
+              {viewPrefs.chartMedical && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Activity className="text-red-500" size={20} /> Condiciones de Salud</h3><p className="text-xs text-slate-400 mb-6">Incidencia de condiciones médicas especiales</p><div className="space-y-5 w-full mt-2"><ProgressBar label="Con Alergias" value={summary.totalAllergies} max={totalRegs} colorClass="text-orange-600" bgClass="bg-orange-500" /><ProgressBar label="Con Enfermedades" value={summary.totalDiseases} max={totalRegs} colorClass="text-red-600" bgClass="bg-red-500" /><ProgressBar label="Con Discapacidades" value={summary.totalDisabilities} max={totalRegs} colorClass="text-purple-600" bgClass="bg-purple-500" /></div></div>
+              )}
+              
+              {viewPrefs.chartServers && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-amber-500" size={20} /> Servidores</h3>
+                  <p className="text-xs text-slate-400 mb-6">Distribución de servidores por asignación</p>
+                  <div className="space-y-5 w-full mt-2">
+                    <ProgressBar label="Total Servidores" value={summary.totalServers} max={totalRegs} colorClass="text-amber-600" bgClass="bg-amber-500" />
+                    <ProgressBar label="Teens" value={allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Teens').length} max={summary.totalServers} colorClass="text-indigo-600" bgClass="bg-indigo-400" />
+                    <ProgressBar label="Jóvenes" value={allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes').length} max={summary.totalServers} colorClass="text-blue-600" bgClass="bg-blue-400" />
+                    <ProgressBar label="Ambos" value={summary.totalServersBoth} max={summary.totalServers} colorClass="text-amber-600" bgClass="bg-amber-400" />
+                  </div>
+                </div>
+              )}
+
+              {viewPrefs.chartAges && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Asignación a Eventos</h3>
+                  <p className="text-xs text-slate-400 mb-6">Teens (&lt;18) vs Jóvenes (18+)</p>
+                  <div className="space-y-5 w-full mt-2">
+                    <ProgressBar label="Teens (<18)" value={summary.totalMinors} max={summary.totalMinors + summary.totalAdults} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
+                    <ProgressBar label="Jóvenes (18+)" value={summary.totalAdults} max={summary.totalMinors + summary.totalAdults} colorClass="text-blue-500" bgClass="bg-blue-400" />
+                    {summary.totalServersBoth > 0 && (
+                      <div className="pt-4 mt-2 border-t border-slate-100">
+                        <div className="flex justify-between text-xs font-bold"><span className="text-amber-600 uppercase tracking-wider">Servidores en Ambos</span><span className="text-amber-600 font-black">{summary.totalServersBoth}</span></div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </>
           )}
 
-          {isGeneral && currentEvent.customFields && currentEvent.customFields.map((field, idx) => {
+          {isGeneral && currentEvent.customFields && viewPrefs.chartCustom && currentEvent.customFields.map((field, idx) => {
             const stats = summary.customFieldsStats[field] || {};
             const entries = Object.entries(stats).sort((a, b) => b[1] - a[1]);
             return (
@@ -1482,75 +1905,78 @@ const App = () => {
           })}
         </div>
 
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-          <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="bg-slate-100 p-2 rounded-lg text-slate-600"><TableProperties size={20} /></div>
-              <div><h3 className="text-lg font-bold text-slate-800">Visualización de Datos Generales</h3><p className="text-xs text-slate-400">Desglose detallado por sede</p></div>
+        {viewPrefs.tableDetails && (
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mt-8">
+            <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="bg-slate-100 p-2 rounded-lg text-slate-600"><TableProperties size={20} /></div>
+                <div><h3 className="text-lg font-bold text-slate-800">Visualización de Datos Generales</h3><p className="text-xs text-slate-400">Desglose detallado por sede</p></div>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                {isCampa && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <Filter size={14} className="text-slate-400" />
+                      <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={summaryView} onChange={(e) => setSummaryView(e.target.value)}>
+                        <option value="all">Becados/Regulares</option>
+                        <option value="regular">Regulares</option>
+                        <option value="scholarship">Becados</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Users size={14} className="text-slate-400" />
+                      <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={summaryServerView} onChange={(e) => setSummaryServerView(e.target.value)}>
+                        <option value="all">Servidores: Todos</option>
+                        <option value="Sí">Servidores</option>
+                        <option value="No">Camperos</option>
+                      </select>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
-              {isCampa && (
-                <>
-                  <div className="flex items-center gap-2">
-                    <Filter size={14} className="text-slate-400" />
-                    <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={summaryView} onChange={(e) => setSummaryView(e.target.value)}>
-                      <option value="all">Tipos: Todos</option>
-                      <option value="regular">Solo Regulares</option>
-                      <option value="scholarship">Solo Becados</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Users size={14} className="text-slate-400" />
-                    <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={summaryServerView} onChange={(e) => setSummaryServerView(e.target.value)}>
-                      <option value="all">Servidores: Todos</option>
-                      <option value="Sí">Solo Servidores</option>
-                      <option value="No">No Servidores</option>
-                    </select>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                  <th className="px-6 py-4">Sede</th>
-                  <th className="px-6 py-4 text-center">Inscritos</th>
-                  {isCampa && summaryView === 'all' && <th className="px-6 py-4 text-center text-purple-600">Becados</th>}
-                  {isCampa && summaryServerView === 'all' && <th className="px-6 py-4 text-center text-amber-600">Servidores</th>}
-                  <th className="px-6 py-4 text-right">Recaudado</th>
-                  <th className="px-6 py-4 text-right">Pendiente</th>
-                  <th className="px-6 py-4 text-right">Total Esperado</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {tableData.map(({ loc, stats }) => (
-                  <tr key={loc} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="px-6 py-3 font-bold text-slate-700">{loc}</td>
-                    <td className="px-6 py-3 text-center font-medium text-slate-600">{stats.count}</td>
-                    {isCampa && summaryView === 'all' && <td className="px-6 py-3 text-center text-purple-600 font-bold">{stats.scholarship}</td>}
-                    {isCampa && summaryServerView === 'all' && <td className="px-6 py-3 text-center text-amber-600 font-bold">{stats.servers}</td>}
-                    <td className="px-6 py-3 text-right font-bold text-green-600">{formatMoney(stats.paid)}</td>
-                    <td className="px-6 py-3 text-right font-bold text-orange-500">{formatMoney(stats.pending)}</td>
-                    <td className="px-6 py-3 text-right font-black text-slate-800">{formatMoney(stats.expected)}</td>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                    <th className="px-6 py-4">Sede</th>
+                    <th className="px-6 py-4 text-center">Inscritos</th>
+                    {isCampa && summaryView === 'all' && <th className="px-6 py-4 text-center text-purple-600">Becados</th>}
+                    {isCampa && summaryServerView === 'all' && <th className="px-6 py-4 text-center text-amber-600">Servidores</th>}
+                    <th className="px-6 py-4 text-right">Recaudado</th>
+                    <th className="px-6 py-4 text-right">Pendiente</th>
+                    <th className="px-6 py-4 text-right">Total Esperado</th>
                   </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr className="bg-indigo-50 border-t-2 border-indigo-100">
-                  <td className="px-6 py-4 font-black text-indigo-900 uppercase">Global</td>
-                  <td className="px-6 py-4 text-center font-black text-indigo-900">{globalTableStats.count}</td>
-                  {isCampa && summaryView === 'all' && <td className="px-6 py-4 text-center font-black text-purple-700">{globalTableStats.scholarship}</td>}
-                  {isCampa && summaryServerView === 'all' && <td className="px-6 py-4 text-center font-black text-amber-700">{globalTableStats.servers}</td>}
-                  <td className="px-6 py-4 text-right font-black text-green-700">{formatMoney(globalTableStats.paid)}</td>
-                  <td className="px-6 py-4 text-right font-black text-orange-600">{formatMoney(globalTableStats.pending)}</td>
-                  <td className="px-6 py-4 text-right font-black text-indigo-900">{formatMoney(globalTableStats.expected)}</td>
-                </tr>
-              </tfoot>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {tableData.map(({ loc, stats }) => (
+                    <tr key={loc} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="px-6 py-3 font-bold text-slate-700">{loc}</td>
+                      <td className="px-6 py-3 text-center font-medium text-slate-600">{stats.count}</td>
+                      {isCampa && summaryView === 'all' && <td className="px-6 py-3 text-center text-purple-600 font-bold">{stats.scholarship}</td>}
+                      {isCampa && summaryServerView === 'all' && <td className="px-6 py-3 text-center text-amber-600 font-bold">{stats.servers}</td>}
+                      <td className="px-6 py-3 text-right font-bold text-green-600">{formatMoney(stats.paid)}</td>
+                      <td className="px-6 py-3 text-right font-bold text-orange-500">{formatMoney(stats.pending)}</td>
+                      <td className="px-6 py-3 text-right font-black text-slate-800">{formatMoney(stats.expected)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-indigo-50 border-t-2 border-indigo-100">
+                    <td className="px-6 py-4 font-black text-indigo-900 uppercase">Global</td>
+                    <td className="px-6 py-4 text-center font-black text-indigo-900">{globalTableStats.count}</td>
+                    {isCampa && summaryView === 'all' && <td className="px-6 py-4 text-center font-black text-purple-700">{globalTableStats.scholarship}</td>}
+                    {isCampa && summaryServerView === 'all' && <td className="px-6 py-4 text-center font-black text-amber-700">{globalTableStats.servers}</td>}
+                    <td className="px-6 py-4 text-right font-black text-green-700">{formatMoney(globalTableStats.paid)}</td>
+                    <td className="px-6 py-4 text-right font-black text-orange-600">{formatMoney(globalTableStats.pending)}</td>
+                    <td className="px-6 py-4 text-right font-black text-indigo-900">{formatMoney(globalTableStats.expected)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
           </div>
-        </div>
+        )}
+
       </div>
     );
   };
@@ -1663,158 +2089,183 @@ const App = () => {
         </div>
       )}
 
-      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col lg:flex-row gap-4 justify-between items-center">
-        <div className="relative w-full lg:w-1/4"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} /><input type="text" placeholder="Buscar..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div>
-        <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
-          <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><ArrowUpDown size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="none">Ordenar...</option><option value="name-asc">Nombre (A-Z)</option><option value="name-desc">Nombre (Z-A)</option><option value="debt-asc">Deuda (Menor a Mayor)</option><option value="debt-desc">Deuda (Mayor a Menor)</option></select></div>
-          {isCampa && (
-            <>
-              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><GraduationCap size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterScholarship} onChange={e => setFilterScholarship(e.target.value)}><option value="all">Tipo: Todos</option><option value="Sí">Solo Becados</option><option value="No">Regulares</option></select></div>
-              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Filter size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterMedical} onChange={e => setFilterMedical(e.target.value)}><option value="all">Salud: Todos</option><option value="allergy">Con Alergias</option><option value="disease">Con Enfermedades</option><option value="disability">Con Discapacidades</option></select></div>
-              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Filter size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterSwim} onChange={e => setFilterSwim(e.target.value)}><option value="all">Nado: Todos</option><option value="Sí">Saben nadar</option><option value="No">No saben nadar</option></select></div>
-              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Users size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterServer} onChange={e => setFilterServer(e.target.value)}><option value="all">Servidores: Todos</option><option value="Sí">Solo Servidores</option><option value="No">No Servidores</option><option value="Teens">Asig. Teens</option><option value="Jóvenes">Asig. Jóvenes</option><option value="Ambos">Asig. Ambos</option></select></div>
-            </>
-          )}
-        </div>
-      </div>
+      {currentUser?.role !== 'Lector' ? (
+        <>
+          <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col xl:flex-row gap-4 justify-between items-center">
+            <div className="relative w-full xl:w-1/4"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} /><input type="text" placeholder="Buscar..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div>
+            <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
+              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><ArrowUpDown size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="none">Ordenar...</option><option value="name-asc">Nombre (A-Z)</option><option value="name-desc">Nombre (Z-A)</option><option value="debt-asc">Deuda (Menor a Mayor)</option><option value="debt-desc">Deuda (Mayor a Menor)</option></select></div>
+              {isCampa && (
+                <>
+                  <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><MapPin size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterAssignment} onChange={e => setFilterAssignment(e.target.value)}><option value="all">Asignación: Todas</option><option value="Teens">Teens</option><option value="Jóvenes">Jóvenes</option><option value="Ambos">Ambos (Servidores)</option></select></div>
+                  <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><GraduationCap size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterScholarship} onChange={e => setFilterScholarship(e.target.value)}><option value="all">Becados/Regulares</option><option value="Sí">Becados</option><option value="No">Regulares</option></select></div>
+                  <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Filter size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterMedical} onChange={e => setFilterMedical(e.target.value)}><option value="all">Salud: Todos</option><option value="allergy">Con Alergias</option><option value="disease">Con Enfermedades</option><option value="disability">Con Discapacidades</option></select></div>
+                  <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Filter size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterSwim} onChange={e => setFilterSwim(e.target.value)}><option value="all">Nado: Todos</option><option value="Sí">Saben nadar</option><option value="No">No saben nadar</option></select></div>
+                  <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Users size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterServer} onChange={e => setFilterServer(e.target.value)}><option value="all">Servidores: Todos</option><option value="Sí">Servidores</option><option value="No">Camperos</option><option value="Teens">Asig. Teens</option><option value="Jóvenes">Asig. Jóvenes</option><option value="Ambos">Asig. Ambos</option></select></div>
+                </>
+              )}
+            </div>
+          </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                <th className="px-4 py-4">Participante</th>
-                {isCampa ? <th className="px-4 py-4">Salud y Nado</th> : <th className="px-4 py-4">Detalles</th>}
-                <th className="px-4 py-4">Finanzas</th>
-                <th className="px-4 py-4 text-center">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {(() => {
-                let processedData = [...(data[loc] || [])];
-                if (searchTerm) processedData = processedData.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
-                if (isCampa) {
-                  if (filterSwim !== 'all') processedData = processedData.filter(p => p.canSwim === filterSwim);
-                  if (filterScholarship !== 'all') processedData = processedData.filter(p => p.isScholarship === filterScholarship);
-                  if (filterServer === 'Sí') processedData = processedData.filter(p => p.isServer === 'Sí');
-                  else if (filterServer === 'No') processedData = processedData.filter(p => p.isServer !== 'Sí');
-                  else if (filterServer === 'Teens') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Teens');
-                  else if (filterServer === 'Jóvenes') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes');
-                  else if (filterServer === 'Ambos') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Ambos');
-                  if (filterMedical === 'allergy') processedData = processedData.filter(p => p.hasAllergy === 'Sí');
-                  else if (filterMedical === 'disease') processedData = processedData.filter(p => p.hasDisease === 'Sí');
-                  else if (filterMedical === 'disability') processedData = processedData.filter(p => p.hasDisability === 'Sí');
-                }
-                const getDebt = (p) => p.isScholarship === 'Sí' ? 0 : (p.registeredCost != null ? Number(p.registeredCost) : getPersonCost(p, currentPricing)) - parseFloat(p.paid || 0);
-                if (sortBy === 'name-asc') processedData.sort((a, b) => a.name.localeCompare(b.name));
-                if (sortBy === 'name-desc') processedData.sort((a, b) => b.name.localeCompare(a.name));
-                if (sortBy === 'debt-asc') processedData.sort((a, b) => getDebt(a) - getDebt(b));
-                if (sortBy === 'debt-desc') processedData.sort((a, b) => getDebt(b) - getDebt(a));
-                if (processedData.length === 0) return <tr><td colSpan="4" className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay registros para mostrar en {loc}.</td></tr>;
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                    <th className="px-4 py-4">Participante</th>
+                    {isCampa ? <th className="px-4 py-4">Salud y Nado</th> : <th className="px-4 py-4">Detalles</th>}
+                    <th className="px-4 py-4">Finanzas</th>
+                    <th className="px-4 py-4 text-center">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {(() => {
+                    let processedData = [...(data[loc] || [])];
+                    if (searchTerm) processedData = processedData.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
+                    if (isCampa) {
+                      if (filterAssignment !== 'all') {
+                        processedData = processedData.filter(p => {
+                          const assign = p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment;
+                          return assign === filterAssignment;
+                        });
+                      }
+                      if (filterSwim !== 'all') processedData = processedData.filter(p => p.canSwim === filterSwim);
+                      if (filterScholarship !== 'all') processedData = processedData.filter(p => p.isScholarship === filterScholarship);
+                      if (filterServer === 'Sí') processedData = processedData.filter(p => p.isServer === 'Sí');
+                      else if (filterServer === 'No') processedData = processedData.filter(p => p.isServer !== 'Sí');
+                      else if (filterServer === 'Teens') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Teens');
+                      else if (filterServer === 'Jóvenes') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes');
+                      else if (filterServer === 'Ambos') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Ambos');
+                      if (filterMedical === 'allergy') processedData = processedData.filter(p => p.hasAllergy === 'Sí');
+                      else if (filterMedical === 'disease') processedData = processedData.filter(p => p.hasDisease === 'Sí');
+                      else if (filterMedical === 'disability') processedData = processedData.filter(p => p.hasDisability === 'Sí');
+                    }
+                    const getDebt = (p) => p.isScholarship === 'Sí' ? 0 : (p.registeredCost != null ? Number(p.registeredCost) : getPersonCost(p, currentPricing)) - parseFloat(p.paid || 0);
+                    if (sortBy === 'name-asc') processedData.sort((a, b) => a.name.localeCompare(b.name));
+                    if (sortBy === 'name-desc') processedData.sort((a, b) => b.name.localeCompare(a.name));
+                    if (sortBy === 'debt-asc') processedData.sort((a, b) => getDebt(a) - getDebt(b));
+                    if (sortBy === 'debt-desc') processedData.sort((a, b) => getDebt(b) - getDebt(a));
+                    if (processedData.length === 0) return <tr><td colSpan="4" className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay registros para mostrar en {loc}.</td></tr>;
 
-                return processedData.map((person) => {
-                  const isExpanded = expandedRows.has(person.id);
-                  const isBecado = isCampa && person.isScholarship === 'Sí';
-                  const baseCost = person.registeredCost != null ? Number(person.registeredCost) : getPersonCost(person, currentPricing);
-                  const balance = isBecado ? 0 : baseCost - parseFloat(person.paid || 0);
-                  const payHistory = person.paymentHistory || [];
+                    return processedData.map((person) => {
+                      const isExpanded = expandedRows.has(person.id);
+                      const isBecado = isCampa && person.isScholarship === 'Sí';
+                      const baseCost = person.registeredCost != null ? Number(person.registeredCost) : getPersonCost(person, currentPricing);
+                      const balance = isBecado ? 0 : baseCost - parseFloat(person.paid || 0);
+                      const payHistory = person.paymentHistory || [];
 
-                  return (
-                    <React.Fragment key={person.id}>
-                      <tr className={`hover:bg-slate-50/50 transition-colors group ${isExpanded ? 'bg-slate-50/50' : ''}`}>
-                        <td className="px-4 py-4 align-top">
-                          <div className="space-y-1">
-                            <div className="flex items-center flex-wrap gap-2">
-                              <p className="font-bold text-slate-800 text-sm">{person.name}</p>
-                              {isBecado && <span className="bg-purple-100 text-purple-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><GraduationCap size={10} /> Becado</span>}
-                              {person.isServer === 'Sí' && <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>}
-                            </div>
-                            <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1"><span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone}</span></div>
-                          </div>
-                        </td>
-                        {isCampa ? (
-                          <td className="px-4 py-4 align-top"><div className="flex flex-col gap-2 text-xs"><div className="flex flex-wrap items-center gap-2"><span className="px-2 py-0.5 bg-red-50 text-red-600 rounded font-black border border-red-100 uppercase text-[10px]">Sangre: {person.bloodType}</span><span className={`px-2 py-0.5 rounded font-bold text-[10px] border flex items-center gap-1 ${person.canSwim === 'Sí' ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>{person.canSwim === 'Sí' ? <CheckCircle2 size={12} /> : <XCircle size={12} />} Nadador: {person.canSwim}</span></div></div></td>
-                        ) : (
-                          <td className="px-4 py-4 align-top">
-                            <div className="text-xs text-slate-500 space-y-0.5">
-                              {person.age ? <p><strong className="text-slate-600">Edad:</strong> {person.age} años</p> : <p className="italic text-slate-400">Edad no provista</p>}
-                              {person.gender ? <p><strong className="text-slate-600">Género:</strong> {person.gender}</p> : <p className="italic text-slate-400">Género no provisto</p>}
-                              {isGeneral && person.customData && Object.keys(person.customData).length > 0 && <p className="text-[10px] mt-1 text-indigo-500 font-bold tracking-wider pt-1">+ Datos Extra ({Object.keys(person.customData).length})</p>}
-                            </div>
-                          </td>
-                        )}
-                        <td className="px-4 py-4 align-top">
-                          <div className="flex flex-col gap-2 w-full max-w-[140px]">
-                            <div className="text-left space-y-0.5">
-                              <p className="text-xs font-black text-green-600 flex justify-between"><span>Pagado:</span> <span>{formatMoney(person.paid || 0)}</span></p>
-                              <p className={`text-[10px] font-bold flex justify-between ${isBecado ? 'text-purple-600' : balance > 0 ? 'text-orange-500' : 'text-green-600'}`}><span>Restante:</span> <span>{isBecado ? 'No requerido' : balance > 0 ? formatMoney(balance) : 'Liquidado'}</span></p>
-                            </div>
-                            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1"><div className="h-full bg-green-50 transition-all" style={{ width: `${Math.min(((person.paid || 0) / baseCost) * 100, 100)}%` }} /></div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 align-top text-center">
-                          <div className="flex items-center justify-center gap-2 opacity-100 lg:opacity-50 group-hover:opacity-100 transition-opacity">
-                            <button onClick={() => toggleRow(person.id)} className={`p-2 rounded-lg transition-all ${isExpanded ? 'bg-indigo-50 text-indigo-600' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`} title="Detalles">{isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
-                            {currentUser?.role !== 'Lector' && (
-                              <>
-                                <button onClick={() => setEditRegistryModal({ isOpen: true, loc, data: { ...person, registeredCost: baseCost } })} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all" title="Editar Registro"><Edit3 size={18} /></button>
-                                <button onClick={() => setPaymentModal({ isOpen: true, loc, id: person.id, personName: person.name, amount: '', currentPaid: parseFloat(person.paid || 0), error: '', isScholarship: isBecado ? 'Sí' : 'No', baseCost })} className="p-2 text-slate-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all" title="Abonar Pago"><CreditCard size={18} /></button>
-                                <button onClick={() => removeEntry(loc, person.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all" title="Eliminar Registro"><Trash2 size={18} /></button>
-                              </>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                      {isExpanded && (
-                        <tr className="bg-indigo-50/30 border-b border-slate-100 animate-in fade-in zoom-in-95 duration-200">
-                          <td colSpan="4" className="px-6 py-5">
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs items-start">
-                              <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
-                                <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Detalles Generales</p>
-                                <p className="mb-1 text-slate-600"><strong>Edad:</strong> {person.age || 'N/A'}</p>
-                                <p className="text-slate-600"><strong>Género:</strong> {person.gender || 'N/A'}</p>
+                      return (
+                        <React.Fragment key={person.id}>
+                          <tr className={`hover:bg-slate-50/50 transition-colors group ${isExpanded ? 'bg-slate-50/50' : ''}`}>
+                            <td className="px-4 py-4 align-top">
+                              <div className="space-y-1">
+                                <div className="flex items-center flex-wrap gap-2">
+                                  <p className="font-bold text-slate-800 text-sm">{person.name}</p>
+                                  {isBecado && <span className="bg-purple-100 text-purple-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><GraduationCap size={10} /> Becado</span>}
+                                  {person.isServer === 'Sí' ? (
+                                    <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>
+                                  ) : (
+                                    isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes')}</span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1"><span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone}</span></div>
                               </div>
-                              {(isCampa || isGeneral) ? (
-                                <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
-                                  <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Contacto de Emergencia</p>
-                                  {person.emergencyContact ? (<><p className="text-slate-700 font-semibold mb-1">{person.emergencyContact}</p><p className="flex items-center gap-1 text-slate-500 font-mono"><Phone size={10} /> {person.emergencyPhone}</p></>) : <p className="text-slate-400 italic">No provisto</p>}
+                            </td>
+                            {isCampa ? (
+                              <td className="px-4 py-4 align-top"><div className="flex flex-col gap-2 text-xs"><div className="flex flex-wrap items-center gap-2"><span className="px-2 py-0.5 bg-red-50 text-red-600 rounded font-black border border-red-100 uppercase text-[10px]">Sangre: {person.bloodType}</span><span className={`px-2 py-0.5 rounded font-bold text-[10px] border flex items-center gap-1 ${person.canSwim === 'Sí' ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>{person.canSwim === 'Sí' ? <CheckCircle2 size={12} /> : <XCircle size={12} />} Nadador: {person.canSwim}</span></div></div></td>
+                            ) : (
+                              <td className="px-4 py-4 align-top">
+                                <div className="text-xs text-slate-500 space-y-0.5">
+                                  {person.age ? <p><strong className="text-slate-600">Edad:</strong> {person.age} años</p> : <p className="italic text-slate-400">Edad no provista</p>}
+                                  {person.gender ? <p><strong className="text-slate-600">Género:</strong> {person.gender}</p> : <p className="italic text-slate-400">Género no provisto</p>}
+                                  {isGeneral && person.customData && Object.keys(person.customData).length > 0 && <p className="text-[10px] mt-1 text-indigo-500 font-bold tracking-wider pt-1">+ Datos Extra ({Object.keys(person.customData).length})</p>}
                                 </div>
-                              ) : <div />}
-                              {isCampa && (
-                                <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100"><p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Condiciones Especiales</p><div className="space-y-1.5"><p className="text-slate-600"><strong>Alergias:</strong> {person.hasAllergy === 'Sí' ? <span className="text-orange-600 font-bold">{person.allergyDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Enfermedades:</strong> {person.hasDisease === 'Sí' ? <span className="text-red-600 font-bold">{person.diseaseDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Discapacidades:</strong> {person.hasDisability === 'Sí' ? <span className="text-purple-600 font-bold">{person.disabilityDetails}</span> : <span>Ninguna</span>}</p></div></div>
-                              )}
-                              {isGeneral && person.customData && Object.keys(person.customData).length > 0 && (
-                                <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
-                                  <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Datos Extra</p>
-                                  <div className="space-y-1.5">{Object.entries(person.customData).map(([key, val], i) => <p key={i} className="text-slate-600"><strong>{key}:</strong> {val || <span className="italic text-slate-400">N/A</span>}</p>)}</div>
+                              </td>
+                            )}
+                            <td className="px-4 py-4 align-top">
+                              <div className="flex flex-col gap-2 w-full max-w-[140px]">
+                                <div className="text-left space-y-0.5">
+                                  <p className="text-xs font-black text-green-600 flex justify-between"><span>Pagado:</span> <span>{formatMoney(person.paid || 0)}</span></p>
+                                  <p className={`text-[10px] font-bold flex justify-between ${isBecado ? 'text-purple-600' : balance > 0 ? 'text-orange-500' : 'text-green-600'}`}><span>Restante:</span> <span>{isBecado ? 'No requerido' : balance > 0 ? formatMoney(balance) : 'Liquidado'}</span></p>
                                 </div>
-                              )}
-                            </div>
-                            <div className="mt-4 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-                              <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between"><p className="font-bold text-indigo-900 uppercase tracking-wider text-[10px] flex items-center gap-2"><Receipt size={12} className="text-green-500" /> Historial de Pagos</p><span className="text-[10px] font-bold bg-green-50 text-green-600 px-2 py-0.5 rounded-full border border-green-100">{payHistory.length} {payHistory.length === 1 ? 'movimiento' : 'movimientos'}</span></div>
-                              {payHistory.length === 0 ? <div className="px-4 py-6 text-center"><p className="text-[11px] text-slate-400 italic">Sin movimientos registrados.</p></div> : (
-                                <div className="divide-y divide-slate-50">
-                                  {payHistory.map((pay, idx) => (
-                                    <div key={pay.id} className="px-4 py-2.5 flex items-center justify-between hover:bg-slate-50/50 transition-colors">
-                                      <div className="flex items-center gap-3"><span className="w-5 h-5 rounded-full bg-slate-100 text-slate-500 text-[9px] font-black flex items-center justify-center flex-shrink-0">{idx + 1}</span><div><p className="text-[11px] font-mono text-slate-500">{pay.date}</p><div className="flex items-center gap-1.5 mt-0.5"><UserCircle size={10} className="text-slate-400" /><p className="text-[10px] text-slate-400 font-semibold">{pay.registeredBy}</p>{pay.isManualAdjustment && <span className="text-[9px] bg-amber-50 text-amber-600 border border-amber-100 px-1.5 py-0.5 rounded font-bold uppercase">Ajuste Admin</span>}</div></div></div>
-                                      <div className="text-right"><p className={`text-sm font-black ${pay.amount < 0 ? 'text-red-500' : 'text-green-600'}`}>{pay.amount < 0 ? '-' : '+'}{formatMoney(Math.abs(pay.amount))}</p></div>
+                                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1"><div className="h-full bg-green-50 transition-all" style={{ width: `${Math.min(((person.paid || 0) / baseCost) * 100, 100)}%` }} /></div>
+                              </div>
+                            </td>
+                            <td className="px-4 py-4 align-top text-center">
+                              <div className="flex items-center justify-center gap-2 opacity-100 lg:opacity-50 group-hover:opacity-100 transition-opacity">
+                                <button onClick={() => toggleRow(person.id)} className={`p-2 rounded-lg transition-all ${isExpanded ? 'bg-indigo-50 text-indigo-600' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`} title="Detalles">{isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
+                                {currentUser?.role !== 'Lector' && (
+                                  <>
+                                    <button onClick={() => setEditRegistryModal({ isOpen: true, loc, data: { ...person, registeredCost: baseCost, campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes') } })} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all" title="Editar Registro"><Edit3 size={18} /></button>
+                                    <button onClick={() => setPaymentModal({ isOpen: true, loc, id: person.id, personName: person.name, amount: '', currentPaid: parseFloat(person.paid || 0), error: '', isScholarship: isBecado ? 'Sí' : 'No', baseCost })} className="p-2 text-slate-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all" title="Abonar Pago"><CreditCard size={18} /></button>
+                                    <button onClick={() => removeEntry(loc, person.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all" title="Eliminar Registro"><Trash2 size={18} /></button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr className="bg-indigo-50/30 border-b border-slate-100 animate-in fade-in zoom-in-95 duration-200">
+                              <td colSpan="4" className="px-6 py-5">
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs items-start">
+                                  <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
+                                    <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Detalles Generales</p>
+                                    <p className="mb-1 text-slate-600"><strong>Edad:</strong> {person.age || 'N/A'}</p>
+                                    <p className="text-slate-600"><strong>Género:</strong> {person.gender || 'N/A'}</p>
+                                  </div>
+                                  {(isCampa || isGeneral) ? (
+                                    <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
+                                      <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Contacto de Emergencia</p>
+                                      {person.emergencyContact ? (<><p className="text-slate-700 font-semibold mb-1">{person.emergencyContact}</p><p className="flex items-center gap-1 text-slate-500 font-mono"><Phone size={10} /> {person.emergencyPhone}</p></>) : <p className="text-slate-400 italic">No provisto</p>}
                                     </div>
-                                  ))}
-                                  <div className="px-4 py-2.5 bg-green-50 flex items-center justify-between"><span className="text-[10px] font-black text-green-800 uppercase tracking-wider">Total acumulado</span><span className="text-sm font-black text-green-700">{formatMoney(person.paid || 0)}</span></div>
+                                  ) : <div />}
+                                  {isCampa && (
+                                    <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100"><p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Condiciones Especiales</p><div className="space-y-1.5"><p className="text-slate-600"><strong>Alergias:</strong> {person.hasAllergy === 'Sí' ? <span className="text-orange-600 font-bold">{person.allergyDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Enfermedades:</strong> {person.hasDisease === 'Sí' ? <span className="text-red-600 font-bold">{person.diseaseDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Discapacidades:</strong> {person.hasDisability === 'Sí' ? <span className="text-purple-600 font-bold">{person.disabilityDetails}</span> : <span>Ninguna</span>}</p></div></div>
+                                  )}
+                                  {isGeneral && person.customData && Object.keys(person.customData).length > 0 && (
+                                    <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
+                                      <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Datos Extra</p>
+                                      <div className="space-y-1.5">{Object.entries(person.customData).map(([key, val], i) => <p key={i} className="text-slate-600"><strong>{key}:</strong> {val || <span className="italic text-slate-400">N/A</span>}</p>)}</div>
+                                    </div>
+                                  )}
                                 </div>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                });
-              })()}
-            </tbody>
-          </table>
+                                <div className="mt-4 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+                                  <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between"><p className="font-bold text-indigo-900 uppercase tracking-wider text-[10px] flex items-center gap-2"><Receipt size={12} className="text-green-500" /> Historial de Pagos</p><span className="text-[10px] font-bold bg-green-50 text-green-600 px-2 py-0.5 rounded-full border border-green-100">{payHistory.length} {payHistory.length === 1 ? 'movimiento' : 'movimientos'}</span></div>
+                                  {payHistory.length === 0 ? <div className="px-4 py-6 text-center"><p className="text-[11px] text-slate-400 italic">Sin movimientos registrados.</p></div> : (
+                                    <div className="divide-y divide-slate-50">
+                                      {payHistory.map((pay, idx) => (
+                                        <div key={pay.id} className="px-4 py-2.5 flex items-center justify-between hover:bg-slate-50/50 transition-colors">
+                                          <div className="flex items-center gap-3"><span className="w-5 h-5 rounded-full bg-slate-100 text-slate-500 text-[9px] font-black flex items-center justify-center flex-shrink-0">{idx + 1}</span><div><p className="text-[11px] font-mono text-slate-500">{pay.date}</p><div className="flex items-center gap-1.5 mt-0.5"><UserCircle size={10} className="text-slate-400" /><p className="text-[10px] text-slate-400 font-semibold">{pay.registeredBy}</p>{pay.isManualAdjustment && <span className="text-[9px] bg-amber-50 text-amber-600 border border-amber-100 px-1.5 py-0.5 rounded font-bold uppercase">Ajuste Admin</span>}</div></div></div>
+                                          <div className="text-right"><p className={`text-sm font-black ${pay.amount < 0 ? 'text-red-500' : 'text-green-600'}`}>{pay.amount < 0 ? '-' : '+'}{formatMoney(Math.abs(pay.amount))}</p></div>
+                                        </div>
+                                      ))}
+                                      <div className="px-4 py-2.5 bg-green-50 flex items-center justify-between"><span className="text-[10px] font-black text-green-800 uppercase tracking-wider">Total acumulado</span><span className="text-sm font-black text-green-700">{formatMoney(person.paid || 0)}</span></div>
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    });
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col items-center justify-center text-center gap-4 mt-6">
+          <div className="w-16 h-16 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center border border-slate-100">
+            <EyeOff size={32} />
+          </div>
+          <div>
+            <h3 className="text-lg font-black text-slate-700">Acceso Restringido</h3>
+            <p className="text-sm text-slate-500 max-w-sm mt-1">Tu rol actual de <strong>Lector</strong> no te permite visualizar la lista detallada de usuarios registrados ni realizar modificaciones.</p>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 
@@ -1875,10 +2326,6 @@ const App = () => {
           <div className="pt-2 pb-2 px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Principal</div>
           <button onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Summary' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><BarChart3 size={20} className={activeTab === 'Summary' ? 'text-indigo-400' : ''} /><span className="font-bold">Resumen General</span></div>{activeTab === 'Summary' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
           
-          {currentUser?.role !== 'Lector' && (
-            <button onClick={() => goTo(systemView, selectedEventId, "Logs")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-4 ${activeTab === 'Logs' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><History size={20} className={activeTab === 'Logs' ? 'text-indigo-400' : ''} /><span className="font-bold">Logs del Evento</span></div>{activeTab === 'Logs' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
-          )}
-          
           <div className="flex items-center justify-between py-2 px-4 border-t border-slate-800/50 pt-4">
             <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Sedes Disponibles</span>
             {hasAdminRights && <button onClick={() => setIsAddLocModalOpen(true)} className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 p-1 rounded transition-colors" title="Añadir Sede"><Plus size={14} /></button>}
@@ -1897,7 +2344,7 @@ const App = () => {
             </div>
           ))}
           <div className="pt-6 pb-2 px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.2em] border-t border-slate-800/50 mt-4">Sistema</div>
-          <button onClick={() => goTo('users', null, "Summary")} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><UserCog size={20} /><span className="font-bold">Usuarios Globales</span></div></button>
+          <button onClick={() => goTo('users', null, "Summary")} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><UserCog size={20} /><span className="font-bold">Registro de Usuarios</span></div></button>
           {currentUser?.role !== 'Lector' && (
             <button onClick={() => goTo('logs', null, "Summary")} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><History size={20} /><span className="font-bold">Logs Globales</span></div></button>
           )}
@@ -1933,20 +2380,60 @@ const App = () => {
             </div>
           </div>
           
-          <div className="flex items-center gap-2 md:gap-4 flex-shrink-0">
-            <div className="hidden lg:flex items-center gap-2 mr-4 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
-            <button onClick={() => setShowMoney(!showMoney)} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors">{showMoney ? <EyeOff size={14} /> : <Eye size={14} />}<span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span></button>
-            <div className="bg-slate-100 rounded-full p-1 hidden sm:flex">
+          <div className="flex items-center gap-2 md:gap-4 flex-shrink-0 relative">
+            <div className="hidden lg:flex items-center gap-2 mr-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
+            <button onClick={exportToCSV} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors" title="Exportar a CSV"><Download size={14} /><span className="hidden sm:inline">Exportar</span></button>
+            <button onClick={() => setShowMoney(!showMoney)} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors" title={showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}>{showMoney ? <EyeOff size={14} /> : <Eye size={14} />}<span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span></button>
+            
+            {activeTab === "Summary" && (
+              <div className="relative">
+                <button onClick={() => setShowViewSettings(!showViewSettings)} className={`flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold transition-colors ${showViewSettings ? 'bg-indigo-100 text-indigo-600' : 'text-slate-500 hover:bg-slate-100'}`} title="Configurar Vista">
+                  <SlidersHorizontal size={14} /><span className="hidden sm:inline">Vista</span>
+                </button>
+                {showViewSettings && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowViewSettings(false)}></div>
+                    <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-2xl shadow-xl border border-slate-100 p-4 z-50 animate-in slide-in-from-top-2">
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 border-b border-slate-100 pb-2">Configurar Resumen</h4>
+                      <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+                        {[
+                          { key: 'statsConfig', label: 'Tarjetas Principales' },
+                          { key: 'chartLocations', label: 'Gráfica: Sedes' },
+                          { key: 'chartIncome', label: 'Gráfica: Ingresos' },
+                          { key: 'chartPaymentStatus', label: 'Gráfica: Estado de Pagos' },
+                          { key: 'chartGender', label: 'Gráfica: Género' },
+                          { key: 'chartAgeBrackets', label: 'Gráfica: Rangos de Edad' },
+                          { key: 'chartBloodType', label: 'Gráfica: Tipo de Sangre', show: isCampa },
+                          { key: 'chartScholarship', label: 'Gráfica: Becas', show: isCampa },
+                          { key: 'chartSwimming', label: 'Gráfica: Nado', show: isCampa },
+                          { key: 'chartMedical', label: 'Gráfica: Salud', show: isCampa },
+                          { key: 'chartServers', label: 'Gráfica: Servidores', show: isCampa },
+                          { key: 'chartAges', label: 'Gráfica: Asignación', show: isCampa },
+                          { key: 'chartCustom', label: 'Gráfica: Campos Extra', show: isGeneral && currentEvent?.customFields?.length > 0 },
+                          { key: 'tableDetails', label: 'Tabla de Desglose General' },
+                        ].filter(item => item.show !== false).map(item => (
+                          <label key={item.key} className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-50 rounded-xl transition-colors">
+                            <span className="text-xs font-bold text-slate-600">{item.label}</span>
+                            <div className="relative flex items-center">
+                              <input type="checkbox" className="sr-only peer" checked={viewPrefs[item.key] !== false} onChange={() => togglePref(item.key)} />
+                              <div className="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-500"></div>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            <div className="bg-slate-100 rounded-full p-1 hidden sm:flex ml-2">
               <button onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button>
-              {currentUser?.role !== 'Lector' && (
-                <button onClick={() => goTo(systemView, selectedEventId, "Logs")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Logs' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Logs</button>
-              )}
             </div>
-            <button onClick={() => goTo('events', null, 'Summary')} className="lg:hidden bg-indigo-50 text-indigo-600 p-2 rounded-xl"><LayoutDashboard size={18} /></button>
+            <button onClick={() => goTo('events', null, 'Summary')} className="lg:hidden bg-indigo-50 text-indigo-600 p-2 rounded-xl ml-1"><LayoutDashboard size={18} /></button>
           </div>
         </header>
         {activeTab === "Summary" && renderSummary()}
-        {activeTab === "Logs" && renderLogs()}
         {(currentEvent?.locations || []).includes(activeTab) && renderLocationSheet(activeTab)}
       </main>
 
@@ -2015,14 +2502,22 @@ const App = () => {
                       <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, isScholarship: editRegistryModal.data.isScholarship === 'Sí' ? 'No' : 'Sí' } })} className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.isScholarship === 'Sí' ? 'bg-purple-600 text-white border-purple-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><GraduationCap size={16} /> Becado: {editRegistryModal.data.isScholarship}</button>
                       <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, isServer: editRegistryModal.data.isServer === 'Sí' ? 'No' : 'Sí', serverAssignment: '' } })} className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Users size={16} /> Servidor: {editRegistryModal.data.isServer || 'No'}</button>
                     </div>
-                    {editRegistryModal.data.isServer === 'Sí' && (
-                      <div className="space-y-1">
+                    {editRegistryModal.data.isServer === 'Sí' ? (
+                      <div className="space-y-1 mt-3">
                         <label className={labelClasses}>Asignación de Servidor</label>
                         <select className={inputClasses} value={editRegistryModal.data.serverAssignment || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, serverAssignment: e.target.value } })}>
                           <option value="">Selecciona a qué evento servirá...</option>
                           <option value="Teens">Teens (Menores de 18)</option>
                           <option value="Jóvenes">Jóvenes (Mayores de 18)</option>
                           <option value="Ambos">Ambos Eventos</option>
+                        </select>
+                      </div>
+                    ) : (
+                      <div className="space-y-1 mt-3">
+                        <label className={labelClasses}>Asignación de Campista</label>
+                        <select className={inputClasses} value={editRegistryModal.data.campAssignment} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, campAssignment: e.target.value } })}>
+                          <option value="Teens">Teens (Menores de 18)</option>
+                          <option value="Jóvenes">Jóvenes (Mayores de 18)</option>
                         </select>
                       </div>
                     )}
@@ -2174,35 +2669,6 @@ const App = () => {
                 <button onClick={() => { setIsAddLocModalOpen(false); setNewLocationName(''); }} className={btnSecondary}>Cancelar</button>
                 <button onClick={handleAddLocation} disabled={!newLocationName.trim()} className={btnPrimary}><Plus size={18} /> Añadir</button>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* RESTORE MODAL */}
-      {restoreModal.isOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center">
-            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${restoreModal.type === 'single' ? 'bg-indigo-50 text-indigo-500' : 'bg-red-50 text-red-500'}`}>
-              {restoreModal.type === 'single' ? <Undo size={32} /> : restoreModal.type === 'rollback' ? <History size={32} /> : <Trash2 size={32} />}
-            </div>
-            <h3 className="text-xl font-black text-slate-800 mb-2">
-              {restoreModal.type === 'single' ? 'Restaurar Cambio' : restoreModal.type === 'rollback' ? 'Revertir Cambios' : 'Limpiar Registros'}
-            </h3>
-            <p className="text-sm text-slate-500 mb-6">
-              {restoreModal.type === 'single' 
-                ? `¿Deseas deshacer la acción específica: "${restoreModal.log?.action}"?` 
-                : restoreModal.type === 'rollback'
-                ? `¿Estás seguro de deshacer TODOS los cambios desde el evento "${restoreModal.log?.action}" hasta ahora? Esta acción revertirá múltiples operaciones.`
-                : restoreModal.type === 'cleanOld'
-                ? `¿Estás seguro de eliminar todos los registros de actividad con más de 30 días de antigüedad? Esta acción no se puede deshacer.`
-                : `ATENCIÓN SUPERUSUARIO: ¿Estás seguro de eliminar todos los registros RECIENTES (menos de 30 días)? Esta acción es irreversible.`}
-            </p>
-            <div className="flex gap-3">
-              <button onClick={() => setRestoreModal({ isOpen: false, log: null, type: 'single' })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
-              <button onClick={confirmRestore} className={`flex-1 py-3 px-4 text-white font-bold rounded-xl transition-colors text-sm shadow-lg ${restoreModal.type === 'single' ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200' : 'bg-red-500 hover:bg-red-600 shadow-red-200'}`}>
-                Sí, Confirmar
-              </button>
             </div>
           </div>
         </div>
