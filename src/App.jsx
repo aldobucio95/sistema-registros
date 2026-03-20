@@ -173,7 +173,12 @@ const App = () => {
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
+          try {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } catch (e) {
+            console.warn("Custom token fallback:", e);
+            await signInAnonymously(auth);
+          }
         } else {
           await signInAnonymously(auth);
         }
@@ -288,8 +293,35 @@ const App = () => {
     }
   };
 
+  const handleCleanLogs = () => {
+    if (!hasAdminRights) return;
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const logsToDelete = logs.filter(log => (now - log.id) > thirtyDaysMs);
+    if (logsToDelete.length > 0) {
+      logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
+      addLog('Limpieza de Logs', `Se eliminaron ${logsToDelete.length} registros antiguos (> 30 días).`);
+      showToast(`Se eliminaron ${logsToDelete.length} registros antiguos.`);
+    } else {
+      showToast("No hay registros con más de 30 días de antigüedad.");
+    }
+  };
+
+  const handleCleanRecentLogs = () => {
+    if (!isSuperUser) return;
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const logsToDelete = logs.filter(log => (now - log.id) <= thirtyDaysMs);
+    if (logsToDelete.length > 0) {
+      logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
+      addLog('Limpieza de Logs', `El SuperUsuario eliminó ${logsToDelete.length} registros recientes (< 30 días).`);
+      showToast(`Se eliminaron ${logsToDelete.length} registros recientes.`);
+    } else {
+      showToast("No hay registros recientes para eliminar.");
+    }
+  };
+
   const confirmRestore = async () => {
-    if (!restoreModal.log) return;
     const { log, type } = restoreModal;
 
     if (type === 'single') {
@@ -297,14 +329,16 @@ const App = () => {
       addLog('Restauración', `Se deshizo el cambio específico: "${log.action}" del usuario ${log.username}.`);
       showToast("Cambio revertido exitosamente.");
     } else if (type === 'rollback') {
-      // Como los logs están en orden cronológico descendente (el index 0 es el más reciente), 
-      // revertir desde ese array garantiza que deshacemos desde el presente hacia el pasado ordenadamente
       const logsToRevert = logs.filter(l => l.id >= log.id && l.revertInfo);
       for (const l of logsToRevert) {
         await applyRevert(l.revertInfo);
       }
       addLog('Restauración Masiva', `El SuperUsuario revirtió todos los cambios hasta el evento: "${log.action}" (${log.timestamp}).`);
       showToast(`Se han revertido ${logsToRevert.length} cambios exitosamente.`);
+    } else if (type === 'cleanOld') {
+      handleCleanLogs();
+    } else if (type === 'cleanRecent') {
+      handleCleanRecentLogs();
     }
     setRestoreModal({ isOpen: false, log: null, type: 'single' });
   };
@@ -480,7 +514,7 @@ const App = () => {
 
     const newId = String(Date.now());
     await setDoc(getDocRef('app_users', newId), { ...newUser, id: newId });
-    // Aquí NO pasamos revertInfo para evitar que los usuarios/contraseñas se puedan revertir o ver
+    // NO revert info to protect passwords
     addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`);
     setNewUser({ username: '', password: '', role: 'Editor' });
     showToast("Usuario añadido exitosamente.");
@@ -520,7 +554,7 @@ const App = () => {
     if (currentUser.id === editingUser.id) {
       setCurrentUser({ ...currentUser, username: editingUser.username, password: editingUser.newPassword, role: editingUser.role });
     }
-    // Aquí NO pasamos revertInfo
+    // NO revert info to protect passwords
     if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
     
     setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
@@ -537,37 +571,9 @@ const App = () => {
     }
 
     await deleteDoc(getDocRef('app_users', String(id)));
-    // Aquí NO pasamos revertInfo
+    // NO revert info
     addLog('Gestión de Usuarios', `Eliminó al usuario: ${username}`);
     showToast("Usuario eliminado.");
-  };
-
-  const handleCleanLogs = () => {
-    if (!hasAdminRights) return;
-    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-    const now = Date.now();
-    const logsToDelete = logs.filter(log => (now - log.id) > thirtyDaysMs);
-    if (logsToDelete.length > 0) {
-      logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
-      addLog('Limpieza de Logs', `Se eliminaron ${logsToDelete.length} registros antiguos (> 30 días).`);
-      showToast(`Se eliminaron ${logsToDelete.length} registros antiguos.`);
-    } else {
-      showToast("No hay registros con más de 30 días de antigüedad.");
-    }
-  };
-
-  const handleCleanRecentLogs = () => {
-    if (!isSuperUser) return;
-    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-    const now = Date.now();
-    const logsToDelete = logs.filter(log => (now - log.id) <= thirtyDaysMs);
-    if (logsToDelete.length > 0) {
-      logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
-      addLog('Limpieza de Logs', `El SuperUsuario eliminó ${logsToDelete.length} registros recientes (< 30 días).`);
-      showToast(`Se eliminaron ${logsToDelete.length} registros recientes.`);
-    } else {
-      showToast("No hay registros recientes para eliminar.");
-    }
   };
 
   const isValidPhone = (phone) => phone.startsWith('+') ? phone.length > 5 : phone.replace(/\D/g, '').length === 10;
@@ -950,52 +956,62 @@ const App = () => {
     </div>
   );
 
-  const renderLogs = () => (
-    <div className="p-6 space-y-6 animate-in fade-in duration-500">
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><History className="text-indigo-500" /> Registro de Actividad</h2>
-          <div className="flex items-center gap-4">
-            {hasAdminRights && <button onClick={handleCleanLogs} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
-            {isSuperUser && <button onClick={handleCleanRecentLogs} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-500 text-white hover:bg-red-600 border border-red-600 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200"><Trash2 size={14} /> Limpiar &lt; 30 días</button>}
-            <span className="bg-slate-100 text-slate-500 text-xs font-bold px-3 py-1 rounded-full">{logs.length} eventos</span>
+  const renderLogs = () => {
+    // Si estamos en la ventana de eventos, mostramos solo los del evento actual (y globales si aplica).
+    const displayedLogs = selectedEventId && activeTab === 'Logs'
+      ? logs.filter(log => log.eventId === selectedEventId || log.eventId === 'Global')
+      : logs;
+
+    return (
+      <div className="p-6 space-y-6 animate-in fade-in duration-500">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+              <History className="text-indigo-500" /> 
+              {selectedEventId && activeTab === 'Logs' ? 'Registro de Actividad del Evento' : 'Registro de Actividad Global'}
+            </h2>
+            <div className="flex items-center gap-4">
+              {hasAdminRights && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanOld', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
+              {isSuperUser && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanRecent', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-500 text-white hover:bg-red-600 border border-red-600 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200"><Trash2 size={14} /> Limpiar &lt; 30 días</button>}
+              <span className="bg-slate-100 text-slate-500 text-xs font-bold px-3 py-1 rounded-full">{displayedLogs.length} eventos</span>
+            </div>
+          </div>
+          <div className="overflow-x-auto border border-slate-100 rounded-xl max-h-[600px] overflow-y-auto">
+            <table className="w-full text-left relative">
+              <thead className="sticky top-0 bg-slate-50 shadow-sm"><tr className="text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-200"><th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acción</th><th className="px-6 py-4">Detalles</th>{hasAdminRights && <th className="px-6 py-4 text-center">Restaurar</th>}</tr></thead>
+              <tbody className="divide-y divide-slate-50">
+                {displayedLogs.length === 0 ? (
+                  <tr><td colSpan={hasAdminRights ? "6" : "5"} className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay actividad registrada aún.</td></tr>
+                ) : displayedLogs.map(log => (
+                  <tr key={log.id} className="hover:bg-slate-50/50 transition-colors">
+                    <td className="px-6 py-4 text-xs font-mono text-slate-500 whitespace-nowrap">{log.timestamp}</td>
+                    <td className="px-6 py-4"><span className="text-[9px] bg-indigo-50 text-indigo-600 font-bold px-2 py-1 rounded border border-indigo-100 truncate max-w-[120px] block">{log.eventName}</span></td>
+                    <td className="px-6 py-4 font-bold text-slate-700 flex items-center gap-2"><UserCircle size={14} className="text-indigo-400" />{log.username}</td>
+                    <td className="px-6 py-4"><span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-2 py-1 rounded-md uppercase tracking-wider">{log.action}</span></td>
+                    <td className="px-6 py-4 text-xs text-slate-600">{log.details}</td>
+                    {hasAdminRights && (
+                      <td className="px-6 py-4 text-center">
+                        {log.revertInfo ? (
+                          <div className="flex justify-center items-center gap-2">
+                            <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'single' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors" title="Restaurar este cambio específico"><Undo size={14} /></button>
+                            {isSuperUser && (
+                              <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'rollback' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Revertir todos los cambios hasta aquí"><History size={14} /></button>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[9px] text-slate-300 italic font-medium">N/D</span>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
-        <div className="overflow-x-auto border border-slate-100 rounded-xl max-h-[600px] overflow-y-auto">
-          <table className="w-full text-left relative">
-            <thead className="sticky top-0 bg-slate-50 shadow-sm"><tr className="text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-200"><th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acción</th><th className="px-6 py-4">Detalles</th>{hasAdminRights && <th className="px-6 py-4 text-center">Restaurar</th>}</tr></thead>
-            <tbody className="divide-y divide-slate-50">
-              {logs.length === 0 ? (
-                <tr><td colSpan={hasAdminRights ? "6" : "5"} className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay actividad registrada aún.</td></tr>
-              ) : logs.map(log => (
-                <tr key={log.id} className="hover:bg-slate-50/50 transition-colors">
-                  <td className="px-6 py-4 text-xs font-mono text-slate-500 whitespace-nowrap">{log.timestamp}</td>
-                  <td className="px-6 py-4"><span className="text-[9px] bg-indigo-50 text-indigo-600 font-bold px-2 py-1 rounded border border-indigo-100 truncate max-w-[120px] block">{log.eventName}</span></td>
-                  <td className="px-6 py-4 font-bold text-slate-700 flex items-center gap-2"><UserCircle size={14} className="text-indigo-400" />{log.username}</td>
-                  <td className="px-6 py-4"><span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-2 py-1 rounded-md uppercase tracking-wider">{log.action}</span></td>
-                  <td className="px-6 py-4 text-xs text-slate-600">{log.details}</td>
-                  {hasAdminRights && (
-                    <td className="px-6 py-4 text-center">
-                      {log.revertInfo ? (
-                        <div className="flex justify-center items-center gap-2">
-                          <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'single' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors" title="Restaurar este cambio específico"><Undo size={14} /></button>
-                          {isSuperUser && (
-                            <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'rollback' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Revertir todos los cambios hasta aquí"><History size={14} /></button>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-[9px] text-slate-300 italic font-medium">N/D</span>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   // ─────────────────────────────────────────────
   //  SCREEN 2: EVENT SELECTOR
@@ -1208,6 +1224,35 @@ const App = () => {
                   <button onClick={() => setRenameModal({isOpen: false, id: null, name: ''})} className={btnSecondary}>Cancelar</button>
                   <button onClick={handleRenameEvent} disabled={!renameModal.name.trim()} className={btnPrimary}>Guardar</button>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* RESTORE MODAL (SCREEN 2) */}
+        {restoreModal.isOpen && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center">
+              <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${restoreModal.type === 'single' ? 'bg-indigo-50 text-indigo-500' : 'bg-red-50 text-red-500'}`}>
+                {restoreModal.type === 'single' ? <Undo size={32} /> : restoreModal.type === 'rollback' ? <History size={32} /> : <Trash2 size={32} />}
+              </div>
+              <h3 className="text-xl font-black text-slate-800 mb-2">
+                {restoreModal.type === 'single' ? 'Restaurar Cambio' : restoreModal.type === 'rollback' ? 'Revertir Cambios' : 'Limpiar Registros'}
+              </h3>
+              <p className="text-sm text-slate-500 mb-6">
+                {restoreModal.type === 'single' 
+                  ? `¿Deseas deshacer la acción específica: "${restoreModal.log?.action}"?` 
+                  : restoreModal.type === 'rollback'
+                  ? `¿Estás seguro de deshacer TODOS los cambios desde el evento "${restoreModal.log?.action}" hasta ahora? Esta acción revertirá múltiples operaciones.`
+                  : restoreModal.type === 'cleanOld'
+                  ? `¿Estás seguro de eliminar todos los registros de actividad con más de 30 días de antigüedad? Esta acción no se puede deshacer.`
+                  : `ATENCIÓN SUPERUSUARIO: ¿Estás seguro de eliminar todos los registros RECIENTES (menos de 30 días)? Esta acción es irreversible.`}
+              </p>
+              <div className="flex gap-3">
+                <button onClick={() => setRestoreModal({ isOpen: false, log: null, type: 'single' })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
+                <button onClick={confirmRestore} className={`flex-1 py-3 px-4 text-white font-bold rounded-xl transition-colors text-sm shadow-lg ${restoreModal.type === 'single' ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200' : 'bg-red-500 hover:bg-red-600 shadow-red-200'}`}>
+                  Sí, Confirmar
+                </button>
               </div>
             </div>
           </div>
@@ -1795,7 +1840,10 @@ const App = () => {
         </div>
         <nav className="flex-1 px-4 space-y-1 overflow-y-auto pb-6">
           <div className="pt-2 pb-2 px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Principal</div>
-          <button onClick={() => setActiveTab("Summary")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-4 ${activeTab === 'Summary' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><BarChart3 size={20} className={activeTab === 'Summary' ? 'text-indigo-400' : ''} /><span className="font-bold">Resumen General</span></div>{activeTab === 'Summary' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
+          <button onClick={() => setActiveTab("Summary")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Summary' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><BarChart3 size={20} className={activeTab === 'Summary' ? 'text-indigo-400' : ''} /><span className="font-bold">Resumen General</span></div>{activeTab === 'Summary' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
+          
+          <button onClick={() => setActiveTab("Logs")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-4 ${activeTab === 'Logs' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><History size={20} className={activeTab === 'Logs' ? 'text-indigo-400' : ''} /><span className="font-bold">Logs del Evento</span></div>{activeTab === 'Logs' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
+          
           <div className="flex items-center justify-between py-2 px-4 border-t border-slate-800/50 pt-4">
             <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Sedes Disponibles</span>
             {hasAdminRights && <button onClick={() => setIsAddLocModalOpen(true)} className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 p-1 rounded transition-colors" title="Añadir Sede"><Plus size={14} /></button>}
@@ -1814,8 +1862,8 @@ const App = () => {
             </div>
           ))}
           <div className="pt-6 pb-2 px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.2em] border-t border-slate-800/50 mt-4">Sistema</div>
-          <button onClick={() => { setSelectedEventId(null); setSystemView('users'); }} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><UserCog size={20} /><span className="font-bold">Usuarios Globales</span></div></button>
-          <button onClick={() => { setSelectedEventId(null); setSystemView('logs'); }} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><History size={20} /><span className="font-bold">Logs de Actividad</span></div></button>
+          <button onClick={() => { setSelectedEventId(null); setSystemView('users'); }} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><UserCog size={20} /><span className="font-bold">Gestión de Usuarios</span></div></button>
+          <button onClick={() => { setSelectedEventId(null); setSystemView('logs'); }} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><History size={20} /><span className="font-bold">Logs de Actividades</span></div></button>
         </nav>
         <div className="p-4 border-t border-slate-800 space-y-2">
           <button onClick={() => { setSelectedEventId(null); setActiveTab("Summary"); setSystemView('events'); }} className="w-full flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl font-bold transition-all text-sm"><LayoutDashboard size={16} /> Cambiar de Evento</button>
@@ -1838,11 +1886,15 @@ const App = () => {
           <div className="flex items-center gap-2 md:gap-4 flex-shrink-0">
             <div className="hidden lg:flex items-center gap-2 mr-4 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
             <button onClick={() => setShowMoney(!showMoney)} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors">{showMoney ? <EyeOff size={14} /> : <Eye size={14} />}<span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span></button>
-            <div className="bg-slate-100 rounded-full p-1 hidden sm:flex"><button onClick={() => setActiveTab("Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button></div>
+            <div className="bg-slate-100 rounded-full p-1 hidden sm:flex">
+              <button onClick={() => setActiveTab("Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button>
+              <button onClick={() => setActiveTab("Logs")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Logs' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Logs</button>
+            </div>
             <button onClick={() => { setSelectedEventId(null); setActiveTab("Summary"); }} className="lg:hidden bg-indigo-50 text-indigo-600 p-2 rounded-xl"><LayoutDashboard size={18} /></button>
           </div>
         </header>
         {activeTab === "Summary" && renderSummary()}
+        {activeTab === "Logs" && renderLogs()}
         {(currentEvent?.locations || []).includes(activeTab) && renderLocationSheet(activeTab)}
       </main>
 
@@ -2080,15 +2132,19 @@ const App = () => {
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center">
             <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${restoreModal.type === 'single' ? 'bg-indigo-50 text-indigo-500' : 'bg-red-50 text-red-500'}`}>
-              {restoreModal.type === 'single' ? <Undo size={32} /> : <History size={32} />}
+              {restoreModal.type === 'single' ? <Undo size={32} /> : restoreModal.type === 'rollback' ? <History size={32} /> : <Trash2 size={32} />}
             </div>
             <h3 className="text-xl font-black text-slate-800 mb-2">
-              {restoreModal.type === 'single' ? 'Restaurar Cambio' : 'Revertir Cambios (Rollback)'}
+              {restoreModal.type === 'single' ? 'Restaurar Cambio' : restoreModal.type === 'rollback' ? 'Revertir Cambios' : 'Limpiar Registros'}
             </h3>
             <p className="text-sm text-slate-500 mb-6">
               {restoreModal.type === 'single' 
                 ? `¿Deseas deshacer la acción específica: "${restoreModal.log?.action}"?` 
-                : `¿Estás seguro de deshacer TODOS los cambios desde el evento "${restoreModal.log?.action}" hasta ahora? Esta acción revertirá múltiples operaciones.`}
+                : restoreModal.type === 'rollback'
+                ? `¿Estás seguro de deshacer TODOS los cambios desde el evento "${restoreModal.log?.action}" hasta ahora? Esta acción revertirá múltiples operaciones.`
+                : restoreModal.type === 'cleanOld'
+                ? `¿Estás seguro de eliminar todos los registros de actividad con más de 30 días de antigüedad? Esta acción no se puede deshacer.`
+                : `ATENCIÓN SUPERUSUARIO: ¿Estás seguro de eliminar todos los registros RECIENTES (menos de 30 días)? Esta acción es irreversible.`}
             </p>
             <div className="flex gap-3">
               <button onClick={() => setRestoreModal({ isOpen: false, log: null, type: 'single' })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
