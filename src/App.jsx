@@ -20,6 +20,7 @@ const firebaseConfig = {
   appId: "1:966310430422:web:203653951141917d6eab77",
   measurementId: "G-EH1KXMVDY8"
 };
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -43,6 +44,35 @@ const EMPTY_ENTRY = {
   hasDisability: 'No', disabilityDetails: '', isScholarship: 'No', isServer: 'No',
   serverAssignment: '', customData: {}, paymentHistory: []
 };
+
+// UI Reusable Classes
+const inputClasses = "w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold text-slate-700 transition-all";
+const labelClasses = "text-[10px] font-black text-slate-400 uppercase tracking-widest px-1 block mb-1.5";
+const btnPrimary = "py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2 text-sm";
+const btnSecondary = "py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-all text-sm flex justify-center items-center gap-2";
+
+// Mini Components for UI optimization
+const StatCard = ({ icon: Icon, iconColor, bgIcon, title, value }) => (
+  <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+    <div className="flex items-center gap-2 mb-3">
+      <div className={`p-2 rounded-lg ${bgIcon} ${iconColor}`}><Icon size={18} /></div>
+      <span className="text-xs font-bold text-slate-500">{title}</span>
+    </div>
+    <p className="text-2xl font-black text-slate-800">{value}</p>
+  </div>
+);
+
+const ProgressBar = ({ label, value, max, colorClass, bgClass }) => (
+  <div>
+    <div className="flex justify-between text-xs font-bold mb-1.5">
+      <span className="text-slate-600 uppercase tracking-wider">{label}</span>
+      <span className={`${colorClass} font-black`}>{value}</span>
+    </div>
+    <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+      <div className={`${bgClass} h-full transition-all duration-1000 ease-out`} style={{ width: `${max > 0 ? (value / max) * 100 : 0}%` }} />
+    </div>
+  </div>
+);
 
 const App = () => {
   const [fbUser, setFbUser] = useState(null);
@@ -230,7 +260,6 @@ const App = () => {
     if (!username) return;
 
     const ev = targetEvent || currentEvent;
-
     const newLogId = Date.now();
     const newLog = {
       id: newLogId,
@@ -297,7 +326,6 @@ const App = () => {
     };
 
     const activityEvents = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
-    
     resetTimer();
     activityEvents.forEach(e => window.addEventListener(e, handleActivity));
 
@@ -813,14 +841,14 @@ const App = () => {
           <div className="p-8">
             <form onSubmit={handleLogin} className="space-y-5">
               <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Usuario</label>
+                <label className={labelClasses}>Usuario</label>
                 <div className="relative mt-1">
                   <UserCircle className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                   <input type="text" className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all" placeholder="Ingresa tu usuario" value={loginForm.username} onChange={e => setLoginForm({ ...loginForm, username: e.target.value })} />
                 </div>
               </div>
               <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Contraseña</label>
+                <label className={labelClasses}>Contraseña</label>
                 <div className="relative mt-1">
                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                   <input type="password" className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all" placeholder="••••••••" value={loginForm.password} onChange={e => setLoginForm({ ...loginForm, password: e.target.value })} />
@@ -846,16 +874,16 @@ const App = () => {
         <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2"><UserCog className="text-indigo-500" /> Gestión de Usuarios</h2>
         {hasAdminRights ? (
           <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8 bg-slate-50 p-4 rounded-xl border border-slate-100 items-end">
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Usuario</label><input type="text" required placeholder="Nuevo usuario" className="w-full p-2.5 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} /></div>
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Contraseña</label><input type="password" required placeholder="••••••••" className="w-full p-2.5 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} /></div>
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Rol</label>
-              <select className="w-full p-2.5 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}>
+            <div className="space-y-1"><label className={labelClasses}>Usuario</label><input type="text" required placeholder="Nuevo usuario" className={inputClasses} value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} /></div>
+            <div className="space-y-1"><label className={labelClasses}>Contraseña</label><input type="password" required placeholder="••••••••" className={inputClasses} value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} /></div>
+            <div className="space-y-1"><label className={labelClasses}>Rol</label>
+              <select className={inputClasses} value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}>
                 <option value="Administrador">Administrador</option>
                 <option value="Editor">Editor</option>
                 <option value="Lector">Lector</option>
               </select>
             </div>
-            <div className="flex items-end h-full"><button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 text-sm rounded-lg transition-all shadow-md active:scale-95 flex justify-center items-center gap-2"><Plus size={18} /> Añadir Usuario</button></div>
+            <div className="flex items-end h-full"><button type="submit" className={btnPrimary}><Plus size={18} /> Añadir Usuario</button></div>
           </form>
         ) : (
           <div className="mb-8 p-4 bg-amber-50 border border-amber-100 rounded-xl text-amber-700 text-sm flex items-center gap-2"><ShieldAlert size={18} /><p><strong>Acceso Restringido:</strong> Solo los administradores pueden añadir nuevos usuarios.</p></div>
@@ -869,7 +897,7 @@ const App = () => {
                   <td className="px-6 py-4 font-bold text-slate-700">{u.username}{currentUser.id === u.id && <span className="text-[10px] text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full ml-2">Tú</span>}</td>
                   <td className="px-6 py-4"><span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${u.role === 'SuperUsuario' ? 'bg-amber-100 text-amber-700 border border-amber-200' : u.role === 'Administrador' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>{u.role}</span></td>
                   <td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2">
-                    <button onClick={() => setEditingUser({ isOpen: true, id: u.id, username: u.username, role: u.role, currentPasswordInput: '', newPassword: '', confirmPassword: '' })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'}`}><Edit3 size={18} /></button>
+                    <button onClick={() => setEditingUser({ isOpen: true, id: u.id, username: u.username, role: u.role, currentPasswordInput: '', newPassword: '', confirmPassword: '' })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}><Edit3 size={18} /></button>
                     <button onClick={() => handleDeleteUser(u.id, u.username)} disabled={currentUser.id === u.id || !hasAdminRights} className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || !hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}><Trash2 size={18} /></button>
                   </div></td>
                 </tr>
@@ -920,11 +948,6 @@ const App = () => {
   if (currentUser && !selectedEventId) {
     return (
       <div className="min-h-screen bg-slate-50 p-4 md:p-8 animate-in fade-in duration-500 relative">
-        {toast && (
-          <div className="fixed bottom-6 right-6 bg-slate-800 text-white px-5 py-4 rounded-xl shadow-2xl z-50 animate-in slide-in-from-bottom-5 fade-in flex items-center gap-3 font-bold text-sm border border-slate-700">
-            <ShieldAlert size={20} className="text-amber-400" />{toast}
-          </div>
-        )}
         <div className="max-w-5xl mx-auto space-y-8">
           <header className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
             <div>
@@ -1028,8 +1051,8 @@ const App = () => {
                 );
               })}
               {hasAdminRights && (
-                <div className="bg-blue-50/50 rounded-3xl p-6 border-2 border-dashed border-blue-200 flex flex-col justify-center items-center text-blue-500 hover:bg-blue-50 hover:border-blue-400 cursor-pointer transition-all min-h-[200px]" onClick={() => setIsAddEventModalOpen(true)}>
-                  <div className="bg-white p-3 rounded-full shadow-sm mb-3"><Plus size={24} className="text-blue-600" /></div>
+                <div className="bg-indigo-50/50 rounded-3xl p-6 border-2 border-dashed border-indigo-200 flex flex-col justify-center items-center text-indigo-500 hover:bg-indigo-50 hover:border-indigo-400 cursor-pointer transition-all min-h-[200px]" onClick={() => setIsAddEventModalOpen(true)}>
+                  <div className="bg-white p-3 rounded-full shadow-sm mb-3"><Plus size={24} className="text-indigo-600" /></div>
                   <span className="font-bold text-sm">Crear Nuevo Evento</span>
                 </div>
               )}
@@ -1044,7 +1067,7 @@ const App = () => {
               <h3 className="text-xl font-black text-slate-800 mb-2">Eliminar Evento</h3>
               <p className="text-sm text-slate-500 mb-6">¿Estás seguro de que deseas eliminar <strong>"{deleteEventModal.name}"</strong>? Esta acción no se puede deshacer.</p>
               <div className="flex gap-3">
-                <button onClick={() => setDeleteEventModal({ isOpen: false, id: null, name: '' })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
+                <button onClick={() => setDeleteEventModal({ isOpen: false, id: null, name: '' })} className={btnSecondary}>Cancelar</button>
                 <button onClick={confirmDeleteEvent} className="flex-1 py-3 px-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-colors text-sm shadow-lg shadow-red-200">Sí, eliminar</button>
               </div>
             </div>
@@ -1058,41 +1081,46 @@ const App = () => {
               <p className="text-sm text-slate-500 mb-6">Ingresa los detalles para el nuevo evento.</p>
               <div className="space-y-4">
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Título del Evento</label>
-                  <input type="text" autoFocus className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 font-bold text-slate-700 text-sm" placeholder="Ej. Campamento Jóvenes 2027" value={newEventData.name} onChange={e => setNewEventData({ ...newEventData, name: e.target.value })} />
+                  <label className={labelClasses}>Título del Evento</label>
+                  <input type="text" autoFocus className={inputClasses} placeholder="Ej. Campamento Jóvenes 2027" value={newEventData.name} onChange={e => setNewEventData({ ...newEventData, name: e.target.value })} />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Costo Base ($) Inicial</label>
-                  <input type="number" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 font-bold text-slate-700 text-sm" placeholder="Ej. 150" value={newEventData.baseCost} onChange={e => setNewEventData({ ...newEventData, baseCost: e.target.value })} />
+                  <label className={labelClasses}>Costo Base ($) Inicial</label>
+                  <input type="number" className={inputClasses} placeholder="Ej. 150" value={newEventData.baseCost} onChange={e => setNewEventData({ ...newEventData, baseCost: e.target.value })} />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Fecha del Evento (Opcional)</label>
-                  <input type="date" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 font-bold text-slate-700 text-sm" value={newEventData.date} onChange={e => setNewEventData({ ...newEventData, date: e.target.value })} />
+                  <label className={labelClasses}>Fecha del Evento (Opcional)</label>
+                  <input type="date" className={inputClasses} value={newEventData.date} onChange={e => setNewEventData({ ...newEventData, date: e.target.value })} />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Tipo de Evento</label>
-                  <select className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 font-bold text-slate-700 text-sm" value={newEventData.type} onChange={e => setNewEventData({ ...newEventData, type: e.target.value })}>
+                  <label className={labelClasses}>Tipo de Evento</label>
+                  <select className={inputClasses} value={newEventData.type} onChange={e => setNewEventData({ ...newEventData, type: e.target.value })}>
                     {EVENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                 </div>
                 <div className="flex gap-3 pt-4">
-                  <button onClick={() => { setIsAddEventModalOpen(false); setNewEventData({ name: '', type: 'Campa', date: '', baseCost: '' }); }} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
-                  <button onClick={handleCreateEvent} disabled={!newEventData.name.trim()} className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white font-bold rounded-xl transition-colors text-sm flex justify-center items-center gap-2 shadow-lg shadow-blue-200"><Plus size={18} /> Crear</button>
+                  <button onClick={() => { setIsAddEventModalOpen(false); setNewEventData({ name: '', type: 'Campa', date: '', baseCost: '' }); }} className={btnSecondary}>Cancelar</button>
+                  <button onClick={handleCreateEvent} disabled={!newEventData.name.trim()} className={btnPrimary}><Plus size={18} /> Crear</button>
                 </div>
               </div>
             </div>
           </div>
         )}
 
+        {/* Edit User Modal (FIXED) */}
         {editingUser.isOpen && (
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
               <h3 className="text-lg font-bold text-slate-800 mb-1">Editar Usuario</h3>
-              <p className="text-sm text-slate-500 mb-6">Modifica los datos del usuario.</p>
+              <p className="text-sm text-slate-500 mb-4">Modifica los datos del usuario.</p>
               <form onSubmit={handleUpdateUser} className="space-y-4">
-                <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Usuario</label><input type="text" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.username} onChange={e => setEditingUser({ ...editingUser, username: e.target.value })} /></div>
-                <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Rol</label>
-                  <select className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.role} onChange={e => setEditingUser({ ...editingUser, role: e.target.value })}>
+                <div>
+                  <label className={labelClasses}>Usuario</label>
+                  <input type="text" required className={inputClasses} value={editingUser.username} onChange={e => setEditingUser({ ...editingUser, username: e.target.value })} />
+                </div>
+                <div>
+                  <label className={labelClasses}>Rol</label>
+                  <select className={inputClasses} value={editingUser.role} onChange={e => setEditingUser({ ...editingUser, role: e.target.value })}>
                     {editingUser.role === 'SuperUsuario' && <option value="SuperUsuario">SuperUsuario</option>}
                     <option value="Administrador">Administrador</option>
                     <option value="Editor">Editor</option>
@@ -1100,40 +1128,30 @@ const App = () => {
                   </select>
                 </div>
                 <div className="border-t border-slate-100 pt-4 mt-2 space-y-4">
-      {/* Edit User Modal scoped safely to end */}
-      {editingUser.isOpen && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95">
-            <h3 className="text-lg font-bold mb-1">Editar Usuario</h3>
-            <form onSubmit={handleUpdateUser} className="space-y-4 mt-6">
-              <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Usuario</label><input type="text" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none text-sm font-semibold" value={editingUser.username} onChange={e => setEditingUser({ ...editingUser, username: e.target.value })} /></div>
-              <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Rol</label><select className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none text-sm font-semibold" value={editingUser.role} onChange={e => setEditingUser({ ...editingUser, role: e.target.value })}>{editingUser.role === 'SuperUsuario' && <option value="SuperUsuario">SuperUsuario</option>}<option value="Administrador">Administrador</option><option value="Editor">Editor</option><option value="Lector">Lector</option></select></div>
-              <div className="border-t border-slate-100 pt-4 mt-2 space-y-4">
-                <p className="text-xs font-bold text-slate-800">Cambio de Contraseña</p>
-                  <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Contraseña Actual</label><input type="password" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.currentPasswordInput} onChange={e => setEditingUser({ ...editingUser, currentPasswordInput: e.target.value })} /></div>
-                  <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Nueva Contraseña</label><input type="password" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.newPassword} onChange={e => setEditingUser({ ...editingUser, newPassword: e.target.value })} /></div>
-                  <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Confirmar Nueva Contraseña</label><input type="password" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.confirmPassword} onChange={e => setEditingUser({ ...editingUser, confirmPassword: e.target.value })} /></div>
+                  <p className="text-xs font-bold text-slate-800">Cambio de Contraseña</p>
+                  <div><label className={labelClasses}>Contraseña Actual</label><input type="password" required className={inputClasses} value={editingUser.currentPasswordInput} onChange={e => setEditingUser({ ...editingUser, currentPasswordInput: e.target.value })} /></div>
+                  <div><label className={labelClasses}>Nueva Contraseña</label><input type="password" required className={inputClasses} value={editingUser.newPassword} onChange={e => setEditingUser({ ...editingUser, newPassword: e.target.value })} /></div>
+                  <div><label className={labelClasses}>Confirmar Nueva Contraseña</label><input type="password" required className={inputClasses} value={editingUser.confirmPassword} onChange={e => setEditingUser({ ...editingUser, confirmPassword: e.target.value })} /></div>
                 </div>
                 <div className="flex gap-3 pt-4">
-                  <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
-                  <button type="submit" className="flex-1 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-colors text-sm flex justify-center items-center gap-2 shadow-lg shadow-indigo-200">Guardar</button>
+                  <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' })} className={btnSecondary}>Cancelar</button>
+                  <button type="submit" className={btnPrimary}>Guardar</button>
                 </div>
               </form>
             </div>
           </div>
         )}
 
-        {/* Modal to rename event directly */}
         {renameModal.isOpen && (
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
               <h3 className="text-lg font-bold text-slate-800 mb-1">Renombrar Evento</h3>
               <p className="text-sm text-slate-500 mb-6">Ingresa el nuevo nombre para este evento.</p>
               <div className="space-y-4">
-                <input type="text" autoFocus className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" placeholder="Nombre del Evento" value={renameModal.name} onChange={e => setRenameModal({...renameModal, name: e.target.value})} onKeyDown={e => e.key === 'Enter' && handleRenameEvent()} />
+                <input type="text" autoFocus className={inputClasses} placeholder="Nombre del Evento" value={renameModal.name} onChange={e => setRenameModal({...renameModal, name: e.target.value})} onKeyDown={e => e.key === 'Enter' && handleRenameEvent()} />
                 <div className="flex gap-3 pt-2">
-                  <button onClick={() => setRenameModal({isOpen: false, id: null, name: ''})} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
-                  <button onClick={handleRenameEvent} disabled={!renameModal.name.trim()} className="flex-1 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold rounded-xl transition-colors text-sm flex justify-center items-center gap-2">Guardar</button>
+                  <button onClick={() => setRenameModal({isOpen: false, id: null, name: ''})} className={btnSecondary}>Cancelar</button>
+                  <button onClick={handleRenameEvent} disabled={!renameModal.name.trim()} className={btnPrimary}>Guardar</button>
                 </div>
               </div>
             </div>
@@ -1209,10 +1227,10 @@ const App = () => {
     return (
       <div className="p-6 space-y-8 animate-in fade-in duration-500">
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-6">
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100"><div className="flex items-center gap-2 mb-3"><div className="bg-blue-100 p-2 rounded-lg text-blue-600"><Users size={18} /></div><span className="text-xs font-bold text-slate-500">Registrados</span></div><p className="text-2xl font-black text-slate-800">{totalRegs}</p></div>
-          {isCampa && <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100"><div className="flex items-center gap-2 mb-3"><div className="bg-purple-100 p-2 rounded-lg text-purple-600"><GraduationCap size={18} /></div><span className="text-xs font-bold text-slate-500">Becados</span></div><p className="text-2xl font-black text-slate-800">{totalScholarship}</p></div>}
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100"><div className="flex items-center gap-2 mb-3"><div className="bg-green-100 p-2 rounded-lg text-green-600"><DollarSign size={18} /></div><span className="text-xs font-bold text-slate-500">Recaudado</span></div><p className="text-2xl font-black text-slate-800">{formatMoney(summary.globalStats.all.paid)}</p></div>
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100"><div className="flex items-center gap-2 mb-3"><div className="bg-orange-100 p-2 rounded-lg text-orange-600"><ShieldAlert size={18} /></div><span className="text-xs font-bold text-slate-500">Pendiente</span></div><p className="text-2xl font-black text-slate-800">{formatMoney(summary.globalStats.all.pending)}</p></div>
+          <StatCard icon={Users} iconColor="text-blue-600" bgIcon="bg-blue-100" title="Registrados" value={totalRegs} />
+          {isCampa && <StatCard icon={GraduationCap} iconColor="text-purple-600" bgIcon="bg-purple-100" title="Becados" value={totalScholarship} />}
+          <StatCard icon={DollarSign} iconColor="text-green-600" bgIcon="bg-green-100" title="Recaudado" value={formatMoney(summary.globalStats.all.paid)} />
+          <StatCard icon={ShieldAlert} iconColor="text-orange-600" bgIcon="bg-orange-100" title="Pendiente" value={formatMoney(summary.globalStats.all.pending)} />
 
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
             <div className="flex items-center justify-between mb-3">
@@ -1278,22 +1296,22 @@ const App = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><MapPin className="text-indigo-500" size={20} /> Registrados por Sede</h3><p className="text-xs text-slate-400 mb-6">Proporción de inscritos totales</p><div className="flex flex-col items-center justify-center gap-6"><div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('count') }} /><div className="w-full grid grid-cols-2 gap-2">{(currentEvent?.locations || []).filter(loc => isLocOpen(loc)).map((loc) => { const i = currentEvent.locations.indexOf(loc); const locCount = summary.locationStats[loc].all.count; const percent = totalRegs > 0 ? ((locCount / totalRegs) * 100).toFixed(1) : 0; return (<div key={loc} className="flex items-center justify-between text-xs"><div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div><span className="font-bold text-slate-800">{percent}%</span></div>); })}</div></div></div>
           <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><PieChart className="text-green-500" size={20} /> Ingresos por Sede</h3><p className="text-xs text-slate-400 mb-6">Porcentaje de recaudación</p><div className="flex flex-col items-center justify-center gap-6"><div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('paid') }} /><div className="w-full grid grid-cols-2 gap-2">{(currentEvent?.locations || []).filter(loc => isLocOpen(loc)).map((loc) => { const i = currentEvent.locations.indexOf(loc); const locPaid = summary.locationStats[loc].all.paid; const percent = summary.globalStats.all.paid > 0 ? ((locPaid / summary.globalStats.all.paid) * 100).toFixed(1) : 0; return (<div key={loc} className="flex items-center justify-between text-xs"><div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div><span className="font-bold text-slate-800">{percent}%</span></div>); })}</div></div></div>
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Inscritos por Género</h3><p className="text-xs text-slate-400 mb-6">Comparativa de inscripciones por género</p><div className="flex-1 flex flex-col justify-center gap-6 mt-4 pb-2 w-full"><div className="w-full"><div className="flex justify-between items-end mb-2"><span className="text-xs font-black text-slate-500 uppercase">Hombres</span><span className="text-sm font-bold text-blue-600">{summary.totalMen}</span></div><div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden"><div className="bg-blue-500 h-full transition-all duration-1000 ease-out" style={{ width: `${summary.totalMen + summary.totalWomen > 0 ? (summary.totalMen / (summary.totalMen + summary.totalWomen)) * 100 : 0}%` }} /></div></div><div className="w-full"><div className="flex justify-between items-end mb-2"><span className="text-xs font-black text-slate-500 uppercase">Mujeres</span><span className="text-sm font-bold text-pink-600">{summary.totalWomen}</span></div><div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden"><div className="bg-pink-500 h-full transition-all duration-1000 ease-out" style={{ width: `${summary.totalMen + summary.totalWomen > 0 ? (summary.totalWomen / (summary.totalMen + summary.totalWomen)) * 100 : 0}%` }} /></div></div></div></div>
+          <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Inscritos por Género</h3><p className="text-xs text-slate-400 mb-6">Comparativa de inscripciones por género</p><div className="flex-1 flex flex-col justify-center gap-6 mt-4 pb-2 w-full"><ProgressBar label="Hombres" value={summary.totalMen} max={summary.totalMen + summary.totalWomen} colorClass="text-blue-600" bgClass="bg-blue-500" /><ProgressBar label="Mujeres" value={summary.totalWomen} max={summary.totalMen + summary.totalWomen} colorClass="text-pink-600" bgClass="bg-pink-500" /></div></div>
 
           {isCampa && (
             <>
               <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><GraduationCap className="text-purple-500" size={20} /> Estado de Beca</h3><p className="text-xs text-slate-400 mb-6">Proporción de becados vs regulares</p><div className="flex items-center justify-around gap-6"><div className="w-36 h-36 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: totalRegs > 0 ? `conic-gradient(#a855f7 0% ${percentScholarship}%, #cbd5e1 ${percentScholarship}% 100%)` : '#f1f5f9' }} /><div className="space-y-4"><div><div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-purple-500" /><span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Becados</span></div><p className="text-2xl font-black text-slate-800 mt-1">{totalScholarship}</p></div><div><div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-slate-300" /><span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Regulares</span></div><p className="text-2xl font-black text-slate-800 mt-1">{totalRegs - totalScholarship}</p></div></div></div></div>
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Droplets className="text-blue-500" size={20} /> Habilidades Acuáticas</h3><p className="text-xs text-slate-400 mb-6">Capacidad de nado de los inscritos</p><div className="space-y-5 w-full mt-2"><div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Saben Nadar</span><span className="text-blue-600 font-black">{summary.totalSwimmers}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-blue-500 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (summary.totalSwimmers / totalRegs) * 100 : 0}%` }} /></div></div><div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">No Saben Nadar</span><span className="text-slate-500 font-black">{summary.totalNonSwimmers}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-slate-400 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (summary.totalNonSwimmers / totalRegs) * 100 : 0}%` }} /></div></div></div></div>
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Activity className="text-red-500" size={20} /> Condiciones de Salud</h3><p className="text-xs text-slate-400 mb-6">Incidencia de condiciones médicas especiales</p><div className="space-y-5 w-full mt-2"><div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Con Alergias</span><span className="text-orange-600 font-black">{summary.totalAllergies}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-orange-500 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (summary.totalAllergies / totalRegs) * 100 : 0}%` }} /></div></div><div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Con Enfermedades</span><span className="text-red-600 font-black">{summary.totalDiseases}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-red-500 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (summary.totalDiseases / totalRegs) * 100 : 0}%` }} /></div></div><div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Con Discapacidades</span><span className="text-purple-600 font-black">{summary.totalDisabilities}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-purple-500 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (summary.totalDisabilities / totalRegs) * 100 : 0}%` }} /></div></div></div></div>
-
+              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Droplets className="text-blue-500" size={20} /> Habilidades Acuáticas</h3><p className="text-xs text-slate-400 mb-6">Capacidad de nado de los inscritos</p><div className="space-y-5 w-full mt-2"><ProgressBar label="Saben Nadar" value={summary.totalSwimmers} max={totalRegs} colorClass="text-blue-600" bgClass="bg-blue-500" /><ProgressBar label="No Saben Nadar" value={summary.totalNonSwimmers} max={totalRegs} colorClass="text-slate-500" bgClass="bg-slate-400" /></div></div>
+              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Activity className="text-red-500" size={20} /> Condiciones de Salud</h3><p className="text-xs text-slate-400 mb-6">Incidencia de condiciones médicas especiales</p><div className="space-y-5 w-full mt-2"><ProgressBar label="Con Alergias" value={summary.totalAllergies} max={totalRegs} colorClass="text-orange-600" bgClass="bg-orange-500" /><ProgressBar label="Con Enfermedades" value={summary.totalDiseases} max={totalRegs} colorClass="text-red-600" bgClass="bg-red-500" /><ProgressBar label="Con Discapacidades" value={summary.totalDisabilities} max={totalRegs} colorClass="text-purple-600" bgClass="bg-purple-500" /></div></div>
+              
               <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
                 <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-amber-500" size={20} /> Servidores</h3>
                 <p className="text-xs text-slate-400 mb-6">Distribución de servidores por asignación</p>
                 <div className="space-y-5 w-full mt-2">
-                  <div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Total Servidores</span><span className="text-amber-600 font-black">{summary.totalServers}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-amber-500 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (summary.totalServers / totalRegs) * 100 : 0}%` }} /></div></div>
-                  <div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Teens</span><span className="text-indigo-600 font-black">{allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Teens').length}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-indigo-400 h-full transition-all duration-1000 ease-out" style={{ width: `${summary.totalServers > 0 ? (allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Teens').length / summary.totalServers) * 100 : 0}%` }} /></div></div>
-                  <div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Jóvenes</span><span className="text-blue-600 font-black">{allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes').length}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-blue-400 h-full transition-all duration-1000 ease-out" style={{ width: `${summary.totalServers > 0 ? (allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes').length / summary.totalServers) * 100 : 0}%` }} /></div></div>
-                  <div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Ambos</span><span className="text-amber-600 font-black">{summary.totalServersBoth}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-amber-400 h-full transition-all duration-1000 ease-out" style={{ width: `${summary.totalServers > 0 ? (summary.totalServersBoth / summary.totalServers) * 100 : 0}%` }} /></div></div>
+                  <ProgressBar label="Total Servidores" value={summary.totalServers} max={totalRegs} colorClass="text-amber-600" bgClass="bg-amber-500" />
+                  <ProgressBar label="Teens" value={allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Teens').length} max={summary.totalServers} colorClass="text-indigo-600" bgClass="bg-indigo-400" />
+                  <ProgressBar label="Jóvenes" value={allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes').length} max={summary.totalServers} colorClass="text-blue-600" bgClass="bg-blue-400" />
+                  <ProgressBar label="Ambos" value={summary.totalServersBoth} max={summary.totalServers} colorClass="text-amber-600" bgClass="bg-amber-400" />
                 </div>
               </div>
 
@@ -1301,8 +1319,8 @@ const App = () => {
                 <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Edades y Eventos</h3>
                 <p className="text-xs text-slate-400 mb-6">Teens (&lt;18) vs Jóvenes (18+)</p>
                 <div className="space-y-5 w-full mt-2">
-                  <div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Teens (&lt;18)</span><span className="text-indigo-600 font-black">{summary.totalMinors}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-indigo-500 h-full transition-all duration-1000 ease-out" style={{ width: `${(summary.totalMinors / (summary.totalMinors + summary.totalAdults || 1)) * 100}%` }} /></div></div>
-                  <div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Jóvenes (18+)</span><span className="text-blue-500 font-black">{summary.totalAdults}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-blue-400 h-full transition-all duration-1000 ease-out" style={{ width: `${(summary.totalAdults / (summary.totalMinors + summary.totalAdults || 1)) * 100}%` }} /></div></div>
+                  <ProgressBar label="Teens (<18)" value={summary.totalMinors} max={summary.totalMinors + summary.totalAdults} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
+                  <ProgressBar label="Jóvenes (18+)" value={summary.totalAdults} max={summary.totalMinors + summary.totalAdults} colorClass="text-blue-500" bgClass="bg-blue-400" />
                   {summary.totalServersBoth > 0 && (
                     <div className="pt-4 mt-2 border-t border-slate-100">
                       <div className="flex justify-between text-xs font-bold"><span className="text-amber-600 uppercase tracking-wider">Servidores en Ambos</span><span className="text-amber-600 font-black">{summary.totalServersBoth}</span></div>
@@ -1322,10 +1340,7 @@ const App = () => {
                 <p className="text-xs text-slate-400 mb-6">Distribución de respuestas</p>
                 <div className="space-y-4 w-full mt-2 max-h-48 overflow-y-auto pr-2">
                   {entries.map(([val, count], i) => (
-                    <div key={i}>
-                      <div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider truncate mr-2">{val}</span><span className="text-indigo-600 font-black">{count}</span></div>
-                      <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden"><div className="bg-indigo-500 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (count / totalRegs) * 100 : 0}%` }} /></div>
-                    </div>
+                    <ProgressBar key={i} label={val} value={count} max={totalRegs} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
                   ))}
                   {entries.length === 0 && <p className="text-xs text-slate-400 italic">No hay datos registrados aún.</p>}
                 </div>
@@ -1431,11 +1446,11 @@ const App = () => {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Nombre Completo</label><input placeholder="Ej. Juan Pérez" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.name} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, name: e.target.value })} /></div>
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Teléfono Personal</label><input placeholder="55-1234-5678" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.phone} onChange={e => setNewEntry({ ...newEntry, phone: formatPhoneNumber(e.target.value) })} /></div>
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Edad {!isCampa && "(Opcional)"}</label><input type="number" placeholder="Años" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.age} onChange={e => setNewEntry({ ...newEntry, age: e.target.value })} /></div>
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Género {!isCampa && "(Opcional)"}</label>
-              <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.gender} onChange={e => setNewEntry({ ...newEntry, gender: e.target.value })}>
+            <div className="space-y-1"><label className={labelClasses}>Nombre Completo</label><input placeholder="Ej. Juan Pérez" className={inputClasses} value={newEntry.name} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, name: e.target.value })} /></div>
+            <div className="space-y-1"><label className={labelClasses}>Teléfono Personal</label><input placeholder="55-1234-5678" className={inputClasses} value={newEntry.phone} onChange={e => setNewEntry({ ...newEntry, phone: formatPhoneNumber(e.target.value) })} /></div>
+            <div className="space-y-1"><label className={labelClasses}>Edad {!isCampa && "(Opcional)"}</label><input type="number" placeholder="Años" className={inputClasses} value={newEntry.age} onChange={e => setNewEntry({ ...newEntry, age: e.target.value })} /></div>
+            <div className="space-y-1"><label className={labelClasses}>Género {!isCampa && "(Opcional)"}</label>
+              <select className={inputClasses} value={newEntry.gender} onChange={e => setNewEntry({ ...newEntry, gender: e.target.value })}>
                 <option value="">Seleccionar {!isCampa && "(Opcional)"}</option>
                 {GENDERS.map(g => <option key={g} value={g}>{g}</option>)}
               </select>
@@ -1443,26 +1458,26 @@ const App = () => {
 
             {(isCampa || isGeneral) && (
               <>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Contacto Emergencia {isGeneral && "(Opcional)"}</label><input placeholder="Nombre contacto" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.emergencyContact} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, emergencyContact: e.target.value })} /></div>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Tel. Emergencia {isGeneral && "(Opcional)"}</label><input placeholder="55-1234-5678" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.emergencyPhone} onChange={e => setNewEntry({ ...newEntry, emergencyPhone: formatPhoneNumber(e.target.value) })} /></div>
+                <div className="space-y-1"><label className={labelClasses}>Contacto Emergencia {isGeneral && "(Opcional)"}</label><input placeholder="Nombre contacto" className={inputClasses} value={newEntry.emergencyContact} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, emergencyContact: e.target.value })} /></div>
+                <div className="space-y-1"><label className={labelClasses}>Tel. Emergencia {isGeneral && "(Opcional)"}</label><input placeholder="55-1234-5678" className={inputClasses} value={newEntry.emergencyPhone} onChange={e => setNewEntry({ ...newEntry, emergencyPhone: formatPhoneNumber(e.target.value) })} /></div>
               </>
             )}
 
             {isCampa && (
               <>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Alergias</label><div className="flex gap-2"><select className={`p-3 bg-slate-50 border rounded-xl outline-none text-sm transition-colors ${newEntry.hasAllergy === 'Sí' ? 'border-orange-300 text-orange-700 bg-orange-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasAllergy} onChange={e => setNewEntry({ ...newEntry, hasAllergy: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>{newEntry.hasAllergy === 'Sí' && <input placeholder="¿Cuál?" className="flex-1 p-3 bg-slate-50 border border-orange-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-sm" value={newEntry.allergyDetails} onChange={e => setNewEntry({ ...newEntry, allergyDetails: e.target.value })} />}</div></div>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Enfermedades</label><div className="flex gap-2"><select className={`p-3 bg-slate-50 border rounded-xl outline-none text-sm transition-colors ${newEntry.hasDisease === 'Sí' ? 'border-red-300 text-red-700 bg-red-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasDisease} onChange={e => setNewEntry({ ...newEntry, hasDisease: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>{newEntry.hasDisease === 'Sí' && <input placeholder="Especifique" className="flex-1 p-3 bg-slate-50 border border-red-300 rounded-xl outline-none focus:ring-2 focus:ring-red-500 text-sm" value={newEntry.diseaseDetails} onChange={e => setNewEntry({ ...newEntry, diseaseDetails: e.target.value })} />}</div></div>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Discapacidades</label><div className="flex gap-2"><select className={`p-3 bg-slate-50 border rounded-xl outline-none text-sm transition-colors ${newEntry.hasDisability === 'Sí' ? 'border-purple-300 text-purple-700 bg-purple-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasDisability} onChange={e => setNewEntry({ ...newEntry, hasDisability: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>{newEntry.hasDisability === 'Sí' && <input placeholder="Detalles" className="flex-1 p-3 bg-slate-50 border border-purple-300 rounded-xl outline-none focus:ring-2 focus:ring-purple-500 text-sm" value={newEntry.disabilityDetails} onChange={e => setNewEntry({ ...newEntry, disabilityDetails: e.target.value })} />}</div></div>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Sangre / Nadar</label><div className="flex gap-2"><select className="flex-1 p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm" value={newEntry.bloodType} onChange={e => setNewEntry({ ...newEntry, bloodType: e.target.value })}>{BLOOD_TYPES.map(bt => <option key={bt} value={bt}>{bt}</option>)}</select><button type="button" onClick={() => setNewEntry({ ...newEntry, canSwim: newEntry.canSwim === 'Sí' ? 'No' : 'Sí' })} className={`px-3 py-3 rounded-xl text-[10px] font-bold uppercase transition-all border ${newEntry.canSwim === 'Sí' ? 'bg-blue-500 text-white border-blue-400' : 'bg-slate-100 text-slate-400 border-slate-200'}`}>Nado: {newEntry.canSwim}</button></div></div>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Becado</label><button type="button" onClick={() => setNewEntry({ ...newEntry, isScholarship: newEntry.isScholarship === 'Sí' ? 'No' : 'Sí' })} className={`w-full px-4 py-3 rounded-xl text-sm font-bold transition-all border flex items-center justify-center gap-2 ${newEntry.isScholarship === 'Sí' ? 'bg-purple-500 text-white border-purple-400 shadow-md shadow-purple-100' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}><GraduationCap size={18} className={newEntry.isScholarship === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isScholarship}</button></div>
+                <div className="space-y-1"><label className={labelClasses}>Alergias</label><div className="flex gap-2"><select className={`p-3 bg-slate-50 border rounded-xl outline-none text-sm transition-colors ${newEntry.hasAllergy === 'Sí' ? 'border-orange-300 text-orange-700 bg-orange-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasAllergy} onChange={e => setNewEntry({ ...newEntry, hasAllergy: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>{newEntry.hasAllergy === 'Sí' && <input placeholder="¿Cuál?" className="flex-1 p-3 bg-slate-50 border border-orange-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-sm" value={newEntry.allergyDetails} onChange={e => setNewEntry({ ...newEntry, allergyDetails: e.target.value })} />}</div></div>
+                <div className="space-y-1"><label className={labelClasses}>Enfermedades</label><div className="flex gap-2"><select className={`p-3 bg-slate-50 border rounded-xl outline-none text-sm transition-colors ${newEntry.hasDisease === 'Sí' ? 'border-red-300 text-red-700 bg-red-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasDisease} onChange={e => setNewEntry({ ...newEntry, hasDisease: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>{newEntry.hasDisease === 'Sí' && <input placeholder="Especifique" className="flex-1 p-3 bg-slate-50 border border-red-300 rounded-xl outline-none focus:ring-2 focus:ring-red-500 text-sm" value={newEntry.diseaseDetails} onChange={e => setNewEntry({ ...newEntry, diseaseDetails: e.target.value })} />}</div></div>
+                <div className="space-y-1"><label className={labelClasses}>Discapacidades</label><div className="flex gap-2"><select className={`p-3 bg-slate-50 border rounded-xl outline-none text-sm transition-colors ${newEntry.hasDisability === 'Sí' ? 'border-purple-300 text-purple-700 bg-purple-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasDisability} onChange={e => setNewEntry({ ...newEntry, hasDisability: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>{newEntry.hasDisability === 'Sí' && <input placeholder="Detalles" className="flex-1 p-3 bg-slate-50 border border-purple-300 rounded-xl outline-none focus:ring-2 focus:ring-purple-500 text-sm" value={newEntry.disabilityDetails} onChange={e => setNewEntry({ ...newEntry, disabilityDetails: e.target.value })} />}</div></div>
+                <div className="space-y-1"><label className={labelClasses}>Sangre / Nadar</label><div className="flex gap-2"><select className="flex-1 p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm" value={newEntry.bloodType} onChange={e => setNewEntry({ ...newEntry, bloodType: e.target.value })}>{BLOOD_TYPES.map(bt => <option key={bt} value={bt}>{bt}</option>)}</select><button type="button" onClick={() => setNewEntry({ ...newEntry, canSwim: newEntry.canSwim === 'Sí' ? 'No' : 'Sí' })} className={`px-3 py-3 rounded-xl text-[10px] font-bold uppercase transition-all border ${newEntry.canSwim === 'Sí' ? 'bg-blue-500 text-white border-blue-400' : 'bg-slate-100 text-slate-400 border-slate-200'}`}>Nado: {newEntry.canSwim}</button></div></div>
+                <div className="space-y-1"><label className={labelClasses}>Becado</label><button type="button" onClick={() => setNewEntry({ ...newEntry, isScholarship: newEntry.isScholarship === 'Sí' ? 'No' : 'Sí' })} className={`w-full px-4 py-3 rounded-xl text-sm font-bold transition-all border flex items-center justify-center gap-2 ${newEntry.isScholarship === 'Sí' ? 'bg-purple-500 text-white border-purple-400 shadow-md shadow-purple-100' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}><GraduationCap size={18} className={newEntry.isScholarship === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isScholarship}</button></div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Servidor</label>
+                  <label className={labelClasses}>Servidor</label>
                   <button type="button" onClick={() => setNewEntry({ ...newEntry, isServer: newEntry.isServer === 'Sí' ? 'No' : 'Sí', serverAssignment: '' })} className={`w-full px-4 py-3 rounded-xl text-sm font-bold transition-all border flex items-center justify-center gap-2 ${newEntry.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400 shadow-md shadow-amber-100' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}><Users size={18} className={newEntry.isServer === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isServer}</button>
                 </div>
                 {newEntry.isServer === 'Sí' && (
                   <div className="space-y-1 md:col-span-2">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Asignación de Servidor</label>
-                    <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 text-sm font-semibold text-slate-700" value={newEntry.serverAssignment} onChange={e => setNewEntry({ ...newEntry, serverAssignment: e.target.value })}>
+                    <label className={labelClasses}>Asignación de Servidor</label>
+                    <select className={inputClasses} value={newEntry.serverAssignment} onChange={e => setNewEntry({ ...newEntry, serverAssignment: e.target.value })}>
                       <option value="">Selecciona a qué evento servirá...</option>
                       <option value="Teens">Teens (Menores de 18)</option>
                       <option value="Jóvenes">Jóvenes (Mayores de 18)</option>
@@ -1475,13 +1490,13 @@ const App = () => {
 
             {isGeneral && currentEvent.customFields && currentEvent.customFields.map((field, idx) => (
               <div className="space-y-1" key={idx}>
-                <label className="text-[10px] font-bold text-slate-400 uppercase px-1 truncate block" title={field}>{field}</label>
-                <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.customData?.[field] || ''} onChange={e => setNewEntry({ ...newEntry, customData: { ...(newEntry.customData || {}), [field]: e.target.value } })} />
+                <label className="text-[10px] font-black text-slate-400 uppercase px-1 truncate block tracking-widest" title={field}>{field}</label>
+                <input className={inputClasses} value={newEntry.customData?.[field] || ''} onChange={e => setNewEntry({ ...newEntry, customData: { ...(newEntry.customData || {}), [field]: e.target.value } })} />
               </div>
             ))}
 
             <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-400 uppercase px-1 flex items-center justify-between">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1 flex items-center justify-between">
                 <span>Abono Inicial ($)</span>
                 {!(isCampa && newEntry.isScholarship === 'Sí') && <span className="text-indigo-400 normal-case tracking-normal">Mín. ${currentEvent.minDeposit}</span>}
               </label>
@@ -1786,25 +1801,25 @@ const App = () => {
             </div>
             <form onSubmit={handleUpdateEntry} className="p-8 space-y-6 max-h-[85vh] overflow-y-auto">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Nombre Completo</label><input type="text" required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.name} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, name: e.target.value } })} /></div>
-                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Teléfono</label><input type="text" required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.phone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, phone: formatPhoneNumber(e.target.value) } })} /></div>
-                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Edad {!isCampa && "(Opcional)"}</label><input type="number" required={isCampa} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.age} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, age: e.target.value } })} /></div>
-                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Género {!isCampa && "(Opcional)"}</label>
-                  <select required={isCampa} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.gender} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, gender: e.target.value } })}>
+                <div className="space-y-1"><label className={labelClasses}>Nombre Completo</label><input type="text" required className={inputClasses} value={editRegistryModal.data.name} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, name: e.target.value } })} /></div>
+                <div className="space-y-1"><label className={labelClasses}>Teléfono</label><input type="text" required className={inputClasses} value={editRegistryModal.data.phone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, phone: formatPhoneNumber(e.target.value) } })} /></div>
+                <div className="space-y-1"><label className={labelClasses}>Edad {!isCampa && "(Opcional)"}</label><input type="number" required={isCampa} className={inputClasses} value={editRegistryModal.data.age} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, age: e.target.value } })} /></div>
+                <div className="space-y-1"><label className={labelClasses}>Género {!isCampa && "(Opcional)"}</label>
+                  <select required={isCampa} className={inputClasses} value={editRegistryModal.data.gender} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, gender: e.target.value } })}>
                     <option value="">Seleccionar {!isCampa && "(Opcional)"}</option>
                     {GENDERS.map(g => <option key={g} value={g}>{g}</option>)}
                   </select>
                 </div>
                 {(isCampa || isGeneral) && (
                   <>
-                    <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Contacto Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.emergencyContact} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyContact: e.target.value } })} /></div>
-                    <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Tel. Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.emergencyPhone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyPhone: formatPhoneNumber(e.target.value) } })} /></div>
+                    <div className="space-y-1"><label className={labelClasses}>Contacto Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className={inputClasses} value={editRegistryModal.data.emergencyContact} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyContact: e.target.value } })} /></div>
+                    <div className="space-y-1"><label className={labelClasses}>Tel. Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className={inputClasses} value={editRegistryModal.data.emergencyPhone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyPhone: formatPhoneNumber(e.target.value) } })} /></div>
                   </>
                 )}
                 {isGeneral && currentEvent.customFields && currentEvent.customFields.map((field, idx) => (
                   <div className="space-y-1" key={idx}>
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1 truncate block" title={field}>{field}</label>
-                    <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.customData?.[field] || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, customData: { ...(editRegistryModal.data.customData || {}), [field]: e.target.value } } })} />
+                    <label className={`${labelClasses} truncate`} title={field}>{field}</label>
+                    <input className={inputClasses} value={editRegistryModal.data.customData?.[field] || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, customData: { ...(editRegistryModal.data.customData || {}), [field]: e.target.value } } })} />
                   </div>
                 ))}
               </div>
@@ -1812,9 +1827,9 @@ const App = () => {
               {isCampa && (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 p-6 bg-red-50/30 rounded-2xl border border-red-100">
                   <h4 className="col-span-full text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] pb-2 border-b border-red-100">Condiciones Médicas</h4>
-                  <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Alergias</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasAllergy === 'Sí' ? 'border-orange-300 text-orange-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasAllergy} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasAllergy: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasAllergy === 'Sí' && <input placeholder="¿Cuál?" className="flex-1 p-2.5 bg-white border border-orange-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-xs font-semibold" value={editRegistryModal.data.allergyDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, allergyDetails: e.target.value } })} />}</div></div>
-                  <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Enfermedades</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasDisease === 'Sí' ? 'border-red-300 text-red-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasDisease} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasDisease: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasDisease === 'Sí' && <input placeholder="¿Cuál?" className="flex-1 p-2.5 bg-white border border-red-200 rounded-xl outline-none focus:ring-2 focus:ring-red-500 text-xs font-semibold" value={editRegistryModal.data.diseaseDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, diseaseDetails: e.target.value } })} />}</div></div>
-                  <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Discapacidades</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasDisability === 'Sí' ? 'border-purple-300 text-purple-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasDisability} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasDisability: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasDisability === 'Sí' && <input placeholder="¿Cuál?" className="flex-1 p-2.5 bg-white border border-purple-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500 text-xs font-semibold" value={editRegistryModal.data.disabilityDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, disabilityDetails: e.target.value } })} />}</div></div>
+                  <div className="space-y-1"><label className={labelClasses}>Alergias</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasAllergy === 'Sí' ? 'border-orange-300 text-orange-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasAllergy} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasAllergy: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasAllergy === 'Sí' && <input placeholder="¿Cuál?" className="flex-1 p-2.5 bg-white border border-orange-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-xs font-semibold" value={editRegistryModal.data.allergyDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, allergyDetails: e.target.value } })} />}</div></div>
+                  <div className="space-y-1"><label className={labelClasses}>Enfermedades</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasDisease === 'Sí' ? 'border-red-300 text-red-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasDisease} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasDisease: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasDisease === 'Sí' && <input placeholder="¿Cuál?" className="flex-1 p-2.5 bg-white border border-red-200 rounded-xl outline-none focus:ring-2 focus:ring-red-500 text-xs font-semibold" value={editRegistryModal.data.diseaseDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, diseaseDetails: e.target.value } })} />}</div></div>
+                  <div className="space-y-1"><label className={labelClasses}>Discapacidades</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasDisability === 'Sí' ? 'border-purple-300 text-purple-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasDisability} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasDisability: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasDisability === 'Sí' && <input placeholder="¿Cuál?" className="flex-1 p-2.5 bg-white border border-purple-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500 text-xs font-semibold" value={editRegistryModal.data.disabilityDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, disabilityDetails: e.target.value } })} />}</div></div>
                 </div>
               )}
 
@@ -1824,13 +1839,13 @@ const App = () => {
                     <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] border-b border-slate-200 pb-2">Tipo de Sangre y Nado</h4>
                     <div className="flex gap-3">
                       <div className="flex-1 space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Tipo de Sangre</label>
+                        <label className={labelClasses}>Tipo de Sangre</label>
                         <select className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-500" value={editRegistryModal.data.bloodType || 'O+'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, bloodType: e.target.value } })}>
                           {BLOOD_TYPES.map(bt => <option key={bt} value={bt}>{bt}</option>)}
                         </select>
                       </div>
                       <div className="flex-1 space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase px-1">¿Sabe Nadar?</label>
+                        <label className={labelClasses}>¿Sabe Nadar?</label>
                         <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, canSwim: editRegistryModal.data.canSwim === 'Sí' ? 'No' : 'Sí' } })} className={`w-full py-3 rounded-xl text-sm font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.canSwim === 'Sí' ? 'bg-blue-600 text-white border-blue-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Droplets size={16} /> Nado: {editRegistryModal.data.canSwim}</button>
                       </div>
                     </div>
@@ -1843,8 +1858,8 @@ const App = () => {
                     </div>
                     {editRegistryModal.data.isServer === 'Sí' && (
                       <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Asignación de Servidor</label>
-                        <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 text-sm font-semibold text-slate-700" value={editRegistryModal.data.serverAssignment || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, serverAssignment: e.target.value } })}>
+                        <label className={labelClasses}>Asignación de Servidor</label>
+                        <select className={inputClasses} value={editRegistryModal.data.serverAssignment || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, serverAssignment: e.target.value } })}>
                           <option value="">Selecciona a qué evento servirá...</option>
                           <option value="Teens">Teens (Menores de 18)</option>
                           <option value="Jóvenes">Jóvenes (Mayores de 18)</option>
@@ -1901,17 +1916,17 @@ const App = () => {
             </div>
             {pricingForm.type === 'fixed' ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 p-6 rounded-2xl border border-slate-200">
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Costo Base</label><input type="number" className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" value={pricingForm.globalCost} onChange={e => setPricingForm({ ...pricingForm, globalCost: e.target.value })} /></div>
-                {isCampa && <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Costo Servidor (Ambos)</label><input type="number" className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" value={pricingForm.serverCost} onChange={e => setPricingForm({ ...pricingForm, serverCost: e.target.value })} /></div>}
+                <div className="space-y-1"><label className={labelClasses}>Costo Base</label><input type="number" className={inputClasses} value={pricingForm.globalCost} onChange={e => setPricingForm({ ...pricingForm, globalCost: e.target.value })} /></div>
+                {isCampa && <div className="space-y-1"><label className={labelClasses}>Costo Servidor (Ambos)</label><input type="number" className={inputClasses} value={pricingForm.serverCost} onChange={e => setPricingForm({ ...pricingForm, serverCost: e.target.value })} /></div>}
               </div>
             ) : (
               <div className="space-y-4">
                 <div className="bg-indigo-50/50 p-4 rounded-2xl border border-indigo-100 space-y-4 max-h-[300px] overflow-y-auto">
                   {pricingForm.phases.map((phase, index) => (
                     <div key={phase.id} className="flex flex-wrap md:flex-nowrap items-end gap-3 bg-white p-3 rounded-xl shadow-sm border border-slate-100">
-                      <div className="w-full md:w-auto flex-1 space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase">Hasta la fecha</label><input type="date" max={currentEvent.date || undefined} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold outline-none focus:border-indigo-400" value={phase.dateUntil} onChange={e => { const newPhases = [...pricingForm.phases]; newPhases[index].dateUntil = e.target.value; setPricingForm({ ...pricingForm, phases: newPhases }); }} /></div>
-                      <div className="w-full md:w-auto flex-1 space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase">Costo Base</label><input type="number" className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold outline-none focus:border-indigo-400" value={phase.globalCost} onChange={e => { const newPhases = [...pricingForm.phases]; newPhases[index].globalCost = e.target.value; setPricingForm({ ...pricingForm, phases: newPhases }); }} /></div>
-                      {isCampa && <div className="w-full md:w-auto flex-1 space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase">Costo Serv. (Ambos)</label><input type="number" className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold outline-none focus:border-indigo-400" value={phase.serverCost} onChange={e => { const newPhases = [...pricingForm.phases]; newPhases[index].serverCost = e.target.value; setPricingForm({ ...pricingForm, phases: newPhases }); }} /></div>}
+                      <div className="w-full md:w-auto flex-1 space-y-1"><label className={labelClasses}>Hasta la fecha</label><input type="date" max={currentEvent.date || undefined} className={inputClasses} value={phase.dateUntil} onChange={e => { const newPhases = [...pricingForm.phases]; newPhases[index].dateUntil = e.target.value; setPricingForm({ ...pricingForm, phases: newPhases }); }} /></div>
+                      <div className="w-full md:w-auto flex-1 space-y-1"><label className={labelClasses}>Costo Base</label><input type="number" className={inputClasses} value={phase.globalCost} onChange={e => { const newPhases = [...pricingForm.phases]; newPhases[index].globalCost = e.target.value; setPricingForm({ ...pricingForm, phases: newPhases }); }} /></div>
+                      {isCampa && <div className="w-full md:w-auto flex-1 space-y-1"><label className={labelClasses}>Costo Serv. (Ambos)</label><input type="number" className={inputClasses} value={phase.serverCost} onChange={e => { const newPhases = [...pricingForm.phases]; newPhases[index].serverCost = e.target.value; setPricingForm({ ...pricingForm, phases: newPhases }); }} /></div>}
                       <button onClick={() => { const newPhases = pricingForm.phases.filter((_, i) => i !== index); setPricingForm({ ...pricingForm, phases: newPhases }); }} className="p-2 mb-0.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={18} /></button>
                     </div>
                   ))}
@@ -1920,15 +1935,15 @@ const App = () => {
                 <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 mt-4">
                   <p className="text-xs font-bold text-slate-600 mb-3">Precio Final (Cuando pasen todas las fechas anteriores):</p>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Costo Base Final</label><input type="number" className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" value={pricingForm.globalCost} onChange={e => setPricingForm({ ...pricingForm, globalCost: e.target.value })} /></div>
-                    {isCampa && <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Costo Servidor Final (Ambos)</label><input type="number" className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" value={pricingForm.serverCost} onChange={e => setPricingForm({ ...pricingForm, serverCost: e.target.value })} /></div>}
+                    <div className="space-y-1"><label className={labelClasses}>Costo Base Final</label><input type="number" className={inputClasses} value={pricingForm.globalCost} onChange={e => setPricingForm({ ...pricingForm, globalCost: e.target.value })} /></div>
+                    {isCampa && <div className="space-y-1"><label className={labelClasses}>Costo Servidor Final (Ambos)</label><input type="number" className={inputClasses} value={pricingForm.serverCost} onChange={e => setPricingForm({ ...pricingForm, serverCost: e.target.value })} /></div>}
                   </div>
                 </div>
               </div>
             )}
             <div className="flex gap-4 pt-6 mt-6 border-t border-slate-100">
-              <button onClick={() => setPricingModal({ isOpen: false })} className="flex-1 py-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-2xl transition-all text-sm">Cancelar</button>
-              <button onClick={handleSavePricing} className="flex-1 py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all shadow-xl shadow-indigo-200 flex justify-center items-center gap-2 text-sm"><CheckCircle2 size={20} /> Guardar Precios</button>
+              <button onClick={() => setPricingModal({ isOpen: false })} className={btnSecondary}>Cancelar</button>
+              <button onClick={handleSavePricing} className={btnPrimary}><CheckCircle2 size={20} /> Guardar Precios</button>
             </div>
           </div>
         </div>
@@ -1942,7 +1957,7 @@ const App = () => {
             <p className="text-sm text-slate-500 mb-6">Registrando abono para <strong className="text-slate-700">{paymentModal.personName}</strong></p>
             <div className="space-y-6">
               <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase">Monto a abonar ($)</label>
+                <label className={labelClasses}>Monto a abonar ($)</label>
                 <div className="relative mt-1">
                   <span className={`absolute left-3 top-1/2 -translate-y-1/2 font-bold ${paymentModal.error ? 'text-red-400' : 'text-slate-400'}`}>$</span>
                   <input type="number" autoFocus className={`w-full pl-8 pr-4 py-3 bg-slate-50 border rounded-xl outline-none focus:ring-2 font-bold ${paymentModal.error ? 'border-red-300 text-red-700 focus:ring-red-500' : 'border-slate-200 text-green-700 focus:ring-green-500'}`} placeholder="0.00" value={paymentModal.amount} onChange={e => setPaymentModal({ ...paymentModal, amount: e.target.value, error: '' })} onKeyDown={e => e.key === 'Enter' && submitAbono()} />
@@ -1951,7 +1966,7 @@ const App = () => {
                 {paymentModal.error && <p className="text-[10px] text-red-500 font-bold mt-1 px-1 animate-in slide-in-from-top-1">{paymentModal.error}</p>}
               </div>
               <div className="flex gap-3 pt-2">
-                <button onClick={() => setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0 })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
+                <button onClick={() => setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0 })} className={btnSecondary}>Cancelar</button>
                 <button onClick={submitAbono} className="flex-1 py-3 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl transition-colors shadow-lg shadow-green-200 text-sm flex justify-center items-center gap-2"><CreditCard size={18} /> Guardar</button>
               </div>
             </div>
@@ -1978,10 +1993,10 @@ const App = () => {
               ) : <p className="text-center text-sm italic text-slate-400 py-4">No hay campos extra configurados.</p>}
             </div>
             <div className="space-y-2 pt-4 border-t border-slate-100">
-              <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Añadir Nuevo Campo</label>
+              <label className={labelClasses}>Añadir Nuevo Campo</label>
               <div className="flex gap-2">
-                <input type="text" className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700 text-sm" placeholder="Ej. Talla de playera" value={newCustomField} onChange={e => setNewCustomField(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddCustomField()} />
-                <button onClick={handleAddCustomField} disabled={!newCustomField.trim()} className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold rounded-xl transition-colors shadow-md shadow-indigo-200"><Plus size={18} /></button>
+                <input type="text" className={inputClasses} placeholder="Ej. Talla de playera" value={newCustomField} onChange={e => setNewCustomField(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddCustomField()} />
+                <button onClick={handleAddCustomField} disabled={!newCustomField.trim()} className={btnPrimary}><Plus size={18} /></button>
               </div>
             </div>
           </div>
@@ -1995,10 +2010,10 @@ const App = () => {
             <h3 className="text-lg font-bold text-slate-800 mb-1">Añadir Nueva Sede</h3>
             <p className="text-sm text-slate-500 mb-6">Ingresa el nombre de la nueva ubicación para este evento.</p>
             <div className="space-y-4">
-              <input type="text" autoFocus className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" placeholder="Ej. Querétaro" value={newLocationName} onChange={e => setNewLocationName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddLocation()} />
+              <input type="text" autoFocus className={inputClasses} placeholder="Ej. Querétaro" value={newLocationName} onChange={e => setNewLocationName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddLocation()} />
               <div className="flex gap-3 pt-2">
-                <button onClick={() => { setIsAddLocModalOpen(false); setNewLocationName(''); }} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
-                <button onClick={handleAddLocation} disabled={!newLocationName.trim()} className="flex-1 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold rounded-xl transition-colors text-sm flex justify-center items-center gap-2"><Plus size={18} /> Añadir</button>
+                <button onClick={() => { setIsAddLocModalOpen(false); setNewLocationName(''); }} className={btnSecondary}>Cancelar</button>
+                <button onClick={handleAddLocation} disabled={!newLocationName.trim()} className={btnPrimary}><Plus size={18} /> Añadir</button>
               </div>
             </div>
           </div>
