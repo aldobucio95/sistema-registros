@@ -1641,28 +1641,26 @@ const App = () => {
                         <span className="text-[10px] font-black uppercase text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">{ev.eventType}</span>
                         
                         {hasAdminRights ? (
-                          <label className="relative flex items-center cursor-pointer group" onClick={e => e.stopPropagation()}>
-                            <span className="text-[10px] font-bold text-slate-500 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-200 group-hover:border-indigo-300 transition-colors uppercase">
-                              {formatDisplayDate(ev.date)}
-                            </span>
-                            <input
-                              type="date"
-                              defaultValue={ev.date || ''}
-                              onBlur={async (e) => {
-                                const newVal = e.target.value;
-                                if (newVal !== (ev.date || '')) {
-                                  const payload = { date: newVal };
-                                  if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
-                                  await updateDoc(getDocRef('app_events', ev.id), payload);
-                                  addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
-                                }
-                              }}
-                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
-                              title="Clic para editar fecha"
-                            />
-                          </label>
-                        ) : (
-                          <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-100 uppercase">
+						  <label className="relative flex items-center gap-1.5 text-[10px] font-bold text-slate-600 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 px-2.5 py-1 rounded-full border border-slate-200 hover:border-indigo-200 transition-colors uppercase cursor-pointer group shadow-sm overflow-hidden" onClick={e => e.stopPropagation()} title="Cambiar fecha del evento">
+							<span>{formatDisplayDate(ev.date)}</span>
+							<Edit3 size={12} className="text-slate-400 group-hover:text-indigo-500 transition-colors" />
+							<input
+							  type="date"
+							  defaultValue={ev.date || ''}
+							  onChange={async (e) => {
+								const newVal = e.target.value;
+								if (newVal !== (ev.date || '')) {
+								  const payload = { date: newVal };
+								  if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
+								  await updateDoc(getDocRef('app_events', ev.id), payload);
+								  addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
+								}
+							  }}
+							  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer"
+							/>
+						  </label>
+						) : (
+                          <span className="text-[10px] font-bold text-slate-500 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-200 uppercase shadow-sm">
                             {formatDisplayDate(ev.date)}
                           </span>
                         )}
@@ -1906,19 +1904,19 @@ const App = () => {
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2"><div className="bg-blue-100 p-2 rounded-lg text-blue-600"><CalendarRange size={18} /></div><span className="text-xs font-bold text-slate-500">Fecha Evento</span></div>
                 {hasAdminRights && (
-                  <label className="relative flex items-center justify-center p-2 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer" title="Modificar fecha">
-                    <CalendarRange size={16} className="relative z-10 pointer-events-none" />
-                    <input type="date" value={tempEventDate} onChange={(e) => setTempEventDate(e.target.value)}
-                      onBlur={async (e) => {
-                        const newVal = e.target.value;
-                        if (newVal !== (currentEvent.date || '')) {
-                          await updateEventConfig({ date: newVal });
-                          addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
-                        }
-                      }}
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20" />
-                  </label>
-                )}
+				  <label className="relative flex items-center justify-center p-2 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer overflow-hidden" title="Modificar fecha">
+					<CalendarRange size={16} className="relative z-10 pointer-events-none" />
+					<input type="date" value={tempEventDate} onChange={(e) => setTempEventDate(e.target.value)}
+					  onBlur={async (e) => {
+						const newVal = e.target.value;
+						if (newVal !== (currentEvent.date || '')) {
+						  await updateEventConfig({ date: newVal });
+						  addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+						}
+					  }}
+					  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer" />
+				  </label>
+)}
               </div>
               <div className="flex items-center text-lg md:text-xl font-black text-slate-800 mt-1 capitalize leading-tight">
                 {currentEvent.date ? new Date(currentEvent.date + 'T00:00:00').toLocaleDateString('es-MX', { year: 'numeric', month: 'short', day: 'numeric' }) : 'Sin fecha'}
