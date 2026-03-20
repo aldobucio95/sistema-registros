@@ -181,6 +181,7 @@ const App = () => {
   const [allParticipants, setAllParticipants] = useState([]);
   const [activeTab, setActiveTab] = useState("Summary");
   const [showMoney, setShowMoney] = useState(true);
+  const [showChartValues, setShowChartValues] = useState(false);
   const [summaryView, setSummaryView] = useState("all");
   const [summaryServerView, setSummaryServerView] = useState("all");
   const [isAddLocModalOpen, setIsAddLocModalOpen] = useState(false);
@@ -206,7 +207,6 @@ const App = () => {
   const [paymentModal, setPaymentModal] = useState({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0 });
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [editingUser, setEditingUser] = useState({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
-  const [deleteUserModal, setDeleteUserModal] = useState({ isOpen: false, id: null, username: '' });
   const [restoreModal, setRestoreModal] = useState({ isOpen: false, log: null, type: 'single' });
 
   // Navigation Logic
@@ -567,7 +567,7 @@ const App = () => {
     if (currentUser) {
       const activeTime = Date.now() - (currentUser.loginTime || Date.now());
       const formattedTime = formatDuration(activeTime);
-      addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión. (Tiempo activo: ${formattedTime})`, currentUser.username);
+      addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión manualmente. (Tiempo activo: ${formattedTime})`, currentUser.username);
       await updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
     }
     setNavHistory([]);
@@ -606,11 +606,30 @@ const App = () => {
     performDailyBackup();
   }, [globalConfig, events, allParticipants, users, hasAdminRights, addLog]);
 
+  // Activity Watcher and Session Logout Logic
   useEffect(() => {
     if (!currentUser) return;
 
     let timeoutId;
     let throttleTimeoutId;
+    let isClosing = false; // Flag to prevent multiple close logs
+
+    // Best-effort synchronous write before unload/tab close
+    const handleBrowserClose = () => {
+      if (currentUser?.id && !isClosing) {
+        isClosing = true;
+        const activeTime = Date.now() - (currentUser.loginTime || Date.now());
+        const formattedTime = formatDuration(activeTime);
+        
+        // Ejecución sincrónica; Firebase intenta cachear y emitir por WebSocket
+        addLog(
+          'Cierre de Sesión Automático',
+          `Sesión finalizada por cierre de navegador o pestaña. (Tiempo activo: ${formattedTime})`,
+          currentUser.username
+        );
+        updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
+      }
+    };
 
     const setOffline = () => {
       if (currentUser?.id) {
@@ -647,13 +666,17 @@ const App = () => {
     const activityEvents = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
     resetTimer();
     activityEvents.forEach(e => window.addEventListener(e, handleActivity));
-    window.addEventListener('beforeunload', setOffline);
+    
+    // Detect tab/browser close explicitly to log the session end.
+    window.addEventListener('beforeunload', handleBrowserClose);
+    window.addEventListener('pagehide', handleBrowserClose);
 
     return () => {
       clearTimeout(timeoutId);
       clearTimeout(throttleTimeoutId);
       activityEvents.forEach(e => window.removeEventListener(e, handleActivity));
-      window.removeEventListener('beforeunload', setOffline);
+      window.removeEventListener('beforeunload', handleBrowserClose);
+      window.removeEventListener('pagehide', handleBrowserClose);
     };
   }, [currentUser, addLog, showToast]);
 
@@ -818,32 +841,17 @@ const App = () => {
     showToast("Usuario actualizado.");
   };
 
-  const confirmDeleteUser = async () => {
-    const { id, username } = deleteUserModal;
-    if (!id) return;
-
-    if (!hasAdminRights) {
-      showToast("Permisos insuficientes.");
-      setDeleteUserModal({ isOpen: false, id: null, username: '' });
-      return;
-    }
-    
-    if (currentUser.id === id) {
-      showToast("No puedes eliminar tu propia cuenta.");
-      setDeleteUserModal({ isOpen: false, id: null, username: '' });
-      return;
-    }
+  const handleDeleteUser = async (id, username) => {
+    if (!hasAdminRights) { showToast("Permisos insuficientes."); return; }
+    if (currentUser.id === id) { showToast("No puedes eliminar tu propia cuenta."); return; }
     
     const userToDelete = users.find(u => String(u.id) === String(id));
     if (userToDelete?.role === 'SuperUsuario' && currentUser.role !== 'SuperUsuario') {
-      showToast("Solo otro SuperUsuario puede eliminar a un SuperUsuario.");
-      setDeleteUserModal({ isOpen: false, id: null, username: '' });
-      return;
+      showToast("Solo otro SuperUsuario puede eliminar a un SuperUsuario."); return;
     }
 
     await deleteDoc(getDocRef('app_users', String(id)));
     addLog('Gestión de Usuarios', `Eliminó al usuario: ${username}`);
-    setDeleteUserModal({ isOpen: false, id: null, username: '' });
     showToast("Usuario eliminado.");
   };
 
@@ -1336,12 +1344,10 @@ const App = () => {
                     </div>
                   </td>
                   <td className="px-6 py-4"><span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${u.role === 'SuperUsuario' ? 'bg-amber-100 text-amber-700 border border-amber-200' : u.role === 'Administrador' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>{u.role}</span></td>
-                  <td className="px-6 py-4 text-center">
-                    <div className="flex items-center justify-center gap-2">
-                      <button onClick={() => setEditingUser({ isOpen: true, id: u.id, username: u.username, role: u.role, currentPasswordInput: '', newPassword: '', confirmPassword: '' })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}><Edit3 size={18} /></button>
-                      <button onClick={() => setDeleteUserModal({ isOpen: true, id: u.id, username: u.username })} disabled={currentUser.id === u.id || !hasAdminRights} className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || !hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}><Trash2 size={18} /></button>
-                    </div>
-                  </td>
+                  <td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2">
+                    <button onClick={() => setEditingUser({ isOpen: true, id: u.id, username: u.username, role: u.role, currentPasswordInput: '', newPassword: '', confirmPassword: '' })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}><Edit3 size={18} /></button>
+                    <button onClick={() => handleDeleteUser(u.id, u.username)} disabled={currentUser.id === u.id || !hasAdminRights} className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || !hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}><Trash2 size={18} /></button>
+                  </div></td>
                 </tr>
               ))}
             </tbody>
@@ -1619,29 +1625,6 @@ const App = () => {
               <div className="flex gap-3">
                 <button onClick={() => setDeleteEventModal({ isOpen: false, id: null, name: '' })} className={btnSecondary}>Cancelar</button>
                 <button onClick={confirmDeleteEvent} className="flex-1 py-3 px-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-colors text-sm shadow-lg shadow-red-200">Sí, eliminar</button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {deleteUserModal.isOpen && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center">
-              <div className="bg-red-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                <ShieldAlert size={32} className="text-red-500" />
-              </div>
-              <h3 className="text-xl font-black text-slate-800 mb-2">Eliminar Usuario</h3>
-              <p className="text-sm text-slate-500 mb-6">
-                ¿Estás seguro de que deseas eliminar al usuario <strong>"{deleteUserModal.username}"</strong>?
-                Esta acción no se puede deshacer y perderá acceso al sistema.
-              </p>
-              <div className="flex gap-3">
-                <button onClick={() => setDeleteUserModal({ isOpen: false, id: null, username: '' })} className={btnSecondary}>
-                  Cancelar
-                </button>
-                <button onClick={confirmDeleteUser} className="flex-1 py-3 px-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-colors text-sm shadow-lg shadow-red-200">
-                  Sí, eliminar
-                </button>
               </div>
             </div>
           </div>
@@ -1932,11 +1915,59 @@ const App = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-8">
           
           {viewPrefs.chartLocations && (
-            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><MapPin className="text-indigo-500" size={20} /> Registrados por Sede</h3><p className="text-xs text-slate-400 mb-6">Proporción de inscritos totales</p><div className="flex flex-col items-center justify-center gap-6"><div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('count') }} /><div className="w-full grid grid-cols-2 gap-2">{(currentEvent?.locations || []).map((loc) => { const i = currentEvent.locations.indexOf(loc); const locCount = summary.locationStats[loc].all.count; const percent = totalRegs > 0 ? ((locCount / totalRegs) * 100).toFixed(1) : 0; return (<div key={loc} className="flex items-center justify-between text-xs"><div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div><span className="font-bold text-slate-800">{percent}%</span></div>); })}</div></div></div>
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex justify-between items-start mb-2">
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><MapPin className="text-indigo-500" size={20} /> Registrados por Sede</h3>
+                <button onClick={() => setShowChartValues(!showChartValues)} className="px-2 py-1 bg-slate-50 text-slate-500 hover:bg-slate-100 rounded-md text-[10px] font-bold transition-colors border border-slate-200">
+                  {showChartValues ? 'Ver %' : 'Ver #'}
+                </button>
+              </div>
+              <p className="text-xs text-slate-400 mb-6">Proporción de inscritos totales</p>
+              <div className="flex flex-col items-center justify-center gap-6">
+                <div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('count') }} />
+                <div className="w-full grid grid-cols-2 gap-2">
+                  {(currentEvent?.locations || []).map((loc) => { 
+                    const i = currentEvent.locations.indexOf(loc); 
+                    const locCount = summary.locationStats[loc].all.count; 
+                    const percent = totalRegs > 0 ? ((locCount / totalRegs) * 100).toFixed(1) : 0; 
+                    return (
+                      <div key={loc} className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div>
+                        <span className="font-bold text-slate-800">{showChartValues ? locCount : `${percent}%`}</span>
+                      </div>
+                    ); 
+                  })}
+                </div>
+              </div>
+            </div>
           )}
           
           {viewPrefs.chartIncome && (
-            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><PieChart className="text-green-500" size={20} /> Ingresos por Sede</h3><p className="text-xs text-slate-400 mb-6">Porcentaje de recaudación</p><div className="flex flex-col items-center justify-center gap-6"><div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('paid') }} /><div className="w-full grid grid-cols-2 gap-2">{(currentEvent?.locations || []).map((loc) => { const i = currentEvent.locations.indexOf(loc); const locPaid = summary.locationStats[loc].all.paid; const percent = summary.globalStats.all.paid > 0 ? ((locPaid / summary.globalStats.all.paid) * 100).toFixed(1) : 0; return (<div key={loc} className="flex items-center justify-between text-xs"><div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div><span className="font-bold text-slate-800">{percent}%</span></div>); })}</div></div></div>
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex justify-between items-start mb-2">
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><PieChart className="text-green-500" size={20} /> Ingresos por Sede</h3>
+                <button onClick={() => setShowChartValues(!showChartValues)} className="px-2 py-1 bg-slate-50 text-slate-500 hover:bg-slate-100 rounded-md text-[10px] font-bold transition-colors border border-slate-200">
+                  {showChartValues ? 'Ver %' : 'Ver $'}
+                </button>
+              </div>
+              <p className="text-xs text-slate-400 mb-6">Porcentaje de recaudación</p>
+              <div className="flex flex-col items-center justify-center gap-6">
+                <div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('paid') }} />
+                <div className="w-full grid grid-cols-2 gap-2">
+                  {(currentEvent?.locations || []).map((loc) => { 
+                    const i = currentEvent.locations.indexOf(loc); 
+                    const locPaid = summary.locationStats[loc].all.paid; 
+                    const percent = summary.globalStats.all.paid > 0 ? ((locPaid / summary.globalStats.all.paid) * 100).toFixed(1) : 0; 
+                    return (
+                      <div key={loc} className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div>
+                        <span className="font-bold text-slate-800">{showChartValues ? formatMoney(locPaid) : `${percent}%`}</span>
+                      </div>
+                    ); 
+                  })}
+                </div>
+              </div>
+            </div>
           )}
 
           {viewPrefs.chartPaymentStatus && (
