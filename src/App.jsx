@@ -341,6 +341,13 @@ const App = () => {
   }, [activeTab]);
 
   useEffect(() => {
+    if (systemView !== 'users') {
+      setNewUser({ username: '', password: '', role: 'Editor' });
+      setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
+    }
+  }, [systemView]);
+
+  useEffect(() => {
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
