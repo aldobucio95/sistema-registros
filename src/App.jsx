@@ -115,7 +115,7 @@ const App = () => {
   const [users, setUsers] = useState([]);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState('');
-  const [newUser, setNewUser] = useState({ username: '', password: '', role: 'Editor' });
+  const [newUser, setNewUser] = useState({ username: '', password: '', role: 'Editor', canViewFinances: false });
   const [globalConfig, setGlobalConfig] = useState(null);
 
   const [toast, setToast] = useState('');
@@ -207,8 +207,13 @@ const App = () => {
   const [filterAssignment, setFilterAssignment] = useState("all");
   const [paymentModal, setPaymentModal] = useState({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0 });
   const [expandedRows, setExpandedRows] = useState(new Set());
-  const [editingUser, setEditingUser] = useState({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
+  const [editingUser, setEditingUser] = useState({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false });
   const [restoreModal, setRestoreModal] = useState({ isOpen: false, log: null, type: 'single' });
+
+  // Security Access Definitions
+  const hasFinancialAccess = currentUser ? (['Administrador', 'SuperUsuario', 'Editor'].includes(currentUser.role) || currentUser.canViewFinances) : false;
+  const canSeeMoney = showMoney && hasFinancialAccess;
+  const formatMoney = (amount) => canSeeMoney ? `$${parseFloat(amount || 0).toLocaleString()}` : '$***';
 
   // Navigation Logic
   const goTo = useCallback((view, eventId, tab) => {
@@ -350,8 +355,8 @@ const App = () => {
 
   useEffect(() => {
     if (systemView !== 'users') {
-      setNewUser({ username: '', password: '', role: 'Editor' });
-      setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
+      setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false });
+      setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false });
     }
   }, [systemView]);
 
@@ -414,7 +419,7 @@ const App = () => {
       if (!snap.empty) {
         setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       } else {
-        const initialUser = { username: 'admin', password: '123', role: 'SuperUsuario' };
+        const initialUser = { username: 'admin', password: '123', role: 'SuperUsuario', canViewFinances: true };
         setDoc(getDocRef('app_users', '1'), initialUser);
       }
     }, console.error);
@@ -795,9 +800,15 @@ const App = () => {
     }
 
     const newId = String(Date.now());
-    await setDoc(getDocRef('app_users', newId), { ...newUser, id: newId });
+    const userToSave = {
+      ...newUser,
+      id: newId,
+      canViewFinances: ['Administrador', 'SuperUsuario', 'Editor'].includes(newUser.role) ? true : newUser.canViewFinances
+    };
+
+    await setDoc(getDocRef('app_users', newId), userToSave);
     addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`);
-    setNewUser({ username: '', password: '', role: 'Editor' });
+    setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false });
     showToast("Usuario añadido exitosamente.");
   };
 
@@ -825,20 +836,23 @@ const App = () => {
       return;
     }
 
+    const newCanViewFinances = ['Administrador', 'SuperUsuario', 'Editor'].includes(editingUser.role) ? true : editingUser.canViewFinances;
+
     const changes = [];
     if (originalUser.username !== editingUser.username) changes.push(`Usuario (${originalUser.username} -> ${editingUser.username})`);
     if (originalUser.role !== editingUser.role) changes.push(`Rol (${originalUser.role} -> ${editingUser.role})`);
     if (originalUser.password !== editingUser.newPassword) changes.push(`Contraseña actualizada`);
+    if (originalUser.canViewFinances !== newCanViewFinances) changes.push(`Ver Finanzas (${originalUser.canViewFinances ? 'Sí' : 'No'} -> ${newCanViewFinances ? 'Sí' : 'No'})`);
     
-    await updateDoc(getDocRef('app_users', String(editingUser.id)), { username: editingUser.username, password: editingUser.newPassword, role: editingUser.role });
+    await updateDoc(getDocRef('app_users', String(editingUser.id)), { username: editingUser.username, password: editingUser.newPassword, role: editingUser.role, canViewFinances: newCanViewFinances });
     
     if (currentUser.id === editingUser.id) {
-      setCurrentUser({ ...currentUser, username: editingUser.username, password: editingUser.newPassword, role: editingUser.role });
+      setCurrentUser({ ...currentUser, username: editingUser.username, password: editingUser.newPassword, role: editingUser.role, canViewFinances: newCanViewFinances });
     }
     
     if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
     
-    setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
+    setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false });
     showToast("Usuario actualizado.");
   };
 
@@ -1255,8 +1269,6 @@ const App = () => {
     showToast("Abono procesado correctamente.");
   };
 
-  const formatMoney = (amount) => showMoney ? `$${parseFloat(amount || 0).toLocaleString()}` : '$***';
-
   // ─────────────────────────────────────────────
   //  SCREEN 1: LOGIN
   // ─────────────────────────────────────────────
@@ -1316,17 +1328,26 @@ const App = () => {
       <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
         <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2"><UserCog className="text-indigo-500" /> Gestión de Usuarios</h2>
         {hasAdminRights ? (
-          <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8 bg-slate-50 p-4 rounded-xl border border-slate-100 items-end">
+          <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-8 bg-slate-50 p-4 rounded-xl border border-slate-100 items-end">
             <div className="space-y-1"><label className={labelClasses}>Usuario</label><input type="text" required placeholder="Nuevo usuario" className={inputClasses} value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} /></div>
             <div className="space-y-1"><label className={labelClasses}>Contraseña</label><input type="password" required placeholder="••••••••" className={inputClasses} value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} /></div>
-            <div className="space-y-1"><label className={labelClasses}>Rol</label>
-              <select className={inputClasses} value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}>
+            <div className="space-y-1">
+              <label className={labelClasses}>Rol</label>
+              <select className={inputClasses} value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value, canViewFinances: e.target.value !== 'Lector' ? true : newUser.canViewFinances })}>
                 <option value="Administrador">Administrador</option>
                 <option value="Editor">Editor</option>
                 <option value="Lector">Lector</option>
               </select>
             </div>
-            <div className="flex items-end h-full"><button type="submit" className={btnPrimary}><Plus size={18} /> Añadir Usuario</button></div>
+            {newUser.role === 'Lector' ? (
+              <div className="space-y-1 flex items-center h-full pb-3.5 pl-2">
+                <label className="flex items-center gap-2 cursor-pointer group">
+                  <input type="checkbox" checked={newUser.canViewFinances} onChange={e => setNewUser({...newUser, canViewFinances: e.target.checked})} className="w-4 h-4 accent-indigo-600 rounded cursor-pointer" />
+                  <span className="text-xs font-bold text-slate-600 group-hover:text-indigo-600 transition-colors">Ver Finanzas</span>
+                </label>
+              </div>
+            ) : <div className="hidden lg:block"></div>}
+            <div className="flex items-end h-full md:col-span-4 lg:col-span-1"><button type="submit" className={btnPrimary}><Plus size={18} /> Añadir Usuario</button></div>
           </form>
         ) : (
           <div className="mb-8 p-4 bg-amber-50 border border-amber-100 rounded-xl text-amber-700 text-sm flex items-center gap-2"><ShieldAlert size={18} /><p><strong>Acceso Restringido:</strong> Solo los administradores pueden añadir nuevos usuarios.</p></div>
@@ -1344,9 +1365,18 @@ const App = () => {
                       {currentUser.id === u.id && <span className="text-[10px] text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full ml-2">Tú</span>}
                     </div>
                   </td>
-                  <td className="px-6 py-4"><span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${u.role === 'SuperUsuario' ? 'bg-amber-100 text-amber-700 border border-amber-200' : u.role === 'Administrador' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>{u.role}</span></td>
+                  <td className="px-6 py-4">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${u.role === 'SuperUsuario' ? 'bg-amber-100 text-amber-700 border border-amber-200' : u.role === 'Administrador' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>{u.role}</span>
+                      {u.role === 'Lector' && u.canViewFinances && (
+                        <span className="text-[9px] bg-green-100 text-green-700 border border-green-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-black tracking-wider" title="Puede ver finanzas">
+                          <DollarSign size={10} /> Finanzas
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2">
-                    <button onClick={() => setEditingUser({ isOpen: true, id: u.id, username: u.username, role: u.role, currentPasswordInput: '', newPassword: '', confirmPassword: '' })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}><Edit3 size={18} /></button>
+                    <button onClick={() => setEditingUser({ isOpen: true, id: u.id, username: u.username, role: u.role, currentPasswordInput: '', newPassword: '', confirmPassword: '', canViewFinances: u.canViewFinances || false })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}><Edit3 size={18} /></button>
                     <button onClick={() => handleDeleteUser(u.id, u.username)} disabled={currentUser.id === u.id || !hasAdminRights} className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || !hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}><Trash2 size={18} /></button>
                   </div></td>
                 </tr>
@@ -1676,12 +1706,18 @@ const App = () => {
                 </div>
                 <div>
                   <label className={labelClasses}>Rol</label>
-                  <select className={inputClasses} value={editingUser.role} onChange={e => setEditingUser({ ...editingUser, role: e.target.value })}>
+                  <select className={inputClasses} value={editingUser.role} onChange={e => setEditingUser({ ...editingUser, role: e.target.value, canViewFinances: e.target.value !== 'Lector' ? true : editingUser.canViewFinances })}>
                     {editingUser.role === 'SuperUsuario' && <option value="SuperUsuario">SuperUsuario</option>}
                     <option value="Administrador">Administrador</option>
                     <option value="Editor">Editor</option>
                     <option value="Lector">Lector</option>
                   </select>
+                  {editingUser.role === 'Lector' && (
+                    <label className="flex items-center gap-2 mt-3 cursor-pointer p-3 bg-slate-50 rounded-xl border border-slate-200 group transition-colors hover:border-indigo-200">
+                      <input type="checkbox" checked={editingUser.canViewFinances} onChange={e => setEditingUser({...editingUser, canViewFinances: e.target.checked})} className="accent-indigo-600 w-4 h-4 rounded cursor-pointer" />
+                      <span className="text-xs font-bold text-slate-700 group-hover:text-indigo-700">Permitir ver información financiera</span>
+                    </label>
+                  )}
                 </div>
                 <div className="border-t border-slate-100 pt-4 mt-2 space-y-4">
                   <p className="text-xs font-bold text-slate-800">Cambio de Contraseña</p>
@@ -1690,7 +1726,7 @@ const App = () => {
                   <div><label className={labelClasses}>Confirmar Nueva Contraseña</label><input type="password" required className={inputClasses} value={editingUser.confirmPassword} onChange={e => setEditingUser({ ...editingUser, confirmPassword: e.target.value })} /></div>
                 </div>
                 <div className="flex gap-3 pt-4">
-                  <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' })} className={btnSecondary}>Cancelar</button>
+                  <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false })} className={btnSecondary}>Cancelar</button>
                   <button type="submit" className={btnPrimary}>Guardar</button>
                 </div>
               </form>
@@ -1847,7 +1883,7 @@ const App = () => {
                 <div className="flex items-center gap-2"><div className="bg-indigo-100 p-2 rounded-lg text-indigo-600"><BarChart3 size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Base</span></div>
                 {hasAdminRights && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
               </div>
-              <div className="flex items-center text-2xl font-black text-slate-800">{showMoney ? `$${currentPricing.global}` : '$***'}</div>
+              <div className="flex items-center text-2xl font-black text-slate-800">{canSeeMoney ? `$${currentPricing.global}` : '$***'}</div>
               {currentEvent.pricingType === 'dynamic' && <p className="text-[10px] text-indigo-500 font-bold mt-1 uppercase">Precio Dinámico</p>}
             </div>
 
@@ -1857,14 +1893,14 @@ const App = () => {
                   <div className="flex items-center gap-2"><div className="bg-amber-100 p-2 rounded-lg text-amber-600"><Users size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Servidor (Ambos)</span></div>
                   {hasAdminRights && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
                 </div>
-                <div className="flex items-center text-2xl font-black text-slate-800">{showMoney ? `$${currentPricing.server}` : '$***'}</div>
+                <div className="flex items-center text-2xl font-black text-slate-800">{canSeeMoney ? `$${currentPricing.server}` : '$***'}</div>
               </div>
             )}
 
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
               <div className="flex items-center gap-2 mb-3"><div className="bg-teal-100 p-2 rounded-lg text-teal-600"><Wallet size={18} /></div><span className="text-xs font-bold text-slate-500">Apartado Mín.</span></div>
               <div className="flex items-center text-2xl font-black text-slate-800">
-                {showMoney ? (
+                {canSeeMoney ? (
                   <><span className="mr-1">$</span>
                     <input type="number" value={tempDeposit} disabled={!hasAdminRights} onChange={e => setTempDeposit(e.target.value)}
                       onBlur={async (e) => {
@@ -1882,7 +1918,7 @@ const App = () => {
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
               <div className="flex items-center gap-2 mb-3"><div className="bg-red-100 p-2 rounded-lg text-red-600"><DollarSign size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Real</span></div>
               <div className="flex items-center text-2xl font-black text-slate-800">
-                {showMoney ? (
+                {canSeeMoney ? (
                   <><span className="mr-1">$</span>
                     <input type="number" value={tempRealCost} disabled={!hasAdminRights} onChange={e => setTempRealCost(e.target.value)}
                       onBlur={async (e) => {
@@ -1908,7 +1944,7 @@ const App = () => {
               <p className={`text-2xl font-black ${balanceNeto >= 0 ? 'text-green-600' : 'text-red-500'}`}>
                 {formatMoney(balanceNeto)}
               </p>
-              <p className="text-[10px] text-slate-400 font-bold mt-1">Recaudado - (Costo × Registrados)</p>
+              <p className="text-[10px] text-slate-400 font-bold mt-1">Recaudado - (Costo Real × #Registrados)</p>
             </div>
           </div>
         )}
@@ -2569,7 +2605,10 @@ const App = () => {
           <div className="flex items-center gap-2 md:gap-4 flex-shrink-0 relative">
             <div className="hidden lg:flex items-center gap-2 mr-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
             <button onClick={exportToCSV} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors" title="Exportar a CSV"><Download size={14} /><span className="hidden sm:inline">Exportar</span></button>
-            <button onClick={() => setShowMoney(!showMoney)} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors" title={showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}>{showMoney ? <EyeOff size={14} /> : <Eye size={14} />}<span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span></button>
+            
+            {hasFinancialAccess && (
+              <button onClick={() => setShowMoney(!showMoney)} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors" title={showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}>{showMoney ? <EyeOff size={14} /> : <Eye size={14} />}<span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span></button>
+            )}
             
             {activeTab === "Summary" && (
               <div className="relative">
