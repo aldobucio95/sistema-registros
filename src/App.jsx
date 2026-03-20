@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Phone, ShieldAlert, Power, BarChart3, Edit3, TableProperties,
   Eye, EyeOff, Search, Filter, ArrowUpDown, CreditCard, ChevronDown, ChevronUp,
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock,
-  UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo
+  UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -102,6 +102,9 @@ const App = () => {
   
   const [renameModal, setRenameModal] = useState({ isOpen: false, id: null, name: '' });
 
+  // Navigation History Stack
+  const [navHistory, setNavHistory] = useState([]);
+
   const currentEvent = useMemo(() => events.find(e => e.id === selectedEventId) || null, [events, selectedEventId]);
   const sortedEvents = useMemo(() => [...events].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)), [events]);
 
@@ -156,6 +159,27 @@ const App = () => {
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [editingUser, setEditingUser] = useState({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
   const [restoreModal, setRestoreModal] = useState({ isOpen: false, log: null, type: 'single' });
+
+  // Navigation Logic
+  const goTo = useCallback((view, eventId, tab) => {
+    if (view === systemView && eventId === selectedEventId && tab === activeTab) return;
+    setNavHistory(prev => [...prev, { systemView, selectedEventId, activeTab }]);
+    setSystemView(view);
+    setSelectedEventId(eventId);
+    setActiveTab(tab);
+  }, [systemView, selectedEventId, activeTab]);
+
+  const goBack = useCallback(() => {
+    setNavHistory(prev => {
+      if (prev.length === 0) return prev;
+      const newHist = [...prev];
+      const last = newHist.pop();
+      setSystemView(last.systemView);
+      setSelectedEventId(last.selectedEventId);
+      setActiveTab(last.activeTab);
+      return newHist;
+    });
+  }, []);
 
   useEffect(() => {
     if (currentEvent) {
@@ -363,6 +387,7 @@ const App = () => {
 
   const handleLogout = () => {
     addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión.`);
+    setNavHistory([]);
     setCurrentUser(null);
     setSelectedEventId(null);
     setActiveTab("Summary");
@@ -377,6 +402,7 @@ const App = () => {
 
     const performLogout = () => {
       addLog('Cierre de Sesión Automático', `Sesión finalizada por 10 minutos de inactividad.`);
+      setNavHistory([]);
       setCurrentUser(null);
       setSelectedEventId(null);
       setActiveTab("Summary");
@@ -611,7 +637,7 @@ const App = () => {
     const newRegStatus = { ...currentEvent.regStatus, [loc]: true };
     await updateEventConfig({ locations: newLocations, regStatus: newRegStatus });
     addLog('Gestión de Sedes', `Añadió la nueva sede: ${loc} al evento ${currentEvent.name}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
-    setNewLocationName(''); setIsAddLocModalOpen(false); setActiveTab(loc);
+    setNewLocationName(''); setIsAddLocModalOpen(false); goTo(systemView, selectedEventId, loc);
     showToast("Sede añadida.");
   };
 
@@ -624,7 +650,7 @@ const App = () => {
     delete newRegStatus[loc];
     await updateEventConfig({ locations: newLocations, regStatus: newRegStatus });
     addLog('Gestión de Sedes', `Eliminó la sede vacía: ${loc} del evento ${currentEvent.name}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
-    setActiveTab("Summary");
+    goTo(systemView, selectedEventId, 'Summary');
     showToast("Sede eliminada.");
   };
 
@@ -1021,27 +1047,34 @@ const App = () => {
       <div className="min-h-screen bg-slate-50 p-4 md:p-8 animate-in fade-in duration-500 relative">
         <div className="max-w-5xl mx-auto space-y-8">
           <header className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
-            <div>
-              <h1 className="text-2xl font-black text-slate-800">
-                {systemView === 'users' ? 'Gestión de Usuarios' : systemView === 'logs' ? 'Registro de Actividad' : 'Selecciona un Evento'}
-              </h1>
-              <p className="text-sm text-slate-500">
-                {systemView === 'users' ? 'Administra los accesos al sistema global.' : systemView === 'logs' ? 'Historial global de acciones en el sistema.' : 'Elige el evento que deseas administrar o crea uno nuevo.'}
-              </p>
+            <div className="flex items-center gap-4">
+              {navHistory.length > 0 && (
+                <button onClick={goBack} className="p-2.5 bg-slate-50 text-slate-500 hover:bg-slate-100 hover:text-indigo-600 rounded-xl transition-colors border border-slate-200" title="Regresar">
+                  <ArrowLeft size={20} />
+                </button>
+              )}
+              <div>
+                <h1 className="text-2xl font-black text-slate-800">
+                  {systemView === 'users' ? 'Gestión de Usuarios' : systemView === 'logs' ? 'Registro de Actividad' : 'Selecciona un Evento'}
+                </h1>
+                <p className="text-sm text-slate-500">
+                  {systemView === 'users' ? 'Administra los accesos al sistema global.' : systemView === 'logs' ? 'Historial global de acciones en el sistema.' : 'Elige el evento que deseas administrar o crea uno nuevo.'}
+                </p>
+              </div>
             </div>
             <div className="flex flex-wrap items-center gap-4 border-t md:border-t-0 md:border-l border-slate-100 pt-4 md:pt-0 md:pl-6">
               {systemView !== 'events' && (
-                <button onClick={() => setSystemView('events')} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors text-xs flex items-center gap-2">
+                <button onClick={() => goTo('events', null, 'Summary')} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors text-xs flex items-center gap-2">
                   <LayoutDashboard size={14} /> Eventos
                 </button>
               )}
               {hasAdminRights && systemView !== 'users' && (
-                <button onClick={() => setSystemView('users')} className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl font-bold hover:bg-indigo-100 transition-colors text-xs flex items-center gap-2">
+                <button onClick={() => goTo('users', null, 'Summary')} className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl font-bold hover:bg-indigo-100 transition-colors text-xs flex items-center gap-2">
                   <UserCog size={14} /> Usuarios
                 </button>
               )}
-              {systemView !== 'logs' && (
-                <button onClick={() => setSystemView('logs')} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors text-xs flex items-center gap-2">
+              {systemView !== 'logs' && currentUser?.role !== 'Lector' && (
+                <button onClick={() => goTo('logs', null, 'Summary')} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors text-xs flex items-center gap-2">
                   <History size={14} /> Logs
                 </button>
               )}
@@ -1067,7 +1100,7 @@ const App = () => {
                     onDrop={(e) => handleDrop(e, ev.id)}
                     onDragEnd={() => setDraggedEventId(null)}
                     className={`bg-white rounded-3xl p-6 shadow-sm border border-slate-200 hover:shadow-lg hover:border-indigo-300 transition-all relative group flex flex-col justify-between ${hasAdminRights ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} ${draggedEventId === ev.id ? 'opacity-40 scale-95' : 'opacity-100 scale-100'}`}
-                    onClick={() => { setSelectedEventId(ev.id); setActiveTab("Summary"); }}
+                    onClick={() => goTo('events', ev.id, "Summary")}
                   >
                     {hasAdminRights && <div className="absolute top-4 right-4 text-slate-200 opacity-0 group-hover:opacity-100 transition-opacity"><GripVertical size={20} /></div>}
                     <div>
@@ -1178,7 +1211,7 @@ const App = () => {
           </div>
         )}
 
-        {/* Edit User Modal (FIXED) */}
+        {/* Edit User Modal */}
         {editingUser.isOpen && (
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
@@ -1716,7 +1749,7 @@ const App = () => {
                               <p className="text-xs font-black text-green-600 flex justify-between"><span>Pagado:</span> <span>{formatMoney(person.paid || 0)}</span></p>
                               <p className={`text-[10px] font-bold flex justify-between ${isBecado ? 'text-purple-600' : balance > 0 ? 'text-orange-500' : 'text-green-600'}`}><span>Restante:</span> <span>{isBecado ? 'No requerido' : balance > 0 ? formatMoney(balance) : 'Liquidado'}</span></p>
                             </div>
-                            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1"><div className="h-full bg-green-500 transition-all" style={{ width: `${Math.min(((person.paid || 0) / baseCost) * 100, 100)}%` }} /></div>
+                            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1"><div className="h-full bg-green-50 transition-all" style={{ width: `${Math.min(((person.paid || 0) / baseCost) * 100, 100)}%` }} /></div>
                           </div>
                         </td>
                         <td className="px-4 py-4 align-top text-center">
@@ -1840,9 +1873,11 @@ const App = () => {
         </div>
         <nav className="flex-1 px-4 space-y-1 overflow-y-auto pb-6">
           <div className="pt-2 pb-2 px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Principal</div>
-          <button onClick={() => setActiveTab("Summary")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Summary' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><BarChart3 size={20} className={activeTab === 'Summary' ? 'text-indigo-400' : ''} /><span className="font-bold">Resumen General</span></div>{activeTab === 'Summary' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
+          <button onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Summary' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><BarChart3 size={20} className={activeTab === 'Summary' ? 'text-indigo-400' : ''} /><span className="font-bold">Resumen General</span></div>{activeTab === 'Summary' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
           
-          <button onClick={() => setActiveTab("Logs")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-4 ${activeTab === 'Logs' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><History size={20} className={activeTab === 'Logs' ? 'text-indigo-400' : ''} /><span className="font-bold">Logs del Evento</span></div>{activeTab === 'Logs' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
+          {currentUser?.role !== 'Lector' && (
+            <button onClick={() => goTo(systemView, selectedEventId, "Logs")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-4 ${activeTab === 'Logs' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><History size={20} className={activeTab === 'Logs' ? 'text-indigo-400' : ''} /><span className="font-bold">Logs del Evento</span></div>{activeTab === 'Logs' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
+          )}
           
           <div className="flex items-center justify-between py-2 px-4 border-t border-slate-800/50 pt-4">
             <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Sedes Disponibles</span>
@@ -1850,7 +1885,7 @@ const App = () => {
           </div>
           {(currentEvent?.locations || []).map(loc => (
             <div key={loc} className="flex flex-col mb-1">
-              <button onClick={() => setActiveTab(loc)} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all group ${activeTab === loc ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/40' : 'text-slate-500 hover:bg-white/5 hover:text-slate-300'}`}>
+              <button onClick={() => goTo(systemView, selectedEventId, loc)} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all group ${activeTab === loc ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/40' : 'text-slate-500 hover:bg-white/5 hover:text-slate-300'}`}>
                 <div className="flex items-center gap-3"><MapPin size={20} className={activeTab === loc ? 'text-white' : 'text-slate-700 group-hover:text-slate-500'} /><span className="font-bold">{loc}</span></div>
                 <div className="flex items-center gap-2">
                   {!isLocOpen(loc) && <span className="text-[8px] bg-red-500/20 text-red-400 px-1.5 rounded uppercase font-bold border border-red-500/30">Cerrada</span>}
@@ -1862,35 +1897,52 @@ const App = () => {
             </div>
           ))}
           <div className="pt-6 pb-2 px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.2em] border-t border-slate-800/50 mt-4">Sistema</div>
-          <button onClick={() => { setSelectedEventId(null); setSystemView('users'); }} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><UserCog size={20} /><span className="font-bold">Gestión de Usuarios</span></div></button>
-          <button onClick={() => { setSelectedEventId(null); setSystemView('logs'); }} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><History size={20} /><span className="font-bold">Logs de Actividades</span></div></button>
+          <button onClick={() => goTo('users', null, "Summary")} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><UserCog size={20} /><span className="font-bold">Usuarios Globales</span></div></button>
+          {currentUser?.role !== 'Lector' && (
+            <button onClick={() => goTo('logs', null, "Summary")} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><History size={20} /><span className="font-bold">Logs Globales</span></div></button>
+          )}
         </nav>
         <div className="p-4 border-t border-slate-800 space-y-2">
-          <button onClick={() => { setSelectedEventId(null); setActiveTab("Summary"); setSystemView('events'); }} className="w-full flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl font-bold transition-all text-sm"><LayoutDashboard size={16} /> Cambiar de Evento</button>
+          <button onClick={() => goTo('events', null, "Summary")} className="w-full flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl font-bold transition-all text-sm"><LayoutDashboard size={16} /> Cambiar de Evento</button>
           <button onClick={handleLogout} className="w-full flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-700 text-red-400 hover:bg-red-500/20 hover:text-red-300 rounded-xl font-bold transition-all text-sm"><LogOut size={16} /> Cerrar Sesión</button>
         </div>
       </aside>
 
       <main className="flex-1 overflow-y-auto bg-[#f8fafc]">
-        <header className="sticky top-0 z-10 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 md:px-8 py-4 flex items-center justify-between lg:justify-end">
-          <div className="lg:hidden flex items-center gap-3 flex-1 mr-4 min-w-0">
-            <h2 className="text-slate-800 font-black text-base truncate flex-1">
-              {currentEvent?.name}
-            </h2>
-            {hasAdminRights && (
-              <button onClick={() => setRenameModal({isOpen: true, id: currentEvent.id, name: currentEvent.name})} className="text-slate-400 hover:text-indigo-600 p-1 flex-shrink-0">
-                <Edit3 size={16} />
+        <header className="sticky top-0 z-10 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 md:px-8 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3 flex-1 min-w-0 mr-4">
+            {navHistory.length > 0 && (
+              <button
+                onClick={goBack}
+                className="p-2 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 hover:text-indigo-600 transition-colors flex-shrink-0"
+                title="Regresar"
+              >
+                <ArrowLeft size={18} />
               </button>
             )}
+
+            <div className="lg:hidden flex items-center gap-3 flex-1 min-w-0">
+              <h2 className="text-slate-800 font-black text-base truncate flex-1">
+                {currentEvent?.name}
+              </h2>
+              {hasAdminRights && (
+                <button onClick={() => setRenameModal({isOpen: true, id: currentEvent.id, name: currentEvent.name})} className="text-slate-400 hover:text-indigo-600 p-1 flex-shrink-0">
+                  <Edit3 size={16} />
+                </button>
+              )}
+            </div>
           </div>
+          
           <div className="flex items-center gap-2 md:gap-4 flex-shrink-0">
             <div className="hidden lg:flex items-center gap-2 mr-4 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
             <button onClick={() => setShowMoney(!showMoney)} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors">{showMoney ? <EyeOff size={14} /> : <Eye size={14} />}<span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span></button>
             <div className="bg-slate-100 rounded-full p-1 hidden sm:flex">
-              <button onClick={() => setActiveTab("Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button>
-              <button onClick={() => setActiveTab("Logs")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Logs' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Logs</button>
+              <button onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button>
+              {currentUser?.role !== 'Lector' && (
+                <button onClick={() => goTo(systemView, selectedEventId, "Logs")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Logs' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Logs</button>
+              )}
             </div>
-            <button onClick={() => { setSelectedEventId(null); setActiveTab("Summary"); }} className="lg:hidden bg-indigo-50 text-indigo-600 p-2 rounded-xl"><LayoutDashboard size={18} /></button>
+            <button onClick={() => goTo('events', null, 'Summary')} className="lg:hidden bg-indigo-50 text-indigo-600 p-2 rounded-xl"><LayoutDashboard size={18} /></button>
           </div>
         </header>
         {activeTab === "Summary" && renderSummary()}
