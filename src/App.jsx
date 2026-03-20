@@ -64,6 +64,17 @@ const defaultViewPrefs = {
   tableDetails: true
 };
 
+// Helper: Formatear fecha a DD-MMM-YYYY
+const formatDisplayDate = (dateString) => {
+  if (!dateString) return 'Sin fecha';
+  try {
+    const d = new Date(dateString + 'T00:00:00');
+    return d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/\./g, '');
+  } catch (e) {
+    return dateString;
+  }
+};
+
 // UI Reusable Classes
 const inputClasses = "w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold text-slate-700 transition-all";
 const labelClasses = "text-[10px] font-black text-slate-400 uppercase tracking-widest px-1 block mb-1.5";
@@ -1630,24 +1641,30 @@ const App = () => {
                         <span className="text-[10px] font-black uppercase text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">{ev.eventType}</span>
                         
                         {hasAdminRights ? (
-                          <input
-                            type="date"
-                            defaultValue={ev.date || ''}
-                            onClick={e => e.stopPropagation()}
-                            onBlur={async (e) => {
-                              const newVal = e.target.value;
-                              if (newVal !== (ev.date || '')) {
-                                const payload = { date: newVal };
-                                if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
-                                await updateDoc(getDocRef('app_events', ev.id), payload);
-                                addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
-                              }
-                            }}
-                            className="text-[10px] font-bold text-slate-500 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-200 outline-none cursor-pointer hover:border-indigo-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                            title="Clic para editar fecha"
-                          />
+                          <label className="relative flex items-center cursor-pointer group" onClick={e => e.stopPropagation()}>
+                            <span className="text-[10px] font-bold text-slate-500 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-200 group-hover:border-indigo-300 transition-colors uppercase">
+                              {formatDisplayDate(ev.date)}
+                            </span>
+                            <input
+                              type="date"
+                              defaultValue={ev.date || ''}
+                              onBlur={async (e) => {
+                                const newVal = e.target.value;
+                                if (newVal !== (ev.date || '')) {
+                                  const payload = { date: newVal };
+                                  if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
+                                  await updateDoc(getDocRef('app_events', ev.id), payload);
+                                  addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
+                                }
+                              }}
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
+                              title="Clic para editar fecha"
+                            />
+                          </label>
                         ) : (
-                          <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-100">{ev.date || 'Sin fecha'}</span>
+                          <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-100 uppercase">
+                            {formatDisplayDate(ev.date)}
+                          </span>
                         )}
                       </div>
                     </div>
