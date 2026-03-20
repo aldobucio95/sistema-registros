@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   Users, MapPin, PieChart, Plus, Trash2, DollarSign, CheckCircle2, XCircle,
   LayoutDashboard, Phone, ShieldAlert, Power, BarChart3, Edit3, TableProperties,
@@ -130,12 +130,11 @@ const App = () => {
   const [events, setEvents] = useState([]);
   const [globalLocations, setGlobalLocations] = useState([]);
   const [selectedEventId, setSelectedEventId] = useState(null);
-  const [systemView, setSystemView] = useState('events'); // 'events' | 'users' | 'logs'
+  const [systemView, setSystemView] = useState('events'); 
   const [isAddEventModalOpen, setIsAddEventModalOpen] = useState(false);
   const [deleteEventModal, setDeleteEventModal] = useState({ isOpen: false, id: null, name: '' });
   const [draggedEventId, setDraggedEventId] = useState(null);
   const [newEventData, setNewEventData] = useState({ name: '', type: 'Campa', date: '', baseCost: '' });
-  
   const [renameModal, setRenameModal] = useState({ isOpen: false, id: null, name: '' });
 
   // Navigation History Stack
@@ -145,10 +144,10 @@ const App = () => {
   const [viewPrefs, setViewPrefs] = useState(defaultViewPrefs);
   const [showViewSettings, setShowViewSettings] = useState(false);
 
-  // Debug Mode State
-  const [isDebugMode, setIsDebugMode] = useState(false);
-  const [debugSessionId, setDebugSessionId] = useState(null);
+  // Debug Toast & Watcher
+  const [debugToast, setDebugToast] = useState(null);
   const [showDebugLogs, setShowDebugLogs] = useState(false);
+  const prevDebugRef = useRef();
 
   const currentEvent = useMemo(() => events.find(e => e.id === selectedEventId) || null, [events, selectedEventId]);
   const sortedEvents = useMemo(() => [...events].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)), [events]);
@@ -190,6 +189,7 @@ const App = () => {
   const [tempEventDate, setTempEventDate] = useState("");
   const [tempDeposit, setTempDeposit] = useState("");
   const [tempRealCost, setTempRealCost] = useState("");
+  const [newCustomField, setNewCustomField] = useState("");
 
   const [newEntry, setNewEntry] = useState(EMPTY_ENTRY);
   const [editRegistryModal, setEditRegistryModal] = useState({ isOpen: false, loc: '', data: null });
@@ -253,33 +253,76 @@ const App = () => {
     });
   };
 
-  // Toggle Debug Mode
+  // Watcher for Debug Mode Global Toast
+  useEffect(() => {
+    if (!globalConfig) return;
+
+    const current = globalConfig.isDebugMode;
+    const prev = prevDebugRef.current;
+
+    if (prev !== undefined && current !== prev) {
+      if (current) {
+        setDebugToast({
+          msg: "El modo de depuración se activó. Las modificaciones con el insecto no son permanentes y se eliminarán.",
+          type: "active"
+        });
+      } else {
+        setDebugToast({
+          msg: "El modo de depuración terminó.",
+          type: "inactive"
+        });
+      }
+      
+      const timer = setTimeout(() => setDebugToast(null), 15000);
+      return () => clearTimeout(timer);
+    }
+    prevDebugRef.current = current;
+  }, [globalConfig?.isDebugMode]);
+
+  const applyRevert = async (revertInfo) => {
+    if (!revertInfo) return;
+    const { collectionName, docId, action, previousData } = revertInfo;
+    try {
+      if (action === 'create') {
+        await deleteDoc(getDocRef(collectionName, docId));
+      } else if (action === 'update' || action === 'delete') {
+        if (previousData) {
+          await setDoc(getDocRef(collectionName, docId), previousData);
+        }
+      }
+    } catch (err) {
+      console.error("Error al revertir:", err);
+    }
+  };
+
+  // Toggle Debug Mode (Global via Firestore)
   const toggleDebugMode = async () => {
-    if (!isDebugMode) {
-      setIsDebugMode(true);
-      setDebugSessionId(Date.now());
-      showToast("Modo depuración activado. Todos los cambios estarán ocultos y se revertirán al salir.");
+    if (!globalConfig?.isDebugMode) {
+      const newSessionId = Date.now();
+      await updateDoc(getDocRef('app_data', 'config'), { isDebugMode: true, debugSessionId: newSessionId });
       
       const newLogId = Date.now() + 1;
       await setDoc(getDocRef('app_logs', String(newLogId)), {
         id: newLogId, eventId: 'Global', eventName: 'Sistema',
         timestamp: new Date().toLocaleString('es-MX'),
-        username: currentUser.username, action: 'Sistema', details: 'Inició modo depuración.', revertInfo: null
+        username: currentUser.username, action: 'Sistema', details: 'Inició modo depuración.', revertInfo: null,
+        isDebug: true, debugSessionId: newSessionId
       });
     } else {
-      const logsToRevert = logs.filter(l => l.debugSessionId === debugSessionId && l.revertInfo).sort((a,b) => b.id - a.id);
+      const currentSession = globalConfig.debugSessionId;
+      const logsToRevert = logs.filter(l => l.debugSessionId === currentSession && l.revertInfo).sort((a,b) => b.id - a.id);
+      
       for (const l of logsToRevert) {
         await applyRevert(l.revertInfo);
       }
-      setIsDebugMode(false);
-      setDebugSessionId(null);
-      showToast(`Modo depuración finalizado. Se revirtieron ${logsToRevert.length} acciones.`);
+      
+      await updateDoc(getDocRef('app_data', 'config'), { isDebugMode: false, debugSessionId: null });
       
       const newLogId = Date.now() + 1;
       await setDoc(getDocRef('app_logs', String(newLogId)), {
         id: newLogId, eventId: 'Global', eventName: 'Sistema',
         timestamp: new Date().toLocaleString('es-MX'),
-        username: currentUser.username, action: 'Sistema', details: `Salió de depuración. Se revirtieron ${logsToRevert.length} acciones.`, revertInfo: null
+        username: currentUser.username, action: 'Sistema', details: `Salió de depuración. Se revirtieron ${logsToRevert.length} acciones temporales.`, revertInfo: null
       });
     }
   };
@@ -326,7 +369,7 @@ const App = () => {
         setGlobalLocations(docSnap.data().locations || defaultLocations);
         setGlobalConfig(docSnap.data());
       } else {
-        setDoc(getDocRef('app_data', 'config'), { locations: defaultLocations });
+        setDoc(getDocRef('app_data', 'config'), { locations: defaultLocations, isDebugMode: false, debugSessionId: null });
         setGlobalLocations(defaultLocations);
       }
     }, console.error);
@@ -402,26 +445,10 @@ const App = () => {
       eventName: ev?.name || 'Sistema',
       timestamp: new Date().toLocaleString('es-MX'),
       username, action, details, revertInfo,
-      ...(isDebugMode ? { isDebug: true, debugSessionId } : {})
+      ...(globalConfig?.isDebugMode ? { isDebug: true, debugSessionId: globalConfig.debugSessionId } : {})
     };
     await setDoc(getDocRef('app_logs', String(newLogId)), newLog);
-  }, [currentUser, currentEvent, isDebugMode, debugSessionId]);
-
-  const applyRevert = async (revertInfo) => {
-    if (!revertInfo) return;
-    const { collectionName, docId, action, previousData } = revertInfo;
-    try {
-      if (action === 'create') {
-        await deleteDoc(getDocRef(collectionName, docId));
-      } else if (action === 'update' || action === 'delete') {
-        if (previousData) {
-          await setDoc(getDocRef(collectionName, docId), previousData);
-        }
-      }
-    } catch (err) {
-      console.error("Error al revertir:", err);
-    }
-  };
+  }, [currentUser, currentEvent, globalConfig]);
 
   const handleCleanLogs = () => {
     if (!hasAdminRights) return;
@@ -499,8 +526,13 @@ const App = () => {
 
   const updateEventConfig = useCallback(async (updates) => {
     if (!currentEvent) return;
-    await updateDoc(getDocRef('app_events', currentEvent.id), updates);
-  }, [currentEvent]);
+    const payload = { ...updates };
+    if (globalConfig?.isDebugMode) {
+      payload._isDebug = true;
+      payload._debugSessionId = globalConfig.debugSessionId;
+    }
+    await updateDoc(getDocRef('app_events', currentEvent.id), payload);
+  }, [currentEvent, globalConfig]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -538,7 +570,6 @@ const App = () => {
       if (!globalConfig || !hasAdminRights || events.length === 0 || allParticipants.length === 0) return;
 
       const now = new Date();
-      // Formato local en string para comparar
       const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
 
       if (globalConfig.lastBackupDate !== today) {
@@ -549,7 +580,7 @@ const App = () => {
             timestamp: Date.now(),
             participants: allParticipants,
             events: events,
-            users: users.map(u => ({...u, password: '***'})) // Ocultamos contraseña por seguridad en el backup visible
+            users: users.map(u => ({...u, password: '***'})) 
           };
           await setDoc(getDocRef('app_backups', today), backupData);
           addLog('Sistema', `Copia de seguridad automática diaria (${today}) generada exitosamente.`, 'Sistema', null, { isBackup: true, backupId: today });
@@ -625,7 +656,8 @@ const App = () => {
       realCost: 0,
       dynamicPrices: [],
       minDeposit: 0, locations: defaultLocations, regStatus: defaultRegStatus,
-      customFields: [], order: events.length
+      customFields: [], order: events.length,
+      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {})
     };
     await setDoc(getDocRef('app_events', newEvt.id), newEvt);
     addLog('Gestión de Eventos', `Creó un nuevo evento (${newEvt.eventType}): ${newEvt.name} con base de $${newEvt.globalCost}`, null, newEvt, { collectionName: 'app_events', docId: newEvt.id, action: 'create', previousData: null });
@@ -637,7 +669,10 @@ const App = () => {
     if (!renameModal.name.trim() || !renameModal.id) return;
     const ev = events.find(e => e.id === renameModal.id);
     if (ev && ev.name !== renameModal.name.trim()) {
-      await updateDoc(getDocRef('app_events', ev.id), { name: renameModal.name.trim() });
+      const payload = { name: renameModal.name.trim() };
+      if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
+      
+      await updateDoc(getDocRef('app_events', ev.id), payload);
       addLog('Gestión de Eventos', `Renombró evento: "${ev.name}" -> "${renameModal.name.trim()}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
       showToast("Nombre del evento actualizado.");
     }
@@ -661,12 +696,16 @@ const App = () => {
     const draggedIdx = sortedEvents.findIndex(ev => ev.id === draggedEventId);
     const targetIdx = sortedEvents.findIndex(ev => ev.id === targetId);
     if (draggedIdx === -1 || targetIdx === -1) return;
+    
     const newEventsOrder = [...sortedEvents];
     const [draggedItem] = newEventsOrder.splice(draggedIdx, 1);
     newEventsOrder.splice(targetIdx, 0, draggedItem);
+    
     newEventsOrder.forEach((ev, index) => {
       if ((ev.order ?? -1) !== index) {
-        updateDoc(getDocRef('app_events', ev.id), { order: index });
+        const payload = { order: index };
+        if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
+        updateDoc(getDocRef('app_events', ev.id), payload);
       }
     });
     setDraggedEventId(null);
@@ -719,7 +758,6 @@ const App = () => {
 
     const newId = String(Date.now());
     await setDoc(getDocRef('app_users', newId), { ...newUser, id: newId });
-    // NO revert info to protect passwords
     addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`);
     setNewUser({ username: '', password: '', role: 'Editor' });
     showToast("Usuario añadido exitosamente.");
@@ -759,7 +797,7 @@ const App = () => {
     if (currentUser.id === editingUser.id) {
       setCurrentUser({ ...currentUser, username: editingUser.username, password: editingUser.newPassword, role: editingUser.role });
     }
-    // NO revert info to protect passwords
+    
     if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
     
     setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
@@ -776,7 +814,6 @@ const App = () => {
     }
 
     await deleteDoc(getDocRef('app_users', String(id)));
-    // NO revert info
     addLog('Gestión de Usuarios', `Eliminó al usuario: ${username}`);
     showToast("Usuario eliminado.");
   };
@@ -937,7 +974,6 @@ const App = () => {
           regular: { count: 0, paid: 0, pending: 0, expected: 0 },
           scholarship: { count: 0, paid: 0, pending: 0, expected: 0 }
         };
-        // Removed if (isLocOpen(loc)) check so it includes closed locations in summary
         (data[loc] || []).forEach(person => {
           if (person.gender === 'Hombre') totalMen++;
           else if (person.gender === 'Mujer') totalWomen++;
@@ -1031,7 +1067,7 @@ const App = () => {
       totalMinors, totalAdults, totalServersBoth, totalPaidOff, totalWithDebt,
       ageBrackets, bloodTypeStats, customFieldsStats, locationStats, globalStats
     };
-  }, [data, currentEvent, currentPricing, getPersonCost]); // Removed isLocOpen dependency
+  }, [data, currentEvent, currentPricing, getPersonCost]); 
 
   const handleAddEntry = async (loc) => {
     if (!isFormValid || !isLocOpen(loc)) return;
@@ -1047,7 +1083,16 @@ const App = () => {
       ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'Jóvenes') 
       : '';
 
-    const personData = { ...newEntry, id: newPersonId, location: loc, eventId: currentEvent.id, paymentHistory: initialHistory, registeredCost, campAssignment: initialCampAssignment };
+    const personData = { 
+      ...newEntry, 
+      id: newPersonId, 
+      location: loc, 
+      eventId: currentEvent.id, 
+      paymentHistory: initialHistory, 
+      registeredCost, 
+      campAssignment: initialCampAssignment,
+      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {})
+    };
 
     if (currentEvent.eventType !== 'Campa') {
       personData.isScholarship = 'No'; personData.isServer = 'No'; personData.serverAssignment = '';
@@ -1100,9 +1145,16 @@ const App = () => {
       changes.push(`Costo Ajustado a ${finalRegisteredCost}`);
     }
 
-    await setDoc(getDocRef('app_participants', String(editedPerson.id)), {
+    const payload = {
       ...editedPerson, location: loc, eventId: currentEvent.id, paymentHistory: updatedHistory, registeredCost: finalRegisteredCost
-    });
+    };
+
+    if (globalConfig?.isDebugMode) {
+      payload._isDebug = true;
+      payload._debugSessionId = globalConfig.debugSessionId;
+    }
+
+    await setDoc(getDocRef('app_participants', String(editedPerson.id)), payload);
 
     if (changes.length > 0) {
       const isLiquidado = editedPerson.isScholarship === 'No' && parseFloat(editedPerson.paid) >= finalRegisteredCost;
@@ -1151,7 +1203,14 @@ const App = () => {
     const newPaymentRecord = { id: Date.now(), date: new Date().toLocaleString('es-MX'), amount: addedAmount, registeredBy: currentUser?.username };
     const person = (data[paymentModal.loc] || []).find(p => String(p.id) === String(paymentModal.id));
     const newPaid = parseFloat(person.paid || 0) + addedAmount;
-    await updateDoc(getDocRef('app_participants', String(person.id)), { paid: newPaid, paymentHistory: [...(person.paymentHistory || []), newPaymentRecord] });
+    
+    const payload = { paid: newPaid, paymentHistory: [...(person.paymentHistory || []), newPaymentRecord] };
+    if (globalConfig?.isDebugMode) {
+      payload._isDebug = true;
+      payload._debugSessionId = globalConfig.debugSessionId;
+    }
+
+    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
     const isLiquidado = paymentModal.isScholarship === 'No' && newPaid >= baseCost;
     addLog('Abono Financiero', `Registró un abono de $${addedAmount} para ${paymentModal.personName} en la sede ${paymentModal.loc}. (Pagado: $${paymentModal.currentPaid} -> $${newPaid})${isLiquidado ? ' [LIQUIDADO]' : ''}`, null, null, { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person });
     setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0 });
@@ -1165,7 +1224,15 @@ const App = () => {
   // ─────────────────────────────────────────────
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-blue-950 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-blue-950 flex items-center justify-center p-4 relative">
+        {debugToast && (
+          <div className="fixed bottom-6 left-6 bg-slate-900 text-white p-4 rounded-xl shadow-2xl z-50 max-w-sm animate-in slide-in-from-bottom-5 border-l-4 border-orange-500">
+            <div className="flex items-start gap-3">
+              <Bug className="text-orange-500 flex-shrink-0 mt-0.5" size={20} />
+              <p className="text-xs font-bold leading-relaxed">{debugToast.msg}</p>
+            </div>
+          </div>
+        )}
         <div className="bg-white rounded-3xl shadow-2xl overflow-hidden max-w-md w-full animate-in fade-in zoom-in duration-500">
           <div className="bg-blue-900 p-8 text-center">
             <div className="bg-white/20 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
@@ -1254,13 +1321,10 @@ const App = () => {
   );
 
   const renderLogs = () => {
-    // Filtramos globalmente basándonos en el dropdown de contexto y el término de búsqueda
     const displayedLogs = logs.filter(log => {
-      // Ocultar logs de depuración si no se ha activado la opción (o si no es Admin)
       if (log.isDebug) {
         if (!hasAdminRights || !showDebugLogs) return false;
       }
-
       const matchContext = logFilterContext === 'all' || log.eventName === logFilterContext;
       const matchSearch = !logSearchTerm || 
         log.username.toLowerCase().includes(logSearchTerm.toLowerCase()) ||
@@ -1365,6 +1429,15 @@ const App = () => {
   if (currentUser && !selectedEventId) {
     return (
       <div className="min-h-screen bg-slate-50 p-4 md:p-8 animate-in fade-in duration-500 relative">
+        {debugToast && (
+          <div className="fixed bottom-6 left-6 bg-slate-900 text-white p-4 rounded-xl shadow-2xl z-50 max-w-sm animate-in slide-in-from-bottom-5 border-l-4 border-orange-500">
+            <div className="flex items-start gap-3">
+              <Bug className="text-orange-500 flex-shrink-0 mt-0.5" size={20} />
+              <p className="text-xs font-bold leading-relaxed">{debugToast.msg}</p>
+            </div>
+          </div>
+        )}
+
         <div className="max-w-5xl mx-auto space-y-8">
           <header className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
             <div className="flex items-center gap-4">
@@ -1384,8 +1457,8 @@ const App = () => {
             </div>
             <div className="flex flex-wrap items-center gap-4 border-t md:border-t-0 md:border-l border-slate-100 pt-4 md:pt-0 md:pl-6">
               {isSuperUser && (
-                <button onClick={toggleDebugMode} className={`flex items-center gap-1 md:gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-colors shadow-sm ${isDebugMode ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-500'}`} title="Modo de prueba aislada">
-                  <Bug size={14} /><span className="hidden sm:inline">{isDebugMode ? 'Salir Depuración' : 'Depurar'}</span>
+                <button onClick={toggleDebugMode} className={`flex items-center gap-1 md:gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-colors shadow-sm ${globalConfig?.isDebugMode ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-500'}`} title="Modo de prueba aislada">
+                  <Bug size={14} /><span className="hidden sm:inline">{globalConfig?.isDebugMode ? 'Salir Depuración' : 'Depurar'}</span>
                 </button>
               )}
               {systemView !== 'events' && (
@@ -1407,6 +1480,18 @@ const App = () => {
               <button onClick={handleLogout} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-red-50 hover:text-red-600 transition-colors text-xs flex items-center gap-2"><LogOut size={14} /> Salir</button>
             </div>
           </header>
+
+          {globalConfig?.isDebugMode && systemView === 'events' && (
+            <div className="bg-orange-50 border border-orange-200 p-4 rounded-2xl flex items-start gap-3 shadow-sm animate-in fade-in">
+              <div className="bg-orange-100 p-2 rounded-lg"><Bug className="text-orange-500" size={20} /></div>
+              <div>
+                <h4 className="text-sm font-black text-orange-800">Modo de Depuración Activo</h4>
+                <p className="text-xs text-orange-700 mt-1">
+                  Las modificaciones marcadas con el insecto no son permanentes y se eliminarán al salir de este modo.
+                </p>
+              </div>
+            </div>
+          )}
 
           {systemView === 'users' ? (
             <div className="-mx-6 -mt-6">{renderUsers()}</div>
@@ -1432,7 +1517,10 @@ const App = () => {
                       <div className="bg-indigo-50 text-indigo-600 w-12 h-12 rounded-2xl flex items-center justify-center mb-4"><CalendarRange size={24} /></div>
                       
                       <div className="flex items-start justify-between gap-2 mb-1">
-                        <h3 className="text-lg font-bold text-slate-800 leading-tight pr-2">{ev.name}</h3>
+                        <h3 className="text-lg font-bold text-slate-800 leading-tight pr-2 flex items-center gap-2">
+                          {ev.name}
+                          {ev._isDebug && ev._debugSessionId === globalConfig?.debugSessionId && <Bug size={16} className="text-orange-500" title="Cambio no permanente" />}
+                        </h3>
                         {hasAdminRights && (
                           <button onClick={(e) => { e.stopPropagation(); setRenameModal({isOpen: true, id: ev.id, name: ev.name}); }} className="text-slate-300 hover:text-indigo-600 p-1 flex-shrink-0">
                             <Edit3 size={16} />
@@ -1451,7 +1539,9 @@ const App = () => {
                             onBlur={async (e) => {
                               const newVal = e.target.value;
                               if (newVal !== (ev.date || '')) {
-                                await updateDoc(getDocRef('app_events', ev.id), { date: newVal });
+                                const payload = { date: newVal };
+                                if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
+                                await updateDoc(getDocRef('app_events', ev.id), payload);
                                 addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
                               }
                             }}
@@ -1536,7 +1626,6 @@ const App = () => {
           </div>
         )}
 
-        {/* Edit User Modal */}
         {editingUser.isOpen && (
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
@@ -1587,7 +1676,6 @@ const App = () => {
           </div>
         )}
 
-        {/* RESTORE MODAL (SCREEN 2) */}
         {restoreModal.isOpen && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center">
@@ -1633,7 +1721,6 @@ const App = () => {
     if (total === 0) return '#f1f5f9';
     let curPerc = 0;
     return `conic-gradient(${(currentEvent?.locations || []).map((loc, i) => {
-      // Removed filter here so closed locations are also in the pie chart
       const val = dataKey === 'paid' ? summary.locationStats[loc].all.paid : summary.locationStats[loc].all.count;
       const per = (val / total) * 100;
       if (per === 0) return '';
@@ -1676,9 +1763,7 @@ const App = () => {
       return { count, scholarship, servers, paid, pending, expected };
     };
 
-    const tableData = (currentEvent?.locations || [])
-      // Removed filter so all locations (even deactivated) are displayed
-      .map(loc => ({ loc, stats: getTableStats(loc) }));
+    const tableData = (currentEvent?.locations || []).map(loc => ({ loc, stats: getTableStats(loc) }));
 
     const globalTableStats = tableData.reduce((acc, { stats }) => {
       acc.count += stats.count; acc.scholarship += stats.scholarship; acc.servers += stats.servers;
@@ -2160,7 +2245,12 @@ const App = () => {
                             <td className="px-4 py-4 align-top">
                               <div className="space-y-1">
                                 <div className="flex items-center flex-wrap gap-2">
-                                  <p className="font-bold text-slate-800 text-sm">{person.name}</p>
+                                  <p className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                                    {person.name}
+                                    {person._isDebug && person._debugSessionId === globalConfig?.debugSessionId && (
+                                      <Bug size={14} className="text-orange-500 inline-block" title="Cambio no permanente" />
+                                    )}
+                                  </p>
                                   {isBecado && <span className="bg-purple-100 text-purple-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><GraduationCap size={10} /> Becado</span>}
                                   {person.isServer === 'Sí' ? (
                                     <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>
@@ -2277,7 +2367,14 @@ const App = () => {
         </div>
       )}
 
-      <aside className="w-80 bg-slate-900 text-white flex-shrink-0 flex-col hidden lg:flex">
+      {debugToast && currentUser && selectedEventId && (
+        <div className="fixed bottom-6 left-6 bg-slate-900 text-white p-4 rounded-xl shadow-2xl z-50 max-w-sm animate-in slide-in-from-bottom-5 border-l-4 border-orange-500 flex items-start gap-3">
+          <Bug className="text-orange-500 flex-shrink-0 mt-0.5" size={20} />
+          <p className="text-xs font-bold leading-relaxed">{debugToast.msg}</p>
+        </div>
+      )}
+
+      <aside className="w-80 bg-slate-900 text-white flex-shrink-0 flex-col hidden lg:flex z-20">
         <div className="p-8 pb-4">
           <div className="flex items-start gap-3 mb-2">
             <div className="bg-indigo-600 p-2 rounded-xl shadow-lg shadow-indigo-500/20 mt-1"><Edit3 size={20} /></div>
@@ -2302,7 +2399,9 @@ const App = () => {
                   onBlur={async (e) => {
                     const newVal = e.target.value;
                     if (newVal !== (currentEvent.date || '')) {
-                      await updateEventConfig({ date: newVal });
+                      const payload = { date: newVal };
+                      if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
+                      await updateDoc(getDocRef('app_events', currentEvent.id), payload);
                       addLog('Evento', `Fecha: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                     }
                   }}
@@ -2369,8 +2468,9 @@ const App = () => {
             )}
 
             <div className="lg:hidden flex items-center gap-3 flex-1 min-w-0">
-              <h2 className="text-slate-800 font-black text-base truncate flex-1">
+              <h2 className="text-slate-800 font-black text-base truncate flex-1 flex items-center gap-2">
                 {currentEvent?.name}
+                {currentEvent?._isDebug && currentEvent?._debugSessionId === globalConfig?.debugSessionId && <Bug size={14} className="text-orange-500" title="Cambio no permanente" />}
               </h2>
               {hasAdminRights && (
                 <button onClick={() => setRenameModal({isOpen: true, id: currentEvent.id, name: currentEvent.name})} className="text-slate-400 hover:text-indigo-600 p-1 flex-shrink-0">
