@@ -5,7 +5,7 @@ import {
   Eye, EyeOff, Search, Filter, ArrowUpDown, CreditCard, ChevronDown, ChevronUp,
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock,
   UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft,
-  SlidersHorizontal, Bug, Download, Database
+  SlidersHorizontal, Bug, Download, Database, Info
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -124,6 +124,8 @@ const App = () => {
     setTimeout(() => setToast(''), 4000);
   }, []);
 
+  const [permissionAlert, setPermissionAlert] = useState({ isOpen: false, message: '' });
+
   const hasAdminRights = ['Administrador', 'SuperUsuario'].includes(currentUser?.role);
   const isSuperUser = currentUser?.role === 'SuperUsuario';
 
@@ -237,6 +239,39 @@ const App = () => {
       return newHist;
     });
   }, []);
+
+  // Real-time Permission Tracker
+  useEffect(() => {
+    if (!currentUser || users.length === 0) return;
+
+    const dbUser = users.find(u => String(u.id) === String(currentUser.id));
+    if (!dbUser) {
+      handleLogout();
+      showToast("Tu cuenta ha sido eliminada por un administrador.");
+      return;
+    }
+
+    const roleChanged = dbUser.role !== currentUser.role;
+    const financesChanged = dbUser.canViewFinances !== currentUser.canViewFinances;
+
+    if (roleChanged || financesChanged) {
+      setCurrentUser(prev => ({
+        ...prev,
+        role: dbUser.role,
+        canViewFinances: dbUser.canViewFinances,
+        username: dbUser.username
+      }));
+
+      let msg = "Tus permisos han sido actualizados. ";
+      if (financesChanged) {
+        msg += dbUser.canViewFinances ? "Ahora tienes acceso a la información financiera." : "Se ha revocado tu acceso a la información financiera.";
+      } else if (roleChanged) {
+        msg += `Tu rol ha cambiado a ${dbUser.role}.`;
+      }
+
+      setPermissionAlert({ isOpen: true, message: msg });
+    }
+  }, [users, currentUser?.role, currentUser?.canViewFinances, currentUser?.id]);
 
   // Load User Preferences
   useEffect(() => {
@@ -815,7 +850,7 @@ const App = () => {
   const handleUpdateUser = async (e) => {
     e.preventDefault();
     if (!hasAdminRights) return;
-    if (!editingUser.username.trim() || !editingUser.newPassword.trim()) return;
+    if (!editingUser.username.trim()) return;
     
     if (editingUser.role === 'SuperUsuario' && users.some(u => u.role === 'SuperUsuario' && String(u.id) !== String(editingUser.id))) {
       showToast("Solo puede haber un SuperUsuario en el sistema.");
@@ -826,14 +861,23 @@ const App = () => {
     const existingUser = users.find(u => u.username === editingUser.username && String(u.id) !== String(editingUser.id));
     if (existingUser) { showToast("El usuario ya existe."); return; }
     
-    if (editingUser.currentPasswordInput !== originalUser.password) {
-      showToast("La contraseña actual es incorrecta.");
-      return;
-    }
-    
-    if (editingUser.newPassword !== editingUser.confirmPassword) {
-      showToast("Las nuevas contraseñas no coinciden.");
-      return;
+    let finalPassword = originalUser.password;
+    const isUpdatingPassword = editingUser.currentPasswordInput || editingUser.newPassword || editingUser.confirmPassword;
+
+    if (isUpdatingPassword) {
+      if (editingUser.currentPasswordInput !== originalUser.password) {
+        showToast("La contraseña actual es incorrecta.");
+        return;
+      }
+      if (!editingUser.newPassword.trim()) {
+        showToast("La nueva contraseña no puede estar vacía.");
+        return;
+      }
+      if (editingUser.newPassword !== editingUser.confirmPassword) {
+        showToast("Las nuevas contraseñas no coinciden.");
+        return;
+      }
+      finalPassword = editingUser.newPassword;
     }
 
     const newCanViewFinances = ['Administrador', 'SuperUsuario', 'Editor'].includes(editingUser.role) ? true : editingUser.canViewFinances;
@@ -841,13 +885,18 @@ const App = () => {
     const changes = [];
     if (originalUser.username !== editingUser.username) changes.push(`Usuario (${originalUser.username} -> ${editingUser.username})`);
     if (originalUser.role !== editingUser.role) changes.push(`Rol (${originalUser.role} -> ${editingUser.role})`);
-    if (originalUser.password !== editingUser.newPassword) changes.push(`Contraseña actualizada`);
+    if (isUpdatingPassword && originalUser.password !== finalPassword) changes.push(`Contraseña actualizada`);
     if (originalUser.canViewFinances !== newCanViewFinances) changes.push(`Ver Finanzas (${originalUser.canViewFinances ? 'Sí' : 'No'} -> ${newCanViewFinances ? 'Sí' : 'No'})`);
     
-    await updateDoc(getDocRef('app_users', String(editingUser.id)), { username: editingUser.username, password: editingUser.newPassword, role: editingUser.role, canViewFinances: newCanViewFinances });
+    await updateDoc(getDocRef('app_users', String(editingUser.id)), { 
+      username: editingUser.username, 
+      password: finalPassword, 
+      role: editingUser.role, 
+      canViewFinances: newCanViewFinances 
+    });
     
     if (currentUser.id === editingUser.id) {
-      setCurrentUser({ ...currentUser, username: editingUser.username, password: editingUser.newPassword, role: editingUser.role, canViewFinances: newCanViewFinances });
+      setCurrentUser({ ...currentUser, username: editingUser.username, password: finalPassword, role: editingUser.role, canViewFinances: newCanViewFinances });
     }
     
     if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
@@ -902,7 +951,7 @@ const App = () => {
     const loc = newLocationName.trim();
     if (!loc || !currentEvent || currentEvent.locations.includes(loc)) return;
     const newLocations = [...currentEvent.locations, loc];
-    const newRegStatus = { ...currentEvent.regStatus, [loc]: true };
+    const newRegStatus = { ...currentEvent.regStatus, [loc] };
     await updateEventConfig({ locations: newLocations, regStatus: newRegStatus });
     addLog('Gestión de Sedes', `Añadió la nueva sede: ${loc} al evento ${currentEvent.name}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
     setNewLocationName(''); setIsAddLocModalOpen(false); goTo(systemView, selectedEventId, loc);
@@ -1497,6 +1546,23 @@ const App = () => {
   if (currentUser && !selectedEventId) {
     return (
       <div className="min-h-screen bg-slate-50 p-4 md:p-8 animate-in fade-in duration-500 relative">
+        
+        {/* Permission Alert Modal */}
+        {permissionAlert.isOpen && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+            <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center border border-indigo-100">
+              <div className="bg-indigo-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border-2 border-indigo-100">
+                <Info size={32} className="text-indigo-500" />
+              </div>
+              <h3 className="text-xl font-black text-slate-800 mb-2">Aviso del Sistema</h3>
+              <p className="text-sm text-slate-500 mb-6">{permissionAlert.message}</p>
+              <button onClick={() => setPermissionAlert({ isOpen: false, message: '' })} className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all active:scale-95 shadow-lg shadow-indigo-200">
+                Entendido
+              </button>
+            </div>
+          </div>
+        )}
+
         {debugToast && (
           <div className="fixed bottom-6 left-6 bg-slate-900 text-white p-4 rounded-xl shadow-2xl z-50 max-w-sm animate-in slide-in-from-bottom-5 border-l-4 border-orange-500">
             <div className="flex items-start gap-3">
@@ -1720,10 +1786,10 @@ const App = () => {
                   )}
                 </div>
                 <div className="border-t border-slate-100 pt-4 mt-2 space-y-4">
-                  <p className="text-xs font-bold text-slate-800">Cambio de Contraseña</p>
-                  <div><label className={labelClasses}>Contraseña Actual</label><input type="password" required className={inputClasses} value={editingUser.currentPasswordInput} onChange={e => setEditingUser({ ...editingUser, currentPasswordInput: e.target.value })} /></div>
-                  <div><label className={labelClasses}>Nueva Contraseña</label><input type="password" required className={inputClasses} value={editingUser.newPassword} onChange={e => setEditingUser({ ...editingUser, newPassword: e.target.value })} /></div>
-                  <div><label className={labelClasses}>Confirmar Nueva Contraseña</label><input type="password" required className={inputClasses} value={editingUser.confirmPassword} onChange={e => setEditingUser({ ...editingUser, confirmPassword: e.target.value })} /></div>
+                  <p className="text-xs font-bold text-slate-800">Cambio de Contraseña <span className="text-slate-400 font-normal">(Opcional)</span></p>
+                  <div><label className={labelClasses}>Contraseña Actual</label><input type="password" placeholder="Dejar en blanco si no se cambiará" className={inputClasses} value={editingUser.currentPasswordInput} onChange={e => setEditingUser({ ...editingUser, currentPasswordInput: e.target.value })} /></div>
+                  <div><label className={labelClasses}>Nueva Contraseña</label><input type="password" placeholder="Solo si deseas cambiarla" className={inputClasses} value={editingUser.newPassword} onChange={e => setEditingUser({ ...editingUser, newPassword: e.target.value })} /></div>
+                  <div><label className={labelClasses}>Confirmar Nueva Contraseña</label><input type="password" placeholder="Repite la nueva contraseña" className={inputClasses} value={editingUser.confirmPassword} onChange={e => setEditingUser({ ...editingUser, confirmPassword: e.target.value })} /></div>
                 </div>
                 <div className="flex gap-3 pt-4">
                   <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false })} className={btnSecondary}>Cancelar</button>
@@ -2469,6 +2535,23 @@ const App = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 flex overflow-hidden relative">
+      
+      {/* Realtime Permission Modal Notification */}
+      {permissionAlert.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+          <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center border border-indigo-100">
+            <div className="bg-indigo-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border-2 border-indigo-100">
+              <Info size={32} className="text-indigo-500" />
+            </div>
+            <h3 className="text-xl font-black text-slate-800 mb-2">Aviso del Sistema</h3>
+            <p className="text-sm text-slate-500 mb-6">{permissionAlert.message}</p>
+            <button onClick={() => setPermissionAlert({ isOpen: false, message: '' })} className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all active:scale-95 shadow-lg shadow-indigo-200">
+              Entendido
+            </button>
+          </div>
+        </div>
+      )}
+
       {toast && (
         <div className="fixed bottom-6 right-6 bg-slate-800 text-white px-5 py-4 rounded-xl shadow-2xl z-50 animate-in slide-in-from-bottom-5 fade-in flex items-center gap-3 font-bold text-sm border border-slate-700">
           <ShieldAlert size={20} className="text-amber-400" />{toast}
