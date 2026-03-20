@@ -273,7 +273,7 @@ const App = () => {
         });
       }
       
-      const timer = setTimeout(() => setDebugToast(null), 15000);
+      const timer = setTimeout(() => setDebugToast(null), 10000);
       return () => clearTimeout(timer);
     }
     prevDebugRef.current = current;
@@ -302,12 +302,18 @@ const App = () => {
       await updateDoc(getDocRef('app_data', 'config'), { isDebugMode: true, debugSessionId: newSessionId });
       
       const newLogId = Date.now() + 1;
-      await setDoc(getDocRef('app_logs', String(newLogId)), {
-        id: newLogId, eventId: 'Global', eventName: 'Sistema',
-        timestamp: new Date().toLocaleString('es-MX'),
-        username: currentUser.username, action: 'Sistema', details: 'Inició modo depuración.', revertInfo: null,
-        isDebug: true, debugSessionId: newSessionId
-      });
+	  await setDoc(getDocRef('app_logs', String(newLogId)), {
+		id: newLogId,
+		eventId: 'Global',
+		eventName: 'Sistema',
+		timestamp: new Date().toLocaleString('es-MX'),
+		username: currentUser.username,
+		action: 'Modo Depuración',
+		details: `El SuperUsuario "${currentUser.username}" activó el modo de depuración. Los cambios realizados durante esta sesión serán revertidos al salir.`,
+		revertInfo: null,
+		isDebug: false,        // ← importante: este log es PERMANENTE, no se revierte
+		debugSessionId: newSessionId
+	  });
     } else {
       const currentSession = globalConfig.debugSessionId;
       const logsToRevert = logs.filter(l => l.debugSessionId === currentSession && l.revertInfo).sort((a,b) => b.id - a.id);
