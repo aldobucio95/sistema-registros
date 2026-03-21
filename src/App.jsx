@@ -497,7 +497,7 @@ const App = () => {
     const logsToDelete = logs.filter(log => (now - log.id) > thirtyDaysMs);
     if (logsToDelete.length > 0) {
       logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
-      addLog('Limpieza de Logs', `Se eliminaron ${logsToDelete.length} registros antiguos (> 30 días).`);
+      addLog('Limpieza de Logs', `Se eliminaron ${logsToDelete.length} registros antiguos (> 30 días).`, null, { id: 'Global', name: 'Sistema' });
       showToast(`Se eliminaron ${logsToDelete.length} registros antiguos.`);
     } else {
       showToast("No hay registros con más de 30 días de antigüedad.");
@@ -511,7 +511,7 @@ const App = () => {
     const logsToDelete = logs.filter(log => (now - log.id) <= thirtyDaysMs);
     if (logsToDelete.length > 0) {
       logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
-      addLog('Limpieza de Logs', `El SuperUsuario eliminó ${logsToDelete.length} registros recientes (< 30 días).`);
+      addLog('Limpieza de Logs', `El SuperUsuario eliminó ${logsToDelete.length} registros recientes (< 30 días).`, null, { id: 'Global', name: 'Sistema' });
       showToast(`Se eliminaron ${logsToDelete.length} registros recientes.`);
     } else {
       showToast("No hay registros recientes para eliminar.");
@@ -523,14 +523,14 @@ const App = () => {
 
     if (type === 'single') {
       await applyRevert(log.revertInfo);
-      addLog('Restauración', `Se deshizo el cambio específico: "${log.action}" del usuario ${log.username}.`);
+      addLog('Restauración', `Se deshizo el cambio específico: "${log.action}" del usuario ${log.username}.`, null, { id: 'Global', name: 'Sistema' });
       showToast("Cambio revertido exitosamente.");
     } else if (type === 'rollback') {
       const logsToRevert = logs.filter(l => l.id >= log.id && l.revertInfo && !l.isDebug).sort((a,b) => b.id - a.id);
       for (const l of logsToRevert) {
         await applyRevert(l.revertInfo);
       }
-      addLog('Restauración Masiva', `El SuperUsuario revirtió todos los cambios hasta el evento: "${log.action}" (${log.timestamp}).`);
+      addLog('Restauración Masiva', `El SuperUsuario revirtió todos los cambios hasta el evento: "${log.action}" (${log.timestamp}).`, null, { id: 'Global', name: 'Sistema' });
       showToast(`Se han revertido ${logsToRevert.length} cambios exitosamente.`);
     } else if (type === 'cleanOld') {
       handleCleanLogs();
@@ -554,7 +554,7 @@ const App = () => {
         await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
         await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
 
-        addLog('Restauración de Sistema', `El SuperUsuario restauró el sistema desde la copia de seguridad del ${backupData.date}.`);
+        addLog('Restauración de Sistema', `El SuperUsuario restauró el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
         showToast("Sistema restaurado con éxito desde copia de seguridad.");
       } catch (err) {
         console.error(err);
@@ -582,7 +582,7 @@ const App = () => {
       setCurrentUser({ ...user, loginTime });
       setLoginError('');
       setLoginForm({ username: '', password: '' });
-      addLog('Inicio de Sesión', `El usuario ${user.username} inició sesión.`, user.username);
+      addLog('Inicio de Sesión', `El usuario ${user.username} inició sesión.`, user.username, { id: 'Global', name: 'Sistema' });
       await updateDoc(getDocRef('app_users', String(user.id)), { isOnline: true });
     } else {
       setLoginError('Usuario o contraseña incorrectos.');
@@ -593,7 +593,7 @@ const App = () => {
     if (currentUser) {
       const activeTime = Date.now() - (currentUser.loginTime || Date.now());
       const formattedTime = formatDuration(activeTime);
-      addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión manualmente. (Tiempo activo: ${formattedTime})`, currentUser.username);
+      addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión manualmente. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
       await updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
     }
     setNavHistory([]);
@@ -623,7 +623,7 @@ const App = () => {
             users: users.map(u => ({...u, password: '***'})) 
           };
           await setDoc(getDocRef('app_backups', today), backupData);
-          addLog('Sistema', `Copia de seguridad automática diaria (${today}) generada exitosamente.`, 'Sistema', null, { isBackup: true, backupId: today });
+          addLog('Sistema', `Copia de seguridad automática diaria (${today}) generada exitosamente.`, 'Sistema', { id: 'Global', name: 'Sistema' }, { isBackup: true, backupId: today });
         } catch (e) {
           console.error("Backup automatico falló", e);
         }
@@ -649,7 +649,8 @@ const App = () => {
         addLog(
           'Cierre de Sesión Automático',
           `Sesión finalizada por cierre de navegador o pestaña. (Tiempo activo: ${formattedTime})`,
-          currentUser.username
+          currentUser.username,
+          { id: 'Global', name: 'Sistema' }
         );
         updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
       }
@@ -664,7 +665,7 @@ const App = () => {
     const performLogout = async () => {
       const activeTime = Date.now() - (currentUser.loginTime || Date.now());
       const formattedTime = formatDuration(activeTime);
-      addLog('Cierre de Sesión Automático', `Sesión finalizada por inactividad. (Tiempo activo: ${formattedTime})`, currentUser.username);
+      addLog('Cierre de Sesión Automático', `Sesión finalizada por inactividad. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
       await setOffline();
       setNavHistory([]);
       setCurrentUser(null);
@@ -1971,7 +1972,7 @@ const App = () => {
                         const newVal = e.target.value;
                         if (newVal !== (currentEvent.date || '')) {
                           await updateEventConfig({ date: newVal });
-                          addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                          addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                         }
                       }}
                       className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer" />
@@ -2012,7 +2013,7 @@ const App = () => {
                         const newVal = parseFloat(e.target.value) || 0;
                         if (newVal !== currentEvent.minDeposit) {
                           await updateEventConfig({ minDeposit: newVal });
-                          addLog('Configuración', `Apartado mín: $${currentEvent.minDeposit} -> $${newVal}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                          addLog('Configuración', `Apartado mín: $${currentEvent.minDeposit} -> $${newVal}`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                         }
                       }}
                       className={`bg-transparent border-b-2 outline-none w-20 transition-colors ${!hasAdminRights ? 'border-transparent cursor-not-allowed' : 'border-transparent hover:border-slate-200 focus:border-indigo-500'}`} /></>
@@ -2030,7 +2031,7 @@ const App = () => {
                         const newVal = parseFloat(e.target.value) || 0;
                         if (newVal !== (currentEvent.realCost || 0)) {
                           await updateEventConfig({ realCost: newVal });
-                          addLog('Configuración', `Costo Real: $${currentEvent.realCost || 0} -> $${newVal}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                          addLog('Configuración', `Costo Real: $${currentEvent.realCost || 0} -> $${newVal}`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                         }
                       }}
                       className={`bg-transparent border-b-2 outline-none w-24 transition-colors ${!hasAdminRights ? 'border-transparent cursor-not-allowed' : 'border-transparent hover:border-slate-200 focus:border-indigo-500'}`} /></>
@@ -2621,7 +2622,7 @@ const App = () => {
                       const payload = { date: newVal };
                       if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
                       await updateDoc(getDocRef('app_events', currentEvent.id), payload);
-                      addLog('Evento', `Fecha: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                      addLog('Evento', `Fecha: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                     }
                   }}
                   className={`bg-transparent border-b border-dashed border-slate-600 text-indigo-200 text-xs font-bold focus:outline-none focus:border-indigo-400 transition-colors pb-0.5 [color-scheme:dark] ${hasAdminRights ? 'cursor-pointer' : 'cursor-default border-transparent'}`}
