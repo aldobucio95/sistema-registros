@@ -5,7 +5,7 @@ import {
   Eye, EyeOff, Search, Filter, ArrowUpDown, CreditCard, ChevronDown, ChevronUp,
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock,
   UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft,
-  SlidersHorizontal, Bug, Download, Database
+  SlidersHorizontal, Bug, Download, Database, Menu
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -148,6 +148,9 @@ const App = () => {
   const [newEventData, setNewEventData] = useState({ name: '', type: 'Campa', date: '', baseCost: '' });
   const [renameModal, setRenameModal] = useState({ isOpen: false, id: null, name: '' });
 
+  // Mobile Menu State
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
   // Navigation History Stack
   const [navHistory, setNavHistory] = useState([]);
 
@@ -158,6 +161,7 @@ const App = () => {
   // Debug Toast & Watcher
   const [debugToast, setDebugToast] = useState(null);
   const [showDebugLogs, setShowDebugLogs] = useState(false);
+  const [selectedLogs, setSelectedLogs] = useState(new Set());
   const prevDebugRef = useRef();
 
   const currentEvent = useMemo(() => events.find(e => e.id === selectedEventId) || null, [events, selectedEventId]);
@@ -228,12 +232,16 @@ const App = () => {
 
   // Navigation Logic
   const goTo = useCallback((view, eventId, tab) => {
-    if (view === systemView && eventId === selectedEventId && tab === activeTab) return;
+    if (view === systemView && eventId === selectedEventId && tab === activeTab) {
+      setIsMobileMenuOpen(false);
+      return;
+    }
     setNavHistory(prev => [...prev, { systemView, selectedEventId, activeTab }]);
     setSystemView(view);
     setSelectedEventId(eventId);
     setActiveTab(tab);
     setShowViewSettings(false);
+    setIsMobileMenuOpen(false);
   }, [systemView, selectedEventId, activeTab]);
 
   const goBack = useCallback(() => {
@@ -245,6 +253,7 @@ const App = () => {
       setSelectedEventId(last.selectedEventId);
       setActiveTab(last.activeTab);
       setShowViewSettings(false);
+      setIsMobileMenuOpen(false);
       return newHist;
     });
   }, []);
@@ -629,16 +638,14 @@ const App = () => {
 
     let timeoutId;
     let throttleTimeoutId;
-    let isClosing = false; // Flag to prevent multiple close logs
+    let isClosing = false;
 
-    // Best-effort synchronous write before unload/tab close
     const handleBrowserClose = () => {
       if (currentUser?.id && !isClosing) {
         isClosing = true;
         const activeTime = Date.now() - (currentUser.loginTime || Date.now());
         const formattedTime = formatDuration(activeTime);
         
-        // Ejecución sincrónica; Firebase intenta cachear y emitir por WebSocket
         addLog(
           'Cierre de Sesión Automático',
           `Sesión finalizada por cierre de navegador o pestaña. (Tiempo activo: ${formattedTime})`,
@@ -684,7 +691,6 @@ const App = () => {
     resetTimer();
     activityEvents.forEach(e => window.addEventListener(e, handleActivity));
     
-    // Detect tab/browser close explicitly to log the session end.
     window.addEventListener('beforeunload', handleBrowserClose);
     window.addEventListener('pagehide', handleBrowserClose);
 
@@ -1311,57 +1317,6 @@ const App = () => {
   };
 
   // ─────────────────────────────────────────────
-  //  SCREEN 1: LOGIN
-  // ─────────────────────────────────────────────
-  if (!currentUser) {
-    return (
-      <div className="min-h-screen bg-blue-950 flex items-center justify-center p-4 relative">
-        {debugToast && (
-          <div className="fixed bottom-6 left-6 bg-slate-900 text-white p-4 rounded-xl shadow-2xl z-50 max-w-sm animate-in slide-in-from-bottom-5 border-l-4 border-orange-500">
-            <div className="flex items-start gap-3">
-              <Bug className="text-orange-500 flex-shrink-0 mt-0.5" size={20} />
-              <p className="text-xs font-bold leading-relaxed">{debugToast.msg}</p>
-            </div>
-          </div>
-        )}
-        <div className="bg-white rounded-3xl shadow-2xl overflow-hidden max-w-md w-full animate-in fade-in zoom-in duration-500">
-          <div className="bg-blue-900 p-8 text-center">
-            <div className="bg-white/20 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
-              <Lock size={32} className="text-white" />
-            </div>
-            <h1 className="text-2xl font-black text-white tracking-tight leading-tight">
-              Registros Vida Nueva<br /><span className="text-blue-200 text-lg">Para El Mundo</span>
-            </h1>
-            <p className="text-blue-200 text-xs uppercase tracking-widest mt-2 font-bold">Sistema de Gestión</p>
-          </div>
-          <div className="p-8">
-            <form onSubmit={handleLogin} className="space-y-5">
-              <div>
-                <label className={labelClasses}>Usuario</label>
-                <div className="relative mt-1">
-                  <UserCircle className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  <input type="text" className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all" placeholder="Ingresa tu usuario" value={loginForm.username} onChange={e => setLoginForm({ ...loginForm, username: e.target.value })} />
-                </div>
-              </div>
-              <div>
-                <label className={labelClasses}>Contraseña</label>
-                <div className="relative mt-1">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  <input type="password" className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all" placeholder="••••••••" value={loginForm.password} onChange={e => setLoginForm({ ...loginForm, password: e.target.value })} />
-                </div>
-              </div>
-              {loginError && <p className="text-xs text-red-500 font-bold animate-in slide-in-from-top-1 text-center">{loginError}</p>}
-              <button type="submit" disabled={!fbUser} className="w-full bg-blue-800 hover:bg-blue-900 disabled:bg-slate-400 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-blue-900/20 active:scale-95 flex justify-center items-center gap-2">
-                {!fbUser ? <span className="animate-pulse">Conectando a la nube...</span> : 'Iniciar Sesión'}
-              </button>
-            </form>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ─────────────────────────────────────────────
   // REUSABLE COMPONENTS
   // ─────────────────────────────────────────────
   const renderUsers = () => (
@@ -1429,9 +1384,46 @@ const App = () => {
     </div>
   );
 
+  const toggleLogSelection = (id) => {
+    setSelectedLogs(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllLogs = (displayedLogs, e) => {
+    if (e.target.checked) {
+      setSelectedLogs(new Set(displayedLogs.map(l => l.id)));
+    } else {
+      setSelectedLogs(new Set());
+    }
+  };
+
+  const deleteSelectedLogs = async () => {
+    if (selectedLogs.size === 0) return;
+    for (const id of selectedLogs) {
+      await deleteDoc(getDocRef('app_logs', String(id)));
+    }
+    const logEntry = {
+      id: Date.now(),
+      eventId: 'Global',
+      eventName: 'Sistema',
+      timestamp: new Date().toLocaleString('es-MX'),
+      username: currentUser?.username || 'Sistema',
+      action: 'Borrado Selectivo',
+      details: `El SuperUsuario eliminó ${selectedLogs.size} registro(s) de actividad.`,
+      isHidden: true
+    };
+    await setDoc(getDocRef('app_logs', String(logEntry.id)), logEntry);
+    showToast(`Se eliminaron ${selectedLogs.size} logs.`);
+    setSelectedLogs(new Set());
+  };
+
   const renderLogs = () => {
     const displayedLogs = logs.filter(log => {
-      if (log.isDebug) {
+      if (log.isDebug || log.isHidden) {
         if (!hasAdminRights || !showDebugLogs) return false;
       }
       const matchContext = logFilterContext === 'all' || log.eventName === logFilterContext;
@@ -1484,25 +1476,42 @@ const App = () => {
                   <input type="checkbox" checked={showDebugLogs} onChange={e => setShowDebugLogs(e.target.checked)} className="accent-indigo-600" />
                 </label>
               )}
-              {hasAdminRights && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanOld', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
-              {isSuperUser && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanRecent', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-500 text-white hover:bg-red-600 border border-red-600 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200"><Trash2 size={14} /> Limpiar &lt; 30 días</button>}
+              {isSuperUser && selectedLogs.size > 0 && (
+                <button onClick={deleteSelectedLogs} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-600 text-white hover:bg-red-700 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200">
+                  <Trash2 size={14} /> Borrar {selectedLogs.size}
+                </button>
+              )}
+              {hasAdminRights && selectedLogs.size === 0 && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanOld', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
+              {isSuperUser && selectedLogs.size === 0 && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanRecent', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-500 text-white hover:bg-red-600 border border-red-600 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200"><Trash2 size={14} /> Limpiar &lt; 30 días</button>}
               <span className="bg-slate-100 text-slate-500 text-xs font-bold px-3 py-1 rounded-full">{displayedLogs.length} eventos</span>
             </div>
           </div>
           <div className="overflow-x-auto border border-slate-100 rounded-xl max-h-[600px] overflow-y-auto">
             <table className="w-full text-left relative">
-              <thead className="sticky top-0 bg-slate-50 shadow-sm"><tr className="text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-200"><th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acción</th><th className="px-6 py-4">Detalles</th>{hasAdminRights && <th className="px-6 py-4 text-center">Acciones</th>}</tr></thead>
+              <thead className="sticky top-0 bg-slate-50 shadow-sm">
+                <tr className="text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-200">
+                  {isSuperUser && <th className="px-6 py-4 w-10"><input type="checkbox" onChange={(e) => toggleAllLogs(displayedLogs, e)} checked={displayedLogs.length > 0 && selectedLogs.size === displayedLogs.length} className="accent-indigo-600 w-4 h-4 rounded cursor-pointer" /></th>}
+                  <th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acción</th><th className="px-6 py-4">Detalles</th>{hasAdminRights && <th className="px-6 py-4 text-center">Acciones</th>}
+                </tr>
+              </thead>
               <tbody className="divide-y divide-slate-50">
                 {displayedLogs.length === 0 ? (
-                  <tr><td colSpan={hasAdminRights ? "6" : "5"} className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay actividad registrada para este contexto.</td></tr>
+                  <tr><td colSpan={isSuperUser ? "7" : hasAdminRights ? "6" : "5"} className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay actividad registrada para este contexto.</td></tr>
                 ) : displayedLogs.map(log => (
-                  <tr key={log.id} className={`hover:bg-slate-50/50 transition-colors ${log.isDebug ? 'bg-orange-50/30' : ''}`}>
+                  <tr key={log.id} className={`hover:bg-slate-50/50 transition-colors ${log.isDebug ? 'bg-orange-50/30' : log.isHidden ? 'bg-purple-50/30' : ''}`}>
+                    {isSuperUser && (
+                      <td className="px-6 py-4">
+                        <input type="checkbox" checked={selectedLogs.has(log.id)} onChange={() => toggleLogSelection(log.id)} className="accent-indigo-600 w-4 h-4 rounded cursor-pointer" />
+                      </td>
+                    )}
                     <td className="px-6 py-4 text-xs font-mono text-slate-500 whitespace-nowrap">{log.timestamp}</td>
-                    <td className="px-6 py-4"><span className={`text-[9px] font-bold px-2 py-1 rounded border truncate max-w-[120px] block ${log.isDebug ? 'bg-orange-100 text-orange-700 border-orange-200' : 'bg-indigo-50 text-indigo-600 border-indigo-100'}`}>{log.eventName}</span></td>
-                    <td className="px-6 py-4 font-bold text-slate-700 flex items-center gap-2"><UserCircle size={14} className={log.isDebug ? 'text-orange-400' : 'text-indigo-400'} />{log.username}</td>
+                    <td className="px-6 py-4"><span className={`text-[9px] font-bold px-2 py-1 rounded border truncate max-w-[120px] block ${log.isDebug ? 'bg-orange-100 text-orange-700 border-orange-200' : log.isHidden ? 'bg-purple-100 text-purple-700 border-purple-200' : 'bg-indigo-50 text-indigo-600 border-indigo-100'}`}>{log.eventName}</span></td>
+                    <td className="px-6 py-4 font-bold text-slate-700 flex items-center gap-2"><UserCircle size={14} className={log.isDebug ? 'text-orange-400' : log.isHidden ? 'text-purple-400' : 'text-indigo-400'} />{log.username}</td>
                     <td className="px-6 py-4">
-                      <span className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${log.isDebug ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-600'}`}>
-                        {log.action} {log.isDebug && <span className="text-red-500 ml-1 font-black">(DEPURACIÓN)</span>}
+                      <span className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${log.isDebug ? 'bg-orange-100 text-orange-700' : log.isHidden ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>
+                        {log.action} 
+                        {log.isDebug && <span className="text-red-500 ml-1 font-black">(DEPURACIÓN)</span>}
+                        {log.isHidden && <span className="text-purple-600 ml-1 font-black">(OCULTO)</span>}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-xs text-slate-600">{log.details}</td>
@@ -1531,6 +1540,57 @@ const App = () => {
       </div>
     );
   };
+
+  // ─────────────────────────────────────────────
+  //  SCREEN 1: LOGIN
+  // ─────────────────────────────────────────────
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen bg-blue-950 flex items-center justify-center p-4 relative">
+        {debugToast && (
+          <div className="fixed bottom-6 left-6 bg-slate-900 text-white p-4 rounded-xl shadow-2xl z-50 max-w-sm animate-in slide-in-from-bottom-5 border-l-4 border-orange-500">
+            <div className="flex items-start gap-3">
+              <Bug className="text-orange-500 flex-shrink-0 mt-0.5" size={20} />
+              <p className="text-xs font-bold leading-relaxed">{debugToast.msg}</p>
+            </div>
+          </div>
+        )}
+        <div className="bg-white rounded-3xl shadow-2xl overflow-hidden max-w-md w-full animate-in fade-in zoom-in duration-500">
+          <div className="bg-blue-900 p-8 text-center">
+            <div className="bg-white/20 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
+              <Lock size={32} className="text-white" />
+            </div>
+            <h1 className="text-2xl font-black text-white tracking-tight leading-tight">
+              Registros Vida Nueva<br /><span className="text-blue-200 text-lg">Para El Mundo</span>
+            </h1>
+            <p className="text-blue-200 text-xs uppercase tracking-widest mt-2 font-bold">Sistema de Gestión</p>
+          </div>
+          <div className="p-8">
+            <form onSubmit={handleLogin} className="space-y-5">
+              <div>
+                <label className={labelClasses}>Usuario</label>
+                <div className="relative mt-1">
+                  <UserCircle className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input type="text" className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all" placeholder="Ingresa tu usuario" value={loginForm.username} onChange={e => setLoginForm({ ...loginForm, username: e.target.value })} />
+                </div>
+              </div>
+              <div>
+                <label className={labelClasses}>Contraseña</label>
+                <div className="relative mt-1">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input type="password" className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all" placeholder="••••••••" value={loginForm.password} onChange={e => setLoginForm({ ...loginForm, password: e.target.value })} />
+                </div>
+              </div>
+              {loginError && <p className="text-xs text-red-500 font-bold animate-in slide-in-from-top-1 text-center">{loginError}</p>}
+              <button type="submit" disabled={!fbUser} className="w-full bg-blue-800 hover:bg-blue-900 disabled:bg-slate-400 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-blue-900/20 active:scale-95 flex justify-center items-center gap-2">
+                {!fbUser ? <span className="animate-pulse">Conectando a la nube...</span> : 'Iniciar Sesión'}
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // ─────────────────────────────────────────────
   //  SCREEN 2: EVENT SELECTOR
@@ -1641,25 +1701,25 @@ const App = () => {
                         <span className="text-[10px] font-black uppercase text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">{ev.eventType}</span>
                         
                         {hasAdminRights ? (
-						  <label className="relative flex items-center gap-1.5 text-[10px] font-bold text-slate-600 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 px-2.5 py-1 rounded-full border border-slate-200 hover:border-indigo-200 transition-colors uppercase cursor-pointer group shadow-sm overflow-hidden" onClick={e => e.stopPropagation()} title="Cambiar fecha del evento">
-							<span>{formatDisplayDate(ev.date)}</span>
-							<Edit3 size={12} className="text-slate-400 group-hover:text-indigo-500 transition-colors" />
-							<input
-							  type="date"
-							  defaultValue={ev.date || ''}
-							  onChange={async (e) => {
-								const newVal = e.target.value;
-								if (newVal !== (ev.date || '')) {
-								  const payload = { date: newVal };
-								  if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
-								  await updateDoc(getDocRef('app_events', ev.id), payload);
-								  addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
-								}
-							  }}
-							  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer"
-							/>
-						  </label>
-						) : (
+                          <label className="relative flex items-center gap-1.5 text-[10px] font-bold text-slate-600 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 px-2.5 py-1 rounded-full border border-slate-200 hover:border-indigo-200 transition-colors uppercase cursor-pointer group shadow-sm overflow-hidden" onClick={e => e.stopPropagation()} title="Cambiar fecha del evento">
+                            <span>{formatDisplayDate(ev.date)}</span>
+                            <Edit3 size={12} className="text-slate-400 group-hover:text-indigo-500 transition-colors" />
+                            <input
+                              type="date"
+                              defaultValue={ev.date || ''}
+                              onChange={async (e) => {
+                                const newVal = e.target.value;
+                                if (newVal !== (ev.date || '')) {
+                                  const payload = { date: newVal };
+                                  if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
+                                  await updateDoc(getDocRef('app_events', ev.id), payload);
+                                  addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
+                                }
+                              }}
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer"
+                            />
+                          </label>
+                        ) : (
                           <span className="text-[10px] font-bold text-slate-500 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-200 uppercase shadow-sm">
                             {formatDisplayDate(ev.date)}
                           </span>
@@ -1904,18 +1964,18 @@ const App = () => {
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2"><div className="bg-blue-100 p-2 rounded-lg text-blue-600"><CalendarRange size={18} /></div><span className="text-xs font-bold text-slate-500">Fecha Evento</span></div>
                 {hasAdminRights && (
-				  <label className="relative flex items-center justify-center p-2 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer overflow-hidden" title="Modificar fecha">
-					<CalendarRange size={16} className="relative z-10 pointer-events-none" />
-					<input type="date" value={tempEventDate} onChange={(e) => setTempEventDate(e.target.value)}
-					  onBlur={async (e) => {
-						const newVal = e.target.value;
-						if (newVal !== (currentEvent.date || '')) {
-						  await updateEventConfig({ date: newVal });
-						  addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
-						}
-					  }}
-					  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer" />
-				  </label>
+                  <label className="relative flex items-center justify-center p-2 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer overflow-hidden" title="Modificar fecha">
+                    <CalendarRange size={16} className="relative z-10 pointer-events-none" />
+                    <input type="date" value={tempEventDate} onChange={(e) => setTempEventDate(e.target.value)}
+                      onBlur={async (e) => {
+                        const newVal = e.target.value;
+                        if (newVal !== (currentEvent.date || '')) {
+                          await updateEventConfig({ date: newVal });
+                          addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                        }
+                      }}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer" />
+                  </label>
 )}
               </div>
               <div className="flex items-center text-lg md:text-xl font-black text-slate-800 mt-1 capitalize leading-tight">
@@ -2527,7 +2587,13 @@ const App = () => {
         </div>
       )}
 
-      <aside className="w-80 bg-slate-900 text-white flex-shrink-0 flex-col hidden lg:flex z-20">
+      {/* Overlay del Menú Móvil */}
+      {isMobileMenuOpen && (
+         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-30 lg:hidden transition-opacity duration-300" onClick={() => setIsMobileMenuOpen(false)} />
+      )}
+
+      {/* Sidebar Responsive */}
+      <aside className={`fixed inset-y-0 left-0 z-40 w-80 bg-slate-900 text-white flex flex-col transition-transform duration-300 lg:relative lg:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="p-8 pb-4">
           <div className="flex items-start gap-3 mb-2">
             <div className="bg-indigo-600 p-2 rounded-xl shadow-lg shadow-indigo-500/20 mt-1"><Edit3 size={20} /></div>
@@ -2606,6 +2672,12 @@ const App = () => {
       <main className="flex-1 overflow-y-auto bg-[#f8fafc]">
         <header className="sticky top-0 z-10 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 md:px-8 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3 flex-1 min-w-0 mr-4">
+            
+            {/* Botón Hamburguesa para Móviles */}
+            <button onClick={() => setIsMobileMenuOpen(true)} className="lg:hidden p-2 bg-slate-100 text-slate-600 hover:text-indigo-600 hover:bg-slate-200 rounded-xl transition-colors flex-shrink-0" title="Abrir Menú">
+              <Menu size={20} />
+            </button>
+
             {navHistory.length > 0 && (
               <button
                 onClick={goBack}
@@ -2621,11 +2693,6 @@ const App = () => {
                 {currentEvent?.name}
                 {currentEvent?._isDebug && currentEvent?._debugSessionId === globalConfig?.debugSessionId && <Bug size={14} className="text-orange-500" title="Cambio no permanente" />}
               </h2>
-              {hasAdminRights && (
-                <button onClick={() => setRenameModal({isOpen: true, id: currentEvent.id, name: currentEvent.name})} className="text-slate-400 hover:text-indigo-600 p-1 flex-shrink-0">
-                  <Edit3 size={16} />
-                </button>
-              )}
             </div>
           </div>
           
