@@ -784,6 +784,10 @@ const App = () => {
       });
 
       XLSX.writeFile(wb, `Registros_${currentEvent.name.replace(/\s+/g, '_')}_${new Date().toLocaleDateString('es-MX')}.xlsx`);
+      
+      // Registrar log de la exportación
+      await addLog('Exportación de Datos', `Descargó la base de datos completa del evento en formato Excel.`);
+      
       showToast("Archivo Excel generado con éxito.");
 
     } catch (err) {
