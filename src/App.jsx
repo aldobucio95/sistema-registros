@@ -5,7 +5,7 @@ import {
   Eye, EyeOff, Search, Filter, ArrowUpDown, CreditCard, ChevronDown, ChevronUp,
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock,
   UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft,
-  SlidersHorizontal, Bug, Download, Database, Menu
+  SlidersHorizontal, Bug, Download, Database, Menu, FileSpreadsheet
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -114,10 +114,16 @@ const formatDuration = (ms) => {
   return `${seconds}s`;
 };
 
-const escapeCSV = (str) => {
-  if (str === null || str === undefined) return '""';
-  const stringified = String(str);
-  return `"${stringified.replace(/"/g, '""')}"`;
+// Carga asíncrona de SheetJS para exportar a Excel
+const loadSheetJS = () => {
+  return new Promise((resolve, reject) => {
+    if (window.XLSX) return resolve(window.XLSX);
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    script.onload = () => resolve(window.XLSX);
+    script.onerror = () => reject(new Error('No se pudo cargar la librería de exportación a Excel.'));
+    document.body.appendChild(script);
+  });
 };
 
 const App = () => {
@@ -147,6 +153,7 @@ const App = () => {
   const [draggedEventId, setDraggedEventId] = useState(null);
   const [newEventData, setNewEventData] = useState({ name: '', type: 'Campa', date: '', baseCost: '' });
   const [renameModal, setRenameModal] = useState({ isOpen: false, id: null, name: '' });
+  const [isExporting, setIsExporting] = useState(false);
 
   // Mobile Menu State
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -489,6 +496,303 @@ const App = () => {
     };
     await setDoc(getDocRef('app_logs', String(newLogId)), newLog);
   }, [currentUser, currentEvent, globalConfig]);
+
+  const summary = useMemo(() => {
+    let totalMen = 0, totalWomen = 0, totalSwimmers = 0, totalNonSwimmers = 0;
+    let totalAllergies = 0, totalDiseases = 0, totalDisabilities = 0, totalServers = 0;
+    let totalMinors = 0, totalAdults = 0, totalServersBoth = 0;
+    let totalPaidOff = 0, totalWithDebt = 0;
+    
+    let ageBrackets = { kids: 0, teens: 0, youngAdults: 0, adults: 0, seniors: 0 };
+
+    let bloodTypeStats = {};
+    BLOOD_TYPES.forEach(bt => bloodTypeStats[bt] = 0);
+    
+    let customFieldsStats = {};
+    if (currentEvent?.customFields) currentEvent.customFields.forEach(f => customFieldsStats[f] = {});
+
+    let globalStats = {
+      all: { count: 0, scholarship: 0, servers: 0, paid: 0, pending: 0, expected: 0 },
+      regular: { count: 0, paid: 0, pending: 0, expected: 0 },
+      scholarship: { count: 0, paid: 0, pending: 0, expected: 0 }
+    };
+    let locationStats = {};
+
+    if (currentEvent) {
+      (currentEvent.locations || []).forEach(loc => {
+        let stats = {
+          all: { count: 0, scholarship: 0, servers: 0, paid: 0, pending: 0, expected: 0 },
+          regular: { count: 0, paid: 0, pending: 0, expected: 0 },
+          scholarship: { count: 0, paid: 0, pending: 0, expected: 0 }
+        };
+        (data[loc] || []).forEach(person => {
+          if (person.gender === 'Hombre') totalMen++;
+          else if (person.gender === 'Mujer') totalWomen++;
+          if (person.canSwim === 'Sí') totalSwimmers++; else totalNonSwimmers++;
+          if (person.hasAllergy === 'Sí') totalAllergies++;
+          if (person.hasDisease === 'Sí') totalDiseases++;
+          if (person.hasDisability === 'Sí') totalDisabilities++;
+          if (person.isServer === 'Sí') { totalServers++; stats.all.servers++; }
+          
+          if (person.bloodType) {
+            bloodTypeStats[person.bloodType] = (bloodTypeStats[person.bloodType] || 0) + 1;
+          }
+
+          const ageNum = parseInt(person.age) || 0;
+          if (ageNum > 0) {
+            if (ageNum < 13) ageBrackets.kids++;
+            else if (ageNum <= 17) ageBrackets.teens++;
+            else if (ageNum <= 25) ageBrackets.youngAdults++;
+            else if (ageNum <= 40) ageBrackets.adults++;
+            else ageBrackets.seniors++;
+          }
+
+          if (currentEvent.eventType === 'Campa') {
+            if (person.isServer === 'Sí') {
+              if (person.serverAssignment === 'Teens') totalMinors++;
+              else if (person.serverAssignment === 'Jóvenes') totalAdults++;
+              else if (person.serverAssignment === 'Ambos') { totalMinors++; totalAdults++; totalServersBoth++; }
+            } else {
+              const assignment = person.campAssignment || (ageNum < 18 ? 'Teens' : 'Jóvenes');
+              if (assignment === 'Teens') totalMinors++; else totalAdults++;
+            }
+          }
+
+          if (currentEvent.eventType === 'General' && currentEvent.customFields) {
+            currentEvent.customFields.forEach(field => {
+              const val = person.customData?.[field]?.trim() || 'Sin especificar';
+              customFieldsStats[field][val] = (customFieldsStats[field][val] || 0) + 1;
+            });
+          }
+
+          const paid = parseFloat(person.paid || 0);
+          const isBecado = person.isScholarship === 'Sí';
+          const baseCost = person.registeredCost != null
+            ? Number(person.registeredCost)
+            : getPersonCost(person, currentPricing);
+
+          if (isBecado || paid >= baseCost) totalPaidOff++;
+          else totalWithDebt++;
+
+          stats.all.count++;
+          stats.all.paid += paid;
+
+          if (isBecado && currentEvent.eventType === 'Campa') {
+            stats.all.scholarship++;
+            stats.scholarship.count++;
+            stats.scholarship.paid += paid;
+            stats.scholarship.expected += paid;
+          } else {
+            stats.regular.count++;
+            stats.regular.paid += paid;
+            stats.regular.pending += (baseCost - paid);
+            stats.regular.expected += baseCost;
+          }
+        });
+
+        stats.all.pending = stats.regular.pending;
+        stats.all.expected = stats.regular.expected + stats.scholarship.expected;
+
+        globalStats.all.count += stats.all.count;
+        globalStats.all.scholarship += stats.all.scholarship;
+        globalStats.all.servers += stats.all.servers;
+        globalStats.all.paid += stats.all.paid;
+        globalStats.all.pending += stats.all.pending;
+        globalStats.all.expected += stats.all.expected;
+        globalStats.regular.count += stats.regular.count;
+        globalStats.regular.paid += stats.regular.paid;
+        globalStats.regular.pending += stats.regular.pending;
+        globalStats.regular.expected += stats.regular.expected;
+        globalStats.scholarship.count += stats.scholarship.count;
+        globalStats.scholarship.paid += stats.scholarship.paid;
+        globalStats.scholarship.pending += stats.scholarship.pending;
+        globalStats.scholarship.expected += stats.scholarship.expected;
+        
+        locationStats[loc] = stats;
+      });
+    }
+
+    return {
+      totalMen, totalWomen, totalSwimmers, totalNonSwimmers,
+      totalAllergies, totalDiseases, totalDisabilities, totalServers,
+      totalMinors, totalAdults, totalServersBoth, totalPaidOff, totalWithDebt,
+      ageBrackets, bloodTypeStats, customFieldsStats, locationStats, globalStats
+    };
+  }, [data, currentEvent, currentPricing, getPersonCost]); 
+
+  // EXPORT TO EXCEL FEATURE
+  const handleExportExcel = async () => {
+    if (!currentEvent) return;
+    setIsExporting(true);
+    showToast("Generando archivo Excel...");
+
+    try {
+      const XLSX = await loadSheetJS();
+      const wb = XLSX.utils.book_new();
+      const isCampa = currentEvent.eventType === 'Campa';
+      const isGeneral = currentEvent.eventType === 'General';
+
+      // --- SHEET 1: RESUMEN GENERAL ---
+      const wsGeneralData = [];
+      wsGeneralData.push(["RESUMEN GENERAL DEL EVENTO:", currentEvent.name]);
+      wsGeneralData.push(["Fecha:", currentEvent.date || 'Sin fecha especificada']);
+      wsGeneralData.push([]);
+      
+      wsGeneralData.push(["MÉTRICAS PRINCIPALES"]);
+      wsGeneralData.push(["Total Registrados", summary.globalStats.all.count]);
+      if (isCampa) {
+        wsGeneralData.push(["Total Becados", summary.globalStats.all.scholarship]);
+        wsGeneralData.push(["Total Servidores", summary.globalStats.all.servers]);
+      }
+      wsGeneralData.push([]);
+
+      if (hasFinancialAccess) {
+        wsGeneralData.push(["DATOS FINANCIEROS GLOBALES"]);
+        wsGeneralData.push(["Costo Base (Regular)", `$${currentPricing.global}`]);
+        if (isCampa) wsGeneralData.push(["Costo Servidor (Ambos)", `$${currentPricing.server}`]);
+        wsGeneralData.push(["Recaudado Total", `$${summary.globalStats.all.paid}`]);
+        wsGeneralData.push(["Adeudo Total Pendiente", `$${summary.globalStats.all.pending}`]);
+        wsGeneralData.push(["Total Esperado Final", `$${summary.globalStats.all.expected}`]);
+        wsGeneralData.push(["Balance Neto", `$${summary.globalStats.all.paid - (Number(currentEvent.realCost || 0) * summary.globalStats.all.count)}`]);
+        wsGeneralData.push([]);
+      }
+
+      wsGeneralData.push(["DESGLOSE POR SEDE"]);
+      const tableHeaders = ["Sede", "Inscritos"];
+      if (isCampa) tableHeaders.push("Becados", "Servidores");
+      if (hasFinancialAccess) tableHeaders.push("Recaudado", "Pendiente", "Esperado Final");
+      wsGeneralData.push(tableHeaders);
+
+      (currentEvent.locations || []).forEach(loc => {
+        const s = summary.locationStats[loc];
+        if(!s) return;
+        let row = [loc, s.all.count];
+        if (isCampa) row.push(s.all.scholarship, s.all.servers);
+        if (hasFinancialAccess) row.push(`$${s.all.paid}`, `$${s.all.pending}`, `$${s.all.expected}`);
+        wsGeneralData.push(row);
+      });
+      wsGeneralData.push([]);
+
+      // Datos de Gráficas simulados en tablas
+      wsGeneralData.push(["MÉTRICAS: GÉNERO"]);
+      wsGeneralData.push(["Hombres", summary.totalMen]);
+      wsGeneralData.push(["Mujeres", summary.totalWomen]);
+      wsGeneralData.push([]);
+
+      wsGeneralData.push(["MÉTRICAS: RANGOS DE EDAD"]);
+      wsGeneralData.push(["Niños (< 13)", summary.ageBrackets.kids]);
+      wsGeneralData.push(["Adolescentes (13-17)", summary.ageBrackets.teens]);
+      wsGeneralData.push(["Jóvenes (18-25)", summary.ageBrackets.youngAdults]);
+      wsGeneralData.push(["Adultos (26-40)", summary.ageBrackets.adults]);
+      wsGeneralData.push(["Mayores (41+)", summary.ageBrackets.seniors]);
+      wsGeneralData.push([]);
+
+      if (isCampa) {
+        wsGeneralData.push(["MÉTRICAS: ASIGNACIÓN / SERVIDORES"]);
+        wsGeneralData.push(["Campistas / Servidores Asignados a Teens", summary.totalMinors]);
+        wsGeneralData.push(["Campistas / Servidores Asignados a Jóvenes", summary.totalAdults]);
+        wsGeneralData.push(["Servidores que apoyan en Ambos", summary.totalServersBoth]);
+        wsGeneralData.push([]);
+
+        wsGeneralData.push(["MÉTRICAS: SALUD"]);
+        wsGeneralData.push(["Con Alergias", summary.totalAllergies]);
+        wsGeneralData.push(["Con Enfermedades", summary.totalDiseases]);
+        wsGeneralData.push(["Con Discapacidades", summary.totalDisabilities]);
+        wsGeneralData.push([]);
+
+        wsGeneralData.push(["MÉTRICAS: NADO"]);
+        wsGeneralData.push(["Saben Nadar", summary.totalSwimmers]);
+        wsGeneralData.push(["No Saben Nadar", summary.totalNonSwimmers]);
+        wsGeneralData.push([]);
+      }
+
+      if (isGeneral && currentEvent.customFields && currentEvent.customFields.length > 0) {
+        wsGeneralData.push(["MÉTRICAS: CAMPOS PERSONALIZADOS"]);
+        currentEvent.customFields.forEach(field => {
+          wsGeneralData.push([`Respuesta a: ${field}`, "Cantidad"]);
+          const entries = Object.entries(summary.customFieldsStats[field] || {}).sort((a,b) => b[1] - a[1]);
+          entries.forEach(([val, count]) => wsGeneralData.push([val, count]));
+          wsGeneralData.push([]);
+        });
+      }
+
+      const wsGeneral = XLSX.utils.aoa_to_sheet(wsGeneralData);
+      XLSX.utils.book_append_sheet(wb, wsGeneral, "Resumen General");
+
+      // --- SHEETS 2-N: DESGLOSE POR SEDES ---
+      (currentEvent.locations || []).forEach(loc => {
+        const evtParticipants = allParticipants.filter(p => p.eventId === currentEvent.id && p.location === loc);
+        if (evtParticipants.length === 0) return; // Omite sedes vacías en la exportación
+        
+        const locData = [];
+        const locHeaders = ['Nombre', 'Teléfono'];
+        
+        if (isCampa) {
+          locHeaders.push('Edad', 'Género', 'Tipo Sangre', 'Nado', 'Alergias', 'Detalle Alergias', 'Enfermedades', 'Detalle Enfermedades', 'Discapacidades', 'Detalle Discapacidades', 'Contacto Emergencia', 'Tel Emergencia', 'Becado', 'Servidor', 'Asignación');
+        } else if (isGeneral) {
+          locHeaders.push('Edad', 'Género', 'Contacto Emergencia', 'Tel Emergencia');
+          if (currentEvent.customFields) locHeaders.push(...currentEvent.customFields);
+        } else {
+          locHeaders.push('Edad', 'Género');
+        }
+
+        if (hasFinancialAccess) {
+          locHeaders.push('Costo Base Total', 'Pagado', 'Adeudo Pendiente', 'Estado Financiero');
+        }
+
+        locData.push(locHeaders);
+
+        evtParticipants.forEach(p => {
+          const row = [p.name || '', p.phone || ''];
+          
+          if (isCampa) {
+            row.push(
+              p.age || '', p.gender || '', p.bloodType || '', p.canSwim || '',
+              p.hasAllergy || 'No', p.hasAllergy === 'Sí' ? p.allergyDetails : '',
+              p.hasDisease || 'No', p.hasDisease === 'Sí' ? p.diseaseDetails : '',
+              p.hasDisability || 'No', p.hasDisability === 'Sí' ? p.disabilityDetails : '',
+              p.emergencyContact || '', p.emergencyPhone || '',
+              p.isScholarship || 'No', p.isServer || 'No',
+              p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment
+            );
+          } else if (isGeneral) {
+            row.push(p.age || '', p.gender || '', p.emergencyContact || '', p.emergencyPhone || '');
+            if (currentEvent.customFields) {
+              currentEvent.customFields.forEach(f => row.push(p.customData?.[f] || ''));
+            }
+          } else {
+            row.push(p.age || '', p.gender || '');
+          }
+
+          if (hasFinancialAccess) {
+            const baseCost = p.registeredCost != null ? Number(p.registeredCost) : getPersonCost(p, currentPricing);
+            const isBecado = p.isScholarship === 'Sí';
+            const paid = parseFloat(p.paid || 0);
+            const debt = isBecado ? 0 : baseCost - paid;
+            const estado = isBecado ? 'Becado (No requerido)' : debt <= 0 ? 'Liquidado' : 'Pendiente';
+            
+            row.push(`$${baseCost}`, `$${paid}`, `$${debt}`, estado);
+          }
+
+          locData.push(row);
+        });
+
+        // Limita nombre de hoja a 31 caracteres por seguridad de Excel
+        let sheetName = `Sede ${loc}`.substring(0, 31);
+        const wsLoc = XLSX.utils.aoa_to_sheet(locData);
+        XLSX.utils.book_append_sheet(wb, wsLoc, sheetName);
+      });
+
+      XLSX.writeFile(wb, `Registros_${currentEvent.name.replace(/\s+/g, '_')}_${new Date().toLocaleDateString('es-MX')}.xlsx`);
+      showToast("Archivo Excel generado con éxito.");
+
+    } catch (err) {
+      console.error(err);
+      showToast("Hubo un error al generar el archivo de exportación.");
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const handleCleanLogs = () => {
     if (!hasAdminRights) return;
@@ -986,188 +1290,6 @@ const App = () => {
     await updateEventConfig({ customFields: updated });
     addLog('Campos Extra', `Eliminó el campo "${field}" del evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
   };
-
-  const exportToCSV = () => {
-    if (!currentEvent) return;
-    const isCampa = currentEvent.eventType === 'Campa';
-    const isGeneral = currentEvent.eventType === 'General';
-    const evtParticipants = allParticipants.filter(p => p.eventId === currentEvent.id);
-
-    const headers = ['Nombre', 'Teléfono', 'Sede', 'Pagado', 'Costo Final', 'Adeudo'];
-    
-    if (isCampa) {
-      headers.push('Edad', 'Género', 'Tipo Sangre', 'Nado', 'Alergias', 'Enfermedades', 'Discapacidades', 'Contacto Emergencia', 'Tel Emergencia', 'Becado', 'Servidor', 'Asignación');
-    } else if (isGeneral) {
-      headers.push('Edad', 'Género', 'Contacto Emergencia', 'Tel Emergencia');
-      if (currentEvent.customFields) headers.push(...currentEvent.customFields);
-    } else {
-      headers.push('Edad', 'Género');
-    }
-
-    const rows = evtParticipants.map(p => {
-      const baseCost = p.registeredCost != null ? Number(p.registeredCost) : getPersonCost(p, currentPricing);
-      const isBecado = p.isScholarship === 'Sí';
-      const debt = isBecado ? 0 : baseCost - parseFloat(p.paid || 0);
-
-      const row = [
-        escapeCSV(p.name), escapeCSV(p.phone), escapeCSV(p.location),
-        p.paid || 0, baseCost, debt
-      ];
-
-      if (isCampa) {
-        row.push(
-          p.age || '', p.gender || '', p.bloodType || '', p.canSwim || '',
-          escapeCSV(p.hasAllergy === 'Sí' ? p.allergyDetails : 'No'),
-          escapeCSV(p.hasDisease === 'Sí' ? p.diseaseDetails : 'No'),
-          escapeCSV(p.hasDisability === 'Sí' ? p.disabilityDetails : 'No'),
-          escapeCSV(p.emergencyContact), escapeCSV(p.emergencyPhone),
-          p.isScholarship || 'No', p.isServer || 'No',
-          escapeCSV(p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment)
-        );
-      } else if (isGeneral) {
-        row.push(p.age || '', p.gender || '', escapeCSV(p.emergencyContact), escapeCSV(p.emergencyPhone));
-        if (currentEvent.customFields) {
-          currentEvent.customFields.forEach(f => row.push(escapeCSV(p.customData?.[f])));
-        }
-      } else {
-        row.push(p.age || '', p.gender || '');
-      }
-      return row.join(',');
-    });
-
-    const csvContent = [headers.join(','), ...rows].join('\n');
-    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `Registros_${currentEvent.name.replace(/\s+/g, '_')}_${new Date().toLocaleDateString('es-MX')}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const summary = useMemo(() => {
-    let totalMen = 0, totalWomen = 0, totalSwimmers = 0, totalNonSwimmers = 0;
-    let totalAllergies = 0, totalDiseases = 0, totalDisabilities = 0, totalServers = 0;
-    let totalMinors = 0, totalAdults = 0, totalServersBoth = 0;
-    let totalPaidOff = 0, totalWithDebt = 0;
-    
-    let ageBrackets = { kids: 0, teens: 0, youngAdults: 0, adults: 0, seniors: 0 };
-
-    let bloodTypeStats = {};
-    BLOOD_TYPES.forEach(bt => bloodTypeStats[bt] = 0);
-    
-    let customFieldsStats = {};
-    if (currentEvent?.customFields) currentEvent.customFields.forEach(f => customFieldsStats[f] = {});
-
-    let globalStats = {
-      all: { count: 0, scholarship: 0, servers: 0, paid: 0, pending: 0, expected: 0 },
-      regular: { count: 0, paid: 0, pending: 0, expected: 0 },
-      scholarship: { count: 0, paid: 0, pending: 0, expected: 0 }
-    };
-    let locationStats = {};
-
-    if (currentEvent) {
-      (currentEvent.locations || []).forEach(loc => {
-        let stats = {
-          all: { count: 0, scholarship: 0, servers: 0, paid: 0, pending: 0, expected: 0 },
-          regular: { count: 0, paid: 0, pending: 0, expected: 0 },
-          scholarship: { count: 0, paid: 0, pending: 0, expected: 0 }
-        };
-        (data[loc] || []).forEach(person => {
-          if (person.gender === 'Hombre') totalMen++;
-          else if (person.gender === 'Mujer') totalWomen++;
-          if (person.canSwim === 'Sí') totalSwimmers++; else totalNonSwimmers++;
-          if (person.hasAllergy === 'Sí') totalAllergies++;
-          if (person.hasDisease === 'Sí') totalDiseases++;
-          if (person.hasDisability === 'Sí') totalDisabilities++;
-          if (person.isServer === 'Sí') { totalServers++; stats.all.servers++; }
-          
-          if (person.bloodType) {
-            bloodTypeStats[person.bloodType] = (bloodTypeStats[person.bloodType] || 0) + 1;
-          }
-
-          const ageNum = parseInt(person.age) || 0;
-          if (ageNum > 0) {
-            if (ageNum < 13) ageBrackets.kids++;
-            else if (ageNum <= 17) ageBrackets.teens++;
-            else if (ageNum <= 25) ageBrackets.youngAdults++;
-            else if (ageNum <= 40) ageBrackets.adults++;
-            else ageBrackets.seniors++;
-          }
-
-          if (currentEvent.eventType === 'Campa') {
-            if (person.isServer === 'Sí') {
-              if (person.serverAssignment === 'Teens') totalMinors++;
-              else if (person.serverAssignment === 'Jóvenes') totalAdults++;
-              else if (person.serverAssignment === 'Ambos') { totalMinors++; totalAdults++; totalServersBoth++; }
-            } else {
-              const assignment = person.campAssignment || (ageNum < 18 ? 'Teens' : 'Jóvenes');
-              if (assignment === 'Teens') totalMinors++; else totalAdults++;
-            }
-          }
-
-          if (currentEvent.eventType === 'General' && currentEvent.customFields) {
-            currentEvent.customFields.forEach(field => {
-              const val = person.customData?.[field]?.trim() || 'Sin especificar';
-              customFieldsStats[field][val] = (customFieldsStats[field][val] || 0) + 1;
-            });
-          }
-
-          const paid = parseFloat(person.paid || 0);
-          const isBecado = person.isScholarship === 'Sí';
-          const baseCost = person.registeredCost != null
-            ? Number(person.registeredCost)
-            : getPersonCost(person, currentPricing);
-
-          if (isBecado || paid >= baseCost) totalPaidOff++;
-          else totalWithDebt++;
-
-          stats.all.count++;
-          stats.all.paid += paid;
-
-          if (isBecado && currentEvent.eventType === 'Campa') {
-            stats.all.scholarship++;
-            stats.scholarship.count++;
-            stats.scholarship.paid += paid;
-            stats.scholarship.expected += paid;
-          } else {
-            stats.regular.count++;
-            stats.regular.paid += paid;
-            stats.regular.pending += (baseCost - paid);
-            stats.regular.expected += baseCost;
-          }
-        });
-
-        stats.all.pending = stats.regular.pending;
-        stats.all.expected = stats.regular.expected + stats.scholarship.expected;
-
-        globalStats.all.count += stats.all.count;
-        globalStats.all.scholarship += stats.all.scholarship;
-        globalStats.all.servers += stats.all.servers;
-        globalStats.all.paid += stats.all.paid;
-        globalStats.all.pending += stats.all.pending;
-        globalStats.all.expected += stats.all.expected;
-        globalStats.regular.count += stats.regular.count;
-        globalStats.regular.paid += stats.regular.paid;
-        globalStats.regular.pending += stats.regular.pending;
-        globalStats.regular.expected += stats.regular.expected;
-        globalStats.scholarship.count += stats.scholarship.count;
-        globalStats.scholarship.paid += stats.scholarship.paid;
-        globalStats.scholarship.pending += stats.scholarship.pending;
-        globalStats.scholarship.expected += stats.scholarship.expected;
-        
-        locationStats[loc] = stats;
-      });
-    }
-
-    return {
-      totalMen, totalWomen, totalSwimmers, totalNonSwimmers,
-      totalAllergies, totalDiseases, totalDisabilities, totalServers,
-      totalMinors, totalAdults, totalServersBoth, totalPaidOff, totalWithDebt,
-      ageBrackets, bloodTypeStats, customFieldsStats, locationStats, globalStats
-    };
-  }, [data, currentEvent, currentPricing, getPersonCost]); 
 
   const handleAddEntry = async (loc) => {
     if (!isFormValid || !isLocOpen(loc)) return;
@@ -2704,7 +2826,11 @@ const App = () => {
               <LayoutDashboard size={14} /><span className="hidden sm:inline">Eventos</span>
             </button>
 
-            <button onClick={exportToCSV} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors" title="Exportar a CSV"><Download size={14} /><span className="hidden sm:inline">Exportar</span></button>
+            {/* BOTÓN EXPORTAR EXCEL */}
+            <button onClick={handleExportExcel} disabled={isExporting} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-green-700 bg-green-100 hover:bg-green-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Exportar Todo a Excel">
+              {isExporting ? <span className="animate-spin">⏳</span> : <FileSpreadsheet size={14} />}
+              <span className="hidden sm:inline">{isExporting ? 'Generando...' : 'Exportar Excel'}</span>
+            </button>
             
             {hasFinancialAccess && (
               <button onClick={() => setShowMoney(!showMoney)} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors" title={showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}>{showMoney ? <EyeOff size={14} /> : <Eye size={14} />}<span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span></button>
