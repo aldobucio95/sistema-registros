@@ -255,23 +255,59 @@ const fromDatetimeLocalToIso = (localStr) => {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 };
 
-const formatPayHistoryRowDate = (pay) => {
-  if (pay?.recordedAt) {
-    try {
-      const t = new Date(pay.recordedAt).getTime();
-      if (!Number.isNaN(t)) return new Date(pay.recordedAt).toLocaleString('es-MX');
-    } catch { /* usar pay.date */ }
+/** ISO string, Date, Firestore Timestamp (toDate / { seconds, nanoseconds }). */
+const parseFlexibleInstantMs = (raw) => {
+  if (raw == null || raw === '') return null;
+  if (typeof raw?.toDate === 'function') {
+    const d = raw.toDate();
+    const t = d.getTime();
+    return Number.isNaN(t) ? null : t;
   }
+  if (typeof raw === 'object' && typeof raw.seconds === 'number') {
+    return raw.seconds * 1000 + Math.floor((raw.nanoseconds || 0) / 1e6);
+  }
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    // Solo fecha: usar mediodía local para que el día civil coincida con la sede (evita UTC medianoche → día anterior).
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      const [yy, mm, dd] = s.split('-').map((n) => parseInt(n, 10));
+      const d = new Date(yy, mm - 1, dd, 12, 0, 0, 0);
+      const t = d.getTime();
+      return Number.isNaN(t) ? null : t;
+    }
+  }
+  const d = raw instanceof Date ? raw : new Date(raw);
+  const t = d.getTime();
+  return Number.isNaN(t) ? null : t;
+};
+
+const formatPayHistoryRowDate = (pay) => {
+  const ms = parseFlexibleInstantMs(pay?.recordedAt);
+  if (ms != null) return new Date(ms).toLocaleString('es-MX');
   return pay?.date || '—';
 };
 
-const getPaymentHistoryTimestamp = (h) => {
-  if (h?.recordedAt) {
-    const t = new Date(h.recordedAt).getTime();
-    if (!Number.isNaN(t)) return t;
+/** fallbackMs: p. ej. registeredAt del participante si recordedAt no parsea (evita usar Date.now() en cortes). */
+const getPaymentHistoryTimestamp = (h, fallbackMs = null) => {
+  if (h?.recordedAt != null) {
+    const t = parseFlexibleInstantMs(h.recordedAt);
+    if (t != null) return t;
   }
-  if (typeof h?.id === 'number') return h.id;
-  return Date.now();
+  if (typeof h?.id === 'number' && Number.isFinite(h.id)) return h.id;
+  const idStr = h?.id != null ? String(h.id).trim() : '';
+  if (/^\d{10,}$/.test(idStr)) return Number(idStr);
+  if (fallbackMs != null && Number.isFinite(fallbackMs)) return fallbackMs;
+  return null;
+};
+
+const getPaymentRowInstantMsPreferRecorded = (row) => {
+  if (!row || row.kind === 'comment') return null;
+  const fromRec = parseFlexibleInstantMs(row.recordedAt);
+  if (fromRec != null) return fromRec;
+  if (typeof row.id === 'number' && Number.isFinite(row.id)) return row.id;
+  const idStr = row.id != null ? String(row.id).trim() : '';
+  if (/^\d{10,}$/.test(idStr)) return Number(idStr);
+  return null;
 };
 
 // UI Reusable Classes
@@ -4175,13 +4211,44 @@ const App = () => {
     const locLabel = superDateEditModal.loc || person.location || '';
     try {
       if (superDateEditModal.mode === 'registration') {
-        await updateDoc(getDocRef('app_participants', String(personId)), {
-          registeredAt: iso,
-          ...debugExtras,
-        });
+        const oldRegIso = person.registeredAt;
+        const oldRegMs = parseFlexibleInstantMs(oldRegIso);
+        const hist = [...(person.paymentHistory || [])];
+        const dNew = new Date(iso);
+        const dateStrNew = dNew.toLocaleString('es-MX');
+        const firstPayIdx = hist.findIndex((r) => r && r.kind !== 'comment');
+        let historyChanged = false;
+        for (let i = 0; i < hist.length; i += 1) {
+          const row = hist[i];
+          if (!row || row.kind === 'comment') continue;
+          let tiedToRegistration = false;
+          if (oldRegIso && row.recordedAt) {
+            if (String(row.recordedAt).trim() === String(oldRegIso).trim()) {
+              tiedToRegistration = true;
+            } else {
+              const rowMsFromRec = parseFlexibleInstantMs(row.recordedAt);
+              if (oldRegMs != null && rowMsFromRec != null && rowMsFromRec === oldRegMs) {
+                tiedToRegistration = true;
+              }
+            }
+          }
+          if (!tiedToRegistration && firstPayIdx === i && oldRegMs != null) {
+            const rowMs = getPaymentRowInstantMsPreferRecorded(row);
+            if (rowMs != null && Math.abs(rowMs - oldRegMs) <= 5000) {
+              tiedToRegistration = true;
+            }
+          }
+          if (tiedToRegistration) {
+            hist[i] = { ...row, recordedAt: iso, date: dateStrNew };
+            historyChanged = true;
+          }
+        }
+        const regPayload = { registeredAt: iso, ...debugExtras };
+        if (historyChanged) regPayload.paymentHistory = hist;
+        await updateDoc(getDocRef('app_participants', String(personId)), regPayload);
         addLog(
           'Sistema',
-          `SuperUsuario ajustó la fecha de registro de ${person.name || 'participante'} (sede ${locLabel}).`,
+          `SuperUsuario ajustó la fecha de registro de ${person.name || 'participante'} (sede ${locLabel})${historyChanged ? ' y la marca de tiempo del pago inicial vinculado' : ''}.`,
           null,
           null,
           { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
@@ -5360,22 +5427,59 @@ const App = () => {
 
   const renderCashCutPage = () => {
     const allPayments = [];
-    const locs = currentEvent?.locations || [];
-    locs.forEach(loc => {
-      (data[loc] || []).forEach(person => {
-        (person.paymentHistory || []).forEach(h => {
-          if (h.kind === 'comment') return;
-          const ts = getPaymentHistoryTimestamp(h);
-          allPayments.push({
-            ...h,
-            _ts: ts,
-            _date: new Date(ts),
-            _personName: person.name || '',
-            _personId: person.id,
-            _loc: loc,
-          });
+    const personFallbackMs = (person) =>
+      parseFlexibleInstantMs(person?.registeredAt)
+      ?? (typeof person?.id === 'number' && Number.isFinite(person.id) ? person.id : null)
+      ?? (() => {
+        const s = person?.id != null ? String(person.id).trim() : '';
+        return /^\d{10,}$/.test(s) ? Number(s) : null;
+      })();
+
+    const rosterForCashCut = allParticipants.filter(
+      (p) => p.eventId === currentEvent?.id && participantIsRosterRow(p)
+    );
+
+    rosterForCashCut.forEach((person) => {
+      const loc = person.location || '';
+      const fb = personFallbackMs(person);
+      const historyRows = (person.paymentHistory || []).filter((h) => h && h.kind !== 'comment');
+      const paidGross = parseFloat(person.paid) || 0;
+
+      historyRows.forEach((h) => {
+        const ts = getPaymentHistoryTimestamp(h, fb);
+        if (ts == null || Number.isNaN(ts)) return;
+        allPayments.push({
+          ...h,
+          _ts: ts,
+          _date: new Date(ts),
+          _personName: person.name || '',
+          _personId: person.id,
+          _loc: loc,
         });
       });
+
+      if (paidGross > 0 && historyRows.length === 0 && fb != null && Number.isFinite(fb)) {
+        const paymentMethod = person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+        const paidNet = Number.isFinite(parseFloat(person.paidNet)) ? parseFloat(person.paidNet) : paidGross;
+        const svc = SERVICE_OPTIONS.includes(person.paymentService) ? person.paymentService : NO_SERVICE_LABEL;
+        allPayments.push({
+          id: `legacy-paid-${person.id}`,
+          date: new Date(fb).toLocaleString('es-MX'),
+          recordedAt: new Date(fb).toISOString(),
+          amount: paidGross,
+          netAmount: paidNet,
+          method: paymentMethod,
+          service: svc,
+          reference: (person.cardReference || '').trim(),
+          registeredBy: person.registeredBy || '—',
+          _ts: fb,
+          _date: new Date(fb),
+          _personName: person.name || '',
+          _personId: person.id,
+          _loc: loc,
+          _syntheticLegacyPaid: true,
+        });
+      }
     });
 
     const eventDonationsForCut = donations.filter(d => d.eventId === currentEvent?.id);
