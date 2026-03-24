@@ -6,7 +6,7 @@ import {
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock,
   UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft,
   SlidersHorizontal, Bug, Download, Database, Menu, FileSpreadsheet, MessageCircle,
-  Scissors, Calendar
+  Scissors, Calendar, Church
 } from 'lucide-react';
 
 /* global __app_id, __initial_auth_token */
@@ -38,6 +38,69 @@ const GENDERS = ["Hombre", "Mujer"];
 const EVENT_TYPES = ["Campa", "Desayuno Conferencia", "General"];
 const RESPONSIVA_STATUSES = ["Pendiente", "Entregada"];
 const CHART_COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#0ea5e9'];
+
+/** Campaña de descuento aplica al perfil servidor/campista del registro. */
+const campaignMatchesPersonProfile = (c, personLike) => {
+  const isServerAmbos = personLike?.isServer === 'Sí' && personLike?.serverAssignment === 'Ambos';
+  const appliesTo = c?.appliesTo || 'all';
+  if (appliesTo === 'server_ambos') return isServerAmbos;
+  if (appliesTo === 'general') return !isServerAmbos;
+  return true;
+};
+
+const isDiscountCampaignVigenteOnDate = (c, dayIso) => {
+  if (!c?.startDate || !c?.endDate || !dayIso) return false;
+  return c.startDate <= dayIso && dayIso <= c.endDate;
+};
+
+/** Inicio y fin definidos → puede activarse sola por calendario (vigencia). Si falta alguna, solo manual (alta/edición). */
+const discountCampaignHasDateRange = (c) =>
+  !!(c?.startDate && String(c.startDate).trim() && c?.endDate && String(c.endDate).trim());
+
+const isValidDiscountCampaignRow = (c) =>
+  !!(
+    c &&
+    c.enabled !== false &&
+    String(c.concept || '').trim() &&
+    (Number(c.finalAmount) || 0) > 0
+  );
+
+const getValidDiscountCampaignsForPerson = (eventLike, personLike) => {
+  const all = Array.isArray(eventLike?.discountCampaigns) ? eventLike.discountCampaigns : [];
+  return all.filter((c) => isValidDiscountCampaignRow(c) && campaignMatchesPersonProfile(c, personLike));
+};
+
+const discountCampaignAppliesToLabel = (c) => {
+  const a = c?.appliesTo || 'all';
+  if (a === 'server_ambos') return 'Solo servidor (asignación Ambos)';
+  if (a === 'general') return 'Campistas y servidores no-Ambos';
+  return 'Todos los perfiles';
+};
+
+const findDiscountCampaignById = (eventLike, id) => {
+  if (id == null || id === '') return null;
+  const all = Array.isArray(eventLike?.discountCampaigns) ? eventLike.discountCampaigns : [];
+  return all.find((x) => String(x.id) === String(id)) || null;
+};
+
+/** Segmento Teens / Jóvenes donde contabilizar el bautizo (evento). Null si no aplica o falta dato (ej. Ambos sin elegir). */
+const getBaptismAccountingSegment = (personLike) => {
+  if (String(personLike?.willBeBaptized || '') !== 'Sí') return null;
+  const isServer = personLike?.isServer === 'Sí';
+  if (isServer) {
+    const sa = String(personLike?.serverAssignment || '').trim();
+    if (sa === 'Ambos') {
+      const bs = String(personLike?.baptismSegment || '').trim();
+      return bs === 'Teens' || bs === 'Jóvenes' ? bs : null;
+    }
+    if (sa === 'Teens' || sa === 'Jóvenes') return sa;
+    return null;
+  }
+  const camp = String(personLike?.campAssignment || '').trim();
+  if (camp === 'Teens' || camp === 'Jóvenes') return camp;
+  const ageNum = parseInt(personLike?.age, 10) || 0;
+  return ageNum < 18 ? 'Teens' : 'Jóvenes';
+};
 
 const PAYMENT_METHODS = ['Efectivo', 'Tarjeta'];
 const SERVICE_OPTIONS = ['Primero', 'Segundo', 'Tercero'];
@@ -78,7 +141,7 @@ const EMPTY_ENTRY = {
   name: '', phone: '', age: '', birthDate: '', bloodType: 'O+', gender: '',
   responsivaStatus: '',
   alias: '',
-  emergencyContact: '', emergencyPhone: '', canSwim: 'No', paid: '',
+  emergencyContact: '', emergencyPhone: '', emergencyRelationship: '', canSwim: 'No', paid: '',
   // Para “donación especial oculta” (hijos de pastores / va sin pagar)
   isPastorChild: 'No',
   pastorChildWithoutPay: 'No',
@@ -87,10 +150,13 @@ const EMPTY_ENTRY = {
   hasDisability: 'No', disabilityDetails: '', isScholarship: 'No',
   /** 'total' | 'partial' — solo aplica si isScholarship es Sí (formulario nuevo registro). */
   scholarshipType: 'total',
-  /** Beca parcial: monto que el participante aporta al recaudado; a liquidar = este monto; la beca cubre (costo lista − este monto). */
+  /** Beca parcial: monto cubierto por la beca (cantidad becada); a liquidar = costo de lista actual − este monto. */
   scholarshipPartialAmount: '',
   isServer: 'No',
   serverAssignment: '', campAssignment: '', customData: {}, paymentHistory: [],
+  /** Campamentos: se bautiza en el evento; conteo por Teens / Jóvenes (servidor Ambos elige baptismSegment). */
+  willBeBaptized: 'No',
+  baptismSegment: '',
   llegaEnCarro: false,
   regresaEnCarro: false,
   transportType: 'Camión',
@@ -103,7 +169,8 @@ const EMPTY_ENTRY = {
   paymentMethod: 'Efectivo',
   paymentService: '',
   cardReference: '',
-  applyActiveCampaignNow: false,
+  /** '' = automático (primera campaña vigente hoy que aplique); si no, id de campaña elegida en el alta. */
+  selectedDiscountCampaignId: '',
 };
 
 // Preferencias de vista por defecto
@@ -120,6 +187,7 @@ const defaultViewPrefs = {
   chartMedical: true,
   chartServers: true,
   chartAges: true,
+  chartBaptism: true,
   chartCustom: true,
   tableDetails: true
 };
@@ -316,6 +384,7 @@ const buildArchivedProfileSnapshot = (person) => {
     alias: person?.alias || '',
     emergencyContact: person?.emergencyContact || '',
     emergencyPhone: person?.emergencyPhone || '',
+    emergencyRelationship: person?.emergencyRelationship || '',
     bloodType: person?.bloodType || '',
     canSwim: person?.canSwim || 'No',
     hasAllergy: person?.hasAllergy || 'No',
@@ -340,6 +409,8 @@ const buildArchivedProfileSnapshot = (person) => {
     preferredServeArea: person?.preferredServeArea || '',
     // Campo de compatibilidad semántica para consultas externas.
     hasChildren: person?.goesWithChildren || 'No',
+    willBeBaptized: person?.willBeBaptized || 'No',
+    baptismSegment: person?.baptismSegment || '',
   };
 };
 
@@ -623,19 +694,29 @@ const App = () => {
     return all.filter((c) => {
       if (!c || c.enabled === false) return false;
       if (!c.startDate || !c.endDate) return false;
-      return c.startDate <= today && today <= c.endDate;
+      return isDiscountCampaignVigenteOnDate(c, today);
     });
   }, []);
   const resolveCampaignForPerson = useCallback((personLike, eventLike) => {
     const active = getActiveDiscountCampaigns(eventLike);
-    const isServerAmbos = personLike?.isServer === 'Sí' && personLike?.serverAssignment === 'Ambos';
-    return active.find((c) => {
-      const appliesTo = c?.appliesTo || 'all';
-      if (appliesTo === 'server_ambos') return isServerAmbos;
-      if (appliesTo === 'general') return !isServerAmbos;
-      return true;
-    }) || null;
+    return active.find((c) => campaignMatchesPersonProfile(c, personLike)) || null;
   }, [getActiveDiscountCampaigns]);
+
+  /** Campañas aplicables al perfil (válidas: concepto + monto); en edición se elige manual incluso sin vigencia por fecha. */
+  const getManualApplyCampaignOptions = useCallback((eventLike, personLike) => {
+    return getValidDiscountCampaignsForPerson(eventLike, personLike);
+  }, []);
+
+  const resolveMatchedCampaignForNewEntry = useCallback(
+    (entry) => {
+      const selectable = getValidDiscountCampaignsForPerson(currentEvent, entry);
+      if (entry.selectedDiscountCampaignId) {
+        return selectable.find((c) => String(c.id) === String(entry.selectedDiscountCampaignId)) || null;
+      }
+      return resolveCampaignForPerson(entry, currentEvent);
+    },
+    [currentEvent, resolveCampaignForPerson]
+  );
 
   const getPersonCost = useCallback((person, pricing) => {
     if (person.isServer === 'Sí' && person.serverAssignment === 'Ambos') {
@@ -650,20 +731,20 @@ const App = () => {
     return getPersonCost(person, pricing);
   }, [getPersonCost]);
 
-  /** Monto que debe liquidar la persona (0 = beca total cubierta). */
+  /** Monto que debe liquidar la persona (0 = beca total cubierta). Beca parcial: lista − monto becado (scholarshipPartialAmount). */
   const getLiquidationTarget = useCallback((person) => {
     const listPrice = resolveRegisteredCost(person, currentPricing);
     if (person?.isScholarship !== 'Sí') return listPrice;
     if (person?.scholarshipType === 'partial') {
-      /** Monto que el participante debe aportar al recaudado; la beca cubre (costo lista − este monto). */
-      const obligation = parseFloat(person.scholarshipPartialAmount || 0);
-      if (!Number.isFinite(obligation) || obligation <= 0) return listPrice;
-      return Math.min(obligation, listPrice);
+      const montoBecado = parseFloat(person.scholarshipPartialAmount || 0);
+      if (!Number.isFinite(montoBecado) || montoBecado <= 0) return listPrice;
+      const toLiquidate = listPrice - montoBecado;
+      return Math.max(0, Math.min(toLiquidate, listPrice));
     }
     return 0;
   }, [resolveRegisteredCost, currentPricing]);
 
-  /** Monto condonado por beca (costo de lista menos lo que debe aportar el participante). */
+  /** Monto cubierto por beca respecto al costo de lista (para beca parcial = scholarshipPartialAmount si es coherente). */
   const getScholarshipCondonedAmount = useCallback(
     (person) => {
       if (person?.isScholarship !== 'Sí') return 0;
@@ -949,6 +1030,7 @@ const App = () => {
           bloodType: src.bloodType || 'O+',
           emergencyContact: src.emergencyContact || '',
           emergencyPhone: src.emergencyPhone || '',
+          emergencyRelationship: src.emergencyRelationship || '',
           canSwim: src.canSwim || 'No',
           alias: src.alias || '',
           isPastorChild: src.isPastorChild || 'No',
@@ -971,6 +1053,8 @@ const App = () => {
           preferredServeArea: src.preferredServeArea || '',
           servesInCongress: src.servesInCongress || 'No',
           congressServeArea: src.congressServeArea || '',
+          willBeBaptized: src.willBeBaptized === 'Sí' ? 'Sí' : 'No',
+          baptismSegment: src.baptismSegment || '',
         } : {}),
       };
       setNewEntry(base);
@@ -1460,6 +1544,7 @@ const App = () => {
     let totalMen = 0, totalWomen = 0, totalSwimmers = 0, totalNonSwimmers = 0;
     let totalAllergies = 0, totalDiseases = 0, totalDisabilities = 0, totalServers = 0;
     let totalMinors = 0, totalAdults = 0, totalServersBoth = 0;
+    let baptismsTeens = 0, baptismsJovenes = 0;
     let totalPaidOff = 0, totalWithDebt = 0;
 
     // Sección 1: ingresos netos por Método y por Servicio (para gráficas)
@@ -1533,6 +1618,9 @@ const App = () => {
               const assignment = person.campAssignment || (ageNum < 18 ? 'Teens' : 'Jóvenes');
               if (assignment === 'Teens') totalMinors++; else totalAdults++;
             }
+            const bSeg = getBaptismAccountingSegment(person);
+            if (bSeg === 'Teens') baptismsTeens++;
+            else if (bSeg === 'Jóvenes') baptismsJovenes++;
           }
 
           if (currentEvent.eventType === 'General' && currentEvent.customFields) {
@@ -1642,6 +1730,7 @@ const App = () => {
       totalMen, totalWomen, totalSwimmers, totalNonSwimmers,
       totalAllergies, totalDiseases, totalDisabilities, totalServers,
       totalMinors, totalAdults, totalServersBoth, totalPaidOff, totalWithDebt,
+      baptismsTeens, baptismsJovenes,
       ageBrackets, bloodTypeStats, customFieldsStats, locationStats, globalStats,
       paymentMethodTotals, paymentServiceTotals, travelStats
     };
@@ -1724,6 +1813,11 @@ const App = () => {
         wsGeneralData.push(["Campistas / Servidores Asignados a Jóvenes", summary.totalAdults]);
         wsGeneralData.push(["Servidores que apoyan en Ambos", summary.totalServersBoth]);
         wsGeneralData.push([]);
+        wsGeneralData.push(["MÉTRICAS: BAUTIZOS (conteo por segmento del evento)"]);
+        wsGeneralData.push(["Total bautizos (Teens + Jóvenes)", summary.baptismsTeens + summary.baptismsJovenes]);
+        wsGeneralData.push(["Bautizos contados en Teens", summary.baptismsTeens]);
+        wsGeneralData.push(["Bautizos contados en Jóvenes", summary.baptismsJovenes]);
+        wsGeneralData.push([]);
 
         wsGeneralData.push(["MÉTRICAS: SALUD"]);
         wsGeneralData.push(["Con Alergias", summary.totalAllergies]);
@@ -1761,9 +1855,9 @@ const App = () => {
         const locHeaders = ['Nombre', 'Teléfono'];
         
         if (isCampa) {
-          locHeaders.push('Edad', 'Género', 'Tipo Sangre', 'Nado', 'Alergias', 'Detalle Alergias', 'Enfermedades', 'Detalle Enfermedades', 'Medicamento Requerido', 'Discapacidades', 'Detalle Discapacidades', 'Contacto Emergencia', 'Tel Emergencia', 'Becado', 'Servidor', 'Asignación');
+          locHeaders.push('Edad', 'Género', 'Tipo Sangre', 'Nado', 'Alergias', 'Detalle Alergias', 'Enfermedades', 'Detalle Enfermedades', 'Medicamento Requerido', 'Discapacidades', 'Detalle Discapacidades', 'Contacto Emergencia', 'Tel Emergencia', 'Parentesco emergencia', 'Becado', 'Servidor', 'Asignación', 'Bautizo', 'Bautizo conteo en');
         } else if (isGeneral) {
-          locHeaders.push('Edad', 'Género', 'Contacto Emergencia', 'Tel Emergencia');
+          locHeaders.push('Edad', 'Género', 'Contacto Emergencia', 'Tel Emergencia', 'Parentesco emergencia');
           if (currentEvent.customFields) locHeaders.push(...currentEvent.customFields);
         } else {
           locHeaders.push('Edad', 'Género');
@@ -1784,12 +1878,19 @@ const App = () => {
               p.hasAllergy || 'No', p.hasAllergy === 'Sí' ? p.allergyDetails : '',
               p.hasDisease || 'No', p.hasDisease === 'Sí' ? p.diseaseDetails : '', p.hasDisease === 'Sí' ? (p.diseaseMedication || '') : '',
               p.hasDisability || 'No', p.hasDisability === 'Sí' ? p.disabilityDetails : '',
-              p.emergencyContact || '', p.emergencyPhone || '',
+              p.emergencyContact || '', p.emergencyPhone || '', p.emergencyRelationship || '',
               p.isScholarship || 'No', p.isServer || 'No',
-              p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment
+              p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment,
+              p.willBeBaptized || 'No',
+              (() => {
+                const seg = getBaptismAccountingSegment(p);
+                if (seg) return seg;
+                if (p.willBeBaptized === 'Sí') return '— (falta segmento: servidor Ambos sin elegir)';
+                return '';
+              })()
             );
           } else if (isGeneral) {
-            row.push(p.age || '', p.gender || '', p.emergencyContact || '', p.emergencyPhone || '');
+            row.push(p.age || '', p.gender || '', p.emergencyContact || '', p.emergencyPhone || '', p.emergencyRelationship || '');
             if (currentEvent.customFields) {
               currentEvent.customFields.forEach(f => row.push(p.customData?.[f] || ''));
             }
@@ -2213,7 +2314,7 @@ const App = () => {
         startDate: c.startDate || '',
         endDate: c.endDate || '',
         enabled: c.enabled !== false
-      })).filter((c) => c.concept && c.finalAmount > 0 && c.startDate && c.endDate)
+      })).filter((c) => c.concept && c.finalAmount > 0)
     });
     setPricingModal({ isOpen: false });
     addLog('Configuración', `Actualizó la estructura de precios del evento a modalidad ${pricingForm.type}.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
@@ -2548,19 +2649,27 @@ const App = () => {
   const validateForm = (entry, minDep, evType) => {
     if (!hasValidFullName(entry.name) || !isValidPhone(entry.phone)) return false;
     if (evType === 'Campa') {
-      if (!(entry.birthDate || '').trim() || entry.gender === '' || entry.emergencyContact.trim() === '' || !isValidPhone(entry.emergencyPhone)) return false;
+      if (!(entry.birthDate || '').trim() || entry.gender === '' || entry.emergencyContact.trim() === '' || !isValidPhone(entry.emergencyPhone) || !(entry.emergencyRelationship || '').trim()) return false;
       if (entry.hasAllergy !== 'No' && (entry.allergyDetails.trim() === '' && String(entry.allergyCategory || '').trim() === '')) return false;
       if (entry.hasDisease !== 'No' && entry.diseaseDetails.trim() === '') return false;
       if (entry.hasDisability !== 'No' && entry.disabilityDetails.trim() === '') return false;
       if (entry.isServer === 'Sí' && !entry.serverAssignment) return false;
+      if (
+        entry.willBeBaptized === 'Sí' &&
+        entry.isServer === 'Sí' &&
+        entry.serverAssignment === 'Ambos'
+      ) {
+        const bs = String(entry.baptismSegment || '').trim();
+        if (bs !== 'Teens' && bs !== 'Jóvenes') return false;
+      }
       if (entry.isScholarship === 'Sí') {
-        if (entry.scholarshipType === 'partial') {
-          const listPrice = entry.isServer === 'Sí' && entry.serverAssignment === 'Ambos'
-            ? currentPricing.server
-            : currentPricing.global;
-          const partial = parseFloat(entry.scholarshipPartialAmount);
-          if (!Number.isFinite(partial) || partial <= 0) return false;
-          if (partial >= listPrice) return false;
+      if (entry.scholarshipType === 'partial') {
+        const listPrice = entry.isServer === 'Sí' && entry.serverAssignment === 'Ambos'
+          ? currentPricing.server
+          : currentPricing.global;
+          const montoBecado = parseFloat(entry.scholarshipPartialAmount);
+          if (!Number.isFinite(montoBecado) || montoBecado <= 0) return false;
+          if (montoBecado >= listPrice) return false;
         }
         return true;
       }
@@ -2663,8 +2772,8 @@ const App = () => {
 
       let promoLine;
       if (isBecado && person.scholarshipType === 'partial') {
-        const part = Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX');
-        promoLine = `Se aprobó tu beca parcial. Tu aporte acordado al recaudado: $${part} (puedes pagarlo en cualquier momento); el resto del costo de lista queda cubierto por la beca. Abono ya registrado: ${formatMoney(paid)}. Saliste de la lista de espera y ya quedaste inscrito en el evento.`;
+        const becado = Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX');
+        promoLine = `Se aprobó tu beca parcial. La beca cubre $${becado} de tu costo de lista; debes liquidar ${formatMoney(target)} (puedes pagarlo en cualquier momento). Abono ya registrado: ${formatMoney(paid)}. Saliste de la lista de espera y ya quedaste inscrito en el evento.`;
       } else if (isBecado) {
         promoLine = 'Se aprobó tu beca total. Saliste de la lista de espera y ya quedaste inscrito en el evento.';
       } else {
@@ -2700,7 +2809,7 @@ const App = () => {
       const reportedAtText = new Date(Number(reportedAtMs) || Date.now()).toLocaleString('es-MX');
       const isPartial = person?.scholarshipType === 'partial';
       const partialAmount = Number(person?.scholarshipPartialAmount || 0);
-      const partialText = isPartial ? ` · aporte acordado: ${formatMoney(partialAmount)}` : '';
+      const partialText = isPartial ? ` · monto becado: ${formatMoney(partialAmount)}` : '';
       return [
         `Hola ${person?.name || ''}, te contactamos de ${tribuName}.`,
         `Evento: ${currentEvent?.name || 'el evento'} (${loc}).`,
@@ -3095,8 +3204,13 @@ const App = () => {
     const baseRegisteredCost = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos')
       ? currentPricing.server
       : currentPricing.global;
-    const matchedCampaign = resolveCampaignForPerson(newEntry, currentEvent);
+    const matchedCampaign = resolveMatchedCampaignForNewEntry(newEntry);
+    if (newEntry.selectedDiscountCampaignId && !matchedCampaign) {
+      showToast('La campaña elegida no aplica a este perfil o no está bien configurada (concepto y monto).');
+      return;
+    }
     const registeredCost = matchedCampaign ? Math.max(0, Number(matchedCampaign.finalAmount) || 0) : baseRegisteredCost;
+    const { selectedDiscountCampaignId: _newSelCamp, ...newEntryCore } = newEntry;
 
     const initialCampAssignment = currentEvent.eventType === 'Campa' && newEntry.isServer !== 'Sí' 
       ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'Jóvenes') 
@@ -3105,7 +3219,7 @@ const App = () => {
     const finalVnpPersonId = candidateVnpId;
 
     const personData = { 
-      ...newEntry, 
+      ...newEntryCore, 
       id: newPersonId, 
       status: 'active',
       registeredAt: regIso,
@@ -3135,6 +3249,18 @@ const App = () => {
       refundPendingReason: '',
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {})
     };
+
+    if (currentEvent.eventType === 'Campa') {
+      personData.willBeBaptized = newEntry.willBeBaptized === 'Sí' ? 'Sí' : 'No';
+      if (personData.willBeBaptized !== 'Sí' || newEntry.isServer !== 'Sí' || newEntry.serverAssignment !== 'Ambos') {
+        personData.baptismSegment = '';
+      } else {
+        personData.baptismSegment = String(newEntry.baptismSegment || '').trim();
+      }
+    } else {
+      personData.willBeBaptized = 'No';
+      personData.baptismSegment = '';
+    }
 
     if (currentEvent.eventType !== 'Campa') {
       personData.isScholarship = 'No'; personData.isServer = 'No'; personData.serverAssignment = '';
@@ -3225,9 +3351,14 @@ const App = () => {
       : '';
 
     const baseRegisteredCost = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
-    const matchedCampaign = resolveCampaignForPerson(newEntry, currentEvent);
+    const matchedCampaign = resolveMatchedCampaignForNewEntry(newEntry);
+    if (newEntry.selectedDiscountCampaignId && !matchedCampaign) {
+      showToast('La campaña elegida no aplica a este perfil o no está bien configurada (concepto y monto).');
+      return;
+    }
+    const { selectedDiscountCampaignId: _wlSelCamp, ...newEntryCoreWl } = newEntry;
     const personData = {
-      ...newEntry,
+      ...newEntryCoreWl,
       id: newPersonId,
       status: 'waitlist',
       waitlistCreatedAt: Date.now(),
@@ -3253,6 +3384,18 @@ const App = () => {
       refundPendingReason: '',
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {})
     };
+
+    if (currentEvent.eventType === 'Campa') {
+      personData.willBeBaptized = newEntry.willBeBaptized === 'Sí' ? 'Sí' : 'No';
+      if (personData.willBeBaptized !== 'Sí' || newEntry.isServer !== 'Sí' || newEntry.serverAssignment !== 'Ambos') {
+        personData.baptismSegment = '';
+      } else {
+        personData.baptismSegment = String(newEntry.baptismSegment || '').trim();
+      }
+    } else {
+      personData.willBeBaptized = 'No';
+      personData.baptismSegment = '';
+    }
 
     if (currentEvent.eventType !== 'Campa') {
       personData.isScholarship = 'No'; personData.isServer = 'No'; personData.serverAssignment = '';
@@ -3299,7 +3442,7 @@ const App = () => {
     }
     const becaNote =
       currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí'
-        ? ` Solicitud de beca ${newEntry.scholarshipType === 'partial' ? 'parcial' : 'total'}${newEntry.scholarshipType === 'partial' ? ` (aporte recaudado $${parseFloat(newEntry.scholarshipPartialAmount || 0).toLocaleString('es-MX')})` : ''}, pendiente de aprobación al promover.`
+        ? ` Solicitud de beca ${newEntry.scholarshipType === 'partial' ? 'parcial' : 'total'}${newEntry.scholarshipType === 'partial' ? ` (monto becado $${parseFloat(newEntry.scholarshipPartialAmount || 0).toLocaleString('es-MX')})` : ''}, pendiente de aprobación al promover.`
         : '';
     addLog(
       'Lista de Espera',
@@ -3355,14 +3498,17 @@ const App = () => {
     const changes = [];
     const fieldsToTrack = [
       { key: 'name', label: 'Nombre' }, { key: 'phone', label: 'Teléfono' }, { key: 'paid', label: 'Monto Pagado' },
+      { key: 'emergencyContact', label: 'Contacto emergencia' }, { key: 'emergencyPhone', label: 'Tel. emergencia' }, { key: 'emergencyRelationship', label: 'Parentesco emergencia' },
       { key: 'alias', label: 'Alias' }, { key: 'birthDate', label: 'Fecha nacimiento' }, { key: 'llegaEnCarro', label: 'Llega en carro' }, { key: 'regresaEnCarro', label: 'Regresa en carro' },
       { key: 'isPastorChild', label: 'Hijo de pastor' }, { key: 'pastorChildWithoutPay', label: 'Va sin pagar' },
       { key: 'isScholarship', label: 'Becado' },
       { key: 'scholarshipType', label: 'Tipo beca' },
-      { key: 'scholarshipPartialAmount', label: 'Beca parcial — aporte recaudado ($)' },
+      { key: 'scholarshipPartialAmount', label: 'Beca parcial — monto becado ($)' },
       { key: 'responsivaStatus', label: 'Responsiva' },
       { key: 'isServer', label: 'Servidor' },
-      { key: 'serverAssignment', label: 'Asignación' }, { key: 'campAssignment', label: 'Asig. Campista' }, { key: 'canSwim', label: 'Nado' }, { key: 'age', label: 'Edad' },
+      { key: 'serverAssignment', label: 'Asignación' }, { key: 'campAssignment', label: 'Asig. Campista' },
+      { key: 'willBeBaptized', label: 'Bautizo' }, { key: 'baptismSegment', label: 'Bautizo (Teens/Jóvenes)' },
+      { key: 'canSwim', label: 'Nado' }, { key: 'age', label: 'Edad' },
       { key: 'travelFrom', label: 'Sale de' }, { key: 'travelTo', label: 'Regresa a' },
       { key: 'isMarried', label: 'Es casado' }, { key: 'spouseName', label: 'Nombre de pareja' },
       { key: 'goesWithChildren', label: 'Va con hijos' }, { key: 'childrenCount', label: 'Cant. hijos' }, { key: 'servedOtherCampa', label: 'Sirvió en otro campa' },
@@ -3446,9 +3592,9 @@ const App = () => {
     }
 
     if (currentEvent.eventType === 'Campa' && editedPerson.isScholarship === 'Sí' && editedPerson.scholarshipType === 'partial') {
-      const partial = parseFloat(editedPerson.scholarshipPartialAmount || 0);
-      if (!Number.isFinite(partial) || partial <= 0 || partial >= finalRegisteredCost) {
-        showToast('Beca parcial: el aporte al recaudado debe ser mayor que 0 y menor que el costo de lista.');
+      const montoBecado = parseFloat(editedPerson.scholarshipPartialAmount || 0);
+      if (!Number.isFinite(montoBecado) || montoBecado <= 0 || montoBecado >= finalRegisteredCost) {
+        showToast('Beca parcial: el monto becado debe ser mayor que 0 y menor que el costo de lista del registro.');
         return;
       }
     }
@@ -3464,19 +3610,59 @@ const App = () => {
       payload.scholarshipPendingApproval = false;
     }
     payload.responsivaStatus = resolveResponsivaStatus(editedPerson);
-    if (editedPerson.applyActiveCampaignNow) {
-      const campaign = resolveCampaignForPerson(editedPerson, currentEvent);
-      if (!campaign) {
-        showToast('No hay campaña de descuento activa que aplique para este registro.');
-        return;
+    const campaignEditChoice = editedPerson.editApplyCampaignId;
+    if (hasAdminRights) {
+      if (campaignEditChoice === '__clear__') {
+        payload.registeredCost = getPersonCost(editedPerson, currentPricing);
+        payload.discountCampaignId = '';
+        payload.discountCampaignConcept = '';
+        payload.discountCampaignAppliedAt = null;
+        changes.push(`Campaña quitada; costo de lista del evento: $${payload.registeredCost}`);
+      } else if (campaignEditChoice && campaignEditChoice !== '') {
+        const c = findDiscountCampaignById(currentEvent, campaignEditChoice);
+        if (!c || c.enabled === false) {
+          showToast('Campaña no válida o desactivada.');
+          return;
+        }
+        if (!campaignMatchesPersonProfile(c, editedPerson)) {
+          showToast('Esa campaña no aplica al perfil servidor/campista de este registro.');
+          return;
+        }
+        payload.registeredCost = Math.max(0, Number(c.finalAmount) || 0);
+        payload.discountCampaignId = c.id || '';
+        payload.discountCampaignConcept = c.concept || '';
+        payload.discountCampaignAppliedAt = Date.now();
+        const todayIso = new Date().toISOString().split('T')[0];
+        const vigenteHoy = discountCampaignHasDateRange(c) && isDiscountCampaignVigenteOnDate(c, todayIso);
+        const campNote = !discountCampaignHasDateRange(c)
+          ? ' [sin fechas en campaña; solo manual]'
+          : vigenteHoy
+            ? ''
+            : ' [fuera de vigencia por fechas; aplicación manual]';
+        changes.push(`Campaña aplicada (${c.concept}) → liquidar $${payload.registeredCost}${campNote}`);
       }
-      payload.registeredCost = Math.max(0, Number(campaign.finalAmount) || 0);
-      payload.discountCampaignId = campaign.id || '';
-      payload.discountCampaignConcept = campaign.concept || '';
-      payload.discountCampaignAppliedAt = Date.now();
-      changes.push(`Campaña aplicada (${campaign.concept}) => liquidación ${payload.registeredCost}`);
     }
-    payload.applyActiveCampaignNow = false;
+    delete payload.editApplyCampaignId;
+    delete payload.applyActiveCampaignNow;
+    delete payload.selectedDiscountCampaignId;
+
+    if (currentEvent.eventType === 'Campa') {
+      payload.willBeBaptized = editedPerson.willBeBaptized === 'Sí' ? 'Sí' : 'No';
+      if (payload.willBeBaptized !== 'Sí' || editedPerson.isServer !== 'Sí' || editedPerson.serverAssignment !== 'Ambos') {
+        payload.baptismSegment = '';
+      } else {
+        const bs = String(editedPerson.baptismSegment || '').trim();
+        if (bs !== 'Teens' && bs !== 'Jóvenes') {
+          showToast('Si marca bautizo y el servidor es Ambos, elija si el conteo va en Teens o Jóvenes.');
+          return;
+        }
+        payload.baptismSegment = bs;
+      }
+    } else {
+      payload.willBeBaptized = 'No';
+      payload.baptismSegment = '';
+    }
+
     const mergedForRefund = { ...editedPerson, ...payload };
     const refundDiff = Math.max(0, (parseFloat(mergedForRefund.paid || 0) || 0) - (Number(getLiquidationTarget(mergedForRefund)) || 0));
     payload.refundPendingAmount = refundDiff;
@@ -3740,7 +3926,7 @@ const App = () => {
 
     const promBeca =
       person.isScholarship === 'Sí'
-        ? ` Becado ${person.scholarshipType === 'partial' ? 'parcial' : 'total'}${person.scholarshipType === 'partial' ? ` (aporte recaudado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}, abono registrado $${paidPromote.toLocaleString('es-MX')})` : ''}.`
+        ? ` Becado ${person.scholarshipType === 'partial' ? 'parcial' : 'total'}${person.scholarshipType === 'partial' ? ` (monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}, a liquidar $${Number(liqPromote || 0).toLocaleString('es-MX')}, abono $${paidPromote.toLocaleString('es-MX')})` : ''}.`
         : '';
     addLog(
       'Lista de Espera',
@@ -3751,7 +3937,7 @@ const App = () => {
     );
     showToast(
       person.isScholarship === 'Sí' && person.scholarshipType === 'partial'
-        ? `Inscrito (beca parcial). Abono registrado: $${paidPromote.toLocaleString('es-MX')}.`
+        ? `Inscrito (beca parcial). A liquidar: $${Number(liqPromote || 0).toLocaleString('es-MX')}. Abono: $${paidPromote.toLocaleString('es-MX')}.`
         : 'Registro promovido a inscritos.'
     );
     addLog(
@@ -6796,6 +6982,18 @@ const App = () => {
                   </div>
                 </div>
               )}
+
+              {viewPrefs.chartBaptism && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Church className="text-sky-600" size={20} /> Bautizos</h3>
+                  <p className="text-xs text-slate-400 mb-6">Conteo por segmento del evento (Teens / Jóvenes). Servidor Ambos define dónde cuenta.</p>
+                  <div className="space-y-5 w-full mt-2">
+                    <ProgressBar label="Total" value={summary.baptismsTeens + summary.baptismsJovenes} max={Math.max(summary.globalStats.all.count, 1)} colorClass="text-sky-700" bgClass="bg-sky-500" />
+                    <ProgressBar label="En Teens" value={summary.baptismsTeens} max={Math.max(summary.baptismsTeens + summary.baptismsJovenes, 1)} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
+                    <ProgressBar label="En Jóvenes" value={summary.baptismsJovenes} max={Math.max(summary.baptismsTeens + summary.baptismsJovenes, 1)} colorClass="text-blue-600" bgClass="bg-blue-500" />
+                  </div>
+                </div>
+              )}
             </>
           )}
 
@@ -6966,6 +7164,11 @@ const App = () => {
 
   const renderLocationSheet = (loc) => {
     const visibleParticipants = getProcessedParticipantsForLocation(loc);
+    const newRegCampaignsActive = getActiveDiscountCampaigns(currentEvent).filter((c) => campaignMatchesPersonProfile(c, newEntry));
+    const newRegSelectableCampaigns = getValidDiscountCampaignsForPerson(currentEvent, newEntry);
+    const newRegBaseList = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
+    const newRegCampPreview = resolveMatchedCampaignForNewEntry(newEntry);
+    const newRegLiqPreview = newRegCampPreview ? Math.max(0, Number(newRegCampPreview.finalAmount) || 0) : newRegBaseList;
     return (
     <div className="p-6 space-y-6 animate-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
@@ -7133,7 +7336,7 @@ const App = () => {
             {(isCampa || isGeneral) && (
               <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
                 <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">2 · Contacto de emergencia</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div className="space-y-1">
                     <label className={labelClasses}>Nombre del contacto {isGeneral && '(Opcional)'}</label>
                     <input placeholder="Nombre contacto" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(newEntry.emergencyContact || '').trim())}`} value={newEntry.emergencyContact} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, emergencyContact: e.target.value })} />
@@ -7141,6 +7344,10 @@ const App = () => {
                   <div className="space-y-1">
                     <label className={labelClasses}>Teléfono de emergencia {isGeneral && '(Opcional)'}</label>
                     <input placeholder="55-1234-5678" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !isValidPhone(newEntry.emergencyPhone || ''))}`} value={newEntry.emergencyPhone} onChange={e => setNewEntry({ ...newEntry, emergencyPhone: formatPhoneNumber(e.target.value) })} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className={labelClasses}>Parentesco {isGeneral && '(Opcional)'}</label>
+                    <input placeholder="Ej. Madre, padre, tutor…" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(newEntry.emergencyRelationship || '').trim())}`} value={newEntry.emergencyRelationship || ''} onChange={e => setNewEntry({ ...newEntry, emergencyRelationship: e.target.value })} />
                   </div>
                 </div>
               </section>
@@ -7226,117 +7433,147 @@ const App = () => {
                     </button>
                   )}
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-                  <div className="space-y-1">
-                    <label className={labelClasses}>Becado</label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = newEntry.isScholarship === 'Sí' ? 'No' : 'Sí';
-                        setNewEntry({
-                          ...newEntry,
-                          isScholarship: next,
-                          scholarshipType: 'total',
-                          scholarshipPartialAmount: '',
-                          isPastorChild: next === 'Sí' ? 'No' : newEntry.isPastorChild,
-                          pastorChildWithoutPay: next === 'Sí' ? 'No' : newEntry.pastorChildWithoutPay,
-                          pastorChildSpecialDonationFinanceId: next === 'Sí' ? '' : newEntry.pastorChildSpecialDonationFinanceId,
-                        });
-                        if (next === 'Sí') setSendToWaitlist(false);
-                      }}
-                      className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.isScholarship === 'Sí' ? 'bg-purple-500 text-white border-purple-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}
-                    >
-                      <GraduationCap size={14} className={newEntry.isScholarship === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isScholarship}
-                    </button>
-                  </div>
-                  <div className="space-y-1">
-                    <label className={labelClasses}>Servidor</label>
-                    <button type="button" onClick={() => setNewEntry({
-                      ...newEntry,
-                      isServer: newEntry.isServer === 'Sí' ? 'No' : 'Sí',
-                      serverAssignment: '',
-                      isMarried: 'No',
-                      spouseName: '',
-                      goesWithChildren: 'No',
-                      childrenCount: '',
-                      servedOtherCampa: 'No',
-                      servedAreas: '',
-                      preferredServeArea: '',
-                      servesInCongress: 'No',
-                      congressServeArea: '',
-                    })} className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}><Users size={14} className={newEntry.isServer === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isServer}</button>
-                  </div>
-
-                  {newEntry.isServer === 'Sí' && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="space-y-2 min-w-0">
                     <div className="space-y-1">
-                      <label className={labelClasses}>Asignación de servidor</label>
-                      <select className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(newEntry.isServer === 'Sí' && !String(newEntry.serverAssignment || '').trim())}`} value={newEntry.serverAssignment} onChange={e => setNewEntry({ ...newEntry, serverAssignment: e.target.value })}>
-                        <option value="Teens">Teens</option>
-                        <option value="Jóvenes">Jóvenes</option>
-                        <option value="Ambos">Ambos</option>
-                      </select>
+                      <label className={labelClasses}>Becado</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = newEntry.isScholarship === 'Sí' ? 'No' : 'Sí';
+                          setNewEntry({
+                            ...newEntry,
+                            isScholarship: next,
+                            scholarshipType: 'total',
+                            scholarshipPartialAmount: '',
+                            isPastorChild: next === 'Sí' ? 'No' : newEntry.isPastorChild,
+                            pastorChildWithoutPay: next === 'Sí' ? 'No' : newEntry.pastorChildWithoutPay,
+                            pastorChildSpecialDonationFinanceId: next === 'Sí' ? '' : newEntry.pastorChildSpecialDonationFinanceId,
+                          });
+                          if (next === 'Sí') setSendToWaitlist(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.isScholarship === 'Sí' ? 'bg-purple-500 text-white border-purple-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}
+                      >
+                        <GraduationCap size={14} className={newEntry.isScholarship === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isScholarship}
+                      </button>
                     </div>
-                  )}
-
-                  {newEntry.isScholarship === 'Sí' && (
-                    <div className="md:col-span-2 lg:col-span-4 space-y-2 p-3 rounded-xl bg-purple-50 border border-purple-100">
-                      <p className="text-[10px] font-black text-purple-800 uppercase tracking-wider">Solicitud de beca → lista de espera</p>
-                      <p className="text-[11px] text-purple-900/80 leading-snug">
-                        No ocupa cupo hasta que un administrador promueva el registro. En beca parcial, el monto que indiques es lo único que cuenta como aporte de esa persona al recaudado (pueden pagarlo en cualquier momento); el resto del costo de lista queda saldado por la beca.
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setNewEntry({ ...newEntry, scholarshipType: 'total', scholarshipPartialAmount: '' })}
-                          className={`px-3 py-2 rounded-lg text-xs font-bold border transition-all ${newEntry.scholarshipType !== 'partial' ? 'bg-purple-600 text-white border-purple-500' : 'bg-white text-slate-600 border-slate-200'}`}
-                        >
-                          Beca total
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setNewEntry({ ...newEntry, scholarshipType: 'partial' })}
-                          className={`px-3 py-2 rounded-lg text-xs font-bold border transition-all ${newEntry.scholarshipType === 'partial' ? 'bg-purple-600 text-white border-purple-500' : 'bg-white text-slate-600 border-slate-200'}`}
-                        >
-                          Beca parcial
-                        </button>
-                      </div>
-                      {newEntry.scholarshipType === 'partial' && (
-                        <div className="space-y-1 max-w-md">
-                          <label className={labelClasses}>¿Cuánto puede abonar?</label>
-                          <p className="text-[10px] text-purple-900/85 leading-snug mb-1">
-                            Solo este monto cuenta como lo que aportan al recaudado del evento; pueden pagarlo en cualquier momento. El resto del costo de lista queda saldado por la beca.
-                          </p>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            placeholder="Ej. 500"
-                            className={`${inputClasses} ${getRequiredFieldClass(newEntry.isScholarship === 'Sí' && newEntry.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(newEntry.scholarshipPartialAmount)) || parseFloat(newEntry.scholarshipPartialAmount) <= 0 || parseFloat(newEntry.scholarshipPartialAmount) >= ((newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global)))}`}
-                            value={newEntry.scholarshipPartialAmount}
-                            onChange={(e) => setNewEntry({ ...newEntry, scholarshipPartialAmount: e.target.value })}
-                          />
-                          <p className="text-[10px] text-purple-800/90">
-                            {(() => {
-                              const list = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
-                              const p = parseFloat(newEntry.scholarshipPartialAmount || 0);
-                              if (!Number.isFinite(p) || p <= 0) {
-                                return <>Costo lista sede: ${list.toLocaleString('es-MX')} · Indica arriba su aporte para ver cuánto cubre la beca.</>;
-                              }
-                              const beca = Math.max(0, list - p);
-                              return (
-                                <>
-                                  Costo lista sede: ${list.toLocaleString('es-MX')} · Aporte al recaudado (ellos): ${p.toLocaleString('es-MX')} · Cubre la beca: ${beca.toLocaleString('es-MX')}
-                                </>
-                              );
-                            })()}
-                          </p>
+                    {newEntry.isScholarship === 'Sí' && (
+                      <>
+                        <div className="space-y-1">
+                          <label className={labelClasses}>Tipo de beca</label>
+                          <select
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700"
+                            value={newEntry.scholarshipType === 'partial' ? 'partial' : 'total'}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setNewEntry({
+                                ...newEntry,
+                                scholarshipType: v === 'partial' ? 'partial' : 'total',
+                                scholarshipPartialAmount: v === 'total' ? '' : newEntry.scholarshipPartialAmount,
+                              });
+                            }}
+                          >
+                            <option value="total">Beca total</option>
+                            <option value="partial">Beca parcial</option>
+                          </select>
                         </div>
-                      )}
+                        {newEntry.scholarshipType === 'partial' && (
+                          <div className="space-y-1">
+                            <label className={labelClasses}>Monto becado</label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="0.00"
+                              className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(newEntry.isScholarship === 'Sí' && newEntry.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(newEntry.scholarshipPartialAmount)) || parseFloat(newEntry.scholarshipPartialAmount) <= 0 || parseFloat(newEntry.scholarshipPartialAmount) >= ((newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global)))}`}
+                              value={newEntry.scholarshipPartialAmount}
+                              onChange={(e) => setNewEntry({ ...newEntry, scholarshipPartialAmount: e.target.value })}
+                            />
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  <div className="space-y-2 min-w-0">
+                    <div className="space-y-1">
+                      <label className={labelClasses}>Servidor</label>
+                      <button type="button" onClick={() => setNewEntry({
+                        ...newEntry,
+                        isServer: newEntry.isServer === 'Sí' ? 'No' : 'Sí',
+                        serverAssignment: '',
+                        baptismSegment: '',
+                        isMarried: 'No',
+                        spouseName: '',
+                        goesWithChildren: 'No',
+                        childrenCount: '',
+                        servedOtherCampa: 'No',
+                        servedAreas: '',
+                        preferredServeArea: '',
+                        servesInCongress: 'No',
+                        congressServeArea: '',
+                      })} className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}><Users size={14} className={newEntry.isServer === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isServer}</button>
                     </div>
-                  )}
+                    {newEntry.isServer === 'Sí' && (
+                      <div className="space-y-1">
+                        <label className={labelClasses}>Asignación</label>
+                        <select className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(newEntry.isServer === 'Sí' && !String(newEntry.serverAssignment || '').trim())}`} value={newEntry.serverAssignment} onChange={e => {
+                          const v = e.target.value;
+                          setNewEntry({
+                            ...newEntry,
+                            serverAssignment: v,
+                            baptismSegment: v === 'Ambos' ? newEntry.baptismSegment : '',
+                          });
+                        }}>
+                          <option value="Teens">Teens</option>
+                          <option value="Jóvenes">Jóvenes</option>
+                          <option value="Ambos">Ambos</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2 min-w-0">
+                    <div className="space-y-1">
+                      <label className={labelClasses}>Bautizo</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = newEntry.willBeBaptized === 'Sí' ? 'No' : 'Sí';
+                          setNewEntry({
+                            ...newEntry,
+                            willBeBaptized: next,
+                            baptismSegment: next === 'No' ? '' : newEntry.baptismSegment,
+                          });
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.willBeBaptized === 'Sí' ? 'bg-sky-600 text-white border-sky-500' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}
+                      >
+                        <Church size={14} className={newEntry.willBeBaptized === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.willBeBaptized}
+                      </button>
+                    </div>
+                    {newEntry.willBeBaptized === 'Sí' && newEntry.isServer !== 'Sí' && (
+                      <p className="text-[9px] text-slate-500 leading-snug">
+                        Conteo en <strong>{parseInt(newEntry.age, 10) < 18 ? 'Teens' : 'Jóvenes'}</strong> según edad al guardar (campista).
+                      </p>
+                    )}
+                    {newEntry.willBeBaptized === 'Sí' && newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos' && (
+                      <div className="space-y-1">
+                        <label className={labelClasses}>¿Dónde se bautiza?</label>
+                        <select
+                          className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(!String(newEntry.baptismSegment || '').trim())}`}
+                          value={newEntry.baptismSegment || ''}
+                          onChange={(e) => setNewEntry({ ...newEntry, baptismSegment: e.target.value })}
+                        >
+                          <option value="">Selecciona…</option>
+                          <option value="Teens">Teens</option>
+                          <option value="Jóvenes">Jóvenes</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
 
                   {newEntry.isScholarship !== 'Sí' && (
-                    <div className="md:col-span-2 lg:col-span-4 flex flex-wrap items-center gap-4">
+                    <div className="sm:col-span-3 flex flex-wrap items-center gap-4">
                       <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none p-2 bg-white border border-slate-200 rounded-lg">
                         <input
                           type="checkbox"
@@ -7604,6 +7841,74 @@ const App = () => {
                   </div>
                 )}
               </div>
+              {(currentEvent?.discountCampaigns || []).length > 0 && (
+                <details className="group/camp mt-2 rounded-lg border border-slate-200/80 bg-slate-50/40">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-2.5 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500 hover:text-slate-600 hover:bg-slate-100/40 rounded-lg [&::-webkit-details-marker]:hidden">
+                    <span>Campañas de descuento</span>
+                    <ChevronDown size={14} className="shrink-0 text-slate-400 transition-transform duration-200 group-open/camp:rotate-180" />
+                  </summary>
+                  <div className="border-t border-slate-200/60 px-2.5 pb-2.5 pt-2 space-y-2 text-[10px] text-slate-600">
+                    {newRegCampaignsActive.length > 0 ? (
+                      <ul className="space-y-0.5 list-disc list-inside text-slate-600">
+                        {newRegCampaignsActive.map((c) => (
+                          <li key={`newreg-camp-${c.id}`}>
+                            <span className="font-semibold text-slate-700">{c.concept || 'Sin nombre'}</span>
+                            {' · '}
+                            {c.startDate} → {c.endDate}
+                            {' · '}
+                            ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')}
+                            {' · '}
+                            {discountCampaignAppliesToLabel(c)}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : newRegSelectableCampaigns.length > 0 ? (
+                      <p className="text-slate-500 leading-snug">
+                        Ninguna vigente hoy para este perfil; puedes elegir una en el selector.
+                      </p>
+                    ) : (
+                      <p className="text-slate-500 leading-snug">
+                        Sin campañas aplicables. Lista: <span className="font-semibold text-slate-700">${newRegBaseList.toLocaleString('es-MX')}</span>.
+                      </p>
+                    )}
+                    {newRegSelectableCampaigns.length > 0 ? (
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide px-0.5">Aplicar campaña</label>
+                        <select
+                          className="w-full px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-700 outline-none focus:ring-2 focus:ring-slate-300"
+                          value={newEntry.selectedDiscountCampaignId || ''}
+                          onChange={(e) => setNewEntry({ ...newEntry, selectedDiscountCampaignId: e.target.value })}
+                        >
+                          <option value="">Automático (fechas vigentes hoy)</option>
+                          {newRegSelectableCampaigns.map((c) => {
+                            const activeToday = newRegCampaignsActive.some((a) => String(a.id) === String(c.id));
+                            const noDates = !discountCampaignHasDateRange(c);
+                            const suffix = noDates
+                              ? ' — manual'
+                              : activeToday
+                                ? ' — vigente'
+                                : ' — fuera de vigencia';
+                            return (
+                              <option key={`newreg-opt-${c.id}`} value={String(c.id)}>
+                                {c.concept || 'Campaña'} — ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')}
+                                {suffix}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+                    ) : null}
+                    <p className="text-[10px] text-slate-500 border-t border-slate-200/50 pt-2">
+                      A liquidar: <span className="font-semibold text-slate-700">${newRegLiqPreview.toLocaleString('es-MX')}</span>
+                      {newRegCampPreview ? (
+                        <> · «{newRegCampPreview.concept || '—'}» (sin campaña: ${newRegBaseList.toLocaleString('es-MX')}).</>
+                      ) : (
+                        <> · lista del evento para este perfil.</>
+                      )}
+                    </p>
+                  </div>
+                </details>
+              )}
               <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   {hasAdminRights && (
@@ -8006,6 +8311,14 @@ const App = () => {
                               ) : (
                                 isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes')}</span>
                               )}
+                              {isCampa && person.willBeBaptized === 'Sí' && (() => {
+                                const seg = getBaptismAccountingSegment(person);
+                                return (
+                                  <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border ${seg ? 'bg-sky-100 text-sky-800 border-sky-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`} title={seg ? `Conteo en ${seg}` : 'Servidor Ambos: elige Teens o Jóvenes en editar'}>
+                                    <Church size={10} /> Bautizo{seg ? ` · ${seg}` : ' · incompleto'}
+                                  </span>
+                                );
+                              })()}
                             </div>
                             <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1">
                               <span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone}</span>
@@ -8054,11 +8367,14 @@ const App = () => {
                                     travelTo: person.travelTo || person.location || loc,
                                     registeredCost: listPrice,
                                     campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes'),
+                                    willBeBaptized: person.willBeBaptized === 'Sí' ? 'Sí' : 'No',
+                                    baptismSegment: person.baptismSegment || '',
                                     scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
                                     scholarshipPartialAmount:
                                       person.scholarshipType === 'partial' && person.scholarshipPartialAmount != null && person.scholarshipPartialAmount !== ''
                                         ? String(person.scholarshipPartialAmount)
                                         : '',
+                                    editApplyCampaignId: '',
                                   }
                                 })} className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border text-slate-500 border-slate-200 hover:text-indigo-700 hover:bg-indigo-50 hover:border-indigo-200 transition-all" title="Editar Registro"><Edit3 size={14} className="inline mr-1" />Editar</button>
                                 )}
@@ -8134,7 +8450,17 @@ const App = () => {
                               {(isCampa || isGeneral) ? (
                                 <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
                                   <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Contacto de Emergencia</p>
-                                  {person.emergencyContact ? (<><p className="text-slate-700 font-semibold mb-1">{person.emergencyContact}</p><p className="flex items-center gap-1 text-slate-500 font-mono"><Phone size={10} /> {person.emergencyPhone}</p></>) : <p className="text-slate-400 italic">No provisto</p>}
+                                  {person.emergencyContact ? (
+                                    <>
+                                      <p className="text-slate-700 font-semibold mb-1">{person.emergencyContact}</p>
+                                      {person.emergencyRelationship ? (
+                                        <p className="text-slate-600 text-[11px] mb-1"><strong>Parentesco:</strong> {person.emergencyRelationship}</p>
+                                      ) : null}
+                                      <p className="flex items-center gap-1 text-slate-500 font-mono"><Phone size={10} /> {person.emergencyPhone}</p>
+                                    </>
+                                  ) : (
+                                    <p className="text-slate-400 italic">No provisto</p>
+                                  )}
                                 </div>
                               ) : <div />}
                               {isCampa && (
@@ -8325,7 +8651,7 @@ const App = () => {
                           <p className="mt-1 text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-100 rounded-lg px-2 py-1 inline-block">
                             Solicitud beca {person.scholarshipType === 'partial' ? 'parcial' : 'total'}
                             {person.scholarshipType === 'partial'
-                              ? ` · aporte recaudado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}`
+                              ? ` · monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}`
                               : ''}{' '}
                             (pendiente al promover)
                           </p>
@@ -8349,11 +8675,14 @@ const App = () => {
                                   travelTo: person.travelTo || person.location || loc,
                                   registeredCost: listPrice,
                                   campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes'),
+                                  willBeBaptized: person.willBeBaptized === 'Sí' ? 'Sí' : 'No',
+                                  baptismSegment: person.baptismSegment || '',
                                   scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
                                   scholarshipPartialAmount:
                                     person.scholarshipType === 'partial' && person.scholarshipPartialAmount != null && person.scholarshipPartialAmount !== ''
                                       ? String(person.scholarshipPartialAmount)
                                       : '',
+                                  editApplyCampaignId: '',
                                 }
                               })}
                               className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
@@ -8973,6 +9302,7 @@ const App = () => {
                           { key: 'chartMedical', label: 'Gráfica: Salud', show: isCampa },
                           { key: 'chartServers', label: 'Gráfica: Servidores', show: isCampa },
                           { key: 'chartAges', label: 'Gráfica: Asignación', show: isCampa },
+                          { key: 'chartBaptism', label: 'Gráfica: Bautizos', show: isCampa },
                           { key: 'chartCustom', label: 'Gráfica: Campos Extra', show: isGeneral && currentEvent?.customFields?.length > 0 },
                           { key: 'tableDetails', label: 'Tabla de Desglose General' },
                         ].filter(item => item.show !== false).map(item => (
@@ -9115,22 +9445,6 @@ const App = () => {
                     {(currentEvent?.locations || []).map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
-                <div className="space-y-2 md:col-span-3 p-3 rounded-xl bg-amber-50/50 border border-amber-100">
-                  <p className="text-[10px] font-black text-amber-700 uppercase tracking-wider">Campañas de descuento</p>
-                  <p className="text-[11px] text-amber-700/80">
-                    Campaña actual aplicada: <strong>{editRegistryModal.data.discountCampaignConcept || 'Ninguna'}</strong>
-                  </p>
-                  <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 accent-amber-600 rounded"
-                      checked={!!editRegistryModal.data.applyActiveCampaignNow}
-                      onChange={(e) => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, applyActiveCampaignNow: e.target.checked } })}
-                    />
-                    Aplicar campaña activa ahora (si aplica). Si ya pagó de más, se marcará devolución pendiente.
-                  </label>
-                </div>
-
                 <div className="space-y-1">
                   <label className={labelClasses}>Transporte</label>
                   <div className="flex flex-wrap gap-3">
@@ -9164,6 +9478,7 @@ const App = () => {
                   <>
                     <div className="space-y-1"><label className={labelClasses}>Contacto Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(editRegistryModal.data.emergencyContact || '').trim())}`} value={editRegistryModal.data.emergencyContact} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyContact: e.target.value } })} /></div>
                     <div className="space-y-1"><label className={labelClasses}>Tel. Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className={`${inputClasses} ${getRequiredFieldClass(isCampa && !isValidPhone(editRegistryModal.data.emergencyPhone || ''))}`} value={editRegistryModal.data.emergencyPhone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyPhone: formatPhoneNumber(e.target.value) } })} /></div>
+                    <div className="space-y-1"><label className={labelClasses}>Parentesco {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} placeholder="Ej. Madre, tutor…" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(editRegistryModal.data.emergencyRelationship || '').trim())}`} value={editRegistryModal.data.emergencyRelationship || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyRelationship: e.target.value } })} /></div>
                   </>
                 )}
                 {isGeneral && currentEvent.customFields && currentEvent.customFields.map((field, idx) => (
@@ -9242,6 +9557,7 @@ const App = () => {
                         ...editRegistryModal.data,
                         isServer: editRegistryModal.data.isServer === 'Sí' ? 'No' : 'Sí',
                         serverAssignment: '',
+                        baptismSegment: '',
                         isPastorChild: 'No',
                         pastorChildWithoutPay: 'No',
                         pastorChildSpecialDonationFinanceId: '',
@@ -9255,69 +9571,113 @@ const App = () => {
                         servesInCongress: 'No',
                         congressServeArea: '',
                       } })} className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Users size={16} /> Servidor: {editRegistryModal.data.isServer || 'No'}</button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = editRegistryModal.data.willBeBaptized === 'Sí' ? 'No' : 'Sí';
+                          setEditRegistryModal({
+                            ...editRegistryModal,
+                            data: {
+                              ...editRegistryModal.data,
+                              willBeBaptized: next,
+                              baptismSegment: next === 'No' ? '' : editRegistryModal.data.baptismSegment,
+                            },
+                          });
+                        }}
+                        className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.willBeBaptized === 'Sí' ? 'bg-sky-600 text-white border-sky-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}
+                      >
+                        <Church size={16} /> Bautizo: {editRegistryModal.data.willBeBaptized || 'No'}
+                      </button>
                     </div>
 
                     {editRegistryModal.data.isScholarship === 'Sí' && (
-                      <div className="p-4 bg-purple-50/80 border border-purple-100 rounded-xl mt-3 space-y-2">
-                        <p className="text-[10px] font-black text-purple-800 uppercase tracking-widest">Tipo de beca</p>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setEditRegistryModal({
-                              ...editRegistryModal,
-                              data: { ...editRegistryModal.data, scholarshipType: 'total', scholarshipPartialAmount: '' },
-                            })}
-                            className={`px-3 py-2 rounded-lg text-xs font-bold border ${editRegistryModal.data.scholarshipType !== 'partial' ? 'bg-purple-600 text-white border-purple-500' : 'bg-white text-slate-600 border-slate-200'}`}
+                      <div className="space-y-2 max-w-xs mt-3">
+                        <div className="space-y-1">
+                          <label className={labelClasses}>Tipo de beca</label>
+                          <select
+                            className={inputClasses}
+                            value={editRegistryModal.data.scholarshipType === 'partial' ? 'partial' : 'total'}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setEditRegistryModal({
+                                ...editRegistryModal,
+                                data: {
+                                  ...editRegistryModal.data,
+                                  scholarshipType: v === 'partial' ? 'partial' : 'total',
+                                  scholarshipPartialAmount: v === 'total' ? '' : editRegistryModal.data.scholarshipPartialAmount,
+                                },
+                              });
+                            }}
                           >
-                            Total
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setEditRegistryModal({
-                              ...editRegistryModal,
-                              data: { ...editRegistryModal.data, scholarshipType: 'partial' },
-                            })}
-                            className={`px-3 py-2 rounded-lg text-xs font-bold border ${editRegistryModal.data.scholarshipType === 'partial' ? 'bg-purple-600 text-white border-purple-500' : 'bg-white text-slate-600 border-slate-200'}`}
-                          >
-                            Parcial
-                          </button>
+                            <option value="total">Beca total</option>
+                            <option value="partial">Beca parcial</option>
+                          </select>
                         </div>
                         {editRegistryModal.data.scholarshipType === 'partial' && (
-                          <div className="space-y-1 max-w-md">
-                            <label className={labelClasses}>¿Cuánto puede abonar?</label>
-                            <p className="text-[10px] text-purple-900/85 leading-snug">
-                              Solo este monto cuenta como aporte al recaudado; puede pagarse en cualquier momento. El resto del costo de lista queda saldado por la beca.
-                            </p>
+                          <div className="space-y-1">
+                            <label className={labelClasses}>Monto becado</label>
                             <input
                               type="number"
                               min="0"
                               step="0.01"
-                              className={`${inputClasses} ${getRequiredFieldClass(editRegistryModal.data.isScholarship === 'Sí' && editRegistryModal.data.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(editRegistryModal.data.scholarshipPartialAmount)) || parseFloat(editRegistryModal.data.scholarshipPartialAmount) <= 0 || parseFloat(editRegistryModal.data.scholarshipPartialAmount) >= (Number(editRegistryModal.data.registeredCost) || 0)))}`}
+                              placeholder="0.00"
+                              className={`${inputClasses} ${getRequiredFieldClass(editRegistryModal.data.isScholarship === 'Sí' && editRegistryModal.data.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(editRegistryModal.data.scholarshipPartialAmount)) || parseFloat(editRegistryModal.data.scholarshipPartialAmount) <= 0 || parseFloat(editRegistryModal.data.scholarshipPartialAmount) >= resolveRegisteredCost(editRegistryModal.data, currentPricing)))}`}
                               value={editRegistryModal.data.scholarshipPartialAmount ?? ''}
                               onChange={(e) => setEditRegistryModal({
                                 ...editRegistryModal,
                                 data: { ...editRegistryModal.data, scholarshipPartialAmount: e.target.value },
                               })}
                             />
-                            <p className="text-[10px] text-purple-800/90">
-                              {(() => {
-                                const list = Number(editRegistryModal.data.registeredCost) || 0;
-                                const p = parseFloat(editRegistryModal.data.scholarshipPartialAmount || 0);
-                                if (!list || !Number.isFinite(p) || p <= 0) {
-                                  return <>Costo de lista del registro: {list ? `$${list.toLocaleString('es-MX')}` : '—'} · Completa el monto para ver el desglose.</>;
-                                }
-                                const beca = Math.max(0, list - p);
-                                return (
-                                  <>
-                                    Costo lista: ${list.toLocaleString('es-MX')} · Aporte al recaudado: ${p.toLocaleString('es-MX')} · Cubre la beca: ${beca.toLocaleString('es-MX')}
-                                  </>
-                                );
-                              })()}
-                            </p>
                           </div>
                         )}
                       </div>
                     )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
+                      <div className="space-y-2 min-w-0">
+                        {editRegistryModal.data.isServer === 'Sí' && (
+                          <div className="space-y-1">
+                            <label className={labelClasses}>Asignación</label>
+                            <select className={inputClasses} value={editRegistryModal.data.serverAssignment || ''} onChange={e => {
+                              const v = e.target.value;
+                              setEditRegistryModal({
+                                ...editRegistryModal,
+                                data: {
+                                  ...editRegistryModal.data,
+                                  serverAssignment: v,
+                                  baptismSegment: v === 'Ambos' ? editRegistryModal.data.baptismSegment : '',
+                                },
+                              });
+                            }}>
+                              <option value="Teens">Teens</option>
+                              <option value="Jóvenes">Jóvenes</option>
+                              <option value="Ambos">Ambos</option>
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                      <div className="space-y-2 min-w-0">
+                        {editRegistryModal.data.willBeBaptized === 'Sí' && editRegistryModal.data.isServer !== 'Sí' && (
+                          <p className="text-[10px] text-slate-600">
+                            Conteo del bautizo en <strong>{editRegistryModal.data.campAssignment || (parseInt(editRegistryModal.data.age, 10) < 18 ? 'Teens' : 'Jóvenes')}</strong> (campista, según asignación o edad).
+                          </p>
+                        )}
+                        {editRegistryModal.data.willBeBaptized === 'Sí' && editRegistryModal.data.isServer === 'Sí' && editRegistryModal.data.serverAssignment === 'Ambos' && (
+                          <div className="space-y-1">
+                            <label className={labelClasses}>¿Dónde se bautiza?</label>
+                            <select
+                              className={`${inputClasses} ${getRequiredFieldClass(!String(editRegistryModal.data.baptismSegment || '').trim())}`}
+                              value={editRegistryModal.data.baptismSegment || ''}
+                              onChange={(e) => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, baptismSegment: e.target.value } })}
+                            >
+                              <option value="">Selecciona…</option>
+                              <option value="Teens">Teens</option>
+                              <option value="Jóvenes">Jóvenes</option>
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    </div>
 
                     {editRegistryModal.data.isScholarship !== 'Sí' && (
                       <div className="p-4 bg-indigo-50/60 border border-indigo-100 rounded-xl mt-3">
@@ -9359,14 +9719,6 @@ const App = () => {
 
                     {editRegistryModal.data.isServer === 'Sí' ? (
                       <div className="space-y-3 mt-3">
-                        <div className="space-y-1">
-                          <label className={labelClasses}>Asignación de Servidor</label>
-                          <select className={inputClasses} value={editRegistryModal.data.serverAssignment || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, serverAssignment: e.target.value } })}>
-                            <option value="Teens">Teens</option>
-                            <option value="Jóvenes">Jóvenes</option>
-                            <option value="Ambos">Ambos</option>
-                          </select>
-                        </div>
                         <div className="p-4 bg-amber-50/60 border border-amber-100 rounded-xl">
                           <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-3">Información adicional de servidor (opcional)</p>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -9514,6 +9866,95 @@ const App = () => {
                   <span>Costo Fijado (Total a Cobrar)</span>
                   {!hasAdminRights && <span className="flex items-center gap-1 text-amber-500 normal-case tracking-normal text-[9px]"><Lock size={10} /> Solo Administrador</span>}
                 </h4>
+                {(currentEvent?.discountCampaigns || []).length > 0 && editRegistryModal.data && (() => {
+                  const ed = editRegistryModal.data;
+                  const todayIsoEd = new Date().toISOString().split('T')[0];
+                  const activeForEd = getActiveDiscountCampaigns(currentEvent).filter((c) => campaignMatchesPersonProfile(c, ed));
+                  const manualOpts = getManualApplyCampaignOptions(currentEvent, ed);
+                  const listBaseEd = getPersonCost(ed, currentPricing);
+                  const liqPreview = Number.isFinite(parseFloat(ed.registeredCost)) && parseFloat(ed.registeredCost) > 0
+                    ? parseFloat(ed.registeredCost)
+                    : resolveRegisteredCost(ed, currentPricing);
+                  return (
+                    <div className="mb-4 p-3 rounded-xl bg-amber-50/80 border border-amber-100 space-y-2">
+                      <p className="text-[10px] font-black text-amber-800 uppercase tracking-wider">Campañas de descuento</p>
+                      <p className="text-[11px] text-slate-700">
+                        <strong>Campaña guardada en el registro:</strong>{' '}
+                        {ed.discountCampaignConcept || 'Ninguna'}
+                        {ed.discountCampaignId ? <span className="text-slate-500"> (id {ed.discountCampaignId})</span> : null}
+                      </p>
+                      <p className="text-[11px] text-slate-700">
+                        <strong>Costo de lista del evento</strong> (sin campaña, según este perfil):{' '}
+                        <strong>${listBaseEd.toLocaleString('es-MX')}</strong>.
+                        {' '}<strong>Costo fijado actual</strong> (base del registro; con beca parcial lo que liquida el participante es este costo menos el monto becado):{' '}
+                        <strong>${liqPreview.toLocaleString('es-MX')}</strong>
+                        {ed.discountCampaignConcept ? (
+                          <span className="text-amber-900/90"> — coherente con campaña «{ed.discountCampaignConcept}» si aplica.</span>
+                        ) : (
+                          <span className="text-slate-500"> — sin campaña aplicada en datos.</span>
+                        )}
+                      </p>
+                      {activeForEd.length > 0 ? (
+                        <ul className="text-[10px] text-amber-900/90 space-y-0.5 list-disc list-inside">
+                          <li className="font-black text-amber-800 list-none -ml-0 mb-0.5">Vigentes hoy para este perfil</li>
+                          {activeForEd.map((c) => (
+                            <li key={`ed-act-${c.id}`}>
+                              {c.concept} · {c.startDate} → {c.endDate} · liquidar ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')} · {discountCampaignAppliesToLabel(c)}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-[10px] text-amber-800/90">
+                          Ninguna campaña en <strong>vigencia hoy</strong> para este perfil. Aun así puedes aplicar o quitar una campaña con el selector (incluye fechas pasadas/futuras).
+                        </p>
+                      )}
+                      {manualOpts.length > 0 && hasAdminRights && (
+                        <div className="space-y-1 pt-1 border-t border-amber-200/80">
+                          <label className={labelClasses}>Al guardar: aplicar o quitar campaña</label>
+                          <select
+                            className={inputClasses}
+                            value={ed.editApplyCampaignId || ''}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              const next = { ...ed, editApplyCampaignId: v };
+                              if (v && v !== '__clear__') {
+                                const c = findDiscountCampaignById(currentEvent, v);
+                                if (c) next.registeredCost = String(Math.max(0, Number(c.finalAmount) || 0));
+                              } else if (v === '__clear__') {
+                                next.registeredCost = String(getPersonCost(ed, currentPricing));
+                              }
+                              setEditRegistryModal({ ...editRegistryModal, data: next });
+                            }}
+                          >
+                            <option value="">No cambiar campaña ni costo por este control</option>
+                            <option value="__clear__">Quitar campaña (costo = lista del evento para este perfil)</option>
+                            {manualOpts.map((c) => {
+                              const noDates = !discountCampaignHasDateRange(c);
+                              const vig = !noDates && isDiscountCampaignVigenteOnDate(c, todayIsoEd);
+                              const suffix = noDates
+                                ? ' (sin fechas; solo manual)'
+                                : vig
+                                  ? ' (vigente hoy)'
+                                  : ' (fuera de vigencia; se puede aplicar al guardar)';
+                              return (
+                                <option key={`ed-manual-${c.id}`} value={String(c.id)}>
+                                  Aplicar «{c.concept || 'Campaña'}» — ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')}
+                                  {suffix}
+                                </option>
+                              );
+                            })}
+                          </select>
+                          <p className="text-[10px] text-slate-600">
+                            Si eliges una campaña, el campo de costo se ajusta al monto a liquidar de esa campaña. Puedes editarlo después a mano. Si ya pagó de más tras bajar el costo, al guardar puede quedar devolución pendiente.
+                          </p>
+                        </div>
+                      )}
+                      {manualOpts.length > 0 && !hasAdminRights && (
+                        <p className="text-[10px] text-slate-500 pt-1 border-t border-amber-200/80">Solo administrador puede aplicar o quitar campañas y el costo fijado.</p>
+                      )}
+                    </div>
+                  );
+                })()}
                 {hasAdminRights ? (
                   <div className="relative max-w-xs">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold text-slate-400">$</span>
@@ -9581,7 +10022,9 @@ const App = () => {
             )}
             <div className="mt-5 p-4 rounded-2xl border border-amber-200 bg-amber-50/40 space-y-3">
               <p className="text-xs font-black text-amber-800 uppercase tracking-wider">Campañas de descuento</p>
-              <p className="text-[11px] text-amber-700">Define concepto y monto final a liquidar. Se aplican solo dentro de su vigencia.</p>
+              <p className="text-[11px] text-amber-700">
+                Define concepto y monto a liquidar. <strong>Inicio y fin son opcionales:</strong> con ambas fechas, la campaña puede aplicarse sola cuando esté vigente; sin fechas completas, solo al elegirla en el alta (pago) o al editar un registro.
+              </p>
               <div className="space-y-2 max-h-56 overflow-y-auto">
                 {(pricingForm.campaigns || []).map((c, idx) => (
                   <div key={c.id} className="grid grid-cols-1 md:grid-cols-6 gap-2 bg-white p-2 rounded-xl border border-amber-100 items-end">
@@ -9592,9 +10035,15 @@ const App = () => {
                       <option value="server_ambos">Servidor Ambos</option>
                     </select>
                     <input type="number" className={inputClasses} placeholder="Liquidar $" value={c.finalAmount || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], finalAmount: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
-                    <input type="date" className={inputClasses} value={c.startDate || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], startDate: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
-                    <div className="flex items-center gap-2">
-                      <input type="date" className={inputClasses} value={c.endDate || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], endDate: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
+                    <div className="space-y-0.5">
+                      <label className="text-[9px] font-bold text-amber-800/80 uppercase tracking-wide">Inicio (opcional)</label>
+                      <input type="date" className={inputClasses} value={c.startDate || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], startDate: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <div className="flex-1 space-y-0.5 min-w-0">
+                        <label className="text-[9px] font-bold text-amber-800/80 uppercase tracking-wide">Fin (opcional)</label>
+                        <input type="date" className={inputClasses} value={c.endDate || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], endDate: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
+                      </div>
                       <button type="button" onClick={() => setPricingForm({ ...pricingForm, campaigns: (pricingForm.campaigns || []).filter((_, i) => i !== idx) })} className="p-2 text-red-500 hover:bg-red-50 rounded-lg"><Trash2 size={16} /></button>
                     </div>
                   </div>
