@@ -1,15 +1,19 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   Users, MapPin, PieChart, Plus, Trash2, DollarSign, CheckCircle2, XCircle,
   LayoutDashboard, Phone, ShieldAlert, Power, BarChart3, Edit3, TableProperties,
   Eye, EyeOff, Search, Filter, ArrowUpDown, CreditCard, ChevronDown, ChevronUp,
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock,
-  UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2
+  UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft,
+  SlidersHorizontal, Bug, Download, Database, Menu, FileSpreadsheet, MessageCircle,
+  Scissors, Calendar
 } from 'lucide-react';
+
+/* global __app_id, __initial_auth_token */
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBIRKdNeMmaVVofVx4jshciPB-N9J0HqIg",
@@ -20,6 +24,7 @@ const firebaseConfig = {
   appId: "1:966310430422:web:203653951141917d6eab77",
   measurementId: "G-EH1KXMVDY8"
 };
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -31,17 +36,353 @@ const getDocRef = (colName, docId) => doc(db, 'artifacts', appId, 'public', 'dat
 const BLOOD_TYPES = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
 const GENDERS = ["Hombre", "Mujer"];
 const EVENT_TYPES = ["Campa", "Desayuno Conferencia", "General"];
+const RESPONSIVA_STATUSES = ["Pendiente", "Entregada"];
 const CHART_COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#0ea5e9'];
+
+const PAYMENT_METHODS = ['Efectivo', 'Tarjeta'];
+const SERVICE_OPTIONS = ['Primero', 'Segundo', 'Tercero'];
+const NO_SERVICE_LABEL = 'Fuera de servicios';
+const DEFAULT_SERVE_AREA_OPTIONS = ['Jueces', 'Capitanes', 'Staff', 'Seguridad', 'Otro'];
+const DEFAULT_ALLERGY_OPTIONS = ['Alimentos', 'Medicamentos', 'Ambientales', 'Insectos', 'Otra'];
+
+const parsePreferredServeArea = (str, knownOpts = DEFAULT_SERVE_AREA_OPTIONS) => {
+  const selected = new Set();
+  let otroText = '';
+  if (!str || typeof str !== 'string') return { selected, otroText };
+  const parts = str.split(',').map(p => p.trim()).filter(Boolean);
+  for (const p of parts) {
+    if (p === 'Otro') selected.add('Otro');
+    else if (p.startsWith('Otro: ')) { selected.add('Otro'); otroText = p.slice(6).trim(); }
+    else if (knownOpts.includes(p)) selected.add(p);
+    else { selected.add('Otro'); otroText = p; } // legacy free text → Otro
+  }
+  return { selected, otroText };
+};
+
+const formatPreferredServeArea = (selected, otroText) => {
+  const arr = [...selected].filter(x => x !== 'Otro');
+  if (selected.has('Otro')) arr.push(otroText ? `Otro: ${otroText}` : 'Otro');
+  return arr.join(', ');
+};
+// Horarios por defecto (24h). “Segundo” de 11 a 13; “Tercero” de 13 a 17.
+const DEFAULT_SERVICE_SLOTS = {
+  Primero: { start: '07:00', end: '11:00' },
+  Segundo: { start: '11:00', end: '13:00' },
+  Tercero: { start: '13:00', end: '17:00' },
+};
 
 const defaultLocations = ["Norte", "Sur", "Izcalli", "Coapa", "Acapulco", "Toluca"];
 const defaultRegStatus = defaultLocations.reduce((acc, loc) => ({ ...acc, [loc]: true }), {});
 
 const EMPTY_ENTRY = {
-  name: '', phone: '', age: '', bloodType: 'O+', gender: '',
+  name: '', phone: '', age: '', birthDate: '', bloodType: 'O+', gender: '',
+  responsivaStatus: '',
+  alias: '',
   emergencyContact: '', emergencyPhone: '', canSwim: 'No', paid: '',
-  hasAllergy: 'No', allergyDetails: '', hasDisease: 'No', diseaseDetails: '',
-  hasDisability: 'No', disabilityDetails: '', isScholarship: 'No', isServer: 'No',
-  serverAssignment: '', customData: {}, paymentHistory: []
+  // Para “donación especial oculta” (hijos de pastores / va sin pagar)
+  isPastorChild: 'No',
+  pastorChildWithoutPay: 'No',
+  pastorChildSpecialDonationFinanceId: '',
+  hasAllergy: 'No', allergyCategory: '', allergyDetails: '', hasDisease: 'No', diseaseDetails: '', diseaseMedication: '',
+  hasDisability: 'No', disabilityDetails: '', isScholarship: 'No',
+  /** 'total' | 'partial' — solo aplica si isScholarship es Sí (formulario nuevo registro). */
+  scholarshipType: 'total',
+  /** Beca parcial: monto que el participante aporta al recaudado; a liquidar = este monto; la beca cubre (costo lista − este monto). */
+  scholarshipPartialAmount: '',
+  isServer: 'No',
+  serverAssignment: '', campAssignment: '', customData: {}, paymentHistory: [],
+  llegaEnCarro: false,
+  regresaEnCarro: false,
+  transportType: 'Camión',
+  isMarried: 'No', spouseName: '', goesWithChildren: 'No', childrenCount: '', servedOtherCampa: 'No',
+  servedAreas: '', preferredServeArea: '', servesInCongress: 'No', congressServeArea: '',
+  travelFrom: '', travelTo: '',
+  // Sección 3: ID único de persona (persiste entre eventos del mismo perfil)
+  vnpPersonId: '',
+  // Sección 1: Método / Servicio (para abono inicial y posterior)
+  paymentMethod: 'Efectivo',
+  paymentService: '',
+  cardReference: '',
+};
+
+// Preferencias de vista por defecto
+const defaultViewPrefs = {
+  statsConfig: true,
+  chartLocations: true,
+  chartIncome: true,
+  chartPaymentStatus: true,
+  chartGender: true,
+  chartAgeBrackets: true,
+  chartBloodType: true,
+  chartScholarship: true,
+  chartSwimming: true,
+  chartMedical: true,
+  chartServers: true,
+  chartAges: true,
+  chartCustom: true,
+  tableDetails: true
+};
+
+// Helper: Formatear fecha a DD-MMM-YYYY
+const formatDisplayDate = (dateString) => {
+  if (!dateString) return 'Sin fecha';
+  try {
+    const d = new Date(dateString + 'T00:00:00');
+    return d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/\./g, '');
+  } catch {
+    return dateString;
+  }
+};
+
+// UI Reusable Classes
+const inputClasses = "w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold text-slate-700 transition-all";
+const labelClasses = "text-[10px] font-black text-slate-400 uppercase tracking-widest px-1 block mb-1.5";
+const getRequiredFieldClass = (missing) =>
+  missing ? 'border-red-300 bg-red-50/60 focus:ring-red-400 text-red-800 placeholder:text-red-300' : '';
+const resolveResponsivaStatus = (personLike) => {
+  const ageNum = parseInt(personLike?.age, 10);
+  const isMinor = Number.isFinite(ageNum) && ageNum > 0 && ageNum < 18;
+  if (!isMinor) return 'No aplica';
+  return personLike?.responsivaStatus === 'Entregada' ? 'Entregada' : 'Pendiente';
+};
+const calculateAgeFromBirthDate = (birthDate) => {
+  if (!birthDate || typeof birthDate !== 'string') return '';
+  const b = new Date(`${birthDate}T00:00:00`);
+  if (Number.isNaN(b.getTime())) return '';
+  const now = new Date();
+  let age = now.getFullYear() - b.getFullYear();
+  const monthDiff = now.getMonth() - b.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < b.getDate())) age -= 1;
+  if (!Number.isFinite(age) || age < 0 || age > 120) return '';
+  return String(age);
+};
+const resolveLlegaEnCarro = (personLike) => {
+  if (typeof personLike?.llegaEnCarro === 'boolean') return personLike.llegaEnCarro;
+  if (personLike?.llegaEnCarro === 'Sí') return true;
+  if (personLike?.llegaEnCarro === 'No') return false;
+  return (personLike?.transportType || 'Camión') === 'Carro';
+};
+const resolveRegresaEnCarro = (personLike) => {
+  if (typeof personLike?.regresaEnCarro === 'boolean') return personLike.regresaEnCarro;
+  if (personLike?.regresaEnCarro === 'Sí') return true;
+  if (personLike?.regresaEnCarro === 'No') return false;
+  return (personLike?.transportType || 'Camión') === 'Carro';
+};
+const resolveTransportSummary = (personLike) => {
+  const llegaCarro = resolveLlegaEnCarro(personLike);
+  const regresaCarro = resolveRegresaEnCarro(personLike);
+  if (!llegaCarro && !regresaCarro) return 'Llega camión / Regresa camión';
+  if (llegaCarro && regresaCarro) return 'Llega carro / Regresa carro';
+  if (llegaCarro) return 'Llega carro / Regresa camión';
+  return 'Llega camión / Regresa carro';
+};
+const btnPrimary = "py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2 text-sm";
+const btnSecondary = "py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-all text-sm flex justify-center items-center gap-2";
+
+// Mini Components for UI optimization
+const StatCard = ({ icon: IconComponent, iconColor, bgIcon, title, value }) => (
+  <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+    <div className="flex items-center gap-2 mb-3">
+      <div className={`p-2 rounded-lg ${bgIcon} ${iconColor}`}>{React.createElement(IconComponent, { size: 18 })}</div>
+      <span className="text-xs font-bold text-slate-500">{title}</span>
+    </div>
+    <p className="text-2xl font-black text-slate-800">{value}</p>
+  </div>
+);
+
+const ProgressBar = ({ label, value, max, colorClass, bgClass }) => (
+  <div>
+    <div className="flex justify-between text-xs font-bold mb-1.5">
+      <span className="text-slate-600 uppercase tracking-wider">{label}</span>
+      <span className={`${colorClass} font-black`}>{value}</span>
+    </div>
+    <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+      <div className={`${bgClass} h-full transition-all duration-1000 ease-out`} style={{ width: `${max > 0 ? (value / max) * 100 : 0}%` }} />
+    </div>
+  </div>
+);
+
+/** Solo dígitos para comparar teléfonos (anti-duplicados / búsqueda). */
+const digitsOnlyPhone = (phone) => (phone || '').replace(/\D/g, '');
+
+/** Eliminación lógica: el documento sigue en Firestore para precargar en otros eventos. */
+const PARTICIPANT_STATUS_ARCHIVED = 'archived';
+const PARTICIPANT_STATUS_CANCELLED = 'cancelled';
+const participantIsArchived = (p) => (p?.status || 'active') === PARTICIPANT_STATUS_ARCHIVED;
+const participantIsCancelled = (p) => (p?.status || 'active') === PARTICIPANT_STATUS_CANCELLED;
+/** Inscrito activo en sede (no espera ni archivado). */
+const participantIsRosterRow = (p) => {
+  const s = p?.status || 'active';
+  return s !== 'waitlist' && s !== PARTICIPANT_STATUS_ARCHIVED;
+};
+const participantIsWaitlistRow = (p) => (p?.status || 'active') === 'waitlist';
+/** Cuenta para cupo / duplicados en el mismo evento (excluye archivados). */
+const participantIsActiveInEvent = (p) => !participantIsArchived(p);
+
+const buildArchivedProfileSnapshot = (person) => {
+  const isServerRaw = String(person?.isServer || 'No');
+  const isServerYes = ['sí', 'si', 'yes', 'true'].includes(isServerRaw.toLowerCase());
+  const serverAssignmentRaw = String(person?.serverAssignment || '').trim();
+  const campAssignmentRaw = String(person?.campAssignment || '').trim();
+  const serverAssignmentResolved = isServerYes
+    ? (serverAssignmentRaw || campAssignmentRaw)
+    : '';
+
+  return {
+    name: person?.name || '',
+    phone: person?.phone || '',
+    age: person?.age ?? '',
+    birthDate: person?.birthDate || '',
+    gender: person?.gender || '',
+    alias: person?.alias || '',
+    emergencyContact: person?.emergencyContact || '',
+    emergencyPhone: person?.emergencyPhone || '',
+    bloodType: person?.bloodType || '',
+    canSwim: person?.canSwim || 'No',
+    hasAllergy: person?.hasAllergy || 'No',
+    allergyCategory: person?.allergyCategory || '',
+    allergyDetails: person?.allergyDetails || '',
+    hasDisease: person?.hasDisease || 'No',
+    diseaseDetails: person?.diseaseDetails || '',
+    diseaseMedication: person?.diseaseMedication || '',
+    hasDisability: person?.hasDisability || 'No',
+    disabilityDetails: person?.disabilityDetails || '',
+    isServer: isServerRaw,
+    serverAssignment: serverAssignmentResolved,
+    campAssignment: campAssignmentRaw,
+    // Campo explícito para consultas históricas sin ambigüedad.
+    serverAssignmentResolved,
+    isMarried: person?.isMarried || 'No',
+    spouseName: person?.spouseName || '',
+    goesWithChildren: person?.goesWithChildren || 'No',
+    childrenCount: person?.childrenCount ?? '',
+    servedOtherCampa: person?.servedOtherCampa || 'No',
+    servedAreas: person?.servedAreas || '',
+    preferredServeArea: person?.preferredServeArea || '',
+    // Campo de compatibilidad semántica para consultas externas.
+    hasChildren: person?.goesWithChildren || 'No',
+  };
+};
+
+/** ID estable para la misma persona entre eventos (se reutiliza al importar perfil). */
+const normalizeIdText = (txt) =>
+  String(txt || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+
+const generateVnpPersonId = (personLike = {}) => {
+  const omit = new Set(['DE', 'DEL', 'LA', 'LAS', 'LOS', 'Y', 'MC', 'MAC']);
+  const parts = normalizeIdText(personLike?.name)
+    .replace(/[^A-Z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((p) => !omit.has(p));
+
+  const firstName = parts[0] || '';
+  const firstSurname = parts.length >= 3 ? parts[parts.length - 2] : (parts[1] || '');
+  const secondSurname = parts.length >= 2 ? parts[parts.length - 1] : '';
+
+  const firstSurname2 = `${firstSurname.slice(0, 2)}`.padEnd(2, 'X');
+  const secondSurname1 = (secondSurname[0] || 'X');
+  const firstName1 = (firstName[0] || 'X');
+
+  const birthDateRaw = String(personLike?.birthDate || '');
+  const digits = birthDateRaw.replace(/\D/g, '');
+  const yymmdd = digits.length === 8 ? `${digits.slice(2, 4)}${digits.slice(4, 6)}${digits.slice(6, 8)}` : '000000';
+
+  return `VNPM-${firstSurname2}${secondSurname1}${firstName1}${yymmdd}`;
+};
+
+const hasValidFullName = (fullName) => {
+  const parts = String(fullName || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .split(' ')
+    .filter(Boolean);
+  return parts.length >= 3;
+};
+
+/** Convierte teléfono local/internacional al formato que requiere wa.me */
+const normalizeWhatsAppPhone = (phone) => {
+  const digits = digitsOnlyPhone(phone);
+  if (digits.length < 10) return null;
+  if (digits.length === 10) return `52${digits}`; // MX por defecto para números locales
+  if (digits.startsWith('52') && digits.length === 12) return digits;
+  return digits;
+};
+
+const getWhatsAppNotificationMarkKey = (n) =>
+  n?.id ? String(n.id) : `legacy-${n.createdAt ?? 0}-${n.kind ?? ''}`;
+
+/** Último movimiento financiero pendiente de avisar (más reciente por createdAt). */
+const getLatestUnsentWhatsAppNotification = (person) => {
+  const notifications = Array.isArray(person?.whatsAppFinanceNotifications) ? person.whatsAppFinanceNotifications : [];
+  const pending = notifications.filter((n) => n && !n.sent);
+  if (!pending.length) return null;
+  return [...pending].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))[0];
+};
+
+const getWeekKeyFromDate = (dateStr) => {
+  const d = dateStr ? new Date(`${dateStr}T00:00:00`) : new Date();
+  if (Number.isNaN(d.getTime())) return 'Semana inválida';
+  const day = d.getDay(); // 0 domingo
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  const monday = new Date(d);
+  monday.setDate(d.getDate() + diffToMonday);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const fmt = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+  return `${fmt(monday)}|${fmt(sunday)}`;
+};
+
+const _isSundayDate = (dateStr) => {
+  const d = dateStr ? new Date(`${dateStr}T00:00:00`) : new Date();
+  if (Number.isNaN(d.getTime())) return false;
+  return d.getDay() === 0;
+};
+
+const toLocalISODate = (dateObj) => {
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const getLogDateISO = (log) => {
+  const idNum = Number(log?.id);
+  if (Number.isFinite(idNum) && idNum > 0) {
+    return toLocalISODate(new Date(idNum));
+  }
+  const ts = String(log?.timestamp || '');
+  const m = ts.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (!m) return '';
+  const dd = String(m[1]).padStart(2, '0');
+  const mm = String(m[2]).padStart(2, '0');
+  const yyyy = m[3];
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const formatDuration = (ms) => {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+};
+
+// Carga asíncrona de SheetJS para exportar a Excel
+const loadSheetJS = () => {
+  return new Promise((resolve, reject) => {
+    if (window.XLSX) return resolve(window.XLSX);
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    script.onload = () => resolve(window.XLSX);
+    script.onerror = () => reject(new Error('No se pudo cargar la librería de exportación a Excel.'));
+    document.body.appendChild(script);
+  });
 };
 
 const App = () => {
@@ -50,7 +391,20 @@ const App = () => {
   const [users, setUsers] = useState([]);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState('');
-  const [newUser, setNewUser] = useState({ username: '', password: '', role: 'Editor' });
+  const [newUser, setNewUser] = useState({
+    username: '',
+    password: '',
+    role: 'Editor',
+    canViewFinances: false,
+    canViewHiddenDonations: false,
+    canViewExpenses: false,
+    restrictedEventId: '',
+    restrictedLocation: '',
+    allowedEventIds: [],
+    allowedLocations: [],
+    preferredLandingTab: 'Summary'
+  });
+  const [globalConfig, setGlobalConfig] = useState(null);
 
   const [toast, setToast] = useState('');
   const showToast = useCallback((msg) => {
@@ -58,18 +412,80 @@ const App = () => {
     setTimeout(() => setToast(''), 4000);
   }, []);
 
+  const hasAdminRights = ['Administrador', 'SuperUsuario'].includes(currentUser?.role);
+  const isSuperUser = currentUser?.role === 'SuperUsuario';
+  const canAccessExpenses = currentUser ? (isSuperUser || (hasAdminRights && !!currentUser.canViewExpenses)) : false;
+
   const [events, setEvents] = useState([]);
   const [globalLocations, setGlobalLocations] = useState([]);
   const [selectedEventId, setSelectedEventId] = useState(null);
-  // Reemplazamos showSystemUsers por un estado más flexible
-  const [systemView, setSystemView] = useState('events'); // 'events' | 'users' | 'logs'
+  const [systemView, setSystemView] = useState('events'); 
   const [isAddEventModalOpen, setIsAddEventModalOpen] = useState(false);
   const [deleteEventModal, setDeleteEventModal] = useState({ isOpen: false, id: null, name: '' });
   const [draggedEventId, setDraggedEventId] = useState(null);
-  const [newEventData, setNewEventData] = useState({ name: '', type: 'Campa', date: '' });
+  const [newEventData, setNewEventData] = useState({ name: '', type: 'Campa', date: '', baseCost: '' });
+  const [renameModal, setRenameModal] = useState({ isOpen: false, id: null, name: '' });
+  const [isExporting, setIsExporting] = useState(false);
+
+  // Mobile Menu State
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Navigation History Stack
+  const [navHistory, setNavHistory] = useState([]);
+
+  // Preferences State
+  const [viewPrefs, setViewPrefs] = useState(defaultViewPrefs);
+  const [showViewSettings, setShowViewSettings] = useState(false);
+
+  // Debug Toast & Watcher
+  const [debugToast, setDebugToast] = useState(null);
+  const [showDebugLogs, setShowDebugLogs] = useState(false);
+  const [selectedLogs, setSelectedLogs] = useState(new Set());
+  const prevDebugRef = useRef();
 
   const currentEvent = useMemo(() => events.find(e => e.id === selectedEventId) || null, [events, selectedEventId]);
+  const isCampa = currentEvent?.eventType === 'Campa';
+  const isGeneral = currentEvent?.eventType === 'General';
   const sortedEvents = useMemo(() => [...events].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)), [events]);
+  const getUserAllowedEventIds = useCallback((user) => {
+    const explicit = Array.isArray(user?.allowedEventIds) ? user.allowedEventIds.filter(Boolean) : [];
+    if (explicit.length > 0) return explicit;
+    return user?.restrictedEventId ? [user.restrictedEventId] : [];
+  }, []);
+  const getUserAllowedLocations = useCallback((user) => {
+    const explicit = Array.isArray(user?.allowedLocations) ? user.allowedLocations.filter(Boolean) : [];
+    if (explicit.length > 0) return explicit;
+    return user?.restrictedLocation ? [user.restrictedLocation] : [];
+  }, []);
+  const resolvePreferredLandingTab = useCallback((user, eventObj = null) => {
+    const available = eventObj?.locations || globalLocations || [];
+    const preferred = user?.preferredLandingTab || '';
+    if (preferred === 'Summary') return 'Summary';
+    if (['Administrador', 'SuperUsuario'].includes(user?.role)) {
+      if (preferred && available.includes(preferred)) return preferred;
+      if (available.includes('Norte')) return 'Norte';
+      return 'Summary';
+    }
+    const allowedLocs = getUserAllowedLocations(user);
+    if (!preferred) return 'Summary';
+    if (!available.includes(preferred)) return 'Summary';
+    if (allowedLocs.length === 0 || allowedLocs.includes(preferred)) return preferred;
+    return 'Summary';
+  }, [globalLocations, getUserAllowedLocations]);
+  const visibleEvents = useMemo(() => {
+    if (!currentUser) return [];
+    if (['Administrador', 'SuperUsuario'].includes(currentUser.role)) return sortedEvents;
+    const allowedIds = getUserAllowedEventIds(currentUser);
+    if (!allowedIds.length) return sortedEvents;
+    return sortedEvents.filter(ev => allowedIds.includes(ev.id));
+  }, [sortedEvents, currentUser, getUserAllowedEventIds]);
+  const visibleLocations = useMemo(() => {
+    if (!currentEvent || !currentUser) return [];
+    if (['Administrador', 'SuperUsuario'].includes(currentUser.role)) return currentEvent.locations || [];
+    const allowedLocs = getUserAllowedLocations(currentUser);
+    if (!allowedLocs.length) return currentEvent.locations || [];
+    return (currentEvent.locations || []).filter(loc => allowedLocs.includes(loc));
+  }, [currentEvent, currentUser, getUserAllowedLocations]);
 
   const getPricing = useCallback((event) => {
     if (!event) return { global: 0, server: 0 };
@@ -94,53 +510,571 @@ const App = () => {
     return pricing.global;
   }, []);
 
+  const resolveRegisteredCost = useCallback((person, pricing) => {
+    const parsed = parseFloat(person?.registeredCost);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    return getPersonCost(person, pricing);
+  }, [getPersonCost]);
+
+  /** Monto que debe liquidar la persona (0 = beca total cubierta). */
+  const getLiquidationTarget = useCallback((person) => {
+    const listPrice = resolveRegisteredCost(person, currentPricing);
+    if (person?.isScholarship !== 'Sí') return listPrice;
+    if (person?.scholarshipType === 'partial') {
+      /** Monto que el participante debe aportar al recaudado; la beca cubre (costo lista − este monto). */
+      const obligation = parseFloat(person.scholarshipPartialAmount || 0);
+      if (!Number.isFinite(obligation) || obligation <= 0) return listPrice;
+      return Math.min(obligation, listPrice);
+    }
+    return 0;
+  }, [resolveRegisteredCost, currentPricing]);
+
+  /** Monto condonado por beca (costo de lista menos lo que debe aportar el participante). */
+  const getScholarshipCondonedAmount = useCallback(
+    (person) => {
+      if (person?.isScholarship !== 'Sí') return 0;
+      const listPrice = resolveRegisteredCost(person, currentPricing);
+      const toPay = getLiquidationTarget(person);
+      return Math.max(0, listPrice - toPay);
+    },
+    [resolveRegisteredCost, currentPricing, getLiquidationTarget]
+  );
+
   const [logs, setLogs] = useState([]);
+  const [logFilterContext, setLogFilterContext] = useState('all');
+  const [logSearchTerm, setLogSearchTerm] = useState('');
+  const [logDateMode, setLogDateMode] = useState('none');
+  const [logDateFrom, setLogDateFrom] = useState('');
+  const [logDateTo, setLogDateTo] = useState('');
+  const [logSpecificWeek, setLogSpecificWeek] = useState('');
+  const [logSpecificDay, setLogSpecificDay] = useState('');
+  const [logSpecificMonth, setLogSpecificMonth] = useState('');
   const [allParticipants, setAllParticipants] = useState([]);
   const [activeTab, setActiveTab] = useState("Summary");
   const [showMoney, setShowMoney] = useState(true);
+  const [showLocChartValues, setShowLocChartValues] = useState(false);
+  const [showIncChartValues, setShowIncChartValues] = useState(false);
+  const [showGrossWithoutCommission, setShowGrossWithoutCommission] = useState(false);
   const [summaryView, setSummaryView] = useState("all");
   const [summaryServerView, setSummaryServerView] = useState("all");
   const [isAddLocModalOpen, setIsAddLocModalOpen] = useState(false);
   const [newLocationName, setNewLocationName] = useState('');
   const [locError, setLocError] = useState('');
-  const [tempEventName, setTempEventName] = useState("");
   const [tempEventDate, setTempEventDate] = useState("");
   const [tempDeposit, setTempDeposit] = useState("");
+  const [tempRealCost, setTempRealCost] = useState("");
+  const [tempLocationCaps, setTempLocationCaps] = useState({});
+  const [newCustomField, setNewCustomField] = useState("");
 
   const [newEntry, setNewEntry] = useState(EMPTY_ENTRY);
   const [editRegistryModal, setEditRegistryModal] = useState({ isOpen: false, loc: '', data: null });
   const [pricingModal, setPricingModal] = useState({ isOpen: false });
   const [pricingForm, setPricingForm] = useState({ type: 'fixed', globalCost: 0, serverCost: 0, phases: [] });
   const [customFieldsModal, setCustomFieldsModal] = useState({ isOpen: false });
-  const [newCustomField, setNewCustomField] = useState('');
   const [searchTerm, setSearchTerm] = useState("");
+  /** Búsqueda para importar datos desde otro evento del mismo tipo */
+  const [newRegProfileSearch, setNewRegProfileSearch] = useState('');
   const [sortBy, setSortBy] = useState("none");
   const [filterSwim, setFilterSwim] = useState("all");
   const [filterMedical, setFilterMedical] = useState("all");
   const [filterScholarship, setFilterScholarship] = useState("all");
+  const [filterResponsiva, setFilterResponsiva] = useState("all");
+  const [filterGender, setFilterGender] = useState("all");
+  const [filterTransport, setFilterTransport] = useState("all");
+  const [filterPaymentType, setFilterPaymentType] = useState("all");
+  const [filterTravelFrom, setFilterTravelFrom] = useState("all");
+  const [filterTravelTo, setFilterTravelTo] = useState("all");
+  const [filterPastorChild, setFilterPastorChild] = useState("all");
+  const [filterWithoutPay, setFilterWithoutPay] = useState("all");
+  const [filterFirstTimeId, setFilterFirstTimeId] = useState("all");
+  const [filterCancelled, setFilterCancelled] = useState("all");
+  /** all | pending — solo filas con avisos WhatsApp financieros sin enviar */
+  const [filterWhatsAppPending, setFilterWhatsAppPending] = useState("all");
   const [filterServer, setFilterServer] = useState("all");
-  const [paymentModal, setPaymentModal] = useState({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0 });
+  const [filterAssignment, setFilterAssignment] = useState("all");
+  const [filtersDropdownOpen, setFiltersDropdownOpen] = useState(false);
+  const [serverPageFromFilter, setServerPageFromFilter] = useState('all');
+  const [serverPageToFilter, setServerPageToFilter] = useState('all');
+  const [serverPageAssignmentFilter, setServerPageAssignmentFilter] = useState('all');
+  const [filterPaymentMethod, _setFilterPaymentMethod] = useState({ efectivo: true, tarjeta: true });
+  const [paymentModal, setPaymentModal] = useState({
+    isOpen: false,
+    loc: '',
+    id: null,
+    personName: '',
+    amount: '',
+    currentPaid: 0,
+    error: '',
+    isScholarship: 'No',
+    baseCost: 0,
+    paymentMethod: 'Efectivo',
+    paymentService: '',
+    cardReference: ''
+  });
+  const [sendToWaitlist, setSendToWaitlist] = useState(false);
+  const [openPreferredServeLoc, setOpenPreferredServeLoc] = useState(null);
+  const [editPreferredServeDropdownOpen, setEditPreferredServeDropdownOpen] = useState(false);
+  const [openServedAreasLoc, setOpenServedAreasLoc] = useState(null);
+  const [editServedAreasDropdownOpen, setEditServedAreasDropdownOpen] = useState(false);
+  const [whatsAppModal, setWhatsAppModal] = useState({
+    isOpen: false,
+    personId: null,
+    personName: '',
+    eventName: '',
+    phone: '',
+    message: '',
+    error: '',
+    pendingNotificationMarkKey: null,
+    whatsAppQueuedMessageSnapshot: null
+  });
   const [expandedRows, setExpandedRows] = useState(new Set());
-  const [editingUser, setEditingUser] = useState({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
+  const [commentDrafts, setCommentDrafts] = useState({});
+  const [summaryRosterModal, setSummaryRosterModal] = useState({ isOpen: false, type: 'regular' });
+  const [editingUser, setEditingUser] = useState({
+    isOpen: false,
+    id: null,
+    username: '',
+    currentPasswordInput: '',
+    newPassword: '',
+    confirmPassword: '',
+    role: 'Editor',
+    canViewFinances: false,
+    canViewHiddenDonations: false,
+    canViewExpenses: false,
+    restrictedEventId: '',
+    restrictedLocation: '',
+    allowedEventIds: [],
+    allowedLocations: [],
+    preferredLandingTab: 'Summary'
+  });
+  const [restoreModal, setRestoreModal] = useState({ isOpen: false, log: null, type: 'single' });
+  const [serviceSlotsModal, setServiceSlotsModal] = useState({ isOpen: false });
+  const [serviceSlotsForm, setServiceSlotsForm] = useState(DEFAULT_SERVICE_SLOTS);
+  const [serveAreaOptionsModal, setServeAreaOptionsModal] = useState({ isOpen: false });
+  const [serveAreaOptionsForm, setServeAreaOptionsForm] = useState([...DEFAULT_SERVE_AREA_OPTIONS]);
+  const [allergyOptionsModal, setAllergyOptionsModal] = useState({ isOpen: false });
+  const [allergyOptionsForm, setAllergyOptionsForm] = useState([...DEFAULT_ALLERGY_OPTIONS]);
+  const [donations, setDonations] = useState([]);
+  const [donationModal, setDonationModal] = useState({ isOpen: false, amount: '', donorName: '' });
+  const [donationsListOpen, setDonationsListOpen] = useState(false);
+  const [cupoSedeOpen, setCupoSedeOpen] = useState(false);
+  const [cashCutMode, setCashCutMode] = useState('sunday');
+  const [expandedCut, setExpandedCut] = useState(null);
+  const [cashCutSelected, setCashCutSelected] = useState('all');
+  const [cashCutTotalsView, setCashCutTotalsView] = useState(null);
+  const [cashCutGross, setCashCutGross] = useState(true);
+  const [expenses, setExpenses] = useState([]);
+  const [expenseForm, setExpenseForm] = useState({ name: '', quantity: 1, unitPrice: '' });
+  const [expenseSearch, setExpenseSearch] = useState('');
+  const [expensePartialModal, setExpensePartialModal] = useState({ isOpen: false, expenseId: null, amount: '' });
+  const [expenseEditModal, setExpenseEditModal] = useState({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' });
+  const [expenseFiltersDropdownOpen, setExpenseFiltersDropdownOpen] = useState(false);
+  const [expenseFilters, setExpenseFilters] = useState({
+    paid: false,
+    pending: false,
+    counted: false,
+    uncounted: false,
+  });
+  const [scholarshipLocationsDropdownOpen, setScholarshipLocationsDropdownOpen] = useState(false);
+  const [scholarshipLocationFilters, setScholarshipLocationFilters] = useState([]);
+  const [expenseGross, setExpenseGross] = useState(true);
+
+  // Security Access Definitions
+  const hasFinancialAccess = currentUser ? (['Administrador', 'SuperUsuario', 'Editor'].includes(currentUser.role) || currentUser.canViewFinances) : false;
+  const canSeeMoney = showMoney && hasFinancialAccess;
+  const _canViewHiddenDonations = currentUser
+    ? (['Administrador', 'SuperUsuario'].includes(currentUser.role) ? true : !!currentUser.canViewHiddenDonations)
+    : false;
+  const formatMoney = useCallback(
+    (amount) => (canSeeMoney ? `$${parseFloat(amount || 0).toLocaleString()}` : '$***'),
+    [canSeeMoney]
+  );
+
+  const getCardCommissionRate = useCallback(() => {
+    const raw = globalConfig?.cardCommissionRate ?? 0.04; // 4% por defecto
+    const num = Number(raw) || 0;
+    // Permite guardar “4” o “0.04”
+    return num > 1 ? num / 100 : num;
+  }, [globalConfig?.cardCommissionRate]);
+
+  const parseHHMM = (hhmm) => {
+    if (!hhmm || typeof hhmm !== 'string') return null;
+    const [hh, mm] = hhmm.split(':').map(n => parseInt(n, 10));
+    if (Number.isNaN(hh) || Number.isNaN(mm)) return null;
+    return hh * 60 + mm;
+  };
+
+  const getAutoPaymentService = useCallback((now = new Date()) => {
+    // Regla solicitada: servicio solo aplica para registros hechos en domingo.
+    if (now.getDay() !== 0) return NO_SERVICE_LABEL;
+    const slots = globalConfig?.serviceSlots || DEFAULT_SERVICE_SLOTS;
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    for (const service of SERVICE_OPTIONS) {
+      const slot = slots?.[service];
+      const start = parseHHMM(slot?.start);
+      const end = parseHHMM(slot?.end);
+      if (start == null || end == null) continue;
+      if (nowMin >= start && nowMin < end) return service;
+    }
+    return NO_SERVICE_LABEL;
+  }, [globalConfig?.serviceSlots]);
+
+  const pastProfilesForImport = useMemo(() => {
+    if (!currentEvent) return [];
+    const otherEventIds = new Set(
+      events.filter((e) => e.id !== currentEvent.id).map((e) => e.id)
+    );
+    const pool = allParticipants.filter(
+      (p) =>
+        otherEventIds.has(p.eventId) ||
+        (participantIsArchived(p) && p.eventId === currentEvent.id)
+    );
+    pool.sort((a, b) => {
+      const aArch = participantIsArchived(a) ? 1 : 0;
+      const bArch = participantIsArchived(b) ? 1 : 0;
+      return aArch - bArch;
+    });
+    return pool;
+  }, [currentEvent, events, allParticipants]);
+
+  const profileImportMatches = useMemo(() => {
+    if (!currentEvent) return [];
+    const q = newRegProfileSearch.trim().toLowerCase();
+    const qDigits = digitsOnlyPhone(newRegProfileSearch);
+    if (q.length < 2 && qDigits.length < 4) return [];
+
+    const phonesInCurrentEvent = new Set(
+      allParticipants
+        .filter((p) => p.eventId === currentEvent.id && participantIsActiveInEvent(p))
+        .map((p) => digitsOnlyPhone(p.phone))
+        .filter((d) => d.length >= 10)
+    );
+
+    const seen = new Set();
+    const candidates = [];
+    for (const p of pastProfilesForImport) {
+      const d = digitsOnlyPhone(p.phone);
+      if (d.length >= 10 && phonesInCurrentEvent.has(d)) continue;
+
+      const nameMatch = q.length >= 2 && (p.name || '').toLowerCase().includes(q);
+      const phoneMatch = qDigits.length >= 4 && d.includes(qDigits);
+      const idMatch = q.length >= 2 && (p.vnpPersonId || '').toLowerCase().includes(q);
+      if (!nameMatch && !phoneMatch && !idMatch) continue;
+
+      const dedupeKey = (p.vnpPersonId && String(p.vnpPersonId)) || d || `${p.id}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      candidates.push(p);
+      if (candidates.length >= 15) break;
+    }
+    return candidates;
+  }, [currentEvent, pastProfilesForImport, allParticipants, newRegProfileSearch]);
+
+  const applyImportedProfile = useCallback(
+    (src, loc) => {
+      const evType = currentEvent?.eventType;
+      const isCampaEv = evType === 'Campa';
+      const base = {
+        ...EMPTY_ENTRY,
+        name: src.name || '',
+        phone: src.phone || '',
+        birthDate: src.birthDate || '',
+        age: src.birthDate ? calculateAgeFromBirthDate(src.birthDate) : (src.age != null && src.age !== '' ? String(src.age) : ''),
+        gender: src.gender || '',
+        responsivaStatus: src.responsivaStatus || '',
+        vnpPersonId: src.vnpPersonId || '',
+        paymentMethod: 'Efectivo',
+        paymentService: getAutoPaymentService(new Date()),
+        cardReference: '',
+        paid: '',
+        paidNet: '',
+        paymentHistory: [],
+        isScholarship: 'No',
+        scholarshipType: 'total',
+        scholarshipPartialAmount: '',
+        llegaEnCarro: resolveLlegaEnCarro(src),
+        regresaEnCarro: resolveRegresaEnCarro(src),
+        isServer: 'No',
+        serverAssignment: '',
+        campAssignment: '',
+        customData: {},
+        travelFrom: loc,
+        travelTo: loc,
+        pastorChildSpecialDonationFinanceId: '',
+        ...(isCampaEv ? {
+          bloodType: src.bloodType || 'O+',
+          emergencyContact: src.emergencyContact || '',
+          emergencyPhone: src.emergencyPhone || '',
+          canSwim: src.canSwim || 'No',
+          alias: src.alias || '',
+          isPastorChild: src.isPastorChild || 'No',
+          pastorChildWithoutPay: src.pastorChildWithoutPay || 'No',
+          hasAllergy: src.hasAllergy || 'No',
+          allergyCategory: src.allergyCategory || '',
+          allergyDetails: src.allergyDetails || '',
+          hasDisease: src.hasDisease || 'No',
+          diseaseDetails: src.diseaseDetails || '',
+          diseaseMedication: src.diseaseMedication || '',
+          hasDisability: src.hasDisability || 'No',
+          disabilityDetails: src.disabilityDetails || '',
+          transportType: src.transportType || 'Camión',
+          isMarried: src.isMarried || 'No',
+          spouseName: src.spouseName || '',
+          goesWithChildren: src.goesWithChildren || 'No',
+          childrenCount: src.childrenCount ?? '',
+          servedOtherCampa: src.servedOtherCampa || 'No',
+          servedAreas: src.servedAreas || '',
+          preferredServeArea: src.preferredServeArea || '',
+          servesInCongress: src.servesInCongress || 'No',
+          congressServeArea: src.congressServeArea || '',
+        } : {}),
+      };
+      setNewEntry(base);
+      setNewRegProfileSearch('');
+      showToast('Datos importados. Indica el abono inicial y revisa los campos.');
+    },
+    [currentEvent, getAutoPaymentService, showToast]
+  );
+
+  const hasEventAccess = useCallback((eventId) => {
+    if (!currentUser) return false;
+    if (['Administrador', 'SuperUsuario'].includes(currentUser.role)) return true;
+    const allowedIds = getUserAllowedEventIds(currentUser);
+    if (!allowedIds.length) return true;
+    return allowedIds.includes(eventId);
+  }, [currentUser, getUserAllowedEventIds]);
+
+  const hasLocationAccess = useCallback((loc) => {
+    if (!currentUser) return false;
+    if (['Administrador', 'SuperUsuario'].includes(currentUser.role)) return true;
+    const allowedLocs = getUserAllowedLocations(currentUser);
+    if (!allowedLocs.length) return true;
+    return allowedLocs.includes(loc);
+  }, [currentUser, getUserAllowedLocations]);
+
+  // Navigation Logic
+  const goTo = useCallback((view, eventId, tab) => {
+    if (view === 'events' && eventId && !hasEventAccess(eventId)) {
+      showToast("No tienes acceso a este evento.");
+      setIsMobileMenuOpen(false);
+      return;
+    }
+    const eventNavTabsWithoutLocation = ['Summary', 'ServersPage', 'ExpenseList', 'CashCut', 'Becados'];
+    if (view === 'events' && eventId && tab && !eventNavTabsWithoutLocation.includes(tab) && !hasLocationAccess(tab)) {
+      showToast("No tienes acceso a esta sede.");
+      setIsMobileMenuOpen(false);
+      return;
+    }
+    if (view === systemView && eventId === selectedEventId && tab === activeTab) {
+      setIsMobileMenuOpen(false);
+      return;
+    }
+    setNavHistory(prev => [...prev, { systemView, selectedEventId, activeTab }]);
+    setSystemView(view);
+    setSelectedEventId(eventId);
+    setActiveTab(tab);
+    setShowViewSettings(false);
+    setIsMobileMenuOpen(false);
+  }, [systemView, selectedEventId, activeTab, hasEventAccess, hasLocationAccess, showToast]);
+
+  const goBack = useCallback(() => {
+    setNavHistory(prev => {
+      if (prev.length === 0) return prev;
+      const newHist = [...prev];
+      const last = newHist.pop();
+      setSystemView(last.systemView);
+      setSelectedEventId(last.selectedEventId);
+      setActiveTab(last.activeTab);
+      setShowViewSettings(false);
+      setIsMobileMenuOpen(false);
+      return newHist;
+    });
+  }, []);
+
+  // Load User Preferences
+  useEffect(() => {
+    if (currentUser?.id) {
+      const savedPrefs = localStorage.getItem(`vina_prefs_${currentUser.id}`);
+      if (savedPrefs) {
+        setViewPrefs({ ...defaultViewPrefs, ...JSON.parse(savedPrefs) });
+      } else {
+        setViewPrefs(defaultViewPrefs);
+      }
+    }
+  }, [currentUser?.id]);
+
+  const togglePref = (key) => {
+    setViewPrefs(prev => {
+      const next = { ...prev, [key]: !prev[key] };
+      if (currentUser?.id) {
+        localStorage.setItem(`vina_prefs_${currentUser.id}`, JSON.stringify(next));
+      }
+      return next;
+    });
+  };
+
+  // Watcher for Debug Mode Global Toast
+  useEffect(() => {
+    if (!globalConfig) return;
+
+    const current = globalConfig.isDebugMode;
+    const prev = prevDebugRef.current;
+
+    if (prev !== undefined && current !== prev) {
+      if (current) {
+        setDebugToast({
+          msg: "El modo de depuración se activó. Las modificaciones con el insecto no son permanentes y se eliminarán.",
+          type: "active"
+        });
+      } else {
+        setDebugToast({
+          msg: "El modo de depuración terminó.",
+          type: "inactive"
+        });
+      }
+      
+      const timer = setTimeout(() => setDebugToast(null), 10000);
+      return () => clearTimeout(timer);
+    }
+    prevDebugRef.current = current;
+  }, [globalConfig, globalConfig?.isDebugMode]);
+
+  const applyRevert = async (revertInfo) => {
+    if (!revertInfo) return;
+    const { collectionName, docId, action, previousData } = revertInfo;
+    try {
+      if (action === 'create') {
+        await deleteDoc(getDocRef(collectionName, docId));
+      } else if (action === 'update' || action === 'delete') {
+        if (previousData) {
+          await setDoc(getDocRef(collectionName, docId), previousData);
+        }
+      }
+    } catch (err) {
+      console.error("Error al revertir:", err);
+    }
+  };
+
+  // Toggle Debug Mode (Global via Firestore)
+  const toggleDebugMode = async () => {
+    if (!globalConfig?.isDebugMode) {
+      const newSessionId = Date.now();
+      await updateDoc(getDocRef('app_data', 'config'), { isDebugMode: true, debugSessionId: newSessionId });
+      
+      const newLogId = Date.now() + 1;
+      await setDoc(getDocRef('app_logs', String(newLogId)), {
+        id: newLogId,
+        eventId: 'Global',
+        eventName: 'Sistema',
+        timestamp: new Date().toLocaleString('es-MX'),
+        username: currentUser.username,
+        action: 'Modo Depuración',
+        details: `El SuperUsuario "${currentUser.username}" activó el modo de depuración. Los cambios realizados durante esta sesión serán revertidos al salir.`,
+        revertInfo: null,
+        isDebug: false,        // ← importante: este log es PERMANENTE, no se revierte
+        debugSessionId: newSessionId
+      });
+    } else {
+      const currentSession = globalConfig.debugSessionId;
+      const logsToRevert = logs.filter(l => l.debugSessionId === currentSession && l.revertInfo).sort((a,b) => b.id - a.id);
+      
+      for (const l of logsToRevert) {
+        await applyRevert(l.revertInfo);
+      }
+      
+      await updateDoc(getDocRef('app_data', 'config'), { isDebugMode: false, debugSessionId: null });
+      
+      const newLogId = Date.now() + 1;
+      await setDoc(getDocRef('app_logs', String(newLogId)), {
+        id: newLogId, eventId: 'Global', eventName: 'Sistema',
+        timestamp: new Date().toLocaleString('es-MX'),
+        username: currentUser.username, action: 'Sistema', details: `Salió de depuración. Se revirtieron ${logsToRevert.length} acciones temporales.`, revertInfo: null
+      });
+    }
+  };
 
   useEffect(() => {
     if (currentEvent) {
-      setTempEventName(currentEvent.name);
       setTempEventDate(currentEvent.date || "");
-      setTempDeposit(currentEvent.minDeposit);
-      setNewEntry(EMPTY_ENTRY);
+      setTempDeposit(currentEvent.minDeposit || 0);
+      setTempRealCost(currentEvent.realCost || 0);
+      setTempLocationCaps(currentEvent.locationCaps || {});
+      setNewEntry({
+        ...EMPTY_ENTRY,
+        paymentMethod: 'Efectivo',
+        paymentService: getAutoPaymentService(new Date()),
+        cardReference: ''
+      });
+      setNewRegProfileSearch('');
     }
-  }, [currentEvent]);
+  }, [currentEvent, getAutoPaymentService]);
 
   useEffect(() => {
     setExpandedRows(new Set());
   }, [activeTab]);
 
   useEffect(() => {
+    const handleGlobalPointerDown = (ev) => {
+      const target = ev.target;
+      if (!(target instanceof Element)) return;
+
+      if (!target.closest('[data-dropdown-root="filters"]')) setFiltersDropdownOpen(false);
+      if (!target.closest('[data-dropdown-root="new-served-areas"]')) setOpenServedAreasLoc(null);
+      if (!target.closest('[data-dropdown-root="new-preferred-areas"]')) setOpenPreferredServeLoc(null);
+      if (!target.closest('[data-dropdown-root="edit-served-areas"]')) setEditServedAreasDropdownOpen(false);
+      if (!target.closest('[data-dropdown-root="edit-preferred-areas"]')) setEditPreferredServeDropdownOpen(false);
+      if (!target.closest('[data-dropdown-root="expense-filters"]')) setExpenseFiltersDropdownOpen(false);
+      if (!target.closest('[data-dropdown-root="scholarship-locations-filters"]')) setScholarshipLocationsDropdownOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handleGlobalPointerDown);
+    return () => document.removeEventListener('pointerdown', handleGlobalPointerDown);
+  }, []);
+
+  useEffect(() => {
+    const handleWheelOnNumberInput = (ev) => {
+      const target = ev.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      if (target.type !== 'number') return;
+      if (document.activeElement !== target) return;
+      ev.preventDefault();
+    };
+
+    document.addEventListener('wheel', handleWheelOnNumberInput, { passive: false });
+    return () => document.removeEventListener('wheel', handleWheelOnNumberInput);
+  }, []);
+
+  useEffect(() => {
+    if (systemView !== 'users') {
+      setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' });
+      setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' });
+    }
+  }, [systemView]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    if (selectedEventId && !hasEventAccess(selectedEventId)) {
+      setSelectedEventId(null);
+      setActiveTab("Summary");
+      setSystemView('events');
+      return;
+    }
+    const eventNavTabsWithoutLocation = ['Summary', 'ServersPage', 'ExpenseList', 'CashCut', 'Becados'];
+    if (selectedEventId && !eventNavTabsWithoutLocation.includes(activeTab) && !hasLocationAccess(activeTab)) {
+      setActiveTab('Summary');
+    }
+  }, [currentUser, selectedEventId, activeTab, hasEventAccess, hasLocationAccess]);
+
+  useEffect(() => {
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
+          try {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } catch (e) {
+            console.warn("Custom token fallback:", e);
+            await signInAnonymously(auth);
+          }
         } else {
           await signInAnonymously(auth);
         }
@@ -158,8 +1092,17 @@ const App = () => {
     const unsubConfig = onSnapshot(getDocRef('app_data', 'config'), (docSnap) => {
       if (docSnap.exists()) {
         setGlobalLocations(docSnap.data().locations || defaultLocations);
+        setGlobalConfig(docSnap.data());
       } else {
-        setDoc(getDocRef('app_data', 'config'), { locations: defaultLocations });
+        setDoc(getDocRef('app_data', 'config'), {
+          locations: defaultLocations,
+          isDebugMode: false,
+          debugSessionId: null,
+          cardCommissionRate: 0.04,
+          serviceSlots: DEFAULT_SERVICE_SLOTS,
+          serveAreaOptions: DEFAULT_SERVE_AREA_OPTIONS,
+          allergyOptions: DEFAULT_ALLERGY_OPTIONS
+        });
         setGlobalLocations(defaultLocations);
       }
     }, console.error);
@@ -169,13 +1112,13 @@ const App = () => {
         const ev1 = {
           id: 'evt_campa', name: "Campa 2026: Lazos Inquebrantables",
           pricingType: 'fixed', globalCost: 3400, serverCost: 4000, dynamicPrices: [],
-          minDeposit: 500, eventType: 'Campa', date: '2026-07-20',
+          minDeposit: 500, eventType: 'Campa', date: '2026-07-20', realCost: 0,
           locations: defaultLocations, regStatus: defaultRegStatus, order: 0
         };
         const ev2 = {
           id: 'evt_alducin', name: "Desayuno Conferencia Dr. Armando Alducin Marzo 2026",
           pricingType: 'fixed', globalCost: 350, serverCost: 0, dynamicPrices: [],
-          minDeposit: 150, eventType: 'Desayuno Conferencia', date: '2026-03-14',
+          minDeposit: 150, eventType: 'Desayuno Conferencia', date: '2026-03-14', realCost: 0,
           locations: defaultLocations, regStatus: defaultRegStatus, order: 1
         };
         setDoc(getDocRef('app_events', ev1.id), ev1);
@@ -189,7 +1132,7 @@ const App = () => {
       if (!snap.empty) {
         setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       } else {
-        const initialUser = { username: 'admin', password: '123', role: 'Administrador' };
+        const initialUser = { username: 'admin', password: '123', role: 'SuperUsuario', canViewFinances: true, canViewHiddenDonations: true };
         setDoc(getDocRef('app_users', '1'), initialUser);
       }
     }, console.error);
@@ -204,14 +1147,22 @@ const App = () => {
       setAllParticipants(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     }, console.error);
 
-    return () => { unsubConfig(); unsubEvents(); unsubUsers(); unsubLogs(); unsubParticipants(); };
+    const unsubDonations = onSnapshot(getColRef('app_donations'), (snap) => {
+      setDonations(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, console.error);
+
+    const unsubExpenses = onSnapshot(getColRef('app_expenses'), (snap) => {
+      setExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, console.error);
+
+    return () => { unsubConfig(); unsubEvents(); unsubUsers(); unsubLogs(); unsubParticipants(); unsubDonations(); unsubExpenses(); };
   }, [fbUser]);
 
   const data = useMemo(() => {
     if (!currentEvent) return {};
     const groupedData = globalLocations.reduce((acc, loc) => ({ ...acc, [loc]: [] }), {});
     allParticipants.forEach(p => {
-      if (p.eventId === currentEvent.id) {
+      if (p.eventId === currentEvent.id && participantIsRosterRow(p)) {
         if (!groupedData[p.location]) groupedData[p.location] = [];
         groupedData[p.location].push(p);
       }
@@ -219,62 +1170,631 @@ const App = () => {
     return groupedData;
   }, [allParticipants, currentEvent, globalLocations]);
 
+  const waitlistData = useMemo(() => {
+    if (!currentEvent) return {};
+    const groupedData = globalLocations.reduce((acc, loc) => ({ ...acc, [loc]: [] }), {});
+    allParticipants.forEach((p) => {
+      if (p.eventId === currentEvent.id && participantIsWaitlistRow(p)) {
+        if (!groupedData[p.location]) groupedData[p.location] = [];
+        groupedData[p.location].push(p);
+      }
+    });
+    return groupedData;
+  }, [allParticipants, currentEvent, globalLocations]);
+
+  const getSortedWaitlistForLocation = useCallback((loc) => {
+    return [...(waitlistData[loc] || [])].sort((a, b) => {
+      return Number(a.waitlistCreatedAt || a.id || 0) - Number(b.waitlistCreatedAt || b.id || 0);
+    });
+  }, [waitlistData]);
+
   const isLocOpen = useCallback((loc) => {
     return currentEvent ? currentEvent.regStatus?.[loc] !== false : false;
   }, [currentEvent]);
 
-  // Actualizado para permitir pasar un targetEvent desde el selector de eventos
-  const addLog = useCallback(async (action, details, overrideUsername = null, targetEvent = null) => {
+  const getLocationCap = useCallback((loc) => {
+    if (!currentEvent) return 0;
+    return Number(currentEvent.locationCaps?.[loc] || 0);
+  }, [currentEvent]);
+
+  const getActiveCountByLocation = useCallback((loc) => {
+    return (data[loc] || []).length;
+  }, [data]);
+
+  const isLocationFull = useCallback((loc) => {
+    const cap = getLocationCap(loc);
+    if (!cap || cap <= 0) return false; // 0 = ilimitado
+    return getActiveCountByLocation(loc) >= cap;
+  }, [getLocationCap, getActiveCountByLocation]);
+
+  const addLog = useCallback(async (action, details, overrideUsername = null, targetEvent = null, revertInfo = null) => {
     const username = overrideUsername || currentUser?.username;
     if (!username) return;
 
     const ev = targetEvent || currentEvent;
-
     const newLogId = Date.now();
     const newLog = {
       id: newLogId,
       eventId: ev?.id || 'Global',
       eventName: ev?.name || 'Sistema',
       timestamp: new Date().toLocaleString('es-MX'),
-      username, action, details
+      username, action, details, revertInfo,
+      ...(globalConfig?.isDebugMode ? { isDebug: true, debugSessionId: globalConfig.debugSessionId } : {})
     };
     await setDoc(getDocRef('app_logs', String(newLogId)), newLog);
-  }, [currentUser, currentEvent]);
+  }, [currentUser, currentEvent, globalConfig]);
+
+
+  const summary = useMemo(() => {
+    let totalMen = 0, totalWomen = 0, totalSwimmers = 0, totalNonSwimmers = 0;
+    let totalAllergies = 0, totalDiseases = 0, totalDisabilities = 0, totalServers = 0;
+    let totalMinors = 0, totalAdults = 0, totalServersBoth = 0;
+    let totalPaidOff = 0, totalWithDebt = 0;
+
+    // Sección 1: ingresos netos por Método y por Servicio (para gráficas)
+    let paymentMethodTotals = {
+      efectivo: { net: 0, gross: 0, countPayments: 0 },
+      tarjeta: { net: 0, gross: 0, countPayments: 0 }
+    };
+    let paymentServiceTotals = {
+      Primero: { efectivo: { net: 0, gross: 0, countPayments: 0 }, tarjeta: { net: 0, gross: 0, countPayments: 0 } },
+      Segundo: { efectivo: { net: 0, gross: 0, countPayments: 0 }, tarjeta: { net: 0, gross: 0, countPayments: 0 } },
+      Tercero: { efectivo: { net: 0, gross: 0, countPayments: 0 }, tarjeta: { net: 0, gross: 0, countPayments: 0 } }
+    };
+    
+    let ageBrackets = { kids: 0, teens: 0, youngAdults: 0, adults: 0, seniors: 0 };
+
+    let bloodTypeStats = {};
+    BLOOD_TYPES.forEach(bt => bloodTypeStats[bt] = 0);
+    
+    let customFieldsStats = {};
+    if (currentEvent?.customFields) currentEvent.customFields.forEach(f => customFieldsStats[f] = {});
+
+    let globalStats = {
+      all: { count: 0, scholarship: 0, servers: 0, paid: 0, paidGross: 0, pending: 0, expected: 0 },
+      regular: { count: 0, paid: 0, paidGross: 0, pending: 0, expected: 0 },
+      scholarship: { count: 0, paid: 0, paidGross: 0, pending: 0, expected: 0 }
+    };
+    let locationStats = {};
+    const travelStats = {};
+    if (currentEvent?.locations) {
+      currentEvent.locations.forEach(from => {
+        travelStats[from] = {};
+        currentEvent.locations.forEach(to => { travelStats[from][to] = 0; });
+      });
+    }
+
+    if (currentEvent) {
+      (currentEvent.locations || []).forEach(loc => {
+        let stats = {
+          all: { count: 0, scholarship: 0, servers: 0, paid: 0, paidGross: 0, pending: 0, expected: 0 },
+          regular: { count: 0, paid: 0, paidGross: 0, pending: 0, expected: 0 },
+          scholarship: { count: 0, paid: 0, paidGross: 0, pending: 0, expected: 0 }
+        };
+        (data[loc] || []).forEach(person => {
+          if (person.gender === 'Hombre') totalMen++;
+          else if (person.gender === 'Mujer') totalWomen++;
+          if (person.canSwim === 'Sí') totalSwimmers++; else totalNonSwimmers++;
+          if (person.hasAllergy === 'Sí') totalAllergies++;
+          if (person.hasDisease === 'Sí') totalDiseases++;
+          if (person.hasDisability === 'Sí') totalDisabilities++;
+          if (!participantIsCancelled(person) && person.isServer === 'Sí') { totalServers++; stats.all.servers++; }
+          
+          if (person.bloodType) {
+            bloodTypeStats[person.bloodType] = (bloodTypeStats[person.bloodType] || 0) + 1;
+          }
+
+          const ageNum = parseInt(person.age) || 0;
+          if (ageNum > 0) {
+            if (ageNum < 13) ageBrackets.kids++;
+            else if (ageNum <= 17) ageBrackets.teens++;
+            else if (ageNum <= 25) ageBrackets.youngAdults++;
+            else if (ageNum <= 40) ageBrackets.adults++;
+            else ageBrackets.seniors++;
+          }
+
+          if (currentEvent.eventType === 'Campa' && !participantIsCancelled(person)) {
+            if (person.isServer === 'Sí') {
+              if (person.serverAssignment === 'Teens') totalMinors++;
+              else if (person.serverAssignment === 'Jóvenes') totalAdults++;
+              else if (person.serverAssignment === 'Ambos') { totalMinors++; totalAdults++; totalServersBoth++; }
+            } else {
+              const assignment = person.campAssignment || (ageNum < 18 ? 'Teens' : 'Jóvenes');
+              if (assignment === 'Teens') totalMinors++; else totalAdults++;
+            }
+          }
+
+          if (currentEvent.eventType === 'General' && currentEvent.customFields) {
+            currentEvent.customFields.forEach(field => {
+              const val = person.customData?.[field]?.trim() || 'Sin especificar';
+              customFieldsStats[field][val] = (customFieldsStats[field][val] || 0) + 1;
+            });
+          }
+
+          const paidGross = parseFloat(person.paid || 0);
+          const paidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGross;
+          const isBecado = person.isScholarship === 'Sí';
+          const isCancelled = participantIsCancelled(person);
+          const baseCost = resolveRegisteredCost(person, currentPricing);
+          const liqTarget = getLiquidationTarget(person);
+
+          if (!isCancelled) {
+            if (paidGross >= liqTarget) totalPaidOff++;
+            else totalWithDebt++;
+
+            stats.all.count++;
+            if (isBecado && currentEvent.eventType === 'Campa') {
+              stats.all.scholarship++;
+              stats.scholarship.count++;
+              stats.scholarship.pending += Math.max(0, liqTarget - paidGross);
+              stats.scholarship.expected += liqTarget;
+            } else {
+              stats.regular.count++;
+              stats.regular.pending += (baseCost - paidGross);
+              stats.regular.expected += baseCost;
+            }
+          }
+
+          // Recaudado mantiene pagos incluso para cancelados (se ajusta el balance neto en Lista de gastos).
+          stats.all.paid += paidNet;
+          stats.all.paidGross += paidGross;
+          if (isBecado && currentEvent.eventType === 'Campa') {
+            stats.scholarship.paid += paidNet;
+            stats.scholarship.paidGross += paidGross;
+          } else {
+            stats.regular.paid += paidNet;
+            stats.regular.paidGross += paidGross;
+          }
+
+          // Totales de pagos por método/servicio (para gráficas)
+          const history = person.paymentHistory || [];
+          history.forEach(h => {
+            if (h.kind === 'comment') return; // Comentarios no afectan totales financieros
+            const method = h.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
+            const service = SERVICE_OPTIONS.includes(h.service) ? h.service : (SERVICE_OPTIONS.includes(person.paymentService) ? person.paymentService : '');
+            const gross = Number(h.amount || 0) || 0;
+            const net = Number.isFinite(parseFloat(h.netAmount)) ? Number(h.netAmount) : gross;
+
+            if (method === 'Tarjeta') {
+              paymentMethodTotals.tarjeta.net += net;
+              paymentMethodTotals.tarjeta.gross += gross;
+              paymentMethodTotals.tarjeta.countPayments += 1;
+              if (service && paymentServiceTotals[service]) {
+                paymentServiceTotals[service].tarjeta.net += net;
+                paymentServiceTotals[service].tarjeta.gross += gross;
+                paymentServiceTotals[service].tarjeta.countPayments += 1;
+              }
+            } else {
+              paymentMethodTotals.efectivo.net += net;
+              paymentMethodTotals.efectivo.gross += gross;
+              paymentMethodTotals.efectivo.countPayments += 1;
+              if (service && paymentServiceTotals[service]) {
+                paymentServiceTotals[service].efectivo.net += net;
+                paymentServiceTotals[service].efectivo.gross += gross;
+                paymentServiceTotals[service].efectivo.countPayments += 1;
+              }
+            }
+          });
+
+          const fromLoc = person.travelFrom || person.location || loc;
+          const toLoc = person.travelTo || person.location || loc;
+          if (!travelStats[fromLoc]) travelStats[fromLoc] = {};
+          travelStats[fromLoc][toLoc] = (travelStats[fromLoc][toLoc] || 0) + 1;
+        });
+
+        stats.all.pending = stats.regular.pending;
+        stats.all.expected = stats.regular.expected + stats.scholarship.expected;
+
+        globalStats.all.count += stats.all.count;
+        globalStats.all.scholarship += stats.all.scholarship;
+        globalStats.all.servers += stats.all.servers;
+        globalStats.all.paid += stats.all.paid;
+        globalStats.all.paidGross += stats.all.paidGross;
+        globalStats.all.pending += stats.all.pending;
+        globalStats.all.expected += stats.all.expected;
+        globalStats.regular.count += stats.regular.count;
+        globalStats.regular.paid += stats.regular.paid;
+        globalStats.regular.paidGross += stats.regular.paidGross;
+        globalStats.regular.pending += stats.regular.pending;
+        globalStats.regular.expected += stats.regular.expected;
+        globalStats.scholarship.count += stats.scholarship.count;
+        globalStats.scholarship.paid += stats.scholarship.paid;
+        globalStats.scholarship.paidGross += stats.scholarship.paidGross;
+        globalStats.scholarship.pending += stats.scholarship.pending;
+        globalStats.scholarship.expected += stats.scholarship.expected;
+        
+        locationStats[loc] = stats;
+      });
+    }
+
+    return {
+      totalMen, totalWomen, totalSwimmers, totalNonSwimmers,
+      totalAllergies, totalDiseases, totalDisabilities, totalServers,
+      totalMinors, totalAdults, totalServersBoth, totalPaidOff, totalWithDebt,
+      ageBrackets, bloodTypeStats, customFieldsStats, locationStats, globalStats,
+      paymentMethodTotals, paymentServiceTotals, travelStats
+    };
+  }, [data, currentEvent, currentPricing, resolveRegisteredCost, getLiquidationTarget]);
+
+  // EXPORT TO EXCEL FEATURE
+  const handleExportExcel = async () => {
+    if (!currentEvent) return;
+    setIsExporting(true);
+    showToast("Generando archivo Excel...");
+
+    try {
+      const XLSX = await loadSheetJS();
+      const wb = XLSX.utils.book_new();
+      const isCampa = currentEvent.eventType === 'Campa';
+      const isGeneral = currentEvent.eventType === 'General';
+
+      // --- SHEET 1: RESUMEN GENERAL ---
+      const wsGeneralData = [];
+      wsGeneralData.push(["RESUMEN GENERAL DEL EVENTO:", currentEvent.name]);
+      wsGeneralData.push(["Fecha:", currentEvent.date || 'Sin fecha especificada']);
+      wsGeneralData.push([]);
+      
+      wsGeneralData.push(["MÉTRICAS PRINCIPALES"]);
+      wsGeneralData.push(["Total Registrados", summary.globalStats.all.count]);
+      if (isCampa) {
+        wsGeneralData.push(["Total Becados", summary.globalStats.all.scholarship]);
+        wsGeneralData.push(["Total Servidores", summary.globalStats.all.servers]);
+      }
+      wsGeneralData.push([]);
+
+      if (hasFinancialAccess) {
+        wsGeneralData.push(["DATOS FINANCIEROS GLOBALES"]);
+        wsGeneralData.push(["Costo Base (Regular)", `$${currentPricing.global}`]);
+        if (isCampa) wsGeneralData.push(["Costo Servidor (Ambos)", `$${currentPricing.server}`]);
+        const exportDonations = donations.filter(d => d.eventId === currentEvent?.id);
+        const exportDonationsTotal = exportDonations.reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
+        wsGeneralData.push(["Recaudado (Registros)", `$${summary.globalStats.all.paid}`]);
+        wsGeneralData.push(["Donaciones", `$${exportDonationsTotal}`]);
+        wsGeneralData.push(["Recaudado Total", `$${summary.globalStats.all.paid + exportDonationsTotal}`]);
+        wsGeneralData.push(["Adeudo Total Pendiente", `$${summary.globalStats.all.pending}`]);
+        wsGeneralData.push(["Total Esperado Final", `$${summary.globalStats.all.expected}`]);
+        wsGeneralData.push(["Balance Neto", `$${summary.globalStats.all.paid + exportDonationsTotal - (Number(currentEvent.realCost || 0) * summary.globalStats.all.count)}`]);
+        wsGeneralData.push([]);
+      }
+
+      wsGeneralData.push(["DESGLOSE POR SEDE"]);
+      const tableHeaders = ["Sede", "Inscritos"];
+      if (isCampa) tableHeaders.push("Becados", "Servidores");
+      if (hasFinancialAccess) tableHeaders.push("Recaudado", "Pendiente", "Esperado Final");
+      wsGeneralData.push(tableHeaders);
+
+      (currentEvent.locations || []).forEach(loc => {
+        const s = summary.locationStats[loc];
+        if(!s) return;
+        let row = [loc, s.all.count];
+        if (isCampa) row.push(s.all.scholarship, s.all.servers);
+        if (hasFinancialAccess) row.push(`$${s.all.paid}`, `$${s.all.pending}`, `$${s.all.expected}`);
+        wsGeneralData.push(row);
+      });
+      wsGeneralData.push([]);
+
+      // Datos de Gráficas simulados en tablas
+      wsGeneralData.push(["MÉTRICAS: GÉNERO"]);
+      wsGeneralData.push(["Hombres", summary.totalMen]);
+      wsGeneralData.push(["Mujeres", summary.totalWomen]);
+      wsGeneralData.push([]);
+
+      wsGeneralData.push(["MÉTRICAS: RANGOS DE EDAD"]);
+      wsGeneralData.push(["Niños (< 13)", summary.ageBrackets.kids]);
+      wsGeneralData.push(["Adolescentes (13-17)", summary.ageBrackets.teens]);
+      wsGeneralData.push(["Jóvenes (18-25)", summary.ageBrackets.youngAdults]);
+      wsGeneralData.push(["Adultos (26-40)", summary.ageBrackets.adults]);
+      wsGeneralData.push(["Mayores (41+)", summary.ageBrackets.seniors]);
+      wsGeneralData.push([]);
+
+      if (isCampa) {
+        wsGeneralData.push(["MÉTRICAS: ASIGNACIÓN / SERVIDORES"]);
+        wsGeneralData.push(["Campistas / Servidores Asignados a Teens", summary.totalMinors]);
+        wsGeneralData.push(["Campistas / Servidores Asignados a Jóvenes", summary.totalAdults]);
+        wsGeneralData.push(["Servidores que apoyan en Ambos", summary.totalServersBoth]);
+        wsGeneralData.push([]);
+
+        wsGeneralData.push(["MÉTRICAS: SALUD"]);
+        wsGeneralData.push(["Con Alergias", summary.totalAllergies]);
+        wsGeneralData.push(["Con Enfermedades", summary.totalDiseases]);
+        wsGeneralData.push(["Con Discapacidades", summary.totalDisabilities]);
+        wsGeneralData.push([]);
+
+        wsGeneralData.push(["MÉTRICAS: NADO"]);
+        wsGeneralData.push(["Saben Nadar", summary.totalSwimmers]);
+        wsGeneralData.push(["No Saben Nadar", summary.totalNonSwimmers]);
+        wsGeneralData.push([]);
+      }
+
+      if (isGeneral && currentEvent.customFields && currentEvent.customFields.length > 0) {
+        wsGeneralData.push(["MÉTRICAS: CAMPOS PERSONALIZADOS"]);
+        currentEvent.customFields.forEach(field => {
+          wsGeneralData.push([`Respuesta a: ${field}`, "Cantidad"]);
+          const entries = Object.entries(summary.customFieldsStats[field] || {}).sort((a,b) => b[1] - a[1]);
+          entries.forEach(([val, count]) => wsGeneralData.push([val, count]));
+          wsGeneralData.push([]);
+        });
+      }
+
+      const wsGeneral = XLSX.utils.aoa_to_sheet(wsGeneralData);
+      XLSX.utils.book_append_sheet(wb, wsGeneral, "Resumen General");
+
+      // --- SHEETS 2-N: DESGLOSE POR SEDES ---
+      (currentEvent.locations || []).forEach(loc => {
+        const evtParticipants = allParticipants.filter(
+          (p) => p.eventId === currentEvent.id && p.location === loc && participantIsActiveInEvent(p)
+        );
+        if (evtParticipants.length === 0) return; // Omite sedes vacías en la exportación
+        
+        const locData = [];
+        const locHeaders = ['Nombre', 'Teléfono'];
+        
+        if (isCampa) {
+          locHeaders.push('Edad', 'Género', 'Tipo Sangre', 'Nado', 'Alergias', 'Detalle Alergias', 'Enfermedades', 'Detalle Enfermedades', 'Medicamento Requerido', 'Discapacidades', 'Detalle Discapacidades', 'Contacto Emergencia', 'Tel Emergencia', 'Becado', 'Servidor', 'Asignación');
+        } else if (isGeneral) {
+          locHeaders.push('Edad', 'Género', 'Contacto Emergencia', 'Tel Emergencia');
+          if (currentEvent.customFields) locHeaders.push(...currentEvent.customFields);
+        } else {
+          locHeaders.push('Edad', 'Género');
+        }
+
+        if (hasFinancialAccess) {
+          locHeaders.push('Costo Base Total', 'Pagado', 'Adeudo Pendiente', 'Estado Financiero');
+        }
+
+        locData.push(locHeaders);
+
+        evtParticipants.forEach(p => {
+          const row = [p.name || '', p.phone || ''];
+          
+          if (isCampa) {
+            row.push(
+              p.age || '', p.gender || '', p.bloodType || '', p.canSwim || '',
+              p.hasAllergy || 'No', p.hasAllergy === 'Sí' ? p.allergyDetails : '',
+              p.hasDisease || 'No', p.hasDisease === 'Sí' ? p.diseaseDetails : '', p.hasDisease === 'Sí' ? (p.diseaseMedication || '') : '',
+              p.hasDisability || 'No', p.hasDisability === 'Sí' ? p.disabilityDetails : '',
+              p.emergencyContact || '', p.emergencyPhone || '',
+              p.isScholarship || 'No', p.isServer || 'No',
+              p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment
+            );
+          } else if (isGeneral) {
+            row.push(p.age || '', p.gender || '', p.emergencyContact || '', p.emergencyPhone || '');
+            if (currentEvent.customFields) {
+              currentEvent.customFields.forEach(f => row.push(p.customData?.[f] || ''));
+            }
+          } else {
+            row.push(p.age || '', p.gender || '');
+          }
+
+          if (hasFinancialAccess) {
+            const baseCost = resolveRegisteredCost(p, currentPricing);
+            const isBecado = p.isScholarship === 'Sí';
+            const paid = parseFloat(p.paid || 0);
+            const liq = getLiquidationTarget(p);
+            const debt = Math.max(0, liq - paid);
+            const estado =
+              isBecado && liq <= 0
+                ? 'Becado (total)'
+                : isBecado && p.scholarshipType === 'partial'
+                  ? debt <= 0
+                    ? 'Beca parcial (liquidado)'
+                    : 'Beca parcial (pendiente)'
+                  : debt <= 0
+                    ? 'Liquidado'
+                    : 'Pendiente';
+            
+            row.push(`$${baseCost}`, `$${paid}`, `$${debt}`, estado);
+          }
+
+          locData.push(row);
+        });
+
+        // Limita nombre de hoja a 31 caracteres por seguridad de Excel
+        let sheetName = `Sede ${loc}`.substring(0, 31);
+        const wsLoc = XLSX.utils.aoa_to_sheet(locData);
+        XLSX.utils.book_append_sheet(wb, wsLoc, sheetName);
+      });
+
+      XLSX.writeFile(wb, `Registros_${currentEvent.name.replace(/\s+/g, '_')}_${new Date().toLocaleDateString('es-MX')}.xlsx`);
+      
+      // Registrar log de la exportación
+      await addLog('Exportación de Datos', `Descargó la base de datos completa del evento en formato Excel.`);
+      
+      showToast("Archivo Excel generado con éxito.");
+
+    } catch (err) {
+      console.error(err);
+      showToast("Hubo un error al generar el archivo de exportación.");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleCleanLogs = () => {
+    if (!hasAdminRights) return;
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const logsToDelete = logs.filter(log => (now - log.id) > thirtyDaysMs);
+    if (logsToDelete.length > 0) {
+      logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
+      addLog('Limpieza de Logs', `Se eliminaron ${logsToDelete.length} registros antiguos (> 30 días).`, null, { id: 'Global', name: 'Sistema' });
+      showToast(`Se eliminaron ${logsToDelete.length} registros antiguos.`);
+    } else {
+      showToast("No hay registros con más de 30 días de antigüedad.");
+    }
+  };
+
+  const handleCleanRecentLogs = () => {
+    if (!isSuperUser) return;
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const logsToDelete = logs.filter(log => (now - log.id) <= thirtyDaysMs);
+    if (logsToDelete.length > 0) {
+      logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
+      addLog('Limpieza de Logs', `El SuperUsuario eliminó ${logsToDelete.length} registros recientes (< 30 días).`, null, { id: 'Global', name: 'Sistema' });
+      showToast(`Se eliminaron ${logsToDelete.length} registros recientes.`);
+    } else {
+      showToast("No hay registros recientes para eliminar.");
+    }
+  };
+
+  const confirmRestore = async () => {
+    const { log, type } = restoreModal;
+
+    if (type === 'single') {
+      await applyRevert(log.revertInfo);
+      addLog('Restauración', `Se deshizo el cambio específico: "${log.action}" del usuario ${log.username}.`, null, { id: 'Global', name: 'Sistema' });
+      showToast("Cambio revertido exitosamente.");
+    } else if (type === 'rollback') {
+      const logsToRevert = logs.filter(l => l.id >= log.id && l.revertInfo && !l.isDebug).sort((a,b) => b.id - a.id);
+      for (const l of logsToRevert) {
+        await applyRevert(l.revertInfo);
+      }
+      addLog('Restauración Masiva', `El SuperUsuario revirtió todos los cambios hasta el evento: "${log.action}" (${log.timestamp}).`, null, { id: 'Global', name: 'Sistema' });
+      showToast(`Se han revertido ${logsToRevert.length} cambios exitosamente.`);
+    } else if (type === 'cleanOld') {
+      handleCleanLogs();
+    } else if (type === 'cleanRecent') {
+      handleCleanRecentLogs();
+    } else if (type === 'backup') {
+      try {
+        const backupSnap = await getDoc(getDocRef('app_backups', log.revertInfo.backupId));
+        if (!backupSnap.exists()) {
+          showToast("Error: No se encontró la información de la copia de seguridad.");
+          setRestoreModal({ isOpen: false, log: null, type: 'single' });
+          return;
+        }
+        const backupData = backupSnap.data();
+
+        // Limpiar registros actuales
+        await Promise.all(allParticipants.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
+        await Promise.all(events.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
+
+        // Insertar registros de backup
+        await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
+        await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+
+        addLog('Restauración de Sistema', `El SuperUsuario restauró el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
+        showToast("Sistema restaurado con éxito desde copia de seguridad.");
+      } catch (err) {
+        console.error(err);
+        showToast("Error crítico al restaurar la copia de seguridad.");
+      }
+    }
+    setRestoreModal({ isOpen: false, log: null, type: 'single' });
+  };
 
   const updateEventConfig = useCallback(async (updates) => {
     if (!currentEvent) return;
-    await updateDoc(getDocRef('app_events', currentEvent.id), updates);
-  }, [currentEvent]);
+    const payload = { ...updates };
+    if (globalConfig?.isDebugMode) {
+      payload._isDebug = true;
+      payload._debugSessionId = globalConfig.debugSessionId;
+    }
+    await updateDoc(getDocRef('app_events', currentEvent.id), payload);
+  }, [currentEvent, globalConfig]);
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
     const user = users.find(u => u.username === loginForm.username && u.password === loginForm.password);
     if (user) {
-      setCurrentUser(user);
+      const loginTime = Date.now();
+      const adminDefaultPref = (user.username || '').toLowerCase() === 'admin' && user.role === 'Administrador' ? 'Norte' : (user.preferredLandingTab || 'Summary');
+      setCurrentUser({
+        ...user,
+        loginTime,
+        allowedEventIds: getUserAllowedEventIds(user),
+        allowedLocations: getUserAllowedLocations(user),
+        preferredLandingTab: adminDefaultPref
+      });
       setLoginError('');
       setLoginForm({ username: '', password: '' });
-      addLog('Inicio de Sesión', `El usuario ${user.username} inició sesión.`, user.username);
+      addLog('Inicio de Sesión', `El usuario ${user.username} inició sesión.`, user.username, { id: 'Global', name: 'Sistema' });
+      await updateDoc(getDocRef('app_users', String(user.id)), { isOnline: true });
     } else {
       setLoginError('Usuario o contraseña incorrectos.');
     }
   };
 
-  const handleLogout = () => {
-    addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión.`);
+  const handleLogout = async () => {
+    if (currentUser) {
+      const activeTime = Date.now() - (currentUser.loginTime || Date.now());
+      const formattedTime = formatDuration(activeTime);
+      addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión manualmente. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
+      await updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
+    }
+    setNavHistory([]);
     setCurrentUser(null);
     setSelectedEventId(null);
     setActiveTab("Summary");
     setSystemView('events');
+    setShowViewSettings(false);
   };
 
+  // Automated Daily Backup Logic
+  useEffect(() => {
+    const performDailyBackup = async () => {
+      if (!globalConfig || !hasAdminRights || events.length === 0 || allParticipants.length === 0) return;
+
+      const now = new Date();
+      const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+
+      if (globalConfig.lastBackupDate !== today) {
+        try {
+          await updateDoc(getDocRef('app_data', 'config'), { lastBackupDate: today });
+          const backupData = {
+            date: today,
+            timestamp: Date.now(),
+            participants: allParticipants,
+            events: events,
+            users: users.map(u => ({...u, password: '***'})) 
+          };
+          await setDoc(getDocRef('app_backups', today), backupData);
+          addLog('Sistema', `Copia de seguridad automática diaria (${today}) generada exitosamente.`, 'Sistema', { id: 'Global', name: 'Sistema' }, { isBackup: true, backupId: today });
+        } catch (e) {
+          console.error("Backup automatico falló", e);
+        }
+      }
+    };
+    performDailyBackup();
+  }, [globalConfig, events, allParticipants, users, hasAdminRights, addLog]);
+
+  // Activity Watcher and Session Logout Logic
   useEffect(() => {
     if (!currentUser) return;
 
     let timeoutId;
     let throttleTimeoutId;
+    let isClosing = false;
 
-    const performLogout = () => {
-      addLog('Cierre de Sesión Automático', `Sesión finalizada por 10 minutos de inactividad.`);
+    const handleBrowserClose = () => {
+      if (currentUser?.id && !isClosing) {
+        isClosing = true;
+        const activeTime = Date.now() - (currentUser.loginTime || Date.now());
+        const formattedTime = formatDuration(activeTime);
+        
+        addLog(
+          'Cierre de Sesión Automático',
+          `Sesión finalizada por cierre de navegador o pestaña. (Tiempo activo: ${formattedTime})`,
+          currentUser.username,
+          { id: 'Global', name: 'Sistema' }
+        );
+        updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
+      }
+    };
+
+    const setOffline = () => {
+      if (currentUser?.id) {
+        updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
+      }
+    };
+
+    const performLogout = async () => {
+      const activeTime = Date.now() - (currentUser.loginTime || Date.now());
+      const formattedTime = formatDuration(activeTime);
+      addLog('Cierre de Sesión Automático', `Sesión finalizada por inactividad. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
+      await setOffline();
+      setNavHistory([]);
       setCurrentUser(null);
       setSelectedEventId(null);
       setActiveTab("Summary");
@@ -284,12 +1804,10 @@ const App = () => {
 
     const resetTimer = () => {
       clearTimeout(timeoutId);
-      // 10 minutos = 10 * 60 * 1000 milisegundos
       timeoutId = setTimeout(performLogout, 10 * 60 * 1000); 
     };
 
     const handleActivity = () => {
-      // Limitar la recarga del timer a 1 vez por segundo para mejor rendimiento
       if (throttleTimeoutId) return;
       throttleTimeoutId = setTimeout(() => {
         throttleTimeoutId = null;
@@ -298,16 +1816,62 @@ const App = () => {
     };
 
     const activityEvents = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
-    
-    resetTimer(); // Iniciar inmediatamente al loguearse
+    resetTimer();
     activityEvents.forEach(e => window.addEventListener(e, handleActivity));
+    
+    window.addEventListener('beforeunload', handleBrowserClose);
+    window.addEventListener('pagehide', handleBrowserClose);
 
     return () => {
       clearTimeout(timeoutId);
       clearTimeout(throttleTimeoutId);
       activityEvents.forEach(e => window.removeEventListener(e, handleActivity));
+      window.removeEventListener('beforeunload', handleBrowserClose);
+      window.removeEventListener('pagehide', handleBrowserClose);
     };
   }, [currentUser, addLog, showToast]);
+
+  // Real-time Session Permission Sync
+  useEffect(() => {
+    if (currentUser && users.length > 0) {
+      const liveUser = users.find(u => String(u.id) === String(currentUser.id));
+      if (liveUser) {
+        const roleChanged = liveUser.role !== currentUser.role;
+        const financesChanged = liveUser.canViewFinances !== currentUser.canViewFinances;
+        const expensesChanged = (!!liveUser.canViewExpenses) !== (!!currentUser.canViewExpenses);
+        const prevEventAccess = getUserAllowedEventIds(currentUser).slice().sort().join('|');
+        const nextEventAccess = getUserAllowedEventIds(liveUser).slice().sort().join('|');
+        const prevLocAccess = getUserAllowedLocations(currentUser).slice().sort().join('|');
+        const nextLocAccess = getUserAllowedLocations(liveUser).slice().sort().join('|');
+        const preferenceChanged = (liveUser.preferredLandingTab || 'Summary') !== (currentUser.preferredLandingTab || 'Summary');
+        const eventRestrictionChanged = prevEventAccess !== nextEventAccess;
+        const locationRestrictionChanged = prevLocAccess !== nextLocAccess;
+
+        if (roleChanged || financesChanged || expensesChanged || eventRestrictionChanged || locationRestrictionChanged || preferenceChanged) {
+          setCurrentUser(prev => ({
+            ...prev,
+            role: liveUser.role,
+            canViewFinances: liveUser.canViewFinances,
+            canViewExpenses: liveUser.canViewExpenses,
+            restrictedEventId: liveUser.restrictedEventId || '',
+            restrictedLocation: liveUser.restrictedLocation || '',
+            allowedEventIds: getUserAllowedEventIds(liveUser),
+            allowedLocations: getUserAllowedLocations(liveUser),
+            preferredLandingTab: liveUser.preferredLandingTab || 'Summary'
+          }));
+          if (financesChanged && liveUser.role === 'Lector') {
+            showToast(`Atención: Tus permisos han cambiado. Ahora ${liveUser.canViewFinances ? 'PUEDES' : 'NO PUEDES'} ver información financiera.`);
+          } else if (roleChanged) {
+            showToast(`Atención: Tu rol ha sido actualizado a ${liveUser.role}.`);
+          } else if (eventRestrictionChanged || locationRestrictionChanged) {
+            showToast('Tus restricciones de evento/sede se actualizaron.');
+          } else if (preferenceChanged) {
+            showToast('Tu preferencia de ventana inicial fue actualizada.');
+          }
+        }
+      }
+    }
+  }, [users, currentUser, currentUser?.id, currentUser?.role, currentUser?.canViewFinances, currentUser?.canViewExpenses, currentUser?.restrictedEventId, currentUser?.restrictedLocation, currentUser?.allowedEventIds, currentUser?.allowedLocations, currentUser?.preferredLandingTab, showToast, getUserAllowedEventIds, getUserAllowedLocations]);
 
   const handleCreateEvent = async () => {
     if (!newEventData.name.trim()) return;
@@ -316,21 +1880,41 @@ const App = () => {
       name: newEventData.name.trim(),
       eventType: newEventData.type,
       date: newEventData.date,
-      pricingType: 'fixed', globalCost: 0, serverCost: 0, dynamicPrices: [],
+      pricingType: 'fixed', 
+      globalCost: Number(newEventData.baseCost) || 0, 
+      serverCost: 0, 
+      realCost: 0,
+      dynamicPrices: [],
       minDeposit: 0, locations: defaultLocations, regStatus: defaultRegStatus,
-      customFields: [], order: events.length
+      locationCaps: defaultLocations.reduce((acc, loc) => ({ ...acc, [loc]: 0 }), {}),
+      customFields: [], order: events.length,
+      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {})
     };
     await setDoc(getDocRef('app_events', newEvt.id), newEvt);
-    addLog('Gestión de Eventos', `Creó un nuevo evento (${newEvt.eventType}): ${newEvt.name}`, null, newEvt);
+    addLog('Gestión de Eventos', `Creó un nuevo evento (${newEvt.eventType}): ${newEvt.name} con base de $${newEvt.globalCost}`, null, newEvt, { collectionName: 'app_events', docId: newEvt.id, action: 'create', previousData: null });
     setIsAddEventModalOpen(false);
-    setNewEventData({ name: '', type: 'Campa', date: '' });
+    setNewEventData({ name: '', type: 'Campa', date: '', baseCost: '' });
+  };
+
+  const handleRenameEvent = async () => {
+    if (!renameModal.name.trim() || !renameModal.id) return;
+    const ev = events.find(e => e.id === renameModal.id);
+    if (ev && ev.name !== renameModal.name.trim()) {
+      const payload = { name: renameModal.name.trim() };
+      if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
+      
+      await updateDoc(getDocRef('app_events', ev.id), payload);
+      addLog('Gestión de Eventos', `Renombró evento: "${ev.name}" -> "${renameModal.name.trim()}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
+      showToast("Nombre del evento actualizado.");
+    }
+    setRenameModal({ isOpen: false, id: null, name: '' });
   };
 
   const confirmDeleteEvent = async () => {
     if (!deleteEventModal.id) return;
     const evToDelete = events.find(e => e.id === deleteEventModal.id);
     await deleteDoc(getDocRef('app_events', deleteEventModal.id));
-    addLog('Gestión de Eventos', `Eliminó el evento: ${deleteEventModal.name}`, null, evToDelete || { name: deleteEventModal.name });
+    addLog('Gestión de Eventos', `Eliminó el evento: ${deleteEventModal.name}`, null, evToDelete || { name: deleteEventModal.name }, { collectionName: 'app_events', docId: deleteEventModal.id, action: 'delete', previousData: evToDelete });
     setDeleteEventModal({ isOpen: false, id: null, name: '' });
     showToast("Evento eliminado con éxito.");
   };
@@ -343,12 +1927,16 @@ const App = () => {
     const draggedIdx = sortedEvents.findIndex(ev => ev.id === draggedEventId);
     const targetIdx = sortedEvents.findIndex(ev => ev.id === targetId);
     if (draggedIdx === -1 || targetIdx === -1) return;
+    
     const newEventsOrder = [...sortedEvents];
     const [draggedItem] = newEventsOrder.splice(draggedIdx, 1);
     newEventsOrder.splice(targetIdx, 0, draggedItem);
+    
     newEventsOrder.forEach((ev, index) => {
       if ((ev.order ?? -1) !== index) {
-        updateDoc(getDocRef('app_events', ev.id), { order: index });
+        const payload = { order: index };
+        if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
+        updateDoc(getDocRef('app_events', ev.id), payload);
       }
     });
     setDraggedEventId(null);
@@ -384,100 +1972,365 @@ const App = () => {
       dynamicPrices: sortedPhases.map(p => ({ id: p.id, dateUntil: p.dateUntil, globalCost: Number(p.globalCost) || 0, serverCost: Number(p.serverCost) || 0 }))
     });
     setPricingModal({ isOpen: false });
-    addLog('Configuración', `Actualizó la estructura de precios del evento a modalidad ${pricingForm.type}.`);
+    addLog('Configuración', `Actualizó la estructura de precios del evento a modalidad ${pricingForm.type}.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
     showToast('Precios actualizados correctamente.');
+  };
+
+  const handleSaveServiceSlots = async () => {
+    if (!hasAdminRights) return;
+    const payload = {};
+    SERVICE_OPTIONS.forEach((s) => {
+      payload[s] = {
+        start: serviceSlotsForm?.[s]?.start || DEFAULT_SERVICE_SLOTS[s].start,
+        end: serviceSlotsForm?.[s]?.end || DEFAULT_SERVICE_SLOTS[s].end,
+      };
+    });
+    await updateDoc(getDocRef('app_data', 'config'), { serviceSlots: payload });
+    addLog('Configuración', 'Actualizó los horarios de servicio (Primero/Segundo/Tercero).', null, { id: 'Global', name: 'Sistema' });
+    setServiceSlotsModal({ isOpen: false });
+    showToast('Horarios de servicio actualizados.');
+  };
+
+  const handleSaveServeAreaOptions = async () => {
+    if (!hasAdminRights) return;
+    const opts = serveAreaOptionsForm.filter(Boolean).map(s => s.trim());
+    if (opts.length === 0) { showToast('Debe haber al menos una opción.'); return; }
+    if (!opts.includes('Otro')) { showToast('Debe incluir la opción "Otro".'); return; }
+    await updateDoc(getDocRef('app_data', 'config'), { serveAreaOptions: opts });
+    addLog('Configuración', 'Actualizó las opciones de área para servir.', null, { id: 'Global', name: 'Sistema' });
+    setServeAreaOptionsModal({ isOpen: false });
+    showToast('Opciones de área actualizadas.');
+  };
+
+  const handleSaveAllergyOptions = async () => {
+    if (!hasAdminRights) return;
+    const opts = allergyOptionsForm.filter(Boolean).map((s) => s.trim()).filter(Boolean);
+    if (opts.length === 0) { showToast('Debe haber al menos una categoría de alergia.'); return; }
+    await updateDoc(getDocRef('app_data', 'config'), { allergyOptions: opts });
+    addLog('Configuración', 'Actualizó las categorías de alergias.', null, { id: 'Global', name: 'Sistema' });
+    setAllergyOptionsModal({ isOpen: false });
+    showToast('Categorías de alergias actualizadas.');
+  };
+
+  const handleAddDonation = async () => {
+    if (!hasAdminRights || !currentEvent) return;
+    const amount = parseFloat(donationModal.amount);
+    if (!Number.isFinite(amount) || amount <= 0) { showToast('Ingresa una cantidad válida.'); return; }
+    const donationId = `don_${Date.now()}`;
+    const payload = {
+      eventId: currentEvent.id,
+      amount,
+      donorName: (donationModal.donorName || '').trim(),
+      createdAt: new Date().toISOString(),
+      createdBy: currentUser?.username || 'Desconocido'
+    };
+    await setDoc(getDocRef('app_donations', donationId), payload);
+    addLog('Donación', `Nueva donación de $${amount.toLocaleString()}${payload.donorName ? ` (Donador: ${payload.donorName})` : ''}`);
+    setDonationModal({ isOpen: false, amount: '', donorName: '' });
+    showToast('Donación registrada correctamente.');
+  };
+
+  const handleDeleteDonation = async (donationId) => {
+    if (!hasAdminRights) return;
+    const donation = donations.find(d => d.id === donationId);
+    if (!donation) return;
+    await deleteDoc(getDocRef('app_donations', donationId));
+    addLog('Donación', `Eliminó donación de $${(donation.amount || 0).toLocaleString()}${donation.donorName ? ` (Donador: ${donation.donorName})` : ''}`);
+    showToast('Donación eliminada.');
+  };
+
+  const handleAddExpense = async () => {
+    if (!canAccessExpenses) return;
+    const name = expenseForm.name.trim();
+    const qty = parseInt(expenseForm.quantity) || 0;
+    const price = parseFloat(expenseForm.unitPrice) || 0;
+    if (!name || qty <= 0 || price <= 0) { showToast('Completa nombre, cantidad y precio.'); return; }
+    const expId = 'exp_' + Date.now();
+    await setDoc(getDocRef('app_expenses', expId), {
+      eventId: currentEvent?.id || '',
+      name,
+      quantity: qty,
+      unitPrice: price,
+      totalPrice: qty * price,
+      paid: false,
+      paidAmount: 0,
+      countInTotals: true,
+      createdAt: new Date().toISOString(),
+      createdBy: currentUser?.username || 'Desconocido'
+    });
+    addLog('Gastos', `Agregó gasto: ${name}`);
+    setExpenseForm({ name: '', quantity: 1, unitPrice: '' });
+    showToast('Gasto agregado.');
+  };
+
+  const handleDeleteExpense = async (expenseId) => {
+    if (!canAccessExpenses) return;
+    const exp = expenses.find(e => e.id === expenseId);
+    if (!exp) return;
+    await deleteDoc(getDocRef('app_expenses', expenseId));
+    addLog('Gastos', `Eliminó un gasto`);
+    showToast('Gasto eliminado.');
+  };
+
+  const handleToggleExpensePaid = async (expenseId) => {
+    if (!canAccessExpenses) return;
+    const exp = expenses.find(e => e.id === expenseId);
+    if (!exp) return;
+    const newPaid = !exp.paid;
+    await updateDoc(getDocRef('app_expenses', expenseId), {
+      paid: newPaid,
+      paidAmount: newPaid ? exp.totalPrice : 0,
+      updatedAt: new Date().toISOString(),
+      updatedBy: currentUser?.username || 'Desconocido'
+    });
+    addLog('Gastos', `Marcó gasto como ${newPaid ? 'pagado' : 'no pagado'}`);
+  };
+
+  const handleToggleExpenseCountInTotals = async (expenseId) => {
+    if (!canAccessExpenses) return;
+    const exp = expenses.find((e) => e.id === expenseId);
+    if (!exp) return;
+    const newCountInTotals = !(exp.countInTotals ?? true);
+    await updateDoc(getDocRef('app_expenses', expenseId), {
+      countInTotals: newCountInTotals,
+      updatedAt: new Date().toISOString(),
+      updatedBy: currentUser?.username || 'Desconocido'
+    });
+    addLog('Gastos', `Marcó gasto como ${newCountInTotals ? 'contabilizado' : 'no contabilizado'} en totales`);
+  };
+
+  const handleExpensePartialPayment = async () => {
+    if (!canAccessExpenses || !expensePartialModal.expenseId) return;
+    const amount = parseFloat(expensePartialModal.amount) || 0;
+    if (amount <= 0) { showToast('Ingresa una cantidad válida.'); return; }
+    const exp = expenses.find(e => e.id === expensePartialModal.expenseId);
+    if (!exp) return;
+    const newPaidAmount = Math.min((exp.paidAmount || 0) + amount, exp.totalPrice);
+    await updateDoc(getDocRef('app_expenses', expensePartialModal.expenseId), {
+      paidAmount: newPaidAmount,
+      paid: newPaidAmount >= exp.totalPrice,
+      updatedAt: new Date().toISOString(),
+      updatedBy: currentUser?.username || 'Desconocido'
+    });
+    addLog('Gastos', `Abono parcial a gasto`);
+    setExpensePartialModal({ isOpen: false, expenseId: null, amount: '' });
+    showToast('Abono registrado.');
+  };
+
+  const handleEditExpense = async () => {
+    if (!canAccessExpenses || !expenseEditModal.id) return;
+    const name = expenseEditModal.name.trim();
+    const qty = parseInt(expenseEditModal.quantity) || 0;
+    const price = parseFloat(expenseEditModal.unitPrice) || 0;
+    if (!name || qty <= 0 || price <= 0) { showToast('Completa nombre, cantidad y precio.'); return; }
+    const exp = expenses.find(e => e.id === expenseEditModal.id);
+    if (!exp) return;
+    const newTotal = qty * price;
+    const newPaidAmount = Math.min(exp.paidAmount || 0, newTotal);
+    await updateDoc(getDocRef('app_expenses', expenseEditModal.id), {
+      name,
+      quantity: qty,
+      unitPrice: price,
+      totalPrice: newTotal,
+      paidAmount: newPaidAmount,
+      paid: newPaidAmount >= newTotal,
+      updatedAt: new Date().toISOString(),
+      updatedBy: currentUser?.username || 'Desconocido'
+    });
+    addLog('Gastos', `Editó un gasto`);
+    setExpenseEditModal({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' });
+    showToast('Gasto actualizado.');
   };
 
   const handleAddUser = async (e) => {
     e.preventDefault();
-    if (currentUser?.role !== 'Administrador') { showToast("Permisos insuficientes."); return; }
+    if (!hasAdminRights) { showToast("Permisos insuficientes."); return; }
     if (!newUser.username.trim() || !newUser.password.trim()) return;
     if (users.some(u => u.username === newUser.username)) { showToast("El usuario ya existe."); return; }
+    
+    if (newUser.role === 'SuperUsuario' && users.some(u => u.role === 'SuperUsuario')) {
+      showToast("Solo puede haber un SuperUsuario en el sistema.");
+      return;
+    }
+
     const newId = String(Date.now());
-    await setDoc(getDocRef('app_users', newId), { ...newUser, id: newId });
+    const allowedEventIds = newUser.role === 'SuperUsuario' ? [] : (newUser.allowedEventIds || []);
+    const allowedLocations = newUser.role === 'SuperUsuario' ? [] : (newUser.allowedLocations || []);
+    const preferredLandingTab = resolvePreferredLandingTab({
+      role: newUser.role,
+      preferredLandingTab: newUser.preferredLandingTab || (newUser.role === 'Administrador' ? 'Norte' : 'Summary'),
+      allowedLocations,
+      restrictedLocation: allowedLocations[0] || ''
+    }, { locations: globalLocations });
+    const userToSave = {
+      ...newUser,
+      id: newId,
+      canViewFinances: newUser.role === 'SuperUsuario' ? true : !!newUser.canViewFinances,
+      canViewHiddenDonations: newUser.role === 'SuperUsuario' ? true : !!newUser.canViewHiddenDonations,
+      canViewExpenses: !!newUser.canViewExpenses,
+      allowedEventIds,
+      allowedLocations,
+      preferredLandingTab,
+      restrictedEventId: allowedEventIds[0] || '',
+      restrictedLocation: allowedLocations[0] || ''
+    };
+
+    await setDoc(getDocRef('app_users', newId), userToSave);
     addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`);
-    setNewUser({ username: '', password: '', role: 'Editor' });
+    setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' });
     showToast("Usuario añadido exitosamente.");
   };
 
   const handleUpdateUser = async (e) => {
     e.preventDefault();
-    if (currentUser?.role !== 'Administrador') return;
-    if (!editingUser.username.trim() || !editingUser.newPassword.trim()) return;
+    if (!hasAdminRights) return;
+    const isSelfEdit = String(currentUser?.id) === String(editingUser.id);
+    if (!editingUser.username.trim()) return;
     
-    const originalUser = users.find(u => String(u.id) === String(editingUser.id));
-    const existingUser = users.find(u => u.username === editingUser.username && String(u.id) !== String(editingUser.id));
-    if (existingUser) { showToast("El usuario ya existe."); return; }
-    
-    if (editingUser.currentPasswordInput !== originalUser.password) {
-      showToast("La contraseña actual es incorrecta.");
-      return;
-    }
-    
-    if (editingUser.newPassword !== editingUser.confirmPassword) {
-      showToast("Las nuevas contraseñas no coinciden.");
+    if (editingUser.role === 'SuperUsuario' && users.some(u => u.role === 'SuperUsuario' && String(u.id) !== String(editingUser.id))) {
+      showToast("Solo puede haber un SuperUsuario en el sistema.");
       return;
     }
 
-    const changes = [];
-    if (originalUser.username !== editingUser.username) changes.push(`Usuario (${originalUser.username} -> ${editingUser.username})`);
-    if (originalUser.role !== editingUser.role) changes.push(`Rol (${originalUser.role} -> ${editingUser.role})`);
-    if (originalUser.password !== editingUser.newPassword) changes.push(`Contraseña actualizada`);
+    const originalUser = users.find(u => String(u.id) === String(editingUser.id));
+    const isTargetSuperUser = originalUser?.role === 'SuperUsuario';
+    const targetUsername = isSelfEdit ? editingUser.username : originalUser.username;
+    const existingUser = users.find(u => u.username === targetUsername && String(u.id) !== String(editingUser.id));
+    if (existingUser) { showToast("El usuario ya existe."); return; }
     
-    await updateDoc(getDocRef('app_users', String(editingUser.id)), { username: editingUser.username, password: editingUser.newPassword, role: editingUser.role });
+    let finalPassword = originalUser.password;
+    let passwordChanged = false;
+
+    if (isSelfEdit && (editingUser.currentPasswordInput || editingUser.newPassword)) {
+      if (editingUser.currentPasswordInput !== originalUser.password) {
+        showToast("La contraseña actual es incorrecta.");
+        return;
+      }
+      if (editingUser.newPassword !== editingUser.confirmPassword) {
+        showToast("Las nuevas contraseñas no coinciden.");
+        return;
+      }
+      if (!editingUser.newPassword.trim()) {
+        showToast("La nueva contraseña no puede estar vacía.");
+        return;
+      }
+      finalPassword = editingUser.newPassword;
+      passwordChanged = true;
+    }
+
+    const nextRole = isTargetSuperUser ? 'SuperUsuario' : editingUser.role;
+    const newCanViewFinances = isTargetSuperUser ? true : !!editingUser.canViewFinances;
+    const newCanViewHiddenDonations = isTargetSuperUser ? true : !!editingUser.canViewHiddenDonations;
+    const newCanViewExpenses = !!editingUser.canViewExpenses;
+    const newAllowedEventIds = isTargetSuperUser ? [] : (editingUser.allowedEventIds || []);
+    const newAllowedLocations = isTargetSuperUser ? [] : (editingUser.allowedLocations || []);
+    const newPreferredLandingTab = resolvePreferredLandingTab({
+      role: nextRole,
+      preferredLandingTab: editingUser.preferredLandingTab || 'Summary',
+      allowedLocations: newAllowedLocations,
+      restrictedLocation: newAllowedLocations[0] || ''
+    }, { locations: globalLocations });
+    const newRestrictedEventId = newAllowedEventIds[0] || '';
+    const newRestrictedLocation = newAllowedLocations[0] || '';
+
+    const changes = [];
+    if (isSelfEdit && originalUser.username !== editingUser.username) changes.push(`Usuario (${originalUser.username} -> ${editingUser.username})`);
+    if (originalUser.role !== nextRole) changes.push(`Rol (${originalUser.role} -> ${nextRole})`);
+    if (passwordChanged) changes.push(`Contraseña actualizada`);
+    if (originalUser.canViewFinances !== newCanViewFinances) changes.push(`Ver Finanzas (${originalUser.canViewFinances ? 'Sí' : 'No'} -> ${newCanViewFinances ? 'Sí' : 'No'})`);
+    if (originalUser.canViewHiddenDonations !== newCanViewHiddenDonations) changes.push(`Ver donaciones ocultas (${originalUser.canViewHiddenDonations ? 'Sí' : 'No'} -> ${newCanViewHiddenDonations ? 'Sí' : 'No'})`);
+    if ((!!originalUser.canViewExpenses) !== newCanViewExpenses) changes.push(`Ver Gastos (${originalUser.canViewExpenses ? 'Sí' : 'No'} -> ${newCanViewExpenses ? 'Sí' : 'No'})`);
+    const prevAllowedEvents = getUserAllowedEventIds(originalUser);
+    const prevAllowedLocations = getUserAllowedLocations(originalUser);
+    if (prevAllowedEvents.slice().sort().join('|') !== newAllowedEventIds.slice().sort().join('|')) changes.push(`Eventos permitidos (${prevAllowedEvents.length ? prevAllowedEvents.length : 'Todos'} -> ${newAllowedEventIds.length ? newAllowedEventIds.length : 'Todos'})`);
+    if (prevAllowedLocations.slice().sort().join('|') !== newAllowedLocations.slice().sort().join('|')) changes.push(`Sedes permitidas (${prevAllowedLocations.length ? prevAllowedLocations.length : 'Todas'} -> ${newAllowedLocations.length ? newAllowedLocations.length : 'Todas'})`);
+    if ((originalUser.preferredLandingTab || 'Summary') !== newPreferredLandingTab) changes.push(`Ventana inicial (${originalUser.preferredLandingTab || 'Summary'} -> ${newPreferredLandingTab})`);
+    
+    await updateDoc(getDocRef('app_users', String(editingUser.id)), {
+      username: targetUsername,
+      password: finalPassword,
+      role: nextRole,
+      canViewFinances: newCanViewFinances,
+      canViewHiddenDonations: newCanViewHiddenDonations,
+      canViewExpenses: newCanViewExpenses,
+      allowedEventIds: newAllowedEventIds,
+      allowedLocations: newAllowedLocations,
+      preferredLandingTab: newPreferredLandingTab,
+      restrictedEventId: newRestrictedEventId,
+      restrictedLocation: newRestrictedLocation
+    });
     
     if (currentUser.id === editingUser.id) {
-      setCurrentUser({ ...currentUser, username: editingUser.username, password: editingUser.newPassword, role: editingUser.role });
+      setCurrentUser({
+        ...currentUser,
+        username: targetUsername,
+        password: finalPassword,
+        role: nextRole,
+        canViewFinances: newCanViewFinances,
+        canViewHiddenDonations: newCanViewHiddenDonations,
+        canViewExpenses: newCanViewExpenses,
+        allowedEventIds: newAllowedEventIds,
+        allowedLocations: newAllowedLocations,
+        preferredLandingTab: newPreferredLandingTab,
+        restrictedEventId: newRestrictedEventId,
+        restrictedLocation: newRestrictedLocation
+      });
     }
+    
     if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
     
-    setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' });
+    setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' });
     showToast("Usuario actualizado.");
   };
 
   const handleDeleteUser = async (id, username) => {
-    if (currentUser?.role !== 'Administrador') { showToast("Permisos insuficientes."); return; }
+    if (!hasAdminRights) { showToast("Permisos insuficientes."); return; }
     if (currentUser.id === id) { showToast("No puedes eliminar tu propia cuenta."); return; }
+    
+    const userToDelete = users.find(u => String(u.id) === String(id));
+    if (userToDelete?.role === 'SuperUsuario' && currentUser.role !== 'SuperUsuario') {
+      showToast("Solo otro SuperUsuario puede eliminar a un SuperUsuario."); return;
+    }
+
     await deleteDoc(getDocRef('app_users', String(id)));
     addLog('Gestión de Usuarios', `Eliminó al usuario: ${username}`);
     showToast("Usuario eliminado.");
   };
 
-  const handleCleanLogs = () => {
-    if (currentUser?.role !== 'Administrador') return;
-    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-    const now = Date.now();
-    const logsToDelete = logs.filter(log => (now - log.id) > thirtyDaysMs);
-    if (logsToDelete.length > 0) {
-      logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
-      addLog('Limpieza de Logs', `Se eliminaron ${logsToDelete.length} registros antiguos (> 30 días).`);
-      showToast(`Se eliminaron ${logsToDelete.length} registros antiguos.`);
-    } else {
-      showToast("No hay registros con más de 30 días de antigüedad.");
-    }
-  };
-
   const isValidPhone = (phone) => phone.startsWith('+') ? phone.length > 5 : phone.replace(/\D/g, '').length === 10;
 
   const validateForm = (entry, minDep, evType) => {
-    if (entry.name.trim() === '' || !isValidPhone(entry.phone)) return false;
+    if (!hasValidFullName(entry.name) || !isValidPhone(entry.phone)) return false;
     if (evType === 'Campa') {
-      if (entry.age === '' || entry.gender === '' || entry.emergencyContact.trim() === '' || !isValidPhone(entry.emergencyPhone)) return false;
-      if (entry.hasAllergy !== 'No' && entry.allergyDetails.trim() === '') return false;
+      if (!(entry.birthDate || '').trim() || entry.gender === '' || entry.emergencyContact.trim() === '' || !isValidPhone(entry.emergencyPhone)) return false;
+      if (entry.hasAllergy !== 'No' && (entry.allergyDetails.trim() === '' && String(entry.allergyCategory || '').trim() === '')) return false;
       if (entry.hasDisease !== 'No' && entry.diseaseDetails.trim() === '') return false;
       if (entry.hasDisability !== 'No' && entry.disabilityDetails.trim() === '') return false;
       if (entry.isServer === 'Sí' && !entry.serverAssignment) return false;
-      if (entry.isScholarship === 'Sí') return true;
+      if (entry.isScholarship === 'Sí') {
+        if (entry.scholarshipType === 'partial') {
+          const listPrice = entry.isServer === 'Sí' && entry.serverAssignment === 'Ambos'
+            ? currentPricing.server
+            : currentPricing.global;
+          const partial = parseFloat(entry.scholarshipPartialAmount);
+          if (!Number.isFinite(partial) || partial <= 0) return false;
+          if (partial >= listPrice) return false;
+        }
+        return true;
+      }
     }
     if ((parseFloat(entry.paid) || 0) < minDep) return false;
     return true;
   };
 
   const isFormValid = currentEvent ? validateForm(newEntry, currentEvent.minDeposit || 0, currentEvent.eventType) : false;
+  const missingInitialPaid = !!currentEvent
+    && !(currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí')
+    && (parseFloat(newEntry.paid) || 0) < (currentEvent.minDeposit || 0);
   const handleNameInput = (val) => /^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]*$/.test(val);
 
   const formatPhoneNumber = (value) => {
-    if (value.startsWith('+')) return value.replace(/[^\+0-9\s-]/g, '');
+    if (value.startsWith('+')) return value.replace(/[^+0-9\s-]/g, '');
     const digits = value.replace(/\D/g, '').substring(0, 10);
     let formatted = digits.substring(0, 2);
     if (digits.length > 2) formatted += '-' + digits.substring(2, 6);
@@ -485,29 +2338,413 @@ const App = () => {
     return formatted;
   };
 
+  const buildWhatsAppMessage = useCallback((person, loc, liquidationTarget) => {
+    const paid = parseFloat(person?.paid || 0);
+    const target = Number(liquidationTarget) || 0;
+    const debt = Math.max(target - paid, 0);
+    const personLoc = person?.location || loc || '';
+    const tribuName = `Tribu Vida Nueva${personLoc ? ` ${personLoc}` : ''}`;
+    const debtLine =
+      target <= 0
+        ? 'Tu registro está marcado como becado (cobertura total).'
+        : `Saldo pendiente: ${formatMoney(debt)}.`;
+    return [
+      `Hola ${person?.name || ''}, te contactamos de ${tribuName}.`,
+      `Evento: ${currentEvent?.name || 'Sin evento'} (${loc}).`,
+      debtLine,
+      'Cualquier duda, responde a este mensaje.'
+    ].join('\n');
+  }, [currentEvent?.name, formatMoney]);
+
+  const buildFinanceWhatsAppMessage = useCallback((person, loc, amount, pendingAmount, isLiquidado, kind) => {
+    const amountText = Number(amount || 0).toLocaleString('es-MX');
+    const pendingText = Number(pendingAmount || 0).toLocaleString('es-MX');
+    const eventDateText = currentEvent?.date
+      ? new Date(`${currentEvent.date}T00:00:00`).toLocaleDateString('es-MX', { year: 'numeric', month: 'long', day: 'numeric' })
+      : '';
+    const abonoLine = kind === 'registro'
+      ? `Abono inicial: $${amountText}.`
+      : `Abono aplicado: $${amountText}.`;
+    return [
+      `Hola ${person?.name || ''}, Se registró tu abono en ${currentEvent?.name || 'el evento'}.`,
+      `Tu ID único es: ${person?.vnpPersonId || 'N/A'}`,
+      abonoLine,
+      isLiquidado ? 'Estado: LIQUIDADO.' : `Saldo pendiente: $${pendingText}.`,
+      ...(isLiquidado && eventDateText ? [`¡Nos vemos el ${eventDateText}!`] : []),
+      'Gracias.'
+    ].join('\n');
+  }, [currentEvent?.name, currentEvent?.date]);
+
+  const buildArchiveWhatsAppMessage = useCallback(
+    (person, loc, fromWaitlist) => {
+      const personLoc = person?.location || loc || '';
+      const tribuName = `Tribu Vida Nueva${personLoc ? ` ${personLoc}` : ''}`;
+      const idLine = person?.vnpPersonId
+        ? `Tu ID VNPM (${person.vnpPersonId}) se conserva para precargar en otros eventos.`
+        : 'Tus datos permanecen disponibles para futuras inscripciones.';
+      const ctx = fromWaitlist
+        ? 'Tu entrada en lista de espera fue archivada y ya no figura en este evento.'
+        : 'Tu registro en el evento fue archivado (dado de baja) y ya no apareces en la nómina activa.';
+      return [
+        `Hola ${person?.name || ''}, te contactamos de ${tribuName}.`,
+        `Evento: ${currentEvent?.name || 'el evento'} (${loc}).`,
+        ctx,
+        idLine,
+        'Si fue un error o tienes dudas, responde a este mensaje.',
+      ].join('\n');
+    },
+    [currentEvent?.name]
+  );
+
+  const buildPromoteFromWaitlistWhatsAppMessage = useCallback(
+    (person, loc) => {
+      const personLoc = person?.location || loc || '';
+      const tribuName = `Tribu Vida Nueva${personLoc ? ` ${personLoc}` : ''}`;
+      const eventDateText = currentEvent?.date
+        ? new Date(`${currentEvent.date}T00:00:00`).toLocaleDateString('es-MX', { year: 'numeric', month: 'long', day: 'numeric' })
+        : '';
+      const target = Number(getLiquidationTarget(person)) || 0;
+      const paid = parseFloat(person?.paid || 0);
+      const debt = Math.max(target - paid, 0);
+      const isBecado = person?.isScholarship === 'Sí';
+
+      let promoLine;
+      if (isBecado && person.scholarshipType === 'partial') {
+        const part = Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX');
+        promoLine = `Se aprobó tu beca parcial. Tu aporte acordado al recaudado: $${part} (puedes pagarlo en cualquier momento); el resto del costo de lista queda cubierto por la beca. Abono ya registrado: ${formatMoney(paid)}. Saliste de la lista de espera y ya quedaste inscrito en el evento.`;
+      } else if (isBecado) {
+        promoLine = 'Se aprobó tu beca total. Saliste de la lista de espera y ya quedaste inscrito en el evento.';
+      } else {
+        promoLine = 'Saliste de la lista de espera: tu registro quedó confirmado como inscrito en el evento.';
+      }
+
+      const debtLine =
+        target <= 0 && isBecado
+          ? 'Cobertura de beca según tu registro.'
+          : debt <= 0
+            ? 'Estado de pago: liquidado según tu registro.'
+            : `Saldo pendiente a liquidar: ${formatMoney(debt)}.`;
+
+      const lines = [
+        `Hola ${person?.name || ''}, te contactamos de ${tribuName}.`,
+        `Evento: ${currentEvent?.name || 'el evento'} (${loc}).`,
+        promoLine,
+        `Tu ID único es: ${person?.vnpPersonId || 'N/A'}`,
+        debtLine,
+      ];
+      if (debt <= 0 && eventDateText) lines.push(`¡Nos vemos el ${eventDateText}!`);
+      lines.push('Gracias.');
+      return lines.join('\n');
+    },
+    [currentEvent?.name, currentEvent?.date, formatMoney, getLiquidationTarget]
+  );
+
+  const buildScholarshipPendingApprovalWhatsAppMessage = useCallback(
+    (person, loc) => {
+      const personLoc = person?.location || loc || '';
+      const tribuName = `Tribu Vida Nueva${personLoc ? ` ${personLoc}` : ''}`;
+      const isPartial = person?.scholarshipType === 'partial';
+      const partialAmount = Number(person?.scholarshipPartialAmount || 0);
+      const partialText = isPartial ? ` · aporte acordado: ${formatMoney(partialAmount)}` : '';
+      return [
+        `Hola ${person?.name || ''}, te contactamos de ${tribuName}.`,
+        `Evento: ${currentEvent?.name || 'el evento'} (${loc}).`,
+        `Tu solicitud de beca ${isPartial ? 'parcial' : 'total'} fue registrada en lista de espera y está pendiente de aprobación administrativa${partialText}.`,
+        'Te avisaremos por este medio cuando sea aprobada y promovida a inscritos.',
+        `Tu ID único es: ${person?.vnpPersonId || 'N/A'}`,
+        'Gracias.',
+      ].join('\n');
+    },
+    [currentEvent?.name, formatMoney]
+  );
+
+  const getLastPaymentMethodForFilter = useCallback((person) => {
+    const history = Array.isArray(person?.paymentHistory) ? person.paymentHistory : [];
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const method = history[i]?.method;
+      if (method === 'Tarjeta' || method === 'Efectivo') return method;
+    }
+    return person?.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+  }, []);
+
+  const applyRosterLikeFilters = useCallback((rows, preserveOrder = false) => {
+    let processedData = [...(rows || [])];
+    if (searchTerm) {
+      const st = searchTerm.trim().toLowerCase();
+      const stDigits = digitsOnlyPhone(searchTerm);
+      processedData = processedData.filter((p) =>
+        (p.name || '').toLowerCase().includes(st) ||
+        (p.vnpPersonId && String(p.vnpPersonId).toLowerCase().includes(st)) ||
+        (stDigits.length >= 3 && digitsOnlyPhone(p.phone).includes(stDigits))
+      );
+    }
+    if (filterWhatsAppPending === 'pending') {
+      processedData = processedData.filter((p) => getLatestUnsentWhatsAppNotification(p) != null);
+    }
+    if (filterFirstTimeId !== 'all') {
+      processedData = processedData.filter((p) => {
+        const isFirst = !!p.isFirstVnpId;
+        if (filterFirstTimeId === 'first') return isFirst;
+        if (filterFirstTimeId === 'not-first') return !isFirst;
+        return true;
+      });
+    }
+    if (filterCancelled !== 'all') {
+      processedData = processedData.filter((p) => {
+        const isCancelled = participantIsCancelled(p);
+        if (filterCancelled === 'cancelled') return isCancelled;
+        if (filterCancelled === 'active') return !isCancelled;
+        return true;
+      });
+    }
+    if (filterResponsiva !== 'all') {
+      processedData = processedData.filter((p) => {
+        const st = resolveResponsivaStatus(p);
+        if (filterResponsiva === 'pending') return st === 'Pendiente';
+        if (filterResponsiva === 'delivered') return st === 'Entregada';
+        if (filterResponsiva === 'na') return st === 'No aplica';
+        return true;
+      });
+    }
+    if (filterGender !== 'all') processedData = processedData.filter((p) => (p.gender || '') === filterGender);
+    if (filterTransport !== 'all') {
+      processedData = processedData.filter((p) => {
+        const llegaCarro = resolveLlegaEnCarro(p);
+        const regresaCarro = resolveRegresaEnCarro(p);
+        if (filterTransport === 'go-bus') return !llegaCarro;
+        if (filterTransport === 'return-bus') return !regresaCarro;
+        if (filterTransport === 'go-car') return llegaCarro;
+        if (filterTransport === 'return-car') return regresaCarro;
+        return true;
+      });
+    }
+    if (filterPaymentType !== 'all') processedData = processedData.filter((p) => getLastPaymentMethodForFilter(p) === filterPaymentType);
+    if (filterTravelFrom !== 'all') processedData = processedData.filter((p) => (p.travelFrom || p.location || '') === filterTravelFrom);
+    if (filterTravelTo !== 'all') processedData = processedData.filter((p) => (p.travelTo || p.location || '') === filterTravelTo);
+    if (filterPastorChild === 'Sí') processedData = processedData.filter((p) => (p.isPastorChild || 'No') === 'Sí');
+    else if (filterPastorChild === 'No') processedData = processedData.filter((p) => (p.isPastorChild || 'No') !== 'Sí');
+    if (filterWithoutPay === 'Sí') processedData = processedData.filter((p) => (p.pastorChildWithoutPay || 'No') === 'Sí');
+    else if (filterWithoutPay === 'No') processedData = processedData.filter((p) => (p.pastorChildWithoutPay || 'No') !== 'Sí');
+    if (isCampa) {
+      if (filterAssignment !== 'all') {
+        processedData = processedData.filter((p) => {
+          const assign = p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment;
+          return assign === filterAssignment;
+        });
+      }
+      if (filterSwim !== 'all') processedData = processedData.filter((p) => p.canSwim === filterSwim);
+      if (filterScholarship === 'partial') processedData = processedData.filter((p) => p.isScholarship === 'Sí' && p.scholarshipType === 'partial');
+      else if (filterScholarship === 'total') processedData = processedData.filter((p) => p.isScholarship === 'Sí' && p.scholarshipType !== 'partial');
+      else if (filterScholarship === 'No') processedData = processedData.filter((p) => p.isScholarship !== 'Sí');
+      if (filterServer === 'Sí') processedData = processedData.filter((p) => p.isServer === 'Sí');
+      else if (filterServer === 'No') processedData = processedData.filter((p) => p.isServer !== 'Sí');
+      else if (filterServer === 'Teens') processedData = processedData.filter((p) => p.isServer === 'Sí' && p.serverAssignment === 'Teens');
+      else if (filterServer === 'Jóvenes') processedData = processedData.filter((p) => p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes');
+      else if (filterServer === 'Ambos') processedData = processedData.filter((p) => p.isServer === 'Sí' && p.serverAssignment === 'Ambos');
+      if (filterMedical === 'allergy') processedData = processedData.filter((p) => p.hasAllergy === 'Sí');
+      else if (filterMedical === 'disease') processedData = processedData.filter((p) => p.hasDisease === 'Sí');
+      else if (filterMedical === 'disability') processedData = processedData.filter((p) => p.hasDisability === 'Sí');
+    }
+    if (!preserveOrder) {
+      const getDebt = (p) => Math.max(0, getLiquidationTarget(p) - parseFloat(p.paid || 0));
+      if (sortBy === 'name-asc') processedData.sort((a, b) => a.name.localeCompare(b.name));
+      if (sortBy === 'name-desc') processedData.sort((a, b) => b.name.localeCompare(a.name));
+      if (sortBy === 'age-asc') processedData.sort((a, b) => (parseInt(a.age, 10) || 0) - (parseInt(b.age, 10) || 0));
+      if (sortBy === 'age-desc') processedData.sort((a, b) => (parseInt(b.age, 10) || 0) - (parseInt(a.age, 10) || 0));
+      if (sortBy === 'debt-asc') processedData.sort((a, b) => getDebt(a) - getDebt(b));
+      if (sortBy === 'debt-desc') processedData.sort((a, b) => getDebt(b) - getDebt(a));
+    }
+    return processedData;
+  }, [searchTerm, filterWhatsAppPending, filterFirstTimeId, filterCancelled, filterResponsiva, filterGender, filterTransport, filterPaymentType, filterTravelFrom, filterTravelTo, filterPastorChild, filterWithoutPay, isCampa, filterAssignment, filterSwim, filterScholarship, filterServer, filterMedical, sortBy, getLiquidationTarget, getLastPaymentMethodForFilter]);
+
+  /** Cada fila = un movimiento pendiente de avisar por WhatsApp (registro, abono, promoción, baja, etc.). */
+  const getPendingWhatsAppRowsForLocation = useCallback((loc) => {
+    const rows = [];
+    const sourceRows = [...(data[loc] || []), ...(waitlistData[loc] || [])];
+    const filteredPeople = applyRosterLikeFilters(sourceRows, true);
+    for (const person of filteredPeople) {
+      const waPhone = normalizeWhatsAppPhone(person.phone);
+      if (!waPhone) continue;
+      const notifications = Array.isArray(person.whatsAppFinanceNotifications) ? person.whatsAppFinanceNotifications : [];
+      for (const n of notifications) {
+        if (n?.sent) continue;
+        rows.push({ person, waPhone, notification: n, markKey: getWhatsAppNotificationMarkKey(n) });
+      }
+    }
+    rows.sort((a, b) => Number(a.notification.createdAt || 0) - Number(b.notification.createdAt || 0));
+    return rows;
+  }, [data, waitlistData, applyRosterLikeFilters]);
+
+  const exportPendingWhatsAppToExcel = useCallback(async (loc) => {
+    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
+      showToast("No tienes permisos para exportar en esta sede/evento.");
+      return;
+    }
+    const targets = getPendingWhatsAppRowsForLocation(loc);
+    if (!targets.length) {
+      showToast('No hay movimientos pendientes de exportar en esta sede.');
+      return;
+    }
+    const XLSX = await loadSheetJS();
+    const fecha = new Date().toLocaleDateString('es-MX').replace(/\//g, '-');
+    const locSafe = loc.replace(/\s+/g, '_');
+    const header = [['Nombre', 'Teléfono', 'Mensaje', 'Monto Abono', 'Saldo Pendiente', 'Estado', 'Tipo']];
+    const cols = [{ wch: 25 }, { wch: 15 }, { wch: 60 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 10 }];
+    const aoa = [...header];
+    for (const item of targets) {
+      const n = item.notification || {};
+      aoa.push([
+        item.person?.name || '',
+        item.waPhone || '',
+        (n.message || '').replace(/\n/g, ' '),
+        n.amount ?? '',
+        n.pendingAmount ?? '',
+        n.isLiquidado ? 'Liquidado' : 'Pendiente',
+        n.kind || '',
+      ]);
+    }
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = cols;
+    XLSX.utils.book_append_sheet(wb, ws, 'Pendientes');
+    XLSX.writeFile(wb, `WhatsApp_Pendientes_${locSafe}_${fecha}.xlsx`);
+
+    const byPerson = new Map();
+    for (const item of targets) {
+      const pid = String(item.person.id);
+      if (!byPerson.has(pid)) {
+        byPerson.set(pid, { person: item.person, markKeys: new Set() });
+      }
+      byPerson.get(pid).markKeys.add(item.markKey);
+    }
+    const now = Date.now();
+    let failed = 0;
+    for (const { person, markKeys } of byPerson.values()) {
+      const notifications = [...(person.whatsAppFinanceNotifications || [])];
+      const updated = notifications.map((n) =>
+        markKeys.has(getWhatsAppNotificationMarkKey(n)) ? { ...n, sent: true, sentAt: now } : n
+      );
+      try {
+        await updateDoc(getDocRef('app_participants', String(person.id)), { whatsAppFinanceNotifications: updated });
+      } catch {
+        failed += 1;
+      }
+    }
+
+    addLog(
+      'WhatsApp',
+      `Exportó ${targets.length} movimiento(s) WhatsApp de sede ${loc} y los marcó como enviados.${failed ? ` Fallos al guardar: ${failed}.` : ''}`
+    );
+    if (failed > 0) {
+      showToast(`Archivo generado; no se pudo marcar como enviado en ${failed} registro(s). Revisa conexión o permisos.`);
+    } else {
+      showToast(`Exportados ${targets.length} movimiento(s). Quedaron marcados como enviados hasta el próximo abono o registro.`);
+    }
+  }, [currentEvent?.id, hasEventAccess, hasLocationAccess, getPendingWhatsAppRowsForLocation, addLog, showToast]);
+
+  const openWhatsAppModal = useCallback((person, loc) => {
+    const liq = getLiquidationTarget(person);
+    const latestPending = getLatestUnsentWhatsAppNotification(person);
+    const fromQueue = latestPending && String(latestPending.message || '').trim();
+    const queuedText = fromQueue ? String(latestPending.message).trim() : '';
+    setWhatsAppModal({
+      isOpen: true,
+      personId: person.id,
+      personName: person.name || '',
+      eventName: currentEvent?.name || '',
+      phone: person.phone || '',
+      message: fromQueue ? queuedText : buildWhatsAppMessage(person, loc, liq),
+      error: '',
+      pendingNotificationMarkKey: fromQueue ? getWhatsAppNotificationMarkKey(latestPending) : null,
+      whatsAppQueuedMessageSnapshot: fromQueue ? queuedText : null
+    });
+  }, [buildWhatsAppMessage, currentEvent?.name, getLiquidationTarget]);
+
+  const sendWhatsAppMessage = useCallback(async () => {
+    const waPhone = normalizeWhatsAppPhone(whatsAppModal.phone);
+    if (!waPhone) {
+      setWhatsAppModal((prev) => ({ ...prev, error: 'Teléfono inválido para WhatsApp.' }));
+      return;
+    }
+    const text = (whatsAppModal.message || '').trim();
+    if (!text) {
+      setWhatsAppModal((prev) => ({ ...prev, error: 'Escribe un mensaje antes de enviar.' }));
+      return;
+    }
+    const url = `https://wa.me/${waPhone}?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+    addLog('WhatsApp', `Abrió WhatsApp para ${whatsAppModal.personName} (${waPhone}) en evento ${whatsAppModal.eventName}.`);
+
+    const { personId, pendingNotificationMarkKey, whatsAppQueuedMessageSnapshot, message: sentBody } = whatsAppModal;
+    const messageUnchangedFromQueue =
+      pendingNotificationMarkKey &&
+      whatsAppQueuedMessageSnapshot != null &&
+      String(sentBody || '').trim() === String(whatsAppQueuedMessageSnapshot).trim();
+    if (personId && pendingNotificationMarkKey && messageUnchangedFromQueue) {
+      try {
+        const ref = getDocRef('app_participants', String(personId));
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          const arr = snap.data()?.whatsAppFinanceNotifications || [];
+          const now = Date.now();
+          const next = arr.map((n) =>
+            getWhatsAppNotificationMarkKey(n) === pendingNotificationMarkKey ? { ...n, sent: true, sentAt: now } : n
+          );
+          await updateDoc(ref, { whatsAppFinanceNotifications: next });
+          addLog('WhatsApp', `Marcó como enviado el aviso financiero pendiente de ${whatsAppModal.personName}.`);
+        }
+      } catch {
+        showToast('WhatsApp abierto; no se pudo marcar el aviso como enviado en el servidor.');
+      }
+    }
+
+    setWhatsAppModal({
+      isOpen: false,
+      personId: null,
+      personName: '',
+      eventName: '',
+      phone: '',
+      message: '',
+      error: '',
+      pendingNotificationMarkKey: null,
+      whatsAppQueuedMessageSnapshot: null
+    });
+    showToast('WhatsApp abierto en nueva pestaña.');
+  }, [whatsAppModal, addLog, showToast]);
+
+  const getProcessedParticipantsForLocation = useCallback((loc) => {
+    return applyRosterLikeFilters(data[loc] || []);
+  }, [data, applyRosterLikeFilters]);
+
   const handleAddLocation = async () => {
     const loc = newLocationName.trim();
     if (!loc || !currentEvent || currentEvent.locations.includes(loc)) return;
     const newLocations = [...currentEvent.locations, loc];
     const newRegStatus = { ...currentEvent.regStatus, [loc]: true };
-    await updateEventConfig({ locations: newLocations, regStatus: newRegStatus });
-    addLog('Gestión de Sedes', `Añadió la nueva sede: ${loc} al evento ${currentEvent.name}`);
-    setNewLocationName(''); setIsAddLocModalOpen(false); setActiveTab(loc);
+    const newLocationCaps = { ...(currentEvent.locationCaps || {}), [loc]: 0 };
+    await updateEventConfig({ locations: newLocations, regStatus: newRegStatus, locationCaps: newLocationCaps });
+    addLog('Gestión de Sedes', `Añadió la nueva sede: ${loc} al evento ${currentEvent.name}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+    setNewLocationName(''); setIsAddLocModalOpen(false); goTo(systemView, selectedEventId, loc);
     showToast("Sede añadida.");
   };
 
   const handleDeleteLocation = async (loc) => {
     if (!currentEvent) return;
-    const hasParticipants = allParticipants.some(p => p.eventId === currentEvent.id && p.location === loc);
+    const hasParticipants = allParticipants.some(
+      (p) => p.eventId === currentEvent.id && p.location === loc && participantIsActiveInEvent(p)
+    );
     if (hasParticipants) { setLocError(loc); setTimeout(() => setLocError(''), 3000); return; }
     const newLocations = currentEvent.locations.filter(l => l !== loc);
     const newRegStatus = { ...currentEvent.regStatus };
+    const newLocationCaps = { ...(currentEvent.locationCaps || {}) };
     delete newRegStatus[loc];
-    await updateEventConfig({ locations: newLocations, regStatus: newRegStatus });
-    addLog('Gestión de Sedes', `Eliminó la sede vacía: ${loc} del evento ${currentEvent.name}`);
-    setActiveTab("Summary");
+    delete newLocationCaps[loc];
+    await updateEventConfig({ locations: newLocations, regStatus: newRegStatus, locationCaps: newLocationCaps });
+    addLog('Gestión de Sedes', `Eliminó la sede vacía: ${loc} del evento ${currentEvent.name}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+    goTo(systemView, selectedEventId, 'Summary');
     showToast("Sede eliminada.");
   };
+
 
   const handleAddCustomField = async () => {
     if (!newCustomField.trim() || !currentEvent) return;
@@ -515,7 +2752,7 @@ const App = () => {
     if (currentFields.includes(newCustomField.trim())) return;
     const updated = [...currentFields, newCustomField.trim()];
     await updateEventConfig({ customFields: updated });
-    addLog('Campos Extra', `Añadió el campo "${newCustomField.trim()}" al evento.`);
+    addLog('Campos Extra', `Añadió el campo "${newCustomField.trim()}" al evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
     setNewCustomField('');
   };
 
@@ -523,163 +2760,366 @@ const App = () => {
     if (!currentEvent) return;
     const updated = (currentEvent.customFields || []).filter(f => f !== field);
     await updateEventConfig({ customFields: updated });
-    addLog('Campos Extra', `Eliminó el campo "${field}" del evento.`);
+    addLog('Campos Extra', `Eliminó el campo "${field}" del evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
   };
 
-  const summary = useMemo(() => {
-    let totalMen = 0, totalWomen = 0, totalSwimmers = 0, totalNonSwimmers = 0;
-    let totalAllergies = 0, totalDiseases = 0, totalDisabilities = 0, totalServers = 0;
-    let totalMinors = 0, totalAdults = 0, totalServersBoth = 0;
-    let customFieldsStats = {};
-    if (currentEvent?.customFields) currentEvent.customFields.forEach(f => customFieldsStats[f] = {});
-
-    let globalStats = {
-      all: { count: 0, scholarship: 0, servers: 0, paid: 0, pending: 0, expected: 0 },
-      regular: { count: 0, paid: 0, pending: 0, expected: 0 },
-      scholarship: { count: 0, paid: 0, pending: 0, expected: 0 }
-    };
-    let locationStats = {};
-
-    if (currentEvent) {
-      (currentEvent.locations || []).forEach(loc => {
-        let stats = {
-          all: { count: 0, scholarship: 0, servers: 0, paid: 0, pending: 0, expected: 0 },
-          regular: { count: 0, paid: 0, pending: 0, expected: 0 },
-          scholarship: { count: 0, paid: 0, pending: 0, expected: 0 }
-        };
-        if (isLocOpen(loc)) {
-          (data[loc] || []).forEach(person => {
-            if (person.gender === 'Hombre') totalMen++;
-            else if (person.gender === 'Mujer') totalWomen++;
-            if (person.canSwim === 'Sí') totalSwimmers++; else totalNonSwimmers++;
-            if (person.hasAllergy === 'Sí') totalAllergies++;
-            if (person.hasDisease === 'Sí') totalDiseases++;
-            if (person.hasDisability === 'Sí') totalDisabilities++;
-            if (person.isServer === 'Sí') { totalServers++; stats.all.servers++; }
-
-            if (currentEvent.eventType === 'Campa') {
-              const ageNum = parseInt(person.age) || 0;
-              if (person.isServer === 'Sí') {
-                if (person.serverAssignment === 'Teens') totalMinors++;
-                else if (person.serverAssignment === 'Jóvenes') totalAdults++;
-                else if (person.serverAssignment === 'Ambos') { totalMinors++; totalAdults++; totalServersBoth++; }
-              } else {
-                if (ageNum < 18) totalMinors++; else totalAdults++;
-              }
-            }
-
-            if (currentEvent.eventType === 'General' && currentEvent.customFields) {
-              currentEvent.customFields.forEach(field => {
-                const val = person.customData?.[field]?.trim() || 'Sin especificar';
-                customFieldsStats[field][val] = (customFieldsStats[field][val] || 0) + 1;
-              });
-            }
-
-            const paid = parseFloat(person.paid || 0);
-            const isBecado = person.isScholarship === 'Sí';
-            const baseCost = person.registeredCost != null
-              ? Number(person.registeredCost)
-              : getPersonCost(person, currentPricing);
-
-            stats.all.count++;
-            stats.all.paid += paid;
-
-            if (isBecado && currentEvent.eventType === 'Campa') {
-              stats.all.scholarship++;
-              stats.scholarship.count++;
-              stats.scholarship.paid += paid;
-              stats.scholarship.expected += paid;
-            } else {
-              stats.regular.count++;
-              stats.regular.paid += paid;
-              stats.regular.pending += (baseCost - paid);
-              stats.regular.expected += baseCost;
-            }
-          });
-
-          stats.all.pending = stats.regular.pending;
-          stats.all.expected = stats.regular.expected + stats.scholarship.expected;
-
-          globalStats.all.count += stats.all.count;
-          globalStats.all.scholarship += stats.all.scholarship;
-          globalStats.all.servers += stats.all.servers;
-          globalStats.all.paid += stats.all.paid;
-          globalStats.all.pending += stats.all.pending;
-          globalStats.all.expected += stats.all.expected;
-          globalStats.regular.count += stats.regular.count;
-          globalStats.regular.paid += stats.regular.paid;
-          globalStats.regular.pending += stats.regular.pending;
-          globalStats.regular.expected += stats.regular.expected;
-          globalStats.scholarship.count += stats.scholarship.count;
-          globalStats.scholarship.paid += stats.scholarship.paid;
-          globalStats.scholarship.pending += stats.scholarship.pending;
-          globalStats.scholarship.expected += stats.scholarship.expected;
-        }
-        locationStats[loc] = stats;
-      });
+  const handleAddEntry = async (loc) => {
+    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
+      showToast("No tienes permisos para registrar en esta sede/evento.");
+      return;
+    }
+    if (!isFormValid || !isLocOpen(loc)) return;
+    if (isCampa && newEntry.isScholarship === 'Sí') {
+      await handleAddToWaitlist(loc);
+      return;
+    }
+    if (isLocationFull(loc)) {
+      await handleAddToWaitlist(loc);
+      return;
     }
 
-    return {
-      totalMen, totalWomen, totalSwimmers, totalNonSwimmers,
-      totalAllergies, totalDiseases, totalDisabilities, totalServers,
-      totalMinors, totalAdults, totalServersBoth,
-      customFieldsStats, locationStats, globalStats
-    };
-  }, [data, currentEvent, currentPricing, getPersonCost, isLocOpen]);
+    const phoneDigits = digitsOnlyPhone(newEntry.phone);
+    if (phoneDigits.length >= 10) {
+      const dupPhone = allParticipants.some(
+        (p) =>
+          p.eventId === currentEvent.id &&
+          participantIsActiveInEvent(p) &&
+          digitsOnlyPhone(p.phone) === phoneDigits
+      );
+      if (dupPhone) {
+        showToast('Ya hay un registro con este teléfono en este evento.');
+        return;
+      }
+    }
+    const vnpId = (newEntry.vnpPersonId || '').trim();
+    const candidateVnpId = vnpId || generateVnpPersonId(newEntry);
+    const idExistsAnywhere = allParticipants.some((p) => String(p.vnpPersonId || '') === String(candidateVnpId));
+    const dupVnp = allParticipants.some(
+      (p) =>
+        p.eventId === currentEvent.id &&
+        participantIsActiveInEvent(p) &&
+        String(p.vnpPersonId || '') === String(candidateVnpId)
+    );
+    if (dupVnp) {
+      showToast('El ID VNPM calculado ya existe en registros o lista de espera de este evento.');
+      return;
+    }
 
-  const handleAddEntry = async (loc) => {
-    if (!isFormValid || !isLocOpen(loc)) return;
     const newPersonId = String(Date.now());
-    const initialPaid = parseFloat(newEntry.paid) || 0;
-    const initialHistory = initialPaid > 0 ? [{ id: Date.now() + 1, date: new Date().toLocaleString('es-MX'), amount: initialPaid, registeredBy: currentUser?.username }] : [];
+    const initialPaidGross = parseFloat(newEntry.paid) || 0;
+    const paymentMethod = newEntry.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+    const paymentService = getAutoPaymentService(new Date());
+    const commissionRate = getCardCommissionRate();
+    const commission = paymentMethod === 'Tarjeta' ? (initialPaidGross * commissionRate) : 0;
+    const initialPaidNet = paymentMethod === 'Tarjeta' ? (initialPaidGross - commission) : initialPaidGross;
+
+    const initialHistory = initialPaidGross > 0 ? [{
+      id: Date.now() + 1,
+      date: new Date().toLocaleString('es-MX'),
+      amount: initialPaidGross,      // bruto
+      netAmount: initialPaidNet,    // neto
+      method: paymentMethod,
+      service: paymentService,
+      reference: paymentMethod === 'Tarjeta' ? (newEntry.cardReference || '').trim() : '',
+      commission,
+      registeredBy: currentUser?.username
+    }] : [];
 
     const registeredCost = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos')
       ? currentPricing.server
       : currentPricing.global;
 
-    const personData = { ...newEntry, id: newPersonId, location: loc, eventId: currentEvent.id, paymentHistory: initialHistory, registeredCost };
+    const initialCampAssignment = currentEvent.eventType === 'Campa' && newEntry.isServer !== 'Sí' 
+      ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'Jóvenes') 
+      : '';
+
+    const finalVnpPersonId = candidateVnpId;
+
+    const personData = { 
+      ...newEntry, 
+      id: newPersonId, 
+      status: 'active',
+      vnpPersonId: finalVnpPersonId,
+      isFirstVnpId: !idExistsAnywhere,
+      location: loc, 
+      travelFrom: (newEntry.travelFrom || loc),
+      travelTo: (newEntry.travelTo || loc),
+      eventId: currentEvent.id, 
+      paymentHistory: initialHistory, 
+      registeredCost, 
+      campAssignment: initialCampAssignment,
+      paid: initialPaidGross,
+      paidNet: initialPaidNet,
+      paymentMethod,
+      paymentService,
+      cardReference: paymentMethod === 'Tarjeta' ? (newEntry.cardReference || '').trim() : '',
+      whatsAppFinanceNotifications: [],
+      responsivaStatus: resolveResponsivaStatus(newEntry),
+      scholarshipPendingApproval: false,
+      scholarshipType: 'none',
+      scholarshipPartialAmount: 0,
+      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {})
+    };
 
     if (currentEvent.eventType !== 'Campa') {
       personData.isScholarship = 'No'; personData.isServer = 'No'; personData.serverAssignment = '';
       personData.canSwim = 'No'; personData.hasAllergy = 'No'; personData.hasDisease = 'No'; personData.hasDisability = 'No';
+      personData.isPastorChild = 'No';
+      personData.pastorChildWithoutPay = 'No';
+      personData.pastorChildSpecialDonationFinanceId = '';
     }
 
     await setDoc(getDocRef('app_participants', newPersonId), personData);
-    const isLiquidado = personData.isScholarship === 'No' && initialPaid >= registeredCost;
-    addLog('Nuevo Registro', `Inscribió a ${newEntry.name} en la sede ${loc}. (Pago inicial: $${initialPaid})${isLiquidado ? ' [LIQUIDADO]' : ''}`);
-    setNewEntry(EMPTY_ENTRY);
+    const isLiquidado = personData.isScholarship === 'No' && initialPaidGross >= registeredCost;
+    addLog(
+      'Nuevo Registro',
+      `Inscribió a ${newEntry.name} en la sede ${loc}.${paymentService ? ` (Servicio: ${paymentService})` : ''} (Pago inicial: $${initialPaidGross} ${paymentMethod === 'Tarjeta' ? `(Tarjeta, Neto: $${initialPaidNet})` : '(Efectivo)'} )${isLiquidado ? ' [LIQUIDADO]' : ''}`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: newPersonId, action: 'create', previousData: null }
+    );
+
+    const pendingAfterRegister = Math.max((Number(registeredCost) || 0) - initialPaidGross, 0);
+    const registerNotification = {
+      id: `wa-reg-${Date.now()}`,
+      kind: 'registro',
+      amount: initialPaidGross,
+      pendingAmount: pendingAfterRegister,
+      isLiquidado,
+      createdAt: Date.now(),
+      sent: false,
+      sentAt: null,
+      message: buildFinanceWhatsAppMessage(personData, loc, initialPaidGross, pendingAfterRegister, isLiquidado, 'registro')
+    };
+    await updateDoc(getDocRef('app_participants', newPersonId), { whatsAppFinanceNotifications: [registerNotification] });
+    addLog(
+      'WhatsApp',
+      `Encoló notificación financiera de registro para ${personData.name || 'persona'} (sede ${loc}). Pendiente: ${pendingAfterRegister}. Liquida: ${isLiquidado ? 'Sí' : 'No'}.`,
+      null
+    );
+    setNewEntry({
+      ...EMPTY_ENTRY,
+      paymentMethod: 'Efectivo',
+      paymentService: getAutoPaymentService(new Date()),
+      cardReference: ''
+    });
     showToast("Registro añadido exitosamente.");
+  };
+
+  const handleAddToWaitlist = async (loc) => {
+    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
+      showToast("No tienes permisos para registrar en lista de espera en esta sede/evento.");
+      return;
+    }
+    if (!isLocOpen(loc)) return;
+    if (!validateForm({ ...newEntry, paid: newEntry.paid || 0 }, 0, currentEvent.eventType)) {
+      showToast("Completa los campos requeridos para guardar en lista de espera.");
+      return;
+    }
+
+    const phoneDigits = digitsOnlyPhone(newEntry.phone);
+    if (phoneDigits.length >= 10) {
+      const dupPhone = allParticipants.some(
+        (p) =>
+          p.eventId === currentEvent.id &&
+          participantIsActiveInEvent(p) &&
+          digitsOnlyPhone(p.phone) === phoneDigits
+      );
+      if (dupPhone) {
+        showToast('Ya existe un registro o espera con este teléfono en este evento.');
+        return;
+      }
+    }
+
+    const newPersonId = String(Date.now());
+    const finalVnpPersonId = (newEntry.vnpPersonId || '').trim() || generateVnpPersonId(newEntry);
+    const idExistsAnywhere = allParticipants.some((p) => String(p.vnpPersonId || '') === String(finalVnpPersonId));
+    const dupVnp = allParticipants.some(
+      (p) =>
+        p.eventId === currentEvent.id &&
+        participantIsActiveInEvent(p) &&
+        String(p.vnpPersonId || '') === String(finalVnpPersonId)
+    );
+    if (dupVnp) {
+      showToast('El ID VNPM calculado ya existe en registros o lista de espera de este evento.');
+      return;
+    }
+    const initialCampAssignment = currentEvent.eventType === 'Campa' && newEntry.isServer !== 'Sí'
+      ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'Jóvenes')
+      : '';
+
+    const personData = {
+      ...newEntry,
+      id: newPersonId,
+      status: 'waitlist',
+      waitlistCreatedAt: Date.now(),
+      vnpPersonId: finalVnpPersonId,
+      isFirstVnpId: !idExistsAnywhere,
+      location: loc,
+      travelFrom: (newEntry.travelFrom || loc),
+      travelTo: (newEntry.travelTo || loc),
+      eventId: currentEvent.id,
+      paymentHistory: [],
+      paid: 0,
+      paidNet: 0,
+      paymentMethod: 'Efectivo',
+      paymentService: getAutoPaymentService(new Date()),
+      cardReference: '',
+      responsivaStatus: resolveResponsivaStatus(newEntry),
+      campAssignment: initialCampAssignment,
+      registeredCost: (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global,
+      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {})
+    };
+
+    if (currentEvent.eventType !== 'Campa') {
+      personData.isScholarship = 'No'; personData.isServer = 'No'; personData.serverAssignment = '';
+      personData.canSwim = 'No'; personData.hasAllergy = 'No'; personData.hasDisease = 'No'; personData.hasDisability = 'No';
+      personData.isPastorChild = 'No';
+      personData.pastorChildWithoutPay = 'No';
+      personData.pastorChildSpecialDonationFinanceId = '';
+    }
+
+    if (currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí') {
+      personData.scholarshipPendingApproval = true;
+      personData.scholarshipType = newEntry.scholarshipType === 'partial' ? 'partial' : 'total';
+      personData.scholarshipPartialAmount = newEntry.scholarshipType === 'partial'
+        ? parseFloat(newEntry.scholarshipPartialAmount || 0)
+        : 0;
+    } else {
+      personData.scholarshipPendingApproval = false;
+      personData.scholarshipType = 'none';
+      personData.scholarshipPartialAmount = 0;
+    }
+
+    await setDoc(getDocRef('app_participants', newPersonId), personData);
+    if (currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí') {
+      const now = Date.now();
+      const pendingApprovalNotification = {
+        id: `wa-bpd-${now}`,
+        kind: 'beca_pendiente_aprobacion',
+        amount: 0,
+        pendingAmount: Math.max(Number(getLiquidationTarget(personData)) || 0, 0),
+        isLiquidado: false,
+        createdAt: now,
+        sent: false,
+        sentAt: null,
+        message: buildScholarshipPendingApprovalWhatsAppMessage(personData, loc),
+      };
+      await updateDoc(getDocRef('app_participants', newPersonId), {
+        whatsAppFinanceNotifications: [pendingApprovalNotification],
+      });
+      addLog(
+        'WhatsApp',
+        `Encoló notificación de beca pendiente de aprobación para ${personData.name || 'persona'} (sede ${loc}).`,
+        null
+      );
+    }
+    const becaNote =
+      currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí'
+        ? ` Solicitud de beca ${newEntry.scholarshipType === 'partial' ? 'parcial' : 'total'}${newEntry.scholarshipType === 'partial' ? ` (aporte recaudado $${parseFloat(newEntry.scholarshipPartialAmount || 0).toLocaleString('es-MX')})` : ''}, pendiente de aprobación al promover.`
+        : '';
+    addLog(
+      'Lista de Espera',
+      `Añadió a ${newEntry.name} a la lista de espera en la sede ${loc}.${becaNote}`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: newPersonId, action: 'create', previousData: null }
+    );
+    setNewEntry({
+      ...EMPTY_ENTRY,
+      paymentMethod: 'Efectivo',
+      paymentService: getAutoPaymentService(new Date()),
+      cardReference: ''
+    });
+    showToast(
+      currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí'
+        ? 'Solicitud de beca enviada a lista de espera (aprobación al promover).'
+        : 'Registro enviado a lista de espera.'
+    );
   };
 
   const handleUpdateEntry = async (e) => {
     e.preventDefault();
     const { loc, data: editedPerson } = editRegistryModal;
+    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
+      showToast("No tienes permisos para editar en esta sede/evento.");
+      return;
+    }
     if (!validateForm(editedPerson, 0, currentEvent.eventType)) return;
 
-    const originalPerson = (data[loc] || []).find(p => String(p.id) === String(editedPerson.id));
+    const editDigits = digitsOnlyPhone(editedPerson.phone);
+    if (editDigits.length >= 10) {
+      const dupPhone = allParticipants.some(
+        (p) =>
+          p.eventId === currentEvent.id &&
+          participantIsActiveInEvent(p) &&
+          String(p.id) !== String(editedPerson.id) &&
+          digitsOnlyPhone(p.phone) === editDigits
+      );
+      if (dupPhone) {
+        showToast('Otro registro en este evento ya usa este teléfono.');
+        return;
+      }
+    }
+
+    const originalPerson =
+      (data[loc] || []).find((p) => String(p.id) === String(editedPerson.id)) ||
+      (waitlistData[loc] || []).find((p) => String(p.id) === String(editedPerson.id));
+    if (!originalPerson) {
+      showToast('No se encontró el registro a actualizar.');
+      return;
+    }
     const changes = [];
     const fieldsToTrack = [
       { key: 'name', label: 'Nombre' }, { key: 'phone', label: 'Teléfono' }, { key: 'paid', label: 'Monto Pagado' },
-      { key: 'isScholarship', label: 'Becado' }, { key: 'isServer', label: 'Servidor' },
-      { key: 'serverAssignment', label: 'Asignación' }, { key: 'canSwim', label: 'Nado' }, { key: 'age', label: 'Edad' },
-      { key: 'hasAllergy', label: 'Alergia' }, { key: 'allergyDetails', label: 'Detalle Alergia' },
-      { key: 'hasDisease', label: 'Enfermedad' }, { key: 'diseaseDetails', label: 'Detalle Enfermedad' },
+      { key: 'alias', label: 'Alias' }, { key: 'birthDate', label: 'Fecha nacimiento' }, { key: 'llegaEnCarro', label: 'Llega en carro' }, { key: 'regresaEnCarro', label: 'Regresa en carro' },
+      { key: 'isPastorChild', label: 'Hijo de pastor' }, { key: 'pastorChildWithoutPay', label: 'Va sin pagar' },
+      { key: 'isScholarship', label: 'Becado' },
+      { key: 'scholarshipType', label: 'Tipo beca' },
+      { key: 'scholarshipPartialAmount', label: 'Beca parcial — aporte recaudado ($)' },
+      { key: 'responsivaStatus', label: 'Responsiva' },
+      { key: 'isServer', label: 'Servidor' },
+      { key: 'serverAssignment', label: 'Asignación' }, { key: 'campAssignment', label: 'Asig. Campista' }, { key: 'canSwim', label: 'Nado' }, { key: 'age', label: 'Edad' },
+      { key: 'travelFrom', label: 'Sale de' }, { key: 'travelTo', label: 'Regresa a' },
+      { key: 'isMarried', label: 'Es casado' }, { key: 'spouseName', label: 'Nombre de pareja' },
+      { key: 'goesWithChildren', label: 'Va con hijos' }, { key: 'childrenCount', label: 'Cant. hijos' }, { key: 'servedOtherCampa', label: 'Sirvió en otro campa' },
+      { key: 'servedAreas', label: 'Áreas previas' }, { key: 'preferredServeArea', label: 'Área deseada' },
+      { key: 'servesInCongress', label: 'Sirve en congreso' }, { key: 'congressServeArea', label: 'Área en congreso' },
+      { key: 'hasAllergy', label: 'Alergia' }, { key: 'allergyCategory', label: 'Categoría Alergia' }, { key: 'allergyDetails', label: 'Detalle Alergia' },
+      { key: 'hasDisease', label: 'Enfermedad' }, { key: 'diseaseDetails', label: 'Detalle Enfermedad' }, { key: 'diseaseMedication', label: 'Medicamento' },
       { key: 'hasDisability', label: 'Discapacidad' }, { key: 'disabilityDetails', label: 'Detalle Discapacidad' }
     ];
     fieldsToTrack.forEach(f => {
       if (String(originalPerson[f.key]) !== String(editedPerson[f.key]))
         changes.push(`${f.label} (${originalPerson[f.key]} -> ${editedPerson[f.key]})`);
     });
+    if (hasAdminRights && String(originalPerson.location) !== String(editedPerson.location || loc)) {
+      changes.push(`Sede (${originalPerson.location} -> ${editedPerson.location || loc})`);
+    }
 
     const originalPaid = parseFloat(originalPerson.paid || 0);
     const newPaid = parseFloat(editedPerson.paid || 0);
     let updatedHistory = editedPerson.paymentHistory || [];
-    let finalRegisteredCost = editedPerson.registeredCost;
+    let finalRegisteredCost = resolveRegisteredCost(editedPerson, currentPricing);
 
-    if (currentUser?.role === 'Administrador' && newPaid !== originalPaid) {
+    if (hasAdminRights && newPaid !== originalPaid) {
+      const adjustmentMethod = originalPerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+      const adjustmentService = SERVICE_OPTIONS.includes(originalPerson.paymentService) ? originalPerson.paymentService : NO_SERVICE_LABEL;
+      const commissionRate = getCardCommissionRate();
+      const grossDelta = newPaid - originalPaid;
+      const commission = adjustmentMethod === 'Tarjeta' ? grossDelta * commissionRate : 0;
+      const netDelta = adjustmentMethod === 'Tarjeta' ? (grossDelta - commission) : grossDelta;
+
       updatedHistory = [...updatedHistory, {
         id: Date.now(), date: new Date().toLocaleString('es-MX'),
-        amount: newPaid - originalPaid, registeredBy: currentUser?.username, isManualAdjustment: true
+        amount: grossDelta,           // bruto
+        netAmount: netDelta,         // neto
+        method: adjustmentMethod,
+        service: adjustmentService,
+        reference: '',
+        commission,
+        registeredBy: currentUser?.username,
+        isManualAdjustment: true
       }];
     }
 
@@ -690,35 +3130,308 @@ const App = () => {
       changes.push(`Costo Ajustado a ${finalRegisteredCost}`);
     }
 
-    await setDoc(getDocRef('app_participants', String(editedPerson.id)), {
-      ...editedPerson, location: loc, eventId: currentEvent.id, paymentHistory: updatedHistory, registeredCost: finalRegisteredCost
-    });
+    const finalLocation = hasAdminRights ? (editedPerson.location || loc) : loc;
+    const payload = {
+      ...editedPerson,
+      location: finalLocation,
+      eventId: currentEvent.id,
+      paymentHistory: updatedHistory,
+      registeredCost: finalRegisteredCost
+    };
+
+    // Mantener consistencia de paidNet cuando admin modifica el total “paid”
+    if (hasAdminRights && newPaid !== originalPaid) {
+      const originalPaidNet = Number.isFinite(parseFloat(originalPerson.paidNet || 0)) ? parseFloat(originalPerson.paidNet || 0) : originalPaid;
+      const adjustmentMethod = originalPerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+      const commissionRate = getCardCommissionRate();
+      const grossDelta = newPaid - originalPaid;
+      const commission = adjustmentMethod === 'Tarjeta' ? grossDelta * commissionRate : 0;
+      const netDelta = adjustmentMethod === 'Tarjeta' ? (grossDelta - commission) : grossDelta;
+      payload.paidNet = originalPaidNet + netDelta;
+    }
+
+    if (globalConfig?.isDebugMode) {
+      payload._isDebug = true;
+      payload._debugSessionId = globalConfig.debugSessionId;
+    }
+
+    if (!payload.vnpPersonId) {
+      payload.vnpPersonId = generateVnpPersonId({ ...editedPerson, ...payload });
+    }
+
+    if (currentEvent.eventType === 'Campa' && editedPerson.isScholarship === 'Sí' && editedPerson.scholarshipType === 'partial') {
+      const partial = parseFloat(editedPerson.scholarshipPartialAmount || 0);
+      if (!Number.isFinite(partial) || partial <= 0 || partial >= finalRegisteredCost) {
+        showToast('Beca parcial: el aporte al recaudado debe ser mayor que 0 y menor que el costo de lista.');
+        return;
+      }
+    }
+
+    if (editedPerson.isScholarship === 'Sí') {
+      payload.scholarshipType = editedPerson.scholarshipType === 'partial' ? 'partial' : 'total';
+      payload.scholarshipPartialAmount = editedPerson.scholarshipType === 'partial'
+        ? parseFloat(editedPerson.scholarshipPartialAmount || 0)
+        : 0;
+    } else {
+      payload.scholarshipType = 'none';
+      payload.scholarshipPartialAmount = 0;
+      payload.scholarshipPendingApproval = false;
+    }
+    payload.responsivaStatus = resolveResponsivaStatus(editedPerson);
+
+    if ((originalPerson.status || 'active') === 'waitlist') {
+      payload.status = 'waitlist';
+      if (originalPerson.waitlistCreatedAt != null) payload.waitlistCreatedAt = originalPerson.waitlistCreatedAt;
+      if (editedPerson.isScholarship === 'Sí') payload.scholarshipPendingApproval = true;
+    }
+
+    await setDoc(getDocRef('app_participants', String(editedPerson.id)), payload);
 
     if (changes.length > 0) {
-      const isLiquidado = editedPerson.isScholarship === 'No' && parseFloat(editedPerson.paid) >= finalRegisteredCost;
-      addLog('Actualización de Registro', `Modificó datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`);
+      const mergedForLiq = { ...editedPerson, ...payload };
+      const isLiquidado = parseFloat(mergedForLiq.paid) >= getLiquidationTarget(mergedForLiq);
+      addLog('Actualización de Registro', `Modificó datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: originalPerson });
     }
-    setEditRegistryModal({ isOpen: false, loc: '', data: null });
+    setEditRegistryModal({ isOpen: false, loc: '', data: null }); setEditPreferredServeDropdownOpen(false); setEditServedAreasDropdownOpen(false);
     showToast("Registro actualizado.");
   };
 
   const removeEntry = async (loc, id) => {
+    if (!hasAdminRights) {
+      showToast("Solo administradores pueden eliminar registros.");
+      return;
+    }
     const person = (data[loc] || []).find(p => String(p.id) === String(id));
     if (person) {
-      await deleteDoc(getDocRef('app_participants', String(id)));
-      addLog('Eliminación de Registro', `Eliminó el registro de ${person.name} en la sede ${loc}.`);
-      showToast("Registro eliminado.");
+      const bajaAt = Date.now();
+      const bajaNotification = {
+        id: `wa-bja-${bajaAt}`,
+        kind: 'baja',
+        amount: 0,
+        pendingAmount: 0,
+        isLiquidado: false,
+        createdAt: bajaAt,
+        sent: false,
+        sentAt: null,
+        message: buildArchiveWhatsAppMessage(person, loc, false),
+      };
+      const archivePayload = {
+        status: PARTICIPANT_STATUS_ARCHIVED,
+        archivedAt: bajaAt,
+        archivedFromLocation: loc,
+        archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
+        paymentHistory: [],
+        paid: 0,
+        paidNet: 0,
+        whatsAppFinanceNotifications: [...(person.whatsAppFinanceNotifications || []), bajaNotification],
+        scholarshipPendingApproval: false,
+        ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+      };
+      await updateDoc(getDocRef('app_participants', String(id)), archivePayload);
+      addLog(
+        'WhatsApp',
+        `Encoló aviso de baja/archivo para ${person.name} (sede ${loc}).`,
+        null
+      );
+      addLog(
+        'Eliminación de Registro',
+        `Archivó el registro de ${person.name} en la sede ${loc}. El ID VNPM y los datos personales permanecen en Firebase para precargar en otros eventos.`,
+        null,
+        null,
+        { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
+      );
+      showToast('Registro archivado. Puedes precargar estos datos desde la búsqueda de perfiles.');
     }
   };
 
+  const removeWaitlistEntry = async (loc, id) => {
+    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
+      showToast("No tienes permisos para modificar lista de espera en esta sede/evento.");
+      return;
+    }
+    const person = (waitlistData[loc] || []).find(p => String(p.id) === String(id));
+    if (person) {
+      const bajaAt = Date.now();
+      const bajaNotification = {
+        id: `wa-bja-${bajaAt}`,
+        kind: 'baja',
+        amount: 0,
+        pendingAmount: 0,
+        isLiquidado: false,
+        createdAt: bajaAt,
+        sent: false,
+        sentAt: null,
+        message: buildArchiveWhatsAppMessage(person, loc, true),
+      };
+      const archivePayload = {
+        status: PARTICIPANT_STATUS_ARCHIVED,
+        archivedAt: bajaAt,
+        archivedFromLocation: loc,
+        archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
+        paymentHistory: [],
+        paid: 0,
+        paidNet: 0,
+        whatsAppFinanceNotifications: [...(person.whatsAppFinanceNotifications || []), bajaNotification],
+        scholarshipPendingApproval: false,
+        ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+      };
+      await updateDoc(getDocRef('app_participants', String(id)), archivePayload);
+      addLog(
+        'WhatsApp',
+        `Encoló aviso de baja/archivo (lista de espera) para ${person.name} (sede ${loc}).`,
+        null
+      );
+      addLog(
+        'Lista de Espera',
+        `Archivó a ${person.name} (lista de espera, sede ${loc}). Los datos personales siguen disponibles para precargar en otros eventos.`,
+        null,
+        null,
+        { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
+      );
+      showToast('Entrada archivada. Puedes precargar estos datos desde la búsqueda de perfiles.');
+    }
+  };
+
+  const cancelEntry = async (loc, id) => {
+    if (!hasAdminRights) {
+      showToast("Solo administradores pueden dar de baja registros.");
+      return;
+    }
+    const person = (data[loc] || []).find((p) => String(p.id) === String(id));
+    if (!person) return;
+    const cancelledAt = Date.now();
+    const refundPendingAmount = Math.max(0, parseFloat(person.paid || 0) || 0);
+    const payload = {
+      status: PARTICIPANT_STATUS_CANCELLED,
+      cancelledAt,
+      cancelledFromLocation: loc,
+      refundPendingAmount,
+      refundAsDonation: false,
+      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+    };
+    await updateDoc(getDocRef('app_participants', String(id)), payload);
+    addLog(
+      'Baja de Registro',
+      `Dio de baja a ${person.name} en ${loc}.${refundPendingAmount > 0 ? ` Pendiente de devolución: $${refundPendingAmount}.` : ''}`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
+    );
+    showToast('Registro dado de baja. Ya no cuenta en inscritos/becados/servidores.');
+  };
+
+  const reactivateEntry = async (loc, id) => {
+    if (!hasAdminRights) {
+      showToast("Solo administradores pueden reactivar registros.");
+      return;
+    }
+    const person = (data[loc] || []).find((p) => String(p.id) === String(id));
+    if (!person || !participantIsCancelled(person)) return;
+    const payload = {
+      status: 'active',
+      refundPendingAmount: 0,
+      refundAsDonation: false,
+      reactivatedAt: Date.now(),
+      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+    };
+    await updateDoc(getDocRef('app_participants', String(id)), payload);
+    addLog(
+      'Reactivación de Registro',
+      `Reactivó a ${person.name} en ${loc}. Vuelve a contar en inscritos/becados/servidores.`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
+    );
+    showToast('Registro reactivado.');
+  };
+
+  const markCancelledRefundAsDonation = async (personId) => {
+    if (!canAccessExpenses) return;
+    const person = allParticipants.find((p) => String(p.id) === String(personId));
+    if (!person || !participantIsCancelled(person)) return;
+    await updateDoc(getDocRef('app_participants', String(personId)), {
+      refundAsDonation: true,
+      refundMarkedAsDonationAt: Date.now(),
+      refundPendingAmount: 0,
+      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+    });
+    addLog('Gastos', `Marcó como donación el saldo pendiente de devolución de ${person.name}.`);
+    showToast('Saldo marcado como donación. Vuelve a sumarse al balance neto.');
+  };
+
+  const promoteWaitlistEntry = async (loc, id) => {
+    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
+      showToast("No tienes permisos para promover en esta sede/evento.");
+      return;
+    }
+    if (!isLocOpen(loc)) {
+      showToast("La sede está cerrada. Abre registro para promover.");
+      return;
+    }
+    const person = (waitlistData[loc] || []).find(p => String(p.id) === String(id));
+    if (!person) return;
+    if (isLocationFull(loc)) {
+      showToast("No se puede promover: el cupo de la sede está lleno.");
+      return;
+    }
+    const promoteAt = Date.now();
+    const liqPromote = getLiquidationTarget(person);
+    const paidPromote = parseFloat(person.paid || 0);
+    const pendingAfterPromote = Math.max((Number(liqPromote) || 0) - paidPromote, 0);
+    const isLiquidadoPromote = paidPromote >= liqPromote;
+    const promoteNotification = {
+      id: `wa-prm-${promoteAt}`,
+      kind: person.isScholarship === 'Sí' ? 'beca_aprobada' : 'promocion_espera',
+      amount: 0,
+      pendingAmount: pendingAfterPromote,
+      isLiquidado: isLiquidadoPromote,
+      createdAt: promoteAt,
+      sent: false,
+      sentAt: null,
+      message: buildPromoteFromWaitlistWhatsAppMessage(person, loc),
+    };
+    const payload = {
+      status: 'active',
+      scholarshipPendingApproval: false,
+      whatsAppFinanceNotifications: [...(person.whatsAppFinanceNotifications || []), promoteNotification],
+    };
+    if (globalConfig?.isDebugMode) {
+      payload._isDebug = true;
+      payload._debugSessionId = globalConfig.debugSessionId;
+    }
+    await updateDoc(getDocRef('app_participants', String(id)), payload);
+
+    const promBeca =
+      person.isScholarship === 'Sí'
+        ? ` Becado ${person.scholarshipType === 'partial' ? 'parcial' : 'total'}${person.scholarshipType === 'partial' ? ` (aporte recaudado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}, abono registrado $${paidPromote.toLocaleString('es-MX')})` : ''}.`
+        : '';
+    addLog(
+      'Lista de Espera',
+      `Promovió a ${person.name} de lista de espera a inscritos en la sede ${loc}.${promBeca}`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
+    );
+    showToast(
+      person.isScholarship === 'Sí' && person.scholarshipType === 'partial'
+        ? `Inscrito (beca parcial). Abono registrado: $${paidPromote.toLocaleString('es-MX')}.`
+        : 'Registro promovido a inscritos.'
+    );
+    addLog(
+      'WhatsApp',
+      `Encoló aviso de promoción desde lista de espera para ${person.name} (sede ${loc}). Tipo: ${person.isScholarship === 'Sí' ? 'beca aprobada' : 'promoción a inscritos'}.`,
+      null
+    );
+  };
+
   const toggleRegStatus = async (loc) => {
-    if (currentUser?.role !== 'Administrador') {
+    if (!hasAdminRights) {
       showToast("Permisos insuficientes. Solo administradores pueden cambiar el estado.");
       return;
     }
     const newStatus = !isLocOpen(loc);
     await updateEventConfig({ regStatus: { ...currentEvent.regStatus, [loc]: newStatus } });
-    addLog('Cambio de Estado', `${newStatus ? 'Abrió' : 'Cerró'} las inscripciones en la sede ${loc}.`);
+    addLog('Cambio de Estado', `${newStatus ? 'Abrió' : 'Cerró'} las inscripciones en la sede ${loc}.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
   };
 
   const toggleRow = (id) => {
@@ -730,6 +3443,10 @@ const App = () => {
   };
 
   const submitAbono = async () => {
+    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(paymentModal.loc)) {
+      showToast("No tienes permisos para registrar abonos en esta sede/evento.");
+      return;
+    }
     if (!paymentModal.amount) return;
     const addedAmount = parseFloat(paymentModal.amount) || 0;
     if (addedAmount < 0) { setPaymentModal(prev => ({ ...prev, error: 'El abono no puede ser negativo.' })); return; }
@@ -738,24 +3455,569 @@ const App = () => {
       setPaymentModal(prev => ({ ...prev, error: `El abono supera el costo total. Máximo a abonar: $${baseCost - paymentModal.currentPaid}` }));
       return;
     }
-    const newPaymentRecord = { id: Date.now(), date: new Date().toLocaleString('es-MX'), amount: addedAmount, registeredBy: currentUser?.username };
+    const paymentMethod = paymentModal.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+    const paymentService = getAutoPaymentService(new Date());
+    const commissionRate = getCardCommissionRate();
+    const commission = paymentMethod === 'Tarjeta' ? (addedAmount * commissionRate) : 0;
+    const netAmount = paymentMethod === 'Tarjeta' ? (addedAmount - commission) : addedAmount;
+
+    const newPaymentRecord = {
+      id: Date.now(),
+      date: new Date().toLocaleString('es-MX'),
+      amount: addedAmount, // bruto
+      netAmount,
+      method: paymentMethod,
+      service: paymentService,
+      reference: paymentMethod === 'Tarjeta' ? (paymentModal.cardReference || '').trim() : '',
+      commission,
+      registeredBy: currentUser?.username
+    };
     const person = (data[paymentModal.loc] || []).find(p => String(p.id) === String(paymentModal.id));
-    const newPaid = parseFloat(person.paid || 0) + addedAmount;
-    await updateDoc(getDocRef('app_participants', String(person.id)), { paid: newPaid, paymentHistory: [...(person.paymentHistory || []), newPaymentRecord] });
-    const isLiquidado = paymentModal.isScholarship === 'No' && newPaid >= baseCost;
-    addLog('Abono Financiero', `Registró un abono de $${addedAmount} para ${paymentModal.personName} en la sede ${paymentModal.loc}. (Pagado: $${paymentModal.currentPaid} -> $${newPaid})${isLiquidado ? ' [LIQUIDADO]' : ''}`);
-    setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0 });
+    const paidGrossNow = parseFloat(person.paid || 0);
+    const paidNetNow = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGrossNow;
+    const newPaidGross = paidGrossNow + addedAmount;
+    const newPaidNet = paidNetNow + netAmount;
+    const isLiquidado = newPaidGross >= baseCost;
+
+    const payload = {
+      paid: newPaidGross,
+      paidNet: newPaidNet,
+      paymentHistory: [...(person.paymentHistory || []), newPaymentRecord]
+    };
+    const pendingAfterAbono = Math.max((Number(baseCost) || 0) - newPaidGross, 0);
+    const abonoNotification = {
+      id: `wa-abn-${Date.now()}`,
+      kind: 'abono',
+      amount: addedAmount,
+      pendingAmount: pendingAfterAbono,
+      isLiquidado,
+      createdAt: Date.now(),
+      sent: false,
+      sentAt: null,
+      message: buildFinanceWhatsAppMessage(person, paymentModal.loc, addedAmount, pendingAfterAbono, isLiquidado, 'abono')
+    };
+    payload.whatsAppFinanceNotifications = [...(person.whatsAppFinanceNotifications || []), abonoNotification];
+    if (globalConfig?.isDebugMode) {
+      payload._isDebug = true;
+      payload._debugSessionId = globalConfig.debugSessionId;
+    }
+
+    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
+    addLog(
+      'Abono Financiero',
+      `Registró un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${paymentModal.currentPaid} -> $${newPaidGross})${isLiquidado ? ' [LIQUIDADO]' : ''}`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
+    );
+    addLog(
+      'WhatsApp',
+      `Encoló notificación financiera de abono para ${person.name || 'persona'} (sede ${paymentModal.loc}). Pendiente: ${pendingAfterAbono}. Liquida: ${isLiquidado ? 'Sí' : 'No'}.`,
+      null
+    );
+    setPaymentModal({
+      isOpen: false,
+      loc: '',
+      id: null,
+      personName: '',
+      amount: '',
+      currentPaid: 0,
+      error: '',
+      isScholarship: 'No',
+      baseCost: 0,
+      paymentMethod: 'Efectivo',
+      paymentService: getAutoPaymentService(new Date()),
+      cardReference: ''
+    });
     showToast("Abono procesado correctamente.");
   };
 
-  const formatMoney = (amount) => showMoney ? `$${parseFloat(amount || 0).toLocaleString()}` : '$***';
+  const handleAddComment = async (loc, person) => {
+    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
+      showToast("No tienes permisos para comentar en esta sede/evento.");
+      return;
+    }
+
+    const draft = (commentDrafts[String(person.id)] || '').trim();
+    if (!draft) {
+      showToast("Escribe un comentario antes de guardar.");
+      return;
+    }
+
+    const prevHistory = person.paymentHistory || [];
+    const newHistoryItem = {
+      id: Date.now(),
+      date: new Date().toLocaleString('es-MX'),
+      kind: 'comment',
+      commentText: draft,
+      registeredBy: currentUser?.username
+    };
+
+    const payload = { paymentHistory: [...prevHistory, newHistoryItem] };
+
+    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
+    addLog(
+      'Comentarios',
+      `Agregó comentario para ${person.name} en la sede ${loc}: "${draft}"`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
+    );
+
+    setCommentDrafts(prev => ({ ...prev, [String(person.id)]: '' }));
+    showToast("Comentario guardado.");
+  };
+
+  // ─────────────────────────────────────────────
+  // REUSABLE COMPONENTS
+  // ─────────────────────────────────────────────
+  const renderUsers = () => (
+    <div className="p-6 space-y-8 animate-in fade-in duration-500">
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+        <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2"><UserCog className="text-indigo-500" /> Gestión de Usuarios</h2>
+        {hasAdminRights ? (
+          <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-8 bg-slate-50 p-4 rounded-xl border border-slate-100 items-end">
+            <div className="space-y-1"><label className={labelClasses}>Usuario</label><input type="text" required placeholder="Nuevo usuario" className={inputClasses} value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} /></div>
+            <div className="space-y-1"><label className={labelClasses}>Contraseña</label><input type="password" required placeholder="••••••••" className={inputClasses} value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} /></div>
+            <div className="space-y-1">
+              <label className={labelClasses}>Rol</label>
+              <select className={inputClasses} value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}>
+                <option value="Administrador">Administrador</option>
+                <option value="Editor">Editor</option>
+                <option value="Lector">Lector</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className={labelClasses}>Ventana inicial al entrar al evento</label>
+              <select className={inputClasses} value={newUser.preferredLandingTab || 'Summary'} onChange={e => setNewUser({ ...newUser, preferredLandingTab: e.target.value })}>
+                <option value="Summary">Resumen General</option>
+                {(
+                  ['Administrador', 'SuperUsuario'].includes(newUser.role)
+                    ? globalLocations
+                    : ((newUser.allowedLocations || []).length ? newUser.allowedLocations : globalLocations)
+                ).map((loc) => <option key={`pref-new-${loc}`} value={loc}>{loc}</option>)}
+              </select>
+            </div>
+            {newUser.role !== 'SuperUsuario' && (
+              <div className="md:col-span-2 lg:col-span-2 space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                <p className={labelClasses}>Accesos permitidos</p>
+                {!isSuperUser && <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede ajustar accesos por evento/sede.</p>}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Eventos</label>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+                      <input
+                        type="checkbox"
+                        className="accent-indigo-600"
+                        disabled={!isSuperUser}
+                        checked={(newUser.allowedEventIds || []).length === 0}
+                        onChange={(e) => setNewUser({ ...newUser, allowedEventIds: e.target.checked ? [] : (sortedEvents[0] ? [sortedEvents[0].id] : []) })}
+                      />
+                      Todos los eventos
+                    </label>
+                    <div className="max-h-28 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1">
+                      {sortedEvents.map((ev) => {
+                        const checked = (newUser.allowedEventIds || []).includes(ev.id);
+                        return (
+                          <label key={ev.id} className="flex items-center gap-2 text-xs text-slate-700">
+                            <input
+                              type="checkbox"
+                              className="accent-indigo-600"
+                              disabled={!isSuperUser}
+                              checked={checked}
+                              onChange={(e) => {
+                                const prev = newUser.allowedEventIds || [];
+                                const next = e.target.checked ? [...prev, ev.id] : prev.filter((id) => id !== ev.id);
+                                setNewUser({ ...newUser, allowedEventIds: next });
+                              }}
+                            />
+                            {ev.name}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Sedes</label>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+                      <input
+                        type="checkbox"
+                        className="accent-indigo-600"
+                        disabled={!isSuperUser}
+                        checked={(newUser.allowedLocations || []).length === 0}
+                        onChange={(e) => setNewUser({ ...newUser, allowedLocations: e.target.checked ? [] : (globalLocations[0] ? [globalLocations[0]] : []) })}
+                      />
+                      Todas las sedes
+                    </label>
+                    <div className="max-h-28 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1">
+                      {globalLocations.map((loc) => {
+                        const checked = (newUser.allowedLocations || []).includes(loc);
+                        return (
+                          <label key={loc} className="flex items-center gap-2 text-xs text-slate-700">
+                            <input
+                              type="checkbox"
+                              className="accent-indigo-600"
+                              disabled={!isSuperUser}
+                              checked={checked}
+                              onChange={(e) => {
+                                const prev = newUser.allowedLocations || [];
+                                const next = e.target.checked ? [...prev, loc] : prev.filter((x) => x !== loc);
+                                setNewUser({ ...newUser, allowedLocations: next });
+                              }}
+                            />
+                            {loc}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="md:col-span-2 lg:col-span-2 space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+              <p className={labelClasses}>Permisos</p>
+              {!isSuperUser && (
+                <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede modificar permisos avanzados.</p>
+              )}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                  <input type="checkbox" className="accent-indigo-600" checked={!!newUser.canViewFinances} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={e => setNewUser({ ...newUser, canViewFinances: e.target.checked })} />
+                  Ver finanzas
+                </label>
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                  <input type="checkbox" className="accent-indigo-600" checked={!!newUser.canViewHiddenDonations} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={e => setNewUser({ ...newUser, canViewHiddenDonations: e.target.checked })} />
+                  Ver donaciones ocultas
+                </label>
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                  <input type="checkbox" className="accent-emerald-600" checked={!!newUser.canViewExpenses} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={e => setNewUser({ ...newUser, canViewExpenses: e.target.checked })} />
+                  Lista de gastos
+                </label>
+              </div>
+            </div>
+            <div className="flex items-end h-full md:col-span-4 lg:col-span-1"><button type="submit" className={btnPrimary}><Plus size={18} /> Añadir Usuario</button></div>
+          </form>
+        ) : (
+          <div className="mb-8 p-4 bg-amber-50 border border-amber-100 rounded-xl text-amber-700 text-sm flex items-center gap-2"><ShieldAlert size={18} /><p><strong>Acceso Restringido:</strong> Solo los administradores pueden añadir nuevos usuarios.</p></div>
+        )}
+        <div className="overflow-x-auto border border-slate-100 rounded-xl">
+          <table className="w-full text-left">
+            <thead><tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100"><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Rol</th><th className="px-6 py-4 text-center">Acciones</th></tr></thead>
+            <tbody className="divide-y divide-slate-50">
+              {users.map(u => (
+                <tr key={u.id} className="hover:bg-slate-50/50">
+                  <td className="px-6 py-4 font-bold text-slate-700">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2.5 h-2.5 rounded-full ${u.isOnline ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse' : 'bg-slate-300'}`} title={u.isOnline ? 'En línea' : 'Desconectado'} />
+                      {u.username}
+                      {currentUser.id === u.id && <span className="text-[10px] text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full ml-2">Tú</span>}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${u.role === 'SuperUsuario' ? 'bg-amber-100 text-amber-700 border border-amber-200' : u.role === 'Administrador' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>{u.role}</span>
+                      {u.role === 'Lector' && u.canViewFinances && (
+                        <span className="text-[9px] bg-green-100 text-green-700 border border-green-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-black tracking-wider" title="Puede ver finanzas">
+                          <DollarSign size={10} /> Finanzas
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2">
+                    <button onClick={() => setEditingUser({
+                      isOpen: true,
+                      id: u.id,
+                      username: u.username,
+                      role: u.role,
+                      currentPasswordInput: '',
+                      newPassword: '',
+                      confirmPassword: '',
+                      canViewFinances: u.canViewFinances || false,
+                      restrictedEventId: u.restrictedEventId || '',
+                      restrictedLocation: u.restrictedLocation || '',
+                      allowedEventIds: getUserAllowedEventIds(u),
+                      allowedLocations: getUserAllowedLocations(u),
+                      preferredLandingTab: u.preferredLandingTab || 'Summary',
+                      canViewHiddenDonations: u.canViewHiddenDonations || false,
+                      canViewExpenses: u.canViewExpenses || false
+                    })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}><Edit3 size={18} /></button>
+                    <button onClick={() => handleDeleteUser(u.id, u.username)} disabled={currentUser.id === u.id || !hasAdminRights} className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || !hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}><Trash2 size={18} /></button>
+                  </div></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+
+  const toggleLogSelection = (id) => {
+    setSelectedLogs(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllLogs = (displayedLogs, e) => {
+    if (e.target.checked) {
+      setSelectedLogs(new Set(displayedLogs.map(l => l.id)));
+    } else {
+      setSelectedLogs(new Set());
+    }
+  };
+
+  const deleteSelectedLogs = async () => {
+    if (selectedLogs.size === 0) return;
+    for (const id of selectedLogs) {
+      await deleteDoc(getDocRef('app_logs', String(id)));
+    }
+    const logEntry = {
+      id: Date.now(),
+      eventId: 'Global',
+      eventName: 'Sistema',
+      timestamp: new Date().toLocaleString('es-MX'),
+      username: currentUser?.username || 'Sistema',
+      action: 'Borrado Selectivo',
+      details: `El SuperUsuario eliminó ${selectedLogs.size} registro(s) de actividad.`,
+      isHidden: true
+    };
+    await setDoc(getDocRef('app_logs', String(logEntry.id)), logEntry);
+    showToast(`Se eliminaron ${selectedLogs.size} logs.`);
+    setSelectedLogs(new Set());
+  };
+
+  const renderLogs = () => {
+    const todayIso = toLocalISODate(new Date());
+    const thisWeekKey = getWeekKeyFromDate(todayIso);
+    const thisMonth = todayIso.slice(0, 7);
+    const allLogDates = logs.map((l) => getLogDateISO(l)).filter(Boolean);
+    const uniqueWeeks = [...new Set(allLogDates.map((d) => getWeekKeyFromDate(d)))].sort((a, b) => b.localeCompare(a));
+    const uniqueDays = [...new Set(allLogDates)].sort((a, b) => b.localeCompare(a));
+    const uniqueMonths = [...new Set(allLogDates.map((d) => d.slice(0, 7)))].sort((a, b) => b.localeCompare(a));
+
+    const displayedLogs = logs.filter(log => {
+      if (log.isDebug || log.isHidden) {
+        if (!hasAdminRights || !showDebugLogs) return false;
+      }
+      const matchContext = logFilterContext === 'all' || log.eventName === logFilterContext;
+      const matchSearch = !logSearchTerm || 
+        log.username.toLowerCase().includes(logSearchTerm.toLowerCase()) ||
+        log.action.toLowerCase().includes(logSearchTerm.toLowerCase()) ||
+        log.details.toLowerCase().includes(logSearchTerm.toLowerCase()) ||
+        log.eventName.toLowerCase().includes(logSearchTerm.toLowerCase());
+      const logDate = getLogDateISO(log);
+      let matchDate = true;
+      if (logDateMode === 'range') {
+        if (!logDate) matchDate = false;
+        if (logDateFrom && logDate < logDateFrom) matchDate = false;
+        if (logDateTo && logDate > logDateTo) matchDate = false;
+      } else if (logDateMode === 'week' && logSpecificWeek) {
+        matchDate = !!logDate && getWeekKeyFromDate(logDate) === logSpecificWeek;
+      } else if (logDateMode === 'day' && logSpecificDay) {
+        matchDate = logDate === logSpecificDay;
+      } else if (logDateMode === 'month' && logSpecificMonth) {
+        matchDate = !!logDate && logDate.startsWith(logSpecificMonth);
+      }
+
+      return matchContext && matchSearch && matchDate;
+    });
+
+    const uniqueContexts = [...new Set(logs.map(l => l.eventName))];
+
+    return (
+      <div className="p-6 space-y-6 animate-in fade-in duration-500">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+          <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 mb-6">
+            <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+              <History className="text-indigo-500" /> 
+              Registro de Actividad Global
+            </h2>
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
+                <input
+                  type="text"
+                  placeholder="Buscar en actividad..."
+                  className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-slate-600 outline-none focus:ring-2 focus:ring-indigo-500 w-full md:w-56"
+                  value={logSearchTerm}
+                  onChange={e => setLogSearchTerm(e.target.value)}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Filter size={14} className="text-slate-400" />
+                <select
+                  className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                  value={logFilterContext}
+                  onChange={e => setLogFilterContext(e.target.value)}
+                >
+                  <option value="all">Todos los contextos</option>
+                  {uniqueContexts.map(ctx => (
+                    <option key={ctx} value={ctx}>{ctx}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <CalendarRange size={14} className="text-slate-400" />
+                <select
+                  className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                  value={logDateMode}
+                  onChange={e => setLogDateMode(e.target.value)}
+                >
+                  <option value="none">Fecha: Sin filtro</option>
+                  <option value="range">Fecha: Rango</option>
+                  <option value="week">Fecha: Semana</option>
+                  <option value="day">Fecha: Día</option>
+                  <option value="month">Fecha: Mes</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => { setLogDateMode('day'); setLogSpecificDay(todayIso); }}
+                  className="px-2 py-1.5 text-[10px] font-black uppercase tracking-wider rounded-lg border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 transition-colors"
+                >
+                  Hoy
+                </button>
+                <button
+                  onClick={() => { setLogDateMode('week'); setLogSpecificWeek(thisWeekKey); }}
+                  className="px-2 py-1.5 text-[10px] font-black uppercase tracking-wider rounded-lg border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 transition-colors"
+                >
+                  Esta semana
+                </button>
+                <button
+                  onClick={() => { setLogDateMode('month'); setLogSpecificMonth(thisMonth); }}
+                  className="px-2 py-1.5 text-[10px] font-black uppercase tracking-wider rounded-lg border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 transition-colors"
+                >
+                  Este mes
+                </button>
+                <button
+                  onClick={() => {
+                    setLogDateMode('none');
+                    setLogDateFrom('');
+                    setLogDateTo('');
+                    setLogSpecificWeek('');
+                    setLogSpecificDay('');
+                    setLogSpecificMonth('');
+                  }}
+                  className="px-2 py-1.5 text-[10px] font-black uppercase tracking-wider rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors"
+                >
+                  Limpiar
+                </button>
+              </div>
+              {logDateMode === 'range' && (
+                <div className="flex items-center gap-2">
+                  <input type="date" className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-2 py-2 outline-none focus:ring-2 focus:ring-indigo-500" value={logDateFrom} onChange={e => setLogDateFrom(e.target.value)} />
+                  <span className="text-slate-400 text-xs font-bold">a</span>
+                  <input type="date" className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-2 py-2 outline-none focus:ring-2 focus:ring-indigo-500" value={logDateTo} onChange={e => setLogDateTo(e.target.value)} />
+                </div>
+              )}
+              {logDateMode === 'week' && (
+                <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={logSpecificWeek} onChange={e => setLogSpecificWeek(e.target.value)}>
+                  <option value="">Todas las semanas</option>
+                  {uniqueWeeks.map((wk) => {
+                    const [start, end] = wk.split('|');
+                    return <option key={wk} value={wk}>{start} a {end}</option>;
+                  })}
+                </select>
+              )}
+              {logDateMode === 'day' && (
+                <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={logSpecificDay} onChange={e => setLogSpecificDay(e.target.value)}>
+                  <option value="">Todos los días</option>
+                  {uniqueDays.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              )}
+              {logDateMode === 'month' && (
+                <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={logSpecificMonth} onChange={e => setLogSpecificMonth(e.target.value)}>
+                  <option value="">Todos los meses</option>
+                  {uniqueMonths.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+              )}
+              {hasAdminRights && (
+                <label className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg cursor-pointer hover:bg-slate-100 transition-colors">
+                  <span className="text-xs font-bold text-slate-600">Ver ocultos</span>
+                  <input type="checkbox" checked={showDebugLogs} onChange={e => setShowDebugLogs(e.target.checked)} className="accent-indigo-600" />
+                </label>
+              )}
+              {isSuperUser && selectedLogs.size > 0 && (
+                <button onClick={deleteSelectedLogs} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-600 text-white hover:bg-red-700 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200">
+                  <Trash2 size={14} /> Borrar {selectedLogs.size}
+                </button>
+              )}
+              {hasAdminRights && selectedLogs.size === 0 && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanOld', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
+              {isSuperUser && selectedLogs.size === 0 && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanRecent', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-500 text-white hover:bg-red-600 border border-red-600 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200"><Trash2 size={14} /> Limpiar &lt; 30 días</button>}
+              <span className="bg-slate-100 text-slate-500 text-xs font-bold px-3 py-1 rounded-full">{displayedLogs.length} eventos</span>
+            </div>
+          </div>
+          <div className="overflow-x-auto border border-slate-100 rounded-xl max-h-[600px] overflow-y-auto">
+            <table className="w-full text-left relative">
+              <thead className="sticky top-0 bg-slate-50 shadow-sm">
+                <tr className="text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-200">
+                  {isSuperUser && <th className="px-6 py-4 w-10"><input type="checkbox" onChange={(e) => toggleAllLogs(displayedLogs, e)} checked={displayedLogs.length > 0 && selectedLogs.size === displayedLogs.length} className="accent-indigo-600 w-4 h-4 rounded cursor-pointer" /></th>}
+                  <th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acción</th><th className="px-6 py-4">Detalles</th>{hasAdminRights && <th className="px-6 py-4 text-center">Acciones</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {displayedLogs.length === 0 ? (
+                  <tr><td colSpan={isSuperUser ? "7" : hasAdminRights ? "6" : "5"} className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay actividad registrada para este contexto.</td></tr>
+                ) : displayedLogs.map(log => (
+                  <tr key={log.id} className={`hover:bg-slate-50/50 transition-colors ${log.isDebug ? 'bg-orange-50/30' : log.isHidden ? 'bg-purple-50/30' : ''}`}>
+                    {isSuperUser && (
+                      <td className="px-6 py-4">
+                        <input type="checkbox" checked={selectedLogs.has(log.id)} onChange={() => toggleLogSelection(log.id)} className="accent-indigo-600 w-4 h-4 rounded cursor-pointer" />
+                      </td>
+                    )}
+                    <td className="px-6 py-4 text-xs font-mono text-slate-500 whitespace-nowrap">{log.timestamp}</td>
+                    <td className="px-6 py-4"><span className={`text-[9px] font-bold px-2 py-1 rounded border truncate max-w-[120px] block ${log.isDebug ? 'bg-orange-100 text-orange-700 border-orange-200' : log.isHidden ? 'bg-purple-100 text-purple-700 border-purple-200' : 'bg-indigo-50 text-indigo-600 border-indigo-100'}`}>{log.eventName}</span></td>
+                    <td className="px-6 py-4 font-bold text-slate-700 flex items-center gap-2"><UserCircle size={14} className={log.isDebug ? 'text-orange-400' : log.isHidden ? 'text-purple-400' : 'text-indigo-400'} />{log.username}</td>
+                    <td className="px-6 py-4">
+                      <span className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${log.isDebug ? 'bg-orange-100 text-orange-700' : log.isHidden ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>
+                        {log.action} 
+                        {log.isDebug && <span className="text-red-500 ml-1 font-black">(DEPURACIÓN)</span>}
+                        {log.isHidden && <span className="text-purple-600 ml-1 font-black">(OCULTO)</span>}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-xs text-slate-600">{log.details}</td>
+                    {hasAdminRights && (
+                      <td className="px-6 py-4 text-center">
+                        {log.revertInfo?.isBackup ? (
+                          <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'backup' })} className="p-1.5 bg-indigo-50 text-indigo-600 hover:text-white hover:bg-indigo-600 rounded-lg transition-colors shadow-sm" title="Restaurar Copia de Seguridad Completa"><Database size={14} /></button>
+                        ) : log.revertInfo ? (
+                          <div className="flex justify-center items-center gap-2">
+                            <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'single' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors" title="Restaurar este cambio específico"><Undo size={14} /></button>
+                            {isSuperUser && (
+                              <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'rollback' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Revertir todos los cambios hasta aquí"><History size={14} /></button>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[9px] text-slate-300 italic font-medium">N/D</span>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // ─────────────────────────────────────────────
   //  SCREEN 1: LOGIN
   // ─────────────────────────────────────────────
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-blue-950 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-blue-950 flex items-center justify-center p-4 relative">
+        {debugToast && (
+          <div className="fixed bottom-6 left-6 bg-slate-900 text-white p-4 rounded-xl shadow-2xl z-50 max-w-sm animate-in slide-in-from-bottom-5 border-l-4 border-orange-500">
+            <div className="flex items-start gap-3">
+              <Bug className="text-orange-500 flex-shrink-0 mt-0.5" size={20} />
+              <p className="text-xs font-bold leading-relaxed">{debugToast.msg}</p>
+            </div>
+          </div>
+        )}
         <div className="bg-white rounded-3xl shadow-2xl overflow-hidden max-w-md w-full animate-in fade-in zoom-in duration-500">
           <div className="bg-blue-900 p-8 text-center">
             <div className="bg-white/20 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
@@ -769,14 +4031,14 @@ const App = () => {
           <div className="p-8">
             <form onSubmit={handleLogin} className="space-y-5">
               <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Usuario</label>
+                <label className={labelClasses}>Usuario</label>
                 <div className="relative mt-1">
                   <UserCircle className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                   <input type="text" className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all" placeholder="Ingresa tu usuario" value={loginForm.username} onChange={e => setLoginForm({ ...loginForm, username: e.target.value })} />
                 </div>
               </div>
               <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Contraseña</label>
+                <label className={labelClasses}>Contraseña</label>
                 <div className="relative mt-1">
                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                   <input type="password" className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all" placeholder="••••••••" value={loginForm.password} onChange={e => setLoginForm({ ...loginForm, password: e.target.value })} />
@@ -794,109 +4056,55 @@ const App = () => {
   }
 
   // ─────────────────────────────────────────────
-  // REUSABLE COMPONENTS
-  // ─────────────────────────────────────────────
-  const renderUsers = () => (
-    <div className="p-6 space-y-8 animate-in fade-in duration-500">
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-        <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2"><UserCog className="text-indigo-500" /> Gestión de Usuarios</h2>
-        {currentUser?.role === 'Administrador' ? (
-          <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8 bg-slate-50 p-4 rounded-xl border border-slate-100 items-end">
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Usuario</label><input type="text" required placeholder="Nuevo usuario" className="w-full p-2.5 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} /></div>
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Contraseña</label><input type="password" required placeholder="••••••••" className="w-full p-2.5 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} /></div>
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Rol</label><select className="w-full p-2.5 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}><option value="Administrador">Administrador</option><option value="Editor">Editor</option><option value="Lector">Lector</option></select></div>
-            <div className="flex items-end h-full"><button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 text-sm rounded-lg transition-all shadow-md active:scale-95 flex justify-center items-center gap-2"><Plus size={18} /> Añadir Usuario</button></div>
-          </form>
-        ) : (
-          <div className="mb-8 p-4 bg-amber-50 border border-amber-100 rounded-xl text-amber-700 text-sm flex items-center gap-2"><ShieldAlert size={18} /><p><strong>Acceso Restringido:</strong> Solo los administradores pueden añadir nuevos usuarios.</p></div>
-        )}
-        <div className="overflow-x-auto border border-slate-100 rounded-xl">
-          <table className="w-full text-left">
-            <thead><tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100"><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Rol</th><th className="px-6 py-4 text-center">Acciones</th></tr></thead>
-            <tbody className="divide-y divide-slate-50">
-              {users.map(u => (
-                <tr key={u.id} className="hover:bg-slate-50/50">
-                  <td className="px-6 py-4 font-bold text-slate-700">{u.username}{currentUser.id === u.id && <span className="text-[10px] text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full ml-2">Tú</span>}</td>
-                  <td className="px-6 py-4"><span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${u.role === 'Administrador' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>{u.role}</span></td>
-                  <td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2">
-                    <button onClick={() => setEditingUser({ isOpen: true, id: u.id, username: u.username, role: u.role, currentPasswordInput: '', newPassword: '', confirmPassword: '' })} disabled={currentUser.role !== 'Administrador'} className={`p-2 rounded-lg transition-all ${currentUser.role !== 'Administrador' ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'}`}><Edit3 size={18} /></button>
-                    <button onClick={() => handleDeleteUser(u.id, u.username)} disabled={currentUser.id === u.id || currentUser.role !== 'Administrador'} className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || currentUser.role !== 'Administrador' ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}><Trash2 size={18} /></button>
-                  </div></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-
-  const renderLogs = () => (
-    <div className="p-6 space-y-6 animate-in fade-in duration-500">
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><History className="text-indigo-500" /> Registro de Actividad</h2>
-          <div className="flex items-center gap-4">
-            {currentUser?.role === 'Administrador' && <button onClick={handleCleanLogs} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
-            <span className="bg-slate-100 text-slate-500 text-xs font-bold px-3 py-1 rounded-full">{logs.length} eventos</span>
-          </div>
-        </div>
-        <div className="overflow-x-auto border border-slate-100 rounded-xl max-h-[600px] overflow-y-auto">
-          <table className="w-full text-left relative">
-            <thead className="sticky top-0 bg-slate-50 shadow-sm"><tr className="text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-200"><th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acción</th><th className="px-6 py-4">Detalles</th></tr></thead>
-            <tbody className="divide-y divide-slate-50">
-              {logs.length === 0 ? (
-                <tr><td colSpan="5" className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay actividad registrada aún.</td></tr>
-              ) : logs.map(log => (
-                <tr key={log.id} className="hover:bg-slate-50/50 transition-colors">
-                  <td className="px-6 py-4 text-xs font-mono text-slate-500 whitespace-nowrap">{log.timestamp}</td>
-                  <td className="px-6 py-4"><span className="text-[9px] bg-indigo-50 text-indigo-600 font-bold px-2 py-1 rounded border border-indigo-100 truncate max-w-[120px] block">{log.eventName}</span></td>
-                  <td className="px-6 py-4 font-bold text-slate-700 flex items-center gap-2"><UserCircle size={14} className="text-indigo-400" />{log.username}</td>
-                  <td className="px-6 py-4"><span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-2 py-1 rounded-md uppercase tracking-wider">{log.action}</span></td>
-                  <td className="px-6 py-4 text-xs text-slate-600">{log.details}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-
-  // ─────────────────────────────────────────────
   //  SCREEN 2: EVENT SELECTOR
   // ─────────────────────────────────────────────
   if (currentUser && !selectedEventId) {
     return (
       <div className="min-h-screen bg-slate-50 p-4 md:p-8 animate-in fade-in duration-500 relative">
-        {toast && (
-          <div className="fixed bottom-6 right-6 bg-slate-800 text-white px-5 py-4 rounded-xl shadow-2xl z-50 animate-in slide-in-from-bottom-5 fade-in flex items-center gap-3 font-bold text-sm border border-slate-700">
-            <ShieldAlert size={20} className="text-amber-400" />{toast}
+        {debugToast && (
+          <div className="fixed bottom-6 left-6 bg-slate-900 text-white p-4 rounded-xl shadow-2xl z-50 max-w-sm animate-in slide-in-from-bottom-5 border-l-4 border-orange-500">
+            <div className="flex items-start gap-3">
+              <Bug className="text-orange-500 flex-shrink-0 mt-0.5" size={20} />
+              <p className="text-xs font-bold leading-relaxed">{debugToast.msg}</p>
+            </div>
           </div>
         )}
+
         <div className="max-w-5xl mx-auto space-y-8">
           <header className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
-            <div>
-              <h1 className="text-2xl font-black text-slate-800">
-                {systemView === 'users' ? 'Gestión de Usuarios' : systemView === 'logs' ? 'Registro de Actividad' : 'Selecciona un Evento'}
-              </h1>
-              <p className="text-sm text-slate-500">
-                {systemView === 'users' ? 'Administra los accesos al sistema global.' : systemView === 'logs' ? 'Historial global de acciones en el sistema.' : 'Elige el evento que deseas administrar o crea uno nuevo.'}
-              </p>
+            <div className="flex items-center gap-4">
+              {navHistory.length > 0 && (
+                <button onClick={goBack} className="p-2.5 bg-slate-50 text-slate-500 hover:bg-slate-100 hover:text-indigo-600 rounded-xl transition-colors border border-slate-200" title="Regresar">
+                  <ArrowLeft size={20} />
+                </button>
+              )}
+              <div>
+                <h1 className="text-2xl font-black text-slate-800">
+                  {systemView === 'users' ? 'Gestión de Usuarios' : systemView === 'logs' ? 'Registro de Actividad' : 'Selecciona un Evento'}
+                </h1>
+                <p className="text-sm text-slate-500">
+                  {systemView === 'users' ? 'Administra los accesos al sistema global.' : systemView === 'logs' ? 'Historial global de acciones en el sistema.' : 'Elige el evento que deseas administrar o crea uno nuevo.'}
+                </p>
+              </div>
             </div>
             <div className="flex flex-wrap items-center gap-4 border-t md:border-t-0 md:border-l border-slate-100 pt-4 md:pt-0 md:pl-6">
+              {isSuperUser && (
+                <button onClick={toggleDebugMode} className={`flex items-center gap-1 md:gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-colors shadow-sm ${globalConfig?.isDebugMode ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-500'}`} title="Modo de prueba aislada">
+                  <Bug size={14} /><span className="hidden sm:inline">{globalConfig?.isDebugMode ? 'Salir Depuración' : 'Depurar'}</span>
+                </button>
+              )}
               {systemView !== 'events' && (
-                <button onClick={() => setSystemView('events')} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors text-xs flex items-center gap-2">
+                <button onClick={() => goTo('events', null, 'Summary')} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors text-xs flex items-center gap-2">
                   <LayoutDashboard size={14} /> Eventos
                 </button>
               )}
-              {currentUser.role === 'Administrador' && systemView !== 'users' && (
-                <button onClick={() => setSystemView('users')} className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl font-bold hover:bg-indigo-100 transition-colors text-xs flex items-center gap-2">
+              {hasAdminRights && systemView !== 'users' && (
+                <button onClick={() => goTo('users', null, 'Summary')} className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl font-bold hover:bg-indigo-100 transition-colors text-xs flex items-center gap-2">
                   <UserCog size={14} /> Usuarios
                 </button>
               )}
-              {systemView !== 'logs' && (
-                <button onClick={() => setSystemView('logs')} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors text-xs flex items-center gap-2">
+              {systemView !== 'logs' && currentUser?.role !== 'Lector' && (
+                <button onClick={() => goTo('logs', null, 'Summary')} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors text-xs flex items-center gap-2">
                   <History size={14} /> Logs
                 </button>
               )}
@@ -905,72 +4113,79 @@ const App = () => {
             </div>
           </header>
 
+          {globalConfig?.isDebugMode && systemView === 'events' && (
+            <div className="bg-orange-50 border border-orange-200 p-4 rounded-2xl flex items-start gap-3 shadow-sm animate-in fade-in">
+              <div className="bg-orange-100 p-2 rounded-lg"><Bug className="text-orange-500" size={20} /></div>
+              <div>
+                <h4 className="text-sm font-black text-orange-800">Modo de Depuración Activo</h4>
+                <p className="text-xs text-orange-700 mt-1">
+                  Las modificaciones marcadas con el insecto no son permanentes y se eliminarán al salir de este modo.
+                </p>
+              </div>
+            </div>
+          )}
+
           {systemView === 'users' ? (
             <div className="-mx-6 -mt-6">{renderUsers()}</div>
           ) : systemView === 'logs' ? (
             <div className="-mx-6 -mt-6">{renderLogs()}</div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {sortedEvents.map(ev => {
+              {visibleEvents.map(ev => {
                 const evtPricing = getPricing(ev);
                 return (
                   <div
                     key={ev.id}
-                    draggable={currentUser.role === 'Administrador'}
-                    onDragStart={(e) => { if (currentUser.role === 'Administrador') { setDraggedEventId(ev.id); e.dataTransfer.effectAllowed = "move"; } }}
+                    draggable={hasAdminRights}
+                    onDragStart={(e) => { if (hasAdminRights) { setDraggedEventId(ev.id); e.dataTransfer.effectAllowed = "move"; } }}
                     onDragOver={handleDragOver}
                     onDrop={(e) => handleDrop(e, ev.id)}
                     onDragEnd={() => setDraggedEventId(null)}
-                    className={`bg-white rounded-3xl p-6 shadow-sm border border-slate-200 hover:shadow-lg hover:border-indigo-300 transition-all relative group flex flex-col justify-between ${currentUser.role === 'Administrador' ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} ${draggedEventId === ev.id ? 'opacity-40 scale-95' : 'opacity-100 scale-100'}`}
-                    onClick={() => { setSelectedEventId(ev.id); setActiveTab("Summary"); }}
+                    className={`bg-white rounded-3xl p-6 shadow-sm border border-slate-200 hover:shadow-lg hover:border-indigo-300 transition-all relative group flex flex-col justify-between ${hasAdminRights ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} ${draggedEventId === ev.id ? 'opacity-40 scale-95' : 'opacity-100 scale-100'}`}
+                    onClick={() => goTo('events', ev.id, resolvePreferredLandingTab(currentUser, ev))}
                   >
-                    {currentUser.role === 'Administrador' && <div className="absolute top-4 right-4 text-slate-200 opacity-0 group-hover:opacity-100 transition-opacity"><GripVertical size={20} /></div>}
+                    {hasAdminRights && <div className="absolute top-4 right-4 text-slate-200 opacity-0 group-hover:opacity-100 transition-opacity"><GripVertical size={20} /></div>}
                     <div>
                       <div className="bg-indigo-50 text-indigo-600 w-12 h-12 rounded-2xl flex items-center justify-center mb-4"><CalendarRange size={24} /></div>
                       
-                      {/* EDICIÓN RÁPIDA DE NOMBRE DESDE EL SELECTOR DE EVENTOS */}
-                      {currentUser.role === 'Administrador' ? (
-                        <input
-                          type="text"
-                          defaultValue={ev.name}
-                          onClick={(e) => e.stopPropagation()}
-                          onBlur={async (e) => {
-                            const newVal = e.target.value.trim();
-                            if (newVal && newVal !== ev.name) {
-                              await updateDoc(getDocRef('app_events', ev.id), { name: newVal });
-                              addLog('Gestión de Eventos', `Renombró evento: "${ev.name}" -> "${newVal}"`, null, ev);
-                            } else {
-                              e.target.value = ev.name;
-                            }
-                          }}
-                          className="text-lg font-bold text-slate-800 mb-1 pr-8 leading-tight w-full bg-transparent border-b-2 border-transparent hover:border-indigo-300 focus:border-indigo-500 outline-none truncate transition-colors cursor-text"
-                          title="Clic para editar nombre"
-                        />
-                      ) : (
-                        <h3 className="text-lg font-bold text-slate-800 mb-1 pr-8 leading-tight">{ev.name}</h3>
-                      )}
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <h3 className="text-lg font-bold text-slate-800 leading-tight pr-2 flex items-center gap-2">
+                          {ev.name}
+                          {ev._isDebug && ev._debugSessionId === globalConfig?.debugSessionId && <Bug size={16} className="text-orange-500" title="Cambio no permanente" />}
+                        </h3>
+                        {hasAdminRights && (
+                          <button onClick={(e) => { e.stopPropagation(); setRenameModal({isOpen: true, id: ev.id, name: ev.name}); }} className="text-slate-300 hover:text-indigo-600 p-1 flex-shrink-0">
+                            <Edit3 size={16} />
+                          </button>
+                        )}
+                      </div>
 
                       <div className="flex items-center gap-2 mt-2">
                         <span className="text-[10px] font-black uppercase text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">{ev.eventType}</span>
                         
-                        {/* EDICIÓN RÁPIDA DE FECHA DESDE EL SELECTOR DE EVENTOS */}
-                        {currentUser.role === 'Administrador' ? (
-                          <input
-                            type="date"
-                            defaultValue={ev.date || ''}
-                            onClick={e => e.stopPropagation()}
-                            onBlur={async (e) => {
-                              const newVal = e.target.value;
-                              if (newVal !== (ev.date || '')) {
-                                await updateDoc(getDocRef('app_events', ev.id), { date: newVal });
-                                addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev);
-                              }
-                            }}
-                            className="text-[10px] font-bold text-slate-500 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-200 outline-none cursor-pointer hover:border-indigo-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                            title="Clic para editar fecha"
-                          />
+                        {hasAdminRights ? (
+                          <label className="relative flex items-center gap-1.5 text-[10px] font-bold text-slate-600 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 px-2.5 py-1 rounded-full border border-slate-200 hover:border-indigo-200 transition-colors uppercase cursor-pointer group shadow-sm overflow-hidden" onClick={e => e.stopPropagation()} title="Cambiar fecha del evento">
+                            <span>{formatDisplayDate(ev.date)}</span>
+                            <Edit3 size={12} className="text-slate-400 group-hover:text-indigo-500 transition-colors" />
+                            <input
+                              type="date"
+                              defaultValue={ev.date || ''}
+                              onChange={async (e) => {
+                                const newVal = e.target.value;
+                                if (newVal !== (ev.date || '')) {
+                                  const payload = { date: newVal };
+                                  if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
+                                  await updateDoc(getDocRef('app_events', ev.id), payload);
+                                  addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
+                                }
+                              }}
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer"
+                            />
+                          </label>
                         ) : (
-                          <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-100">{ev.date || 'Sin fecha'}</span>
+                          <span className="text-[10px] font-bold text-slate-500 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-200 uppercase shadow-sm">
+                            {formatDisplayDate(ev.date)}
+                          </span>
                         )}
                       </div>
                     </div>
@@ -984,15 +4199,15 @@ const App = () => {
                         <p className="text-sm font-bold text-slate-700">{ev.locations ? ev.locations.length : 0}</p>
                       </div>
                     </div>
-                    {currentUser.role === 'Administrador' && (
+                    {hasAdminRights && (
                       <button onClick={(e) => { e.stopPropagation(); setDeleteEventModal({ isOpen: true, id: ev.id, name: ev.name }); }} className="absolute bottom-6 right-6 p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl opacity-0 group-hover:opacity-100 transition-all z-10"><Trash2 size={18} /></button>
                     )}
                   </div>
                 );
               })}
-              {currentUser.role === 'Administrador' && (
-                <div className="bg-blue-50/50 rounded-3xl p-6 border-2 border-dashed border-blue-200 flex flex-col justify-center items-center text-blue-500 hover:bg-blue-50 hover:border-blue-400 cursor-pointer transition-all min-h-[200px]" onClick={() => setIsAddEventModalOpen(true)}>
-                  <div className="bg-white p-3 rounded-full shadow-sm mb-3"><Plus size={24} className="text-blue-600" /></div>
+              {hasAdminRights && (
+                <div className="bg-indigo-50/50 rounded-3xl p-6 border-2 border-dashed border-indigo-200 flex flex-col justify-center items-center text-indigo-500 hover:bg-indigo-50 hover:border-indigo-400 cursor-pointer transition-all min-h-[200px]" onClick={() => setIsAddEventModalOpen(true)}>
+                  <div className="bg-white p-3 rounded-full shadow-sm mb-3"><Plus size={24} className="text-indigo-600" /></div>
                   <span className="font-bold text-sm">Crear Nuevo Evento</span>
                 </div>
               )}
@@ -1007,7 +4222,7 @@ const App = () => {
               <h3 className="text-xl font-black text-slate-800 mb-2">Eliminar Evento</h3>
               <p className="text-sm text-slate-500 mb-6">¿Estás seguro de que deseas eliminar <strong>"{deleteEventModal.name}"</strong>? Esta acción no se puede deshacer.</p>
               <div className="flex gap-3">
-                <button onClick={() => setDeleteEventModal({ isOpen: false, id: null, name: '' })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
+                <button onClick={() => setDeleteEventModal({ isOpen: false, id: null, name: '' })} className={btnSecondary}>Cancelar</button>
                 <button onClick={confirmDeleteEvent} className="flex-1 py-3 px-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-colors text-sm shadow-lg shadow-red-200">Sí, eliminar</button>
               </div>
             </div>
@@ -1021,22 +4236,26 @@ const App = () => {
               <p className="text-sm text-slate-500 mb-6">Ingresa los detalles para el nuevo evento.</p>
               <div className="space-y-4">
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Título del Evento</label>
-                  <input type="text" autoFocus className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 font-bold text-slate-700 text-sm" placeholder="Ej. Campamento Jóvenes 2027" value={newEventData.name} onChange={e => setNewEventData({ ...newEventData, name: e.target.value })} />
+                  <label className={labelClasses}>Título del Evento</label>
+                  <input type="text" autoFocus className={inputClasses} placeholder="Ej. Campamento Jóvenes 2027" value={newEventData.name} onChange={e => setNewEventData({ ...newEventData, name: e.target.value })} />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Fecha del Evento (Opcional)</label>
-                  <input type="date" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 font-bold text-slate-700 text-sm" value={newEventData.date} onChange={e => setNewEventData({ ...newEventData, date: e.target.value })} />
+                  <label className={labelClasses}>Costo Base ($) Inicial</label>
+                  <input type="number" className={inputClasses} placeholder="Ej. 150" value={newEventData.baseCost} onChange={e => setNewEventData({ ...newEventData, baseCost: e.target.value })} />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Tipo de Evento</label>
-                  <select className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 font-bold text-slate-700 text-sm" value={newEventData.type} onChange={e => setNewEventData({ ...newEventData, type: e.target.value })}>
+                  <label className={labelClasses}>Fecha del Evento (Opcional)</label>
+                  <input type="date" className={inputClasses} value={newEventData.date} onChange={e => setNewEventData({ ...newEventData, date: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <label className={labelClasses}>Tipo de Evento</label>
+                  <select className={inputClasses} value={newEventData.type} onChange={e => setNewEventData({ ...newEventData, type: e.target.value })}>
                     {EVENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                 </div>
                 <div className="flex gap-3 pt-4">
-                  <button onClick={() => { setIsAddEventModalOpen(false); setNewEventData({ name: '', type: 'Campa', date: '' }); }} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
-                  <button onClick={handleCreateEvent} disabled={!newEventData.name.trim()} className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white font-bold rounded-xl transition-colors text-sm flex justify-center items-center gap-2 shadow-lg shadow-blue-200"><Plus size={18} /> Crear</button>
+                  <button onClick={() => { setIsAddEventModalOpen(false); setNewEventData({ name: '', type: 'Campa', date: '', baseCost: '' }); }} className={btnSecondary}>Cancelar</button>
+                  <button onClick={handleCreateEvent} disabled={!newEventData.name.trim()} className={btnPrimary}><Plus size={18} /> Crear</button>
                 </div>
               </div>
             </div>
@@ -1047,21 +4266,197 @@ const App = () => {
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
               <h3 className="text-lg font-bold text-slate-800 mb-1">Editar Usuario</h3>
-              <p className="text-sm text-slate-500 mb-6">Modifica los datos del usuario.</p>
+              <p className="text-sm text-slate-500 mb-4">Modifica los datos del usuario.</p>
               <form onSubmit={handleUpdateUser} className="space-y-4">
-                <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Usuario</label><input type="text" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.username} onChange={e => setEditingUser({ ...editingUser, username: e.target.value })} /></div>
-                <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Rol</label><select className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.role} onChange={e => setEditingUser({ ...editingUser, role: e.target.value })}><option value="Administrador">Administrador</option><option value="Editor">Editor</option><option value="Lector">Lector</option></select></div>
-                <div className="border-t border-slate-100 pt-4 mt-2 space-y-4">
-                  <p className="text-xs font-bold text-slate-800">Cambio de Contraseña</p>
-                  <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Contraseña Actual</label><input type="password" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.currentPasswordInput} onChange={e => setEditingUser({ ...editingUser, currentPasswordInput: e.target.value })} /></div>
-                  <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Nueva Contraseña</label><input type="password" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.newPassword} onChange={e => setEditingUser({ ...editingUser, newPassword: e.target.value })} /></div>
-                  <div><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Confirmar Nueva Contraseña</label><input type="password" required className="w-full px-4 py-2 mt-1 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700 text-sm" value={editingUser.confirmPassword} onChange={e => setEditingUser({ ...editingUser, confirmPassword: e.target.value })} /></div>
+                {(() => {
+                  const isSelfEdit = String(currentUser?.id) === String(editingUser.id);
+                  const isTargetSuperUser = editingUser.role === 'SuperUsuario';
+                  return (
+                    <>
+                <div>
+                  <label className={labelClasses}>Usuario</label>
+                  <input type="text" required disabled={!isSelfEdit} className={`${inputClasses} ${!isSelfEdit ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : ''}`} value={editingUser.username} onChange={e => setEditingUser({ ...editingUser, username: e.target.value })} />
+                  {!isSelfEdit && <p className="text-[10px] text-slate-500 font-semibold mt-1">Solo el propio usuario puede modificar usuario y contraseña.</p>}
                 </div>
+                <div>
+                  <label className={labelClasses}>Rol</label>
+                  <select disabled={isTargetSuperUser} className={`${inputClasses} ${isTargetSuperUser ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : ''}`} value={editingUser.role} onChange={e => setEditingUser({ ...editingUser, role: e.target.value })}>
+                    {editingUser.role === 'SuperUsuario' && <option value="SuperUsuario">SuperUsuario</option>}
+                    <option value="Administrador">Administrador</option>
+                    <option value="Editor">Editor</option>
+                    <option value="Lector">Lector</option>
+                  </select>
+                  {isTargetSuperUser && <p className="text-[10px] text-slate-500 font-semibold mt-1">El SuperUsuario no puede cambiar rol ni niveles de acceso.</p>}
+                </div>
+                <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className={labelClasses}>Permisos</p>
+                  {!isSuperUser && (
+                    <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede modificar permisos avanzados.</p>
+                  )}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      <input type="checkbox" className="accent-indigo-600" checked={!!editingUser.canViewFinances} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewFinances: e.target.checked })} />
+                      Ver finanzas
+                    </label>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      <input type="checkbox" className="accent-indigo-600" checked={!!editingUser.canViewHiddenDonations} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewHiddenDonations: e.target.checked })} />
+                      Ver donaciones ocultas
+                    </label>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      <input type="checkbox" className="accent-emerald-600" checked={!!editingUser.canViewExpenses} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewExpenses: e.target.checked })} />
+                      Lista de gastos
+                    </label>
+                  </div>
+                </div>
+                <div>
+                  <label className={labelClasses}>Ventana inicial al entrar al evento</label>
+                  <select className={inputClasses} value={editingUser.preferredLandingTab || 'Summary'} onChange={e => setEditingUser({ ...editingUser, preferredLandingTab: e.target.value })}>
+                    <option value="Summary">Resumen General</option>
+                    {(
+                      ['Administrador', 'SuperUsuario'].includes(editingUser.role)
+                        ? globalLocations
+                        : ((editingUser.allowedLocations || []).length ? editingUser.allowedLocations : globalLocations)
+                    ).map((loc) => <option key={`pref-edit-${loc}`} value={loc}>{loc}</option>)}
+                  </select>
+                </div>
+                {editingUser.role !== 'SuperUsuario' && (
+                  <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <p className={labelClasses}>Accesos permitidos</p>
+                    {!isSuperUser && <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede ajustar accesos por evento/sede.</p>}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Eventos</label>
+                        <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+                          <input
+                            type="checkbox"
+                            className="accent-indigo-600"
+                            disabled={!isSuperUser}
+                            checked={(editingUser.allowedEventIds || []).length === 0}
+                            onChange={(e) => setEditingUser({ ...editingUser, allowedEventIds: e.target.checked ? [] : (sortedEvents[0] ? [sortedEvents[0].id] : []) })}
+                          />
+                          Todos los eventos
+                        </label>
+                        <div className="max-h-24 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1 bg-white">
+                          {sortedEvents.map((ev) => {
+                            const checked = (editingUser.allowedEventIds || []).includes(ev.id);
+                            return (
+                              <label key={ev.id} className="flex items-center gap-2 text-xs text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  className="accent-indigo-600"
+                                  disabled={!isSuperUser}
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    const prev = editingUser.allowedEventIds || [];
+                                    const next = e.target.checked ? [...prev, ev.id] : prev.filter((id) => id !== ev.id);
+                                    setEditingUser({ ...editingUser, allowedEventIds: next });
+                                  }}
+                                />
+                                {ev.name}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Sedes</label>
+                        <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+                          <input
+                            type="checkbox"
+                            className="accent-indigo-600"
+                            disabled={!isSuperUser}
+                            checked={(editingUser.allowedLocations || []).length === 0}
+                            onChange={(e) => setEditingUser({ ...editingUser, allowedLocations: e.target.checked ? [] : (globalLocations[0] ? [globalLocations[0]] : []) })}
+                          />
+                          Todas las sedes
+                        </label>
+                        <div className="max-h-24 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1 bg-white">
+                          {globalLocations.map((loc) => {
+                            const checked = (editingUser.allowedLocations || []).includes(loc);
+                            return (
+                              <label key={loc} className="flex items-center gap-2 text-xs text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  className="accent-indigo-600"
+                                  disabled={!isSuperUser}
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    const prev = editingUser.allowedLocations || [];
+                                    const next = e.target.checked ? [...prev, loc] : prev.filter((x) => x !== loc);
+                                    setEditingUser({ ...editingUser, allowedLocations: next });
+                                  }}
+                                />
+                                {loc}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {isSelfEdit && (
+                  <div className="border-t border-slate-100 pt-4 mt-2 space-y-4">
+                    <p className="text-xs font-bold text-slate-800">Cambio de Contraseña <span className="text-[10px] text-slate-400 font-normal">(Opcional)</span></p>
+                    <div><label className={labelClasses}>Contraseña Actual</label><input type="password" className={inputClasses} value={editingUser.currentPasswordInput} onChange={e => setEditingUser({ ...editingUser, currentPasswordInput: e.target.value })} /></div>
+                    <div><label className={labelClasses}>Nueva Contraseña</label><input type="password" className={inputClasses} value={editingUser.newPassword} onChange={e => setEditingUser({ ...editingUser, newPassword: e.target.value })} /></div>
+                    <div><label className={labelClasses}>Confirmar Nueva Contraseña</label><input type="password" className={inputClasses} value={editingUser.confirmPassword} onChange={e => setEditingUser({ ...editingUser, confirmPassword: e.target.value })} /></div>
+                  </div>
+                )}
                 <div className="flex gap-3 pt-4">
-                  <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor' })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
-                  <button type="submit" className="flex-1 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-colors text-sm flex justify-center items-center gap-2 shadow-lg shadow-indigo-200">Guardar</button>
+                  <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' })} className={btnSecondary}>Cancelar</button>
+                  <button type="submit" className={btnPrimary}>Guardar</button>
                 </div>
+                    </>
+                  );
+                })()}
               </form>
+            </div>
+          </div>
+        )}
+
+        {renameModal.isOpen && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
+              <h3 className="text-lg font-bold text-slate-800 mb-1">Renombrar Evento</h3>
+              <p className="text-sm text-slate-500 mb-6">Ingresa el nuevo nombre para este evento.</p>
+              <div className="space-y-4">
+                <input type="text" autoFocus className={inputClasses} placeholder="Nombre del Evento" value={renameModal.name} onChange={e => setRenameModal({...renameModal, name: e.target.value})} onKeyDown={e => e.key === 'Enter' && handleRenameEvent()} />
+                <div className="flex gap-3 pt-2">
+                  <button onClick={() => setRenameModal({isOpen: false, id: null, name: ''})} className={btnSecondary}>Cancelar</button>
+                  <button onClick={handleRenameEvent} disabled={!renameModal.name.trim()} className={btnPrimary}>Guardar</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {restoreModal.isOpen && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center">
+              <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${restoreModal.type === 'single' || restoreModal.type === 'backup' ? 'bg-indigo-50 text-indigo-500' : 'bg-red-50 text-red-500'}`}>
+                {restoreModal.type === 'single' ? <Undo size={32} /> : restoreModal.type === 'rollback' ? <History size={32} /> : restoreModal.type === 'backup' ? <Database size={32} /> : <Trash2 size={32} />}
+              </div>
+              <h3 className="text-xl font-black text-slate-800 mb-2">
+                {restoreModal.type === 'single' ? 'Restaurar Cambio' : restoreModal.type === 'rollback' ? 'Revertir Cambios' : restoreModal.type === 'backup' ? 'Restaurar Copia de Seguridad' : 'Limpiar Registros'}
+              </h3>
+              <p className="text-sm text-slate-500 mb-6">
+                {restoreModal.type === 'single' 
+                  ? `¿Deseas deshacer la acción específica: "${restoreModal.log?.action}"?` 
+                  : restoreModal.type === 'rollback'
+                  ? `¿Estás seguro de deshacer TODOS los cambios desde el evento "${restoreModal.log?.action}" hasta ahora? Esta acción revertirá múltiples operaciones.`
+                  : restoreModal.type === 'backup'
+                  ? `ATENCIÓN: Estás a punto de restaurar la base de datos a la versión del: ${restoreModal.log?.revertInfo?.backupId}. Esto sobrescribirá todos los participantes y eventos actuales. ¿Deseas continuar?`
+                  : restoreModal.type === 'cleanOld'
+                  ? `¿Estás seguro de eliminar todos los registros de actividad con más de 30 días de antigüedad? Esta acción no se puede deshacer.`
+                  : `ATENCIÓN SUPERUSUARIO: ¿Estás seguro de eliminar todos los registros RECIENTES (menos de 30 días)? Esta acción es irreversible.`}
+              </p>
+              <div className="flex gap-3">
+                <button onClick={() => setRestoreModal({ isOpen: false, log: null, type: 'single' })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
+                <button onClick={confirmRestore} className={`flex-1 py-3 px-4 text-white font-bold rounded-xl transition-colors text-sm shadow-lg ${restoreModal.type === 'single' || restoreModal.type === 'backup' ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200' : 'bg-red-500 hover:bg-red-600 shadow-red-200'}`}>
+                  Sí, Confirmar
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -1072,17 +4467,19 @@ const App = () => {
   // ─────────────────────────────────────────────
   //  SCREEN 3: MAIN APP
   // ─────────────────────────────────────────────
-  const isCampa = currentEvent.eventType === 'Campa';
-  const isDesayuno = currentEvent.eventType === 'Desayuno Conferencia';
-  const isGeneral = currentEvent.eventType === 'General';
-
   const getPieChartGradient = (dataKey) => {
-    let total = dataKey === 'paid' ? summary.globalStats.all.paid : summary.globalStats.all.count;
+    const totalPaid = showGrossWithoutCommission
+      ? (summary.globalStats.all.paidGross ?? summary.globalStats.all.paid)
+      : summary.globalStats.all.paid;
+    let total = dataKey === 'paid' ? totalPaid : summary.globalStats.all.count;
     if (total === 0) return '#f1f5f9';
     let curPerc = 0;
     return `conic-gradient(${(currentEvent?.locations || []).map((loc, i) => {
-      if (!isLocOpen(loc)) return '';
-      const val = dataKey === 'paid' ? summary.locationStats[loc].all.paid : summary.locationStats[loc].all.count;
+      const val = dataKey === 'paid'
+        ? (showGrossWithoutCommission
+          ? (summary.locationStats[loc].all.paidGross ?? summary.locationStats[loc].all.paid)
+          : summary.locationStats[loc].all.paid)
+        : summary.locationStats[loc].all.count;
       const per = (val / total) * 100;
       if (per === 0) return '';
       const stop = `${CHART_COLORS[i % CHART_COLORS.length]} ${curPerc}% ${curPerc + per}%`;
@@ -1091,10 +4488,1238 @@ const App = () => {
     }).filter(Boolean).join(', ')})`;
   };
 
+  const renderBecadosPage = () => {
+    if (!currentEvent) return null;
+    const eventId = currentEvent.id;
+    const approvedRaw = [];
+    const pendingRaw = [];
+    for (const p of allParticipants) {
+      if (p.eventId !== eventId || !participantIsActiveInEvent(p) || p.isScholarship !== 'Sí') continue;
+      if (participantIsRosterRow(p)) approvedRaw.push(p);
+      else if (participantIsWaitlistRow(p)) pendingRaw.push(p);
+    }
+    const hasLocationFilter = scholarshipLocationFilters.length > 0;
+    const approved = hasLocationFilter ? approvedRaw.filter((p) => scholarshipLocationFilters.includes(p.location)) : approvedRaw;
+    const pending = hasLocationFilter ? pendingRaw.filter((p) => scholarshipLocationFilters.includes(p.location)) : pendingRaw;
+    const byName = (a, b) => (a.name || '').localeCompare(b.name || '', 'es');
+    approved.sort(byName);
+    pending.sort(byName);
+    let totalCondonedApproved = 0;
+    let totalCondonedPending = 0;
+    for (const p of approved) totalCondonedApproved += getScholarshipCondonedAmount(p);
+    for (const p of pending) totalCondonedPending += getScholarshipCondonedAmount(p);
+
+    const rowSede = (p) => p.location || p.travelFrom || p.travelTo || '—';
+    const rowTipo = (p) => {
+      if (p.scholarshipType === 'partial') return 'Parcial';
+      if (p.scholarshipType === 'total' || p.scholarshipType === 'none') return 'Total';
+      return 'Total';
+    };
+
+    const renderTable = (rows, emptyMsg) => {
+      if (!rows.length) {
+        return <p className="text-sm text-slate-400 italic py-8 text-center">{emptyMsg}</p>;
+      }
+      return (
+        <div className="overflow-x-auto rounded-xl border border-slate-100">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="bg-slate-50 text-[10px] uppercase tracking-wider font-black text-slate-500 border-b border-slate-100">
+                <th className="px-4 py-3">Nombre</th>
+                <th className="px-4 py-3">Sede</th>
+                <th className="px-4 py-3">Tipo</th>
+                <th className="px-4 py-3 text-right">Costo lista</th>
+                <th className="px-4 py-3 text-right">Condonado (beca)</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {rows.map((p) => {
+                const list = resolveRegisteredCost(p, currentPricing);
+                const cond = getScholarshipCondonedAmount(p);
+                return (
+                  <tr key={p.id} className="hover:bg-slate-50/80">
+                    <td className="px-4 py-3 font-bold text-slate-800">{p.name || '—'}</td>
+                    <td className="px-4 py-3 text-slate-600">{rowSede(p)}</td>
+                    <td className="px-4 py-3">
+                      <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-lg bg-purple-50 text-purple-700 border border-purple-100">
+                        {rowTipo(p)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-xs">{formatMoney(list)}</td>
+                    <td className="px-4 py-3 text-right font-mono text-xs font-bold text-purple-700">{formatMoney(cond)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    };
+
+    return (
+      <div className="p-6 space-y-8 animate-in fade-in duration-300 max-w-6xl mx-auto">
+        <div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-2xl font-black text-slate-800 flex items-center gap-2">
+              <GraduationCap className="text-purple-600" size={28} /> Becados
+            </h2>
+            <div className="relative" data-dropdown-root="scholarship-locations-filters">
+              <button
+                type="button"
+                onClick={() => setScholarshipLocationsDropdownOpen((v) => !v)}
+                className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-100 transition-colors text-xs font-black text-slate-700"
+              >
+                <Filter size={14} className="text-slate-500" />
+                Filtros de sede
+                {scholarshipLocationFilters.length > 0 ? (
+                  <span className="ml-1 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-black">
+                    {scholarshipLocationFilters.length}
+                  </span>
+                ) : null}
+              </button>
+              {scholarshipLocationsDropdownOpen && (
+                <div className="absolute right-0 top-full mt-2 z-30 w-[280px] max-w-[90vw] bg-white border border-slate-200 rounded-xl shadow-xl p-3 space-y-2">
+                  <p className="text-[10px] font-black text-slate-500 uppercase">Sedes</p>
+                  <div className="max-h-44 overflow-auto space-y-1">
+                    {(currentEvent.locations || []).map((loc) => (
+                      <label key={`becados-filter-${loc}`} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded accent-indigo-600"
+                          checked={scholarshipLocationFilters.includes(loc)}
+                          onChange={() => setScholarshipLocationFilters((prev) => (
+                            prev.includes(loc) ? prev.filter((x) => x !== loc) : [...prev, loc]
+                          ))}
+                        />
+                        {loc}
+                      </label>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setScholarshipLocationFilters([])}
+                    className="w-full py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-black text-slate-700 transition-colors"
+                  >
+                    Limpiar filtros
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+          <p className="text-sm text-slate-500 mt-1">
+            Becados ya inscritos en el evento y solicitudes de beca en lista de espera. El condonado es lo que la organización deja de cobrar respecto al costo de lista.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Costo total de beca (aprobados)</p>
+            <p className="text-2xl font-black text-purple-700">{formatMoney(totalCondonedApproved)}</p>
+            <p className="text-xs text-slate-500 mt-2">Suma del monto condonado de becados ya aceptados e inscritos.</p>
+          </div>
+          <div className="rounded-2xl border border-amber-100 shadow-sm p-5 bg-amber-50/40">
+            <p className="text-[10px] font-black text-amber-800 uppercase tracking-widest mb-1">Costo total de beca solicitada pendiente</p>
+            <p className="text-2xl font-black text-amber-800">{formatMoney(totalCondonedPending)}</p>
+            <p className="text-xs text-slate-600 mt-2">Suma del monto condonado si se aprueban todas las solicitudes actuales en lista de espera.</p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 space-y-4">
+          <h3 className="text-sm font-black text-slate-700 uppercase tracking-wider flex items-center gap-2">
+            <CheckCircle2 size={18} className="text-emerald-600" /> Becados aprobados (inscritos)
+            <span className="text-slate-400 font-bold normal-case text-xs">({approved.length})</span>
+          </h3>
+          {renderTable(approved, 'No hay becados aprobados en este evento.')}
+        </div>
+
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 space-y-4">
+          <h3 className="text-sm font-black text-slate-700 uppercase tracking-wider flex items-center gap-2">
+            <CalendarRange size={18} className="text-amber-600" /> Lista de espera (solicitud de beca)
+            <span className="text-slate-400 font-bold normal-case text-xs">({pending.length})</span>
+          </h3>
+          {renderTable(pending, 'No hay solicitudes de beca en lista de espera.')}
+        </div>
+      </div>
+    );
+  };
+
+  const renderCashCutPage = () => {
+    const allPayments = [];
+    const locs = currentEvent?.locations || [];
+    locs.forEach(loc => {
+      (data[loc] || []).forEach(person => {
+        (person.paymentHistory || []).forEach(h => {
+          if (h.kind === 'comment') return;
+          const ts = typeof h.id === 'number' ? h.id : Date.now();
+          allPayments.push({
+            ...h,
+            _ts: ts,
+            _date: new Date(ts),
+            _personName: person.name || '',
+            _personId: person.id,
+            _loc: loc,
+          });
+        });
+      });
+    });
+
+    const eventDonationsForCut = donations.filter(d => d.eventId === currentEvent?.id);
+
+    const getWeekKey = (d) => {
+      const dt = new Date(d);
+      const day = dt.getDay();
+      const diff = dt.getDate() - day + (day === 0 ? -6 : 1);
+      const monday = new Date(dt.setDate(diff));
+      return monday.toISOString().slice(0, 10);
+    };
+
+    const getDateKey = (d) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${dd}`;
+    };
+
+    const weekMap = {};
+    allPayments.forEach(p => {
+      const wk = getWeekKey(p._date);
+      if (!weekMap[wk]) weekMap[wk] = { payments: [], efectivo: 0, tarjeta: 0, total: 0, totalNet: 0, count: 0, donations: 0 };
+      weekMap[wk].payments.push(p);
+      const amt = parseFloat(p.amount) || 0;
+      const net = parseFloat(p.netAmount ?? p.amount) || 0;
+      if (p.method === 'Tarjeta') weekMap[wk].tarjeta += amt;
+      else weekMap[wk].efectivo += amt;
+      weekMap[wk].total += amt;
+      weekMap[wk].totalNet += net;
+      weekMap[wk].count++;
+    });
+
+    eventDonationsForCut.forEach(don => {
+      const dt = new Date(don.createdAt);
+      const wk = getWeekKey(dt);
+      if (!weekMap[wk]) weekMap[wk] = { payments: [], efectivo: 0, tarjeta: 0, total: 0, totalNet: 0, count: 0, donations: 0 };
+      weekMap[wk].donations += parseFloat(don.amount) || 0;
+      weekMap[wk].total += parseFloat(don.amount) || 0;
+      weekMap[wk].totalNet += parseFloat(don.amount) || 0;
+    });
+
+    const sundayMap = {};
+    allPayments.filter(p => p._date.getDay() === 0).forEach(p => {
+      const dk = getDateKey(p._date);
+      if (!sundayMap[dk]) sundayMap[dk] = { payments: [], byService: {}, efectivo: 0, tarjeta: 0, total: 0, totalNet: 0, count: 0, donations: 0 };
+      sundayMap[dk].payments.push(p);
+      const amt = parseFloat(p.amount) || 0;
+      const net = parseFloat(p.netAmount ?? p.amount) || 0;
+      const svc = p.service || 'Sin servicio';
+      if (!sundayMap[dk].byService[svc]) sundayMap[dk].byService[svc] = { efectivo: 0, tarjeta: 0, total: 0, totalNet: 0, count: 0 };
+      sundayMap[dk].byService[svc].count++;
+      sundayMap[dk].byService[svc].total += amt;
+      sundayMap[dk].byService[svc].totalNet += net;
+      if (p.method === 'Tarjeta') {
+        sundayMap[dk].tarjeta += amt;
+        sundayMap[dk].byService[svc].tarjeta += amt;
+      } else {
+        sundayMap[dk].efectivo += amt;
+        sundayMap[dk].byService[svc].efectivo += amt;
+      }
+      sundayMap[dk].total += amt;
+      sundayMap[dk].totalNet += net;
+      sundayMap[dk].count++;
+    });
+
+    eventDonationsForCut.forEach(don => {
+      const dt = new Date(don.createdAt);
+      if (dt.getDay() !== 0) return;
+      const dk = getDateKey(dt);
+      if (!sundayMap[dk]) sundayMap[dk] = { payments: [], byService: {}, efectivo: 0, tarjeta: 0, total: 0, totalNet: 0, count: 0, donations: 0 };
+      sundayMap[dk].donations += parseFloat(don.amount) || 0;
+      sundayMap[dk].total += parseFloat(don.amount) || 0;
+      sundayMap[dk].totalNet += parseFloat(don.amount) || 0;
+    });
+
+    const dayMap = {};
+    allPayments.forEach(p => {
+      const dk = getDateKey(p._date);
+      if (!dayMap[dk]) dayMap[dk] = { payments: [], efectivo: 0, tarjeta: 0, total: 0, totalNet: 0, count: 0, donations: 0, isSunday: p._date.getDay() === 0, byService: {} };
+      dayMap[dk].payments.push(p);
+      const amt = parseFloat(p.amount) || 0;
+      const net = parseFloat(p.netAmount ?? p.amount) || 0;
+      if (p.method === 'Tarjeta') dayMap[dk].tarjeta += amt;
+      else dayMap[dk].efectivo += amt;
+      dayMap[dk].total += amt;
+      dayMap[dk].totalNet += net;
+      dayMap[dk].count++;
+      if (p._date.getDay() === 0) {
+        const svc = p.service || 'Sin servicio';
+        if (!dayMap[dk].byService[svc]) dayMap[dk].byService[svc] = { efectivo: 0, tarjeta: 0, total: 0, totalNet: 0, count: 0 };
+        dayMap[dk].byService[svc].count++;
+        dayMap[dk].byService[svc].total += amt;
+        dayMap[dk].byService[svc].totalNet += net;
+        if (p.method === 'Tarjeta') dayMap[dk].byService[svc].tarjeta += amt;
+        else dayMap[dk].byService[svc].efectivo += amt;
+      }
+    });
+    eventDonationsForCut.forEach(don => {
+      const dt = new Date(don.createdAt);
+      const dk = getDateKey(dt);
+      if (!dayMap[dk]) dayMap[dk] = { payments: [], efectivo: 0, tarjeta: 0, total: 0, totalNet: 0, count: 0, donations: 0, isSunday: dt.getDay() === 0, byService: {} };
+      dayMap[dk].donations += parseFloat(don.amount) || 0;
+      dayMap[dk].total += parseFloat(don.amount) || 0;
+      dayMap[dk].totalNet += parseFloat(don.amount) || 0;
+    });
+
+    const getMonthKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const monthMap = {};
+    allPayments.forEach(p => {
+      const mk = getMonthKey(p._date);
+      if (!monthMap[mk]) monthMap[mk] = { payments: [], efectivo: 0, tarjeta: 0, total: 0, totalNet: 0, count: 0, donations: 0 };
+      monthMap[mk].payments.push(p);
+      const amt = parseFloat(p.amount) || 0;
+      const net = parseFloat(p.netAmount ?? p.amount) || 0;
+      if (p.method === 'Tarjeta') monthMap[mk].tarjeta += amt;
+      else monthMap[mk].efectivo += amt;
+      monthMap[mk].total += amt;
+      monthMap[mk].totalNet += net;
+      monthMap[mk].count++;
+    });
+    eventDonationsForCut.forEach(don => {
+      const dt = new Date(don.createdAt);
+      const mk = getMonthKey(dt);
+      if (!monthMap[mk]) monthMap[mk] = { payments: [], efectivo: 0, tarjeta: 0, total: 0, totalNet: 0, count: 0, donations: 0 };
+      monthMap[mk].donations += parseFloat(don.amount) || 0;
+      monthMap[mk].total += parseFloat(don.amount) || 0;
+      monthMap[mk].totalNet += parseFloat(don.amount) || 0;
+    });
+
+    const weekKeys = Object.keys(weekMap).sort((a, b) => b.localeCompare(a));
+    const sundayKeys = Object.keys(sundayMap).sort((a, b) => b.localeCompare(a));
+    const dayKeys = Object.keys(dayMap).sort((a, b) => b.localeCompare(a));
+    const monthKeys = Object.keys(monthMap).sort((a, b) => b.localeCompare(a));
+
+    const formatDateRange = (mondayStr) => {
+      const mon = new Date(mondayStr + 'T12:00:00');
+      const sun = new Date(mon);
+      sun.setDate(sun.getDate() + 6);
+      const f = (d) => d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' });
+      return `${f(mon)} – ${f(sun)}, ${mon.getFullYear()}`;
+    };
+
+    const formatSunday = (dk) => {
+      const d = new Date(dk + 'T12:00:00');
+      return d.toLocaleDateString('es-MX', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+    };
+
+    const formatDay = (dk) => {
+      const d = new Date(dk + 'T12:00:00');
+      return d.toLocaleDateString('es-MX', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+    };
+
+    const formatMonth = (mk) => {
+      const [y, m] = mk.split('-');
+      const d = new Date(Number(y), Number(m) - 1, 1);
+      return d.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
+    };
+
+    const serviceSlots = globalConfig?.serviceSlots || DEFAULT_SERVICE_SLOTS;
+    const serviceOrder = SERVICE_OPTIONS;
+
+    return (
+      <div className="p-6 space-y-6 animate-in fade-in duration-500">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3">
+              <Scissors size={24} className="text-green-600" /> Corte de Caja
+            </h2>
+            <p className="text-sm text-slate-500 mt-1">Resumen de ingresos por periodo · {currentEvent?.name}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCashCutGross(prev => !prev)}
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs flex items-center gap-2"
+            >
+              <Wallet size={14} /> {cashCutGross ? 'Ver Neto' : 'Ver Bruto'}
+            </button>
+            <button
+              onClick={() => {
+                setServiceSlotsForm(globalConfig?.serviceSlots || DEFAULT_SERVICE_SLOTS);
+                setServiceSlotsModal({ isOpen: true });
+              }}
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs flex items-center gap-2"
+            >
+              <Settings2 size={14} /> Configurar Horarios
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="bg-white rounded-xl border border-slate-200 p-1 flex">
+            {[
+              { key: 'daily', label: 'Diario' },
+              { key: 'sunday', label: 'Domingos' },
+              { key: 'weekly', label: 'Semanal' },
+              { key: 'monthly', label: 'Mensual' },
+            ].map(m => (
+              <button
+                key={m.key}
+                onClick={() => { setCashCutMode(m.key); setCashCutSelected('all'); setExpandedCut(null); }}
+                className={`px-3 py-2 rounded-lg text-xs font-bold transition-colors ${cashCutMode === m.key ? 'bg-green-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          {cashCutMode === 'daily' && dayKeys.length > 0 && (
+            <select value={cashCutSelected} onChange={e => { setCashCutSelected(e.target.value); setExpandedCut(null); }} className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-green-500">
+              <option value="all">Todos los días</option>
+              {dayKeys.map(dk => <option key={dk} value={dk}>{formatDay(dk)}</option>)}
+            </select>
+          )}
+          {cashCutMode === 'sunday' && sundayKeys.length > 0 && (
+            <select value={cashCutSelected} onChange={e => { setCashCutSelected(e.target.value); setExpandedCut(null); }} className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-green-500">
+              <option value="all">Todos los domingos</option>
+              {sundayKeys.map(dk => <option key={dk} value={dk}>{formatSunday(dk)}</option>)}
+            </select>
+          )}
+          {cashCutMode === 'weekly' && weekKeys.length > 0 && (
+            <select value={cashCutSelected} onChange={e => { setCashCutSelected(e.target.value); setExpandedCut(null); }} className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-green-500">
+              <option value="all">Todas las semanas</option>
+              {weekKeys.map(wk => <option key={wk} value={wk}>{formatDateRange(wk)}</option>)}
+            </select>
+          )}
+          {cashCutMode === 'monthly' && monthKeys.length > 0 && (
+            <select value={cashCutSelected} onChange={e => { setCashCutSelected(e.target.value); setExpandedCut(null); }} className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-green-500">
+              <option value="all">Todos los meses</option>
+              {monthKeys.map(mk => <option key={mk} value={mk} className="capitalize">{formatMonth(mk)}</option>)}
+            </select>
+          )}
+          {cashCutMode === 'sunday' && (
+            <div className="text-xs text-slate-400 font-bold">
+              Horarios: {serviceOrder.map(s => `${s} ${serviceSlots[s]?.start || '?'}–${serviceSlots[s]?.end || '?'}`).join(' · ')}
+            </div>
+          )}
+        </div>
+
+        {cashCutMode === 'sunday' && (
+          <div className="space-y-4">
+            {sundayKeys.length === 0 ? (
+              <div className="bg-white p-8 rounded-2xl border border-slate-100 text-center">
+                <p className="text-slate-400 text-sm italic">No hay pagos registrados en domingo.</p>
+              </div>
+            ) : sundayKeys.filter(dk => cashCutSelected === 'all' || dk === cashCutSelected).map(dk => {
+              const cut = sundayMap[dk];
+              const isExpanded = cashCutSelected !== 'all' || expandedCut === `sun-${dk}`;
+              return (
+                <div key={dk} className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedCut(isExpanded ? null : `sun-${dk}`)}
+                    className="w-full p-5 flex items-center justify-between text-left hover:bg-slate-50/50 transition-colors"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="bg-green-100 p-2.5 rounded-xl text-green-600"><Calendar size={20} /></div>
+                      <div>
+                        <p className="font-black text-slate-800 capitalize">{formatSunday(dk)}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{cut.count} movimiento{cut.count !== 1 ? 's' : ''}{cut.donations > 0 ? ` + donaciones $${cut.donations.toLocaleString()}` : ''}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <p className="text-lg font-black text-green-600">{formatMoney(cashCutGross ? cut.total : cut.totalNet)}</p>
+                        <p className="text-[10px] text-slate-400 font-bold">Efectivo: {formatMoney(cut.efectivo)} · Tarjeta: {formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
+                      </div>
+                      {isExpanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+                    </div>
+                  </button>
+                  {isExpanded && (
+                    <div className="px-5 pb-5 border-t border-slate-100">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+                        {serviceOrder.map(svc => {
+                          const svcData = cut.byService[svc];
+                          if (!svcData) return (
+                            <div key={svc} className="rounded-xl border border-slate-100 bg-slate-50/50 p-4">
+                              <p className="text-xs font-black text-slate-500 uppercase tracking-wider mb-2">{svc}</p>
+                              <p className="text-sm text-slate-400 italic">Sin movimientos</p>
+                              <p className="text-[10px] text-slate-400 mt-1">{serviceSlots[svc]?.start || '?'} – {serviceSlots[svc]?.end || '?'}</p>
+                            </div>
+                          );
+                          return (
+                            <div key={svc} className="rounded-xl border border-green-100 bg-green-50/30 p-4">
+                              <p className="text-xs font-black text-green-700 uppercase tracking-wider mb-2">{svc}</p>
+                              <p className="text-xl font-black text-slate-800">{formatMoney(cashCutGross ? svcData.total : svcData.totalNet)}</p>
+                              <div className="mt-2 space-y-1 text-xs">
+                                <div className="flex justify-between"><span className="text-slate-500">Movimientos</span><span className="font-bold text-slate-700">{svcData.count}</span></div>
+                                <div className="flex justify-between"><span className="text-emerald-600">Efectivo</span><span className="font-bold">{formatMoney(svcData.efectivo)}</span></div>
+                                <div className="flex justify-between"><span className="text-indigo-600">Tarjeta</span><span className="font-bold">{formatMoney(cashCutGross ? svcData.tarjeta : (svcData.totalNet - svcData.efectivo))}</span></div>
+                              </div>
+                              <p className="text-[10px] text-slate-400 mt-2">{serviceSlots[svc]?.start || '?'} – {serviceSlots[svc]?.end || '?'}</p>
+                            </div>
+                          );
+                        })}
+                        {Object.keys(cut.byService).filter(s => !serviceOrder.includes(s)).map(svc => {
+                          const svcData = cut.byService[svc];
+                          return (
+                            <div key={svc} className="rounded-xl border border-amber-100 bg-amber-50/30 p-4">
+                              <p className="text-xs font-black text-amber-700 uppercase tracking-wider mb-2">{svc}</p>
+                              <p className="text-xl font-black text-slate-800">{formatMoney(cashCutGross ? svcData.total : svcData.totalNet)}</p>
+                              <div className="mt-2 space-y-1 text-xs">
+                                <div className="flex justify-between"><span className="text-slate-500">Movimientos</span><span className="font-bold text-slate-700">{svcData.count}</span></div>
+                                <div className="flex justify-between"><span className="text-emerald-600">Efectivo</span><span className="font-bold">{formatMoney(svcData.efectivo)}</span></div>
+                                <div className="flex justify-between"><span className="text-indigo-600">Tarjeta</span><span className="font-bold">{formatMoney(cashCutGross ? svcData.tarjeta : (svcData.totalNet - svcData.efectivo))}</span></div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
+                        <table className="w-full text-left text-sm">
+                          <thead>
+                            <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                              <th className="px-4 py-2.5">Hora</th>
+                              <th className="px-4 py-2.5">Persona</th>
+                              <th className="px-4 py-2.5">Sede</th>
+                              <th className="px-4 py-2.5">Servicio</th>
+                              <th className="px-4 py-2.5">Método</th>
+                              <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
+                              <th className="px-4 py-2.5">Registró</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {cut.payments.sort((a, b) => a._ts - b._ts).map((p, i) => (
+                              <tr key={`${p.id}-${i}`} className="hover:bg-slate-50/60 transition-colors">
+                                <td className="px-4 py-2 text-xs font-mono text-slate-600">{p._date.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</td>
+                                <td className="px-4 py-2 text-xs font-bold text-slate-700 truncate max-w-[150px]">{p._personName}</td>
+                                <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
+                                <td className="px-4 py-2"><span className="text-[10px] font-bold bg-green-50 text-green-700 px-2 py-0.5 rounded-full border border-green-100">{p.service || NO_SERVICE_LABEL}</span></td>
+                                <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
+                                <td className="px-4 py-2 text-right font-bold text-slate-800">{formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}</td>
+                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '–'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {cashCutMode === 'weekly' && (
+          <div className="space-y-4">
+            {weekKeys.length === 0 ? (
+              <div className="bg-white p-8 rounded-2xl border border-slate-100 text-center">
+                <p className="text-slate-400 text-sm italic">No hay pagos registrados.</p>
+              </div>
+            ) : weekKeys.filter(wk => cashCutSelected === 'all' || wk === cashCutSelected).map(wk => {
+              const cut = weekMap[wk];
+              const isExpanded = cashCutSelected !== 'all' || expandedCut === `wk-${wk}`;
+              return (
+                <div key={wk} className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedCut(isExpanded ? null : `wk-${wk}`)}
+                    className="w-full p-5 flex items-center justify-between text-left hover:bg-slate-50/50 transition-colors"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="bg-indigo-100 p-2.5 rounded-xl text-indigo-600"><CalendarRange size={20} /></div>
+                      <div>
+                        <p className="font-black text-slate-800">{formatDateRange(wk)}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{cut.count} movimiento{cut.count !== 1 ? 's' : ''}{cut.donations > 0 ? ` + donaciones $${cut.donations.toLocaleString()}` : ''}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <p className="text-lg font-black text-green-600">{formatMoney(cashCutGross ? cut.total : cut.totalNet)}</p>
+                        <p className="text-[10px] text-slate-400 font-bold">Efectivo: {formatMoney(cut.efectivo)} · Tarjeta: {formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
+                      </div>
+                      {isExpanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+                    </div>
+                  </button>
+                  {isExpanded && (
+                    <div className="px-5 pb-5 border-t border-slate-100">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+                        <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                          <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">{cashCutGross ? 'Bruto' : 'Neto'}</p>
+                          <p className="text-lg font-black text-slate-800">{formatMoney(cashCutGross ? cut.total : cut.totalNet)}</p>
+                        </div>
+                        <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                          <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Comisión tarjeta</p>
+                          <p className="text-lg font-black text-red-500">-{formatMoney(cut.total - cut.totalNet)}</p>
+                        </div>
+                        <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
+                          <p className="text-[10px] font-black text-emerald-700 uppercase tracking-wider">Efectivo</p>
+                          <p className="text-lg font-black text-slate-800">{formatMoney(cut.efectivo)}</p>
+                        </div>
+                        <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
+                          <p className="text-[10px] font-black text-indigo-700 uppercase tracking-wider">Tarjeta {cashCutGross ? '(Bruto)' : '(Neto)'}</p>
+                          <p className="text-lg font-black text-slate-800">{formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
+                        </div>
+                      </div>
+                      {cut.donations > 0 && (
+                        <div className="mt-3 rounded-xl border border-green-100 bg-green-50/50 p-3 inline-block">
+                          <p className="text-[10px] font-black text-green-700 uppercase tracking-wider">Donaciones</p>
+                          <p className="text-lg font-black text-slate-800">{formatMoney(cut.donations)}</p>
+                        </div>
+                      )}
+                      <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
+                        <table className="w-full text-left text-sm">
+                          <thead>
+                            <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                              <th className="px-4 py-2.5">Fecha / Hora</th>
+                              <th className="px-4 py-2.5">Persona</th>
+                              <th className="px-4 py-2.5">Sede</th>
+                              <th className="px-4 py-2.5">Método</th>
+                              <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
+                              <th className="px-4 py-2.5">Registró</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {cut.payments.sort((a, b) => a._ts - b._ts).map((p, i) => (
+                              <tr key={`${p.id}-${i}`} className="hover:bg-slate-50/60 transition-colors">
+                                <td className="px-4 py-2 text-xs font-mono text-slate-600">{p._date.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })} {p._date.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</td>
+                                <td className="px-4 py-2 text-xs font-bold text-slate-700 truncate max-w-[150px]">{p._personName}</td>
+                                <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
+                                <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
+                                <td className="px-4 py-2 text-right font-bold text-slate-800">{formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}</td>
+                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '–'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {cashCutMode === 'daily' && (
+          <div className="space-y-4">
+            {dayKeys.length === 0 ? (
+              <div className="bg-white p-8 rounded-2xl border border-slate-100 text-center">
+                <p className="text-slate-400 text-sm italic">No hay pagos registrados.</p>
+              </div>
+            ) : dayKeys.filter(dk => cashCutSelected === 'all' || dk === cashCutSelected).map(dk => {
+              const cut = dayMap[dk];
+              const isExpanded = cashCutSelected !== 'all' || expandedCut === `day-${dk}`;
+              return (
+                <div key={dk} className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                  <button type="button" onClick={() => setExpandedCut(isExpanded && cashCutSelected === 'all' ? null : `day-${dk}`)} className="w-full p-5 flex items-center justify-between text-left hover:bg-slate-50/50 transition-colors">
+                    <div className="flex items-center gap-4">
+                      <div className={`p-2.5 rounded-xl ${cut.isSunday ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-600'}`}><Calendar size={20} /></div>
+                      <div>
+                        <p className="font-black text-slate-800 capitalize">{formatDay(dk)}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{cut.count} movimiento{cut.count !== 1 ? 's' : ''}{cut.donations > 0 ? ` + donaciones $${cut.donations.toLocaleString()}` : ''}{cut.isSunday ? ' · Domingo' : ''}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <p className="text-lg font-black text-green-600">{formatMoney(cashCutGross ? cut.total : cut.totalNet)}</p>
+                        <p className="text-[10px] text-slate-400 font-bold">Efectivo: {formatMoney(cut.efectivo)} · Tarjeta: {formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
+                      </div>
+                      {isExpanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+                    </div>
+                  </button>
+                  {isExpanded && (
+                    <div className="px-5 pb-5 border-t border-slate-100">
+                      {cut.isSunday && Object.keys(cut.byService).length > 0 && (
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4 mb-4">
+                          {serviceOrder.map(svc => {
+                            const svcData = cut.byService[svc];
+                            if (!svcData) return (
+                              <div key={svc} className="rounded-xl border border-slate-100 bg-slate-50/50 p-4">
+                                <p className="text-xs font-black text-slate-500 uppercase tracking-wider mb-2">{svc}</p>
+                                <p className="text-sm text-slate-400 italic">Sin movimientos</p>
+                                <p className="text-[10px] text-slate-400 mt-1">{serviceSlots[svc]?.start || '?'} – {serviceSlots[svc]?.end || '?'}</p>
+                              </div>
+                            );
+                            return (
+                              <div key={svc} className="rounded-xl border border-green-100 bg-green-50/30 p-4">
+                                <p className="text-xs font-black text-green-700 uppercase tracking-wider mb-2">{svc}</p>
+                                <p className="text-xl font-black text-slate-800">{formatMoney(cashCutGross ? svcData.total : svcData.totalNet)}</p>
+                                <div className="mt-2 space-y-1 text-xs">
+                                  <div className="flex justify-between"><span className="text-slate-500">Movimientos</span><span className="font-bold text-slate-700">{svcData.count}</span></div>
+                                  <div className="flex justify-between"><span className="text-emerald-600">Efectivo</span><span className="font-bold">{formatMoney(svcData.efectivo)}</span></div>
+                                  <div className="flex justify-between"><span className="text-indigo-600">Tarjeta</span><span className="font-bold">{formatMoney(cashCutGross ? svcData.tarjeta : (svcData.totalNet - svcData.efectivo))}</span></div>
+                                </div>
+                                <p className="text-[10px] text-slate-400 mt-2">{serviceSlots[svc]?.start || '?'} – {serviceSlots[svc]?.end || '?'}</p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <div className={`overflow-x-auto rounded-xl border border-slate-200 ${!cut.isSunday || Object.keys(cut.byService).length === 0 ? 'mt-4' : ''}`}>
+                        <table className="w-full text-left text-sm">
+                          <thead>
+                            <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                              <th className="px-4 py-2.5">Hora</th>
+                              <th className="px-4 py-2.5">Persona</th>
+                              <th className="px-4 py-2.5">Sede</th>
+                              {cut.isSunday && <th className="px-4 py-2.5">Servicio</th>}
+                              <th className="px-4 py-2.5">Método</th>
+                              <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
+                              <th className="px-4 py-2.5">Registró</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {cut.payments.sort((a, b) => a._ts - b._ts).map((p, i) => (
+                              <tr key={`${p.id}-${i}`} className="hover:bg-slate-50/60 transition-colors">
+                                <td className="px-4 py-2 text-xs font-mono text-slate-600">{p._date.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</td>
+                                <td className="px-4 py-2 text-xs font-bold text-slate-700 truncate max-w-[150px]">{p._personName}</td>
+                                <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
+                                {cut.isSunday && <td className="px-4 py-2"><span className="text-[10px] font-bold bg-green-50 text-green-700 px-2 py-0.5 rounded-full border border-green-100">{p.service || NO_SERVICE_LABEL}</span></td>}
+                                <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
+                                <td className="px-4 py-2 text-right font-bold text-slate-800">{formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}</td>
+                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '–'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {cashCutMode === 'monthly' && (
+          <div className="space-y-4">
+            {monthKeys.length === 0 ? (
+              <div className="bg-white p-8 rounded-2xl border border-slate-100 text-center">
+                <p className="text-slate-400 text-sm italic">No hay pagos registrados.</p>
+              </div>
+            ) : monthKeys.filter(mk => cashCutSelected === 'all' || mk === cashCutSelected).map(mk => {
+              const cut = monthMap[mk];
+              const isExpanded = cashCutSelected !== 'all' || expandedCut === `mon-${mk}`;
+              return (
+                <div key={mk} className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                  <button type="button" onClick={() => setExpandedCut(isExpanded && cashCutSelected === 'all' ? null : `mon-${mk}`)} className="w-full p-5 flex items-center justify-between text-left hover:bg-slate-50/50 transition-colors">
+                    <div className="flex items-center gap-4">
+                      <div className="bg-purple-100 p-2.5 rounded-xl text-purple-600"><CalendarRange size={20} /></div>
+                      <div>
+                        <p className="font-black text-slate-800 capitalize">{formatMonth(mk)}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{cut.count} movimiento{cut.count !== 1 ? 's' : ''}{cut.donations > 0 ? ` + donaciones $${cut.donations.toLocaleString()}` : ''}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <p className="text-lg font-black text-green-600">{formatMoney(cashCutGross ? cut.total : cut.totalNet)}</p>
+                        <p className="text-[10px] text-slate-400 font-bold">Efectivo: {formatMoney(cut.efectivo)} · Tarjeta: {formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
+                      </div>
+                      {isExpanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+                    </div>
+                  </button>
+                  {isExpanded && (
+                    <div className="px-5 pb-5 border-t border-slate-100">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+                        <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                          <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">{cashCutGross ? 'Bruto' : 'Neto'}</p>
+                          <p className="text-lg font-black text-slate-800">{formatMoney(cashCutGross ? cut.total : cut.totalNet)}</p>
+                        </div>
+                        <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                          <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Comisión tarjeta</p>
+                          <p className="text-lg font-black text-red-500">-{formatMoney(cut.total - cut.totalNet)}</p>
+                        </div>
+                        <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
+                          <p className="text-[10px] font-black text-emerald-700 uppercase tracking-wider">Efectivo</p>
+                          <p className="text-lg font-black text-slate-800">{formatMoney(cut.efectivo)}</p>
+                        </div>
+                        <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
+                          <p className="text-[10px] font-black text-indigo-700 uppercase tracking-wider">Tarjeta {cashCutGross ? '(Bruto)' : '(Neto)'}</p>
+                          <p className="text-lg font-black text-slate-800">{formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
+                        </div>
+                      </div>
+                      {cut.donations > 0 && (
+                        <div className="mt-3 rounded-xl border border-green-100 bg-green-50/50 p-3 inline-block">
+                          <p className="text-[10px] font-black text-green-700 uppercase tracking-wider">Donaciones</p>
+                          <p className="text-lg font-black text-slate-800">{formatMoney(cut.donations)}</p>
+                        </div>
+                      )}
+                      <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
+                        <table className="w-full text-left text-sm">
+                          <thead>
+                            <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                              <th className="px-4 py-2.5">Fecha / Hora</th>
+                              <th className="px-4 py-2.5">Persona</th>
+                              <th className="px-4 py-2.5">Sede</th>
+                              <th className="px-4 py-2.5">Método</th>
+                              <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
+                              <th className="px-4 py-2.5">Registró</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {cut.payments.sort((a, b) => a._ts - b._ts).map((p, i) => (
+                              <tr key={`${p.id}-${i}`} className="hover:bg-slate-50/60 transition-colors">
+                                <td className="px-4 py-2 text-xs font-mono text-slate-600">{p._date.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })} {p._date.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</td>
+                                <td className="px-4 py-2 text-xs font-bold text-slate-700 truncate max-w-[150px]">{p._personName}</td>
+                                <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
+                                <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
+                                <td className="px-4 py-2 text-right font-bold text-slate-800">{formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}</td>
+                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '–'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {(() => {
+          const efectivoPayments = allPayments.filter(p => p.method !== 'Tarjeta');
+          const tarjetaPayments = allPayments.filter(p => p.method === 'Tarjeta');
+          const totalBruto = allPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0) + eventDonationsForCut.reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
+          const totalNeto = allPayments.reduce((s, p) => s + (parseFloat(p.netAmount ?? p.amount) || 0), 0) + eventDonationsForCut.reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
+          const efectivoBruto = efectivoPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+          const tarjetaBruto = tarjetaPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+          const tarjetaNeto = tarjetaPayments.reduce((s, p) => s + (parseFloat(p.netAmount ?? p.amount) || 0), 0);
+          const totalComision = tarjetaPayments.reduce((s, p) => s + (parseFloat(p.commission) || 0), 0);
+          const activeList = cashCutTotalsView === 'all' ? allPayments
+            : cashCutTotalsView === 'efectivo' ? efectivoPayments
+            : cashCutTotalsView === 'tarjeta' ? tarjetaPayments : null;
+          return (
+            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+              <h3 className="text-sm font-black text-slate-700 uppercase tracking-wider mb-3 flex items-center gap-2">
+                <DollarSign size={16} className="text-green-600" /> Totales Acumulados
+              </h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <button type="button" onClick={() => setCashCutTotalsView(cashCutTotalsView === 'all' ? null : 'all')} className={`rounded-xl border p-4 text-left transition-colors ${cashCutTotalsView === 'all' ? 'border-slate-400 bg-slate-100 ring-2 ring-slate-300' : 'border-slate-200 bg-slate-50 hover:border-slate-300'}`}>
+                  <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Total Movimientos</p>
+                  <p className="text-2xl font-black text-slate-800">{allPayments.length}</p>
+                  <p className="text-[10px] text-slate-400 font-bold mt-1">{cashCutGross ? formatMoney(totalBruto) : formatMoney(totalNeto)} · Click para ver</p>
+                </button>
+                <div className="rounded-xl border border-green-200 bg-green-50 p-4">
+                  <p className="text-[10px] font-black text-green-700 uppercase tracking-wider">{cashCutGross ? 'Total Bruto' : 'Total Neto'}</p>
+                  <p className="text-2xl font-black text-slate-800">{cashCutGross ? formatMoney(totalBruto) : formatMoney(totalNeto)}</p>
+                  {!cashCutGross && totalComision > 0 && <p className="text-[10px] text-slate-400 font-bold mt-1">Comisión tarjeta: -{formatMoney(totalComision)}</p>}
+                </div>
+                <button type="button" onClick={() => setCashCutTotalsView(cashCutTotalsView === 'efectivo' ? null : 'efectivo')} className={`rounded-xl border p-4 text-left transition-colors ${cashCutTotalsView === 'efectivo' ? 'border-emerald-400 bg-emerald-100 ring-2 ring-emerald-300' : 'border-emerald-200 bg-emerald-50 hover:border-emerald-300'}`}>
+                  <p className="text-[10px] font-black text-emerald-700 uppercase tracking-wider">Total Efectivo</p>
+                  <p className="text-2xl font-black text-slate-800">{formatMoney(efectivoBruto)}</p>
+                  <p className="text-[10px] text-slate-400 font-bold mt-1">{efectivoPayments.length} movimiento{efectivoPayments.length !== 1 ? 's' : ''}</p>
+                </button>
+                <button type="button" onClick={() => setCashCutTotalsView(cashCutTotalsView === 'tarjeta' ? null : 'tarjeta')} className={`rounded-xl border p-4 text-left transition-colors ${cashCutTotalsView === 'tarjeta' ? 'border-indigo-400 bg-indigo-100 ring-2 ring-indigo-300' : 'border-indigo-200 bg-indigo-50 hover:border-indigo-300'}`}>
+                  <p className="text-[10px] font-black text-indigo-700 uppercase tracking-wider">Total Tarjeta {cashCutGross ? '(Bruto)' : '(Neto)'}</p>
+                  <p className="text-2xl font-black text-slate-800">{cashCutGross ? formatMoney(tarjetaBruto) : formatMoney(tarjetaNeto)}</p>
+                  <p className="text-[10px] text-slate-400 font-bold mt-1">{tarjetaPayments.length} movimiento{tarjetaPayments.length !== 1 ? 's' : ''}{!cashCutGross && totalComision > 0 ? ` · -${formatMoney(totalComision)} comisión` : ''}</p>
+                </button>
+              </div>
+              {activeList && (
+                <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                        <th className="px-4 py-2.5">Fecha / Hora</th>
+                        <th className="px-4 py-2.5">Persona</th>
+                        <th className="px-4 py-2.5">Sede</th>
+                        <th className="px-4 py-2.5">Método</th>
+                        <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
+                        {!cashCutGross && cashCutTotalsView === 'tarjeta' && <th className="px-4 py-2.5 text-right">Comisión</th>}
+                        <th className="px-4 py-2.5">Registró</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {activeList.sort((a, b) => a._ts - b._ts).map((p, i) => (
+                        <tr key={`tot-${p.id}-${i}`} className="hover:bg-slate-50/60 transition-colors">
+                          <td className="px-4 py-2 text-xs font-mono text-slate-600">{p._date.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })} {p._date.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</td>
+                          <td className="px-4 py-2 text-xs font-bold text-slate-700 truncate max-w-[150px]">{p._personName}</td>
+                          <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
+                          <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
+                          <td className="px-4 py-2 text-right font-bold text-slate-800">{cashCutGross ? formatMoney(p.amount) : formatMoney(p.netAmount ?? p.amount)}</td>
+                          {!cashCutGross && cashCutTotalsView === 'tarjeta' && <td className="px-4 py-2 text-right text-xs text-red-500 font-bold">{p.commission ? `-${formatMoney(p.commission)}` : '–'}</td>}
+                          <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '–'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+      </div>
+    );
+  };
+
+  const renderExpenseListPage = () => {
+    const eventId = currentEvent?.id;
+    const eventExpensesBase = expenses.filter((e) => e.eventId === eventId);
+    const scholarshipAutoExpenses = (() => {
+      if (!eventId) return [];
+      let approvedCondoned = 0;
+      let pendingCondoned = 0;
+      for (const p of allParticipants) {
+        if (p.eventId !== eventId || !participantIsActiveInEvent(p) || p.isScholarship !== 'Sí') continue;
+        const condoned = getScholarshipCondonedAmount(p);
+        if (participantIsRosterRow(p)) approvedCondoned += condoned;
+        else if (participantIsWaitlistRow(p)) pendingCondoned += condoned;
+      }
+      return [
+        {
+          id: `sch-auto-approved-${eventId}`,
+          eventId,
+          name: 'Costo total de beca (aprobados)',
+          quantity: 1,
+          unitPrice: approvedCondoned,
+          totalPrice: approvedCondoned,
+          paidAmount: approvedCondoned,
+          paid: true,
+          countInTotals: true,
+          createdAt: '9999-12-31T00:00:00.000Z',
+          _autoScholarshipExpense: true,
+        },
+        {
+          id: `sch-auto-pending-${eventId}`,
+          eventId,
+          name: 'Costo total de beca solicitada pendiente',
+          quantity: 1,
+          unitPrice: pendingCondoned,
+          totalPrice: pendingCondoned,
+          paidAmount: 0,
+          paid: false,
+          countInTotals: false,
+          createdAt: '9999-12-31T00:00:00.001Z',
+          _autoScholarshipExpense: true,
+        },
+      ];
+    })();
+    const eventExpenses = [...eventExpensesBase, ...scholarshipAutoExpenses];
+    const q = expenseSearch.toLowerCase().trim();
+    let filtered = q ? eventExpenses.filter(e => (e.name || '').toLowerCase().includes(q)) : eventExpenses;
+    const expenseStatusFilterActive = expenseFilters.paid || expenseFilters.pending;
+    const expenseCountFilterActive = expenseFilters.counted || expenseFilters.uncounted;
+    if (expenseStatusFilterActive) {
+      filtered = filtered.filter((e) => (expenseFilters.paid && !!e.paid) || (expenseFilters.pending && !e.paid));
+    }
+    if (expenseCountFilterActive) {
+      filtered = filtered.filter((e) => (expenseFilters.counted && !!(e.countInTotals ?? true)) || (expenseFilters.uncounted && !(e.countInTotals ?? true)));
+    }
+    const sorted = [...filtered].sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+    const anyExpenseFilterActive = expenseStatusFilterActive || expenseCountFilterActive;
+
+    const countedExpenses = eventExpenses.filter((e) => !!(e.countInTotals ?? true));
+    const uncountedExpenses = eventExpenses.filter((e) => !(e.countInTotals ?? true));
+    const totalCost = countedExpenses.reduce((s, e) => s + (e.totalPrice || 0), 0);
+    const totalPaid = countedExpenses.reduce((s, e) => s + (e.paidAmount || 0), 0);
+    const totalPending = totalCost - totalPaid;
+    const totalUncounted = uncountedExpenses.reduce((s, e) => s + (e.totalPrice || 0), 0);
+
+    const recaudacionGross = summary.globalStats.all.paidGross ?? summary.globalStats.all.paid;
+    const recaudacionNet = summary.globalStats.all.paid;
+    const eventDonations = donations.filter(d => d.eventId === currentEvent?.id);
+    const donationsTotal = eventDonations.reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
+    const recaudacion = (expenseGross ? recaudacionGross : recaudacionNet) + donationsTotal;
+    const realCostNum = Number(currentEvent?.realCost) || 0;
+    const totalRegs = summary.globalStats.all.count;
+    const cancelledRefundRows = allParticipants
+      .filter((p) => p.eventId === eventId && participantIsCancelled(p))
+      .map((p) => {
+        const pendingAmount = p.refundAsDonation
+          ? 0
+          : Math.max(0, Number(p.refundPendingAmount ?? p.paid ?? 0) || 0);
+        return { ...p, _refundPendingAmount: pendingAmount };
+      });
+    const pendingRefundRows = cancelledRefundRows.filter((p) => p._refundPendingAmount > 0);
+    const totalPendingRefund = pendingRefundRows.reduce((sum, p) => sum + p._refundPendingAmount, 0);
+
+    const balanceNeto = recaudacion - (realCostNum * totalRegs) - totalPendingRefund;
+    const balanceFinal = balanceNeto - totalCost;
+
+    return (
+      <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3"><Receipt className="text-emerald-500" size={28} /> Lista de Gastos</h2>
+          <button onClick={() => setExpenseGross(p => !p)} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold border transition-colors ${expenseGross ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100' : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'}`}>
+            <Wallet size={15} /> {expenseGross ? 'Ver Neto' : 'Ver Bruto'}
+          </button>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <div className="relative flex-1">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input type="text" placeholder="Buscar gasto por nombre…" value={expenseSearch} onChange={e => setExpenseSearch(e.target.value)} className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
+            </div>
+            <div className="relative" data-dropdown-root="expense-filters">
+              <button
+                type="button"
+                onClick={() => setExpenseFiltersDropdownOpen((v) => !v)}
+                className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 transition-colors"
+              >
+                <Filter size={14} /> Filtros
+              </button>
+              {expenseFiltersDropdownOpen && (
+                <div className="absolute right-0 mt-2 z-30 w-72 max-w-[90vw] bg-white border border-slate-200 rounded-xl shadow-xl p-3 space-y-3">
+                  <div>
+                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Estado de pago</p>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                      <input type="checkbox" className="h-4 w-4 rounded accent-emerald-600" checked={expenseFilters.paid} onChange={() => setExpenseFilters((prev) => ({ ...prev, paid: !prev.paid }))} />
+                      Pagado
+                    </label>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                      <input type="checkbox" className="h-4 w-4 rounded accent-amber-600" checked={expenseFilters.pending} onChange={() => setExpenseFilters((prev) => ({ ...prev, pending: !prev.pending }))} />
+                      Pendiente
+                    </label>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Contabilización</p>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                      <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={expenseFilters.counted} onChange={() => setExpenseFilters((prev) => ({ ...prev, counted: !prev.counted }))} />
+                      Contabilizado
+                    </label>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                      <input type="checkbox" className="h-4 w-4 rounded accent-slate-600" checked={expenseFilters.uncounted} onChange={() => setExpenseFilters((prev) => ({ ...prev, uncounted: !prev.uncounted }))} />
+                      No contabilizado
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setExpenseFilters({ paid: false, pending: false, counted: false, uncounted: false })}
+                    className="w-full px-3 py-2 rounded-lg text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 transition-colors"
+                  >
+                    Limpiar filtros
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 items-end bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase">Nombre</label>
+              <input type="text" placeholder="Nombre del gasto" value={expenseForm.name} onChange={e => setExpenseForm({ ...expenseForm, name: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase">Cantidad</label>
+              <input type="number" min="1" placeholder="1" value={expenseForm.quantity} onChange={e => setExpenseForm({ ...expenseForm, quantity: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase">Precio unitario</label>
+              <input type="number" min="0" step="0.01" placeholder="$0.00" value={expenseForm.unitPrice} onChange={e => setExpenseForm({ ...expenseForm, unitPrice: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase">Total</label>
+              <div className="px-3 py-2 rounded-lg bg-white border border-slate-200 text-sm font-bold text-slate-700">${((parseInt(expenseForm.quantity) || 0) * (parseFloat(expenseForm.unitPrice) || 0)).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
+            </div>
+            <button onClick={handleAddExpense} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-colors"><Plus size={16} /> Agregar</button>
+          </div>
+
+          <div className="overflow-x-auto border border-slate-100 rounded-xl">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  <th className="px-4 py-3 text-[10px] font-black text-slate-500 uppercase w-14">Contar</th>
+                  <th className="px-4 py-3 text-[10px] font-black text-slate-500 uppercase w-10">Pagado</th>
+                  <th className="px-4 py-3 text-[10px] font-black text-slate-500 uppercase">Nombre</th>
+                  <th className="px-4 py-3 text-[10px] font-black text-slate-500 uppercase text-center">Cantidad</th>
+                  <th className="px-4 py-3 text-[10px] font-black text-slate-500 uppercase text-right">P. Unitario</th>
+                  <th className="px-4 py-3 text-[10px] font-black text-slate-500 uppercase text-right">Total</th>
+                  <th className="px-4 py-3 text-[10px] font-black text-slate-500 uppercase text-right">Pagado</th>
+                  <th className="px-4 py-3 text-[10px] font-black text-slate-500 uppercase text-right">Pendiente</th>
+                  <th className="px-4 py-3 text-[10px] font-black text-slate-500 uppercase text-center">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.length === 0 ? (
+                  <tr><td colSpan="9" className="px-4 py-8 text-center text-sm text-slate-400">No hay gastos registrados{q || anyExpenseFilterActive ? ' con este filtro' : ''}.</td></tr>
+                ) : sorted.map(exp => {
+                  const pending = (exp.totalPrice || 0) - (exp.paidAmount || 0);
+                  const isAutoScholarship = !!exp._autoScholarshipExpense;
+                  return (
+                    <tr key={exp.id} className={`border-b border-slate-100 hover:bg-slate-50 transition-colors ${exp.paid ? 'bg-emerald-50/50' : ''}`}>
+                      <td className="px-4 py-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={!!(exp.countInTotals ?? true)}
+                          disabled={isAutoScholarship}
+                          onChange={() => handleToggleExpenseCountInTotals(exp.id)}
+                          className={`w-4 h-4 rounded ${isAutoScholarship ? 'accent-slate-300 cursor-not-allowed opacity-70' : 'accent-indigo-600 cursor-pointer'}`}
+                        />
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={!!exp.paid}
+                          disabled={isAutoScholarship}
+                          onChange={() => handleToggleExpensePaid(exp.id)}
+                          className={`w-4 h-4 rounded ${isAutoScholarship ? 'accent-slate-300 cursor-not-allowed opacity-70' : 'accent-emerald-600 cursor-pointer'}`}
+                        />
+                      </td>
+                      <td className={`px-4 py-3 text-sm font-semibold ${exp.paid ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
+                        {exp.name}
+                        {isAutoScholarship ? (
+                          <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-purple-50 text-purple-700 border border-purple-100">
+                            Automático
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-600 text-center">{exp.quantity}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600 text-right">${(exp.unitPrice || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
+                      <td className="px-4 py-3 text-sm font-bold text-slate-800 text-right">${(exp.totalPrice || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
+                      <td className="px-4 py-3 text-sm font-bold text-emerald-600 text-right">${(exp.paidAmount || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
+                      <td className={`px-4 py-3 text-sm font-bold text-right ${pending > 0 ? 'text-amber-600' : 'text-slate-400'}`}>${pending.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
+                      <td className="px-4 py-3 text-center">
+                        {isAutoScholarship ? (
+                          <span className="text-[10px] font-bold text-slate-400">Auto</span>
+                        ) : (
+                          <div className="flex items-center justify-center gap-1">
+                            <button onClick={() => setExpenseEditModal({ isOpen: true, id: exp.id, name: exp.name, quantity: exp.quantity, unitPrice: exp.unitPrice })} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" title="Editar"><Edit3 size={15} /></button>
+                            {!exp.paid && (
+                              <button onClick={() => setExpensePartialModal({ isOpen: true, expenseId: exp.id, amount: '' })} className="p-1.5 rounded-lg text-indigo-500 hover:bg-indigo-50 transition-colors" title="Abono parcial"><DollarSign size={15} /></button>
+                            )}
+                            <button onClick={() => handleDeleteExpense(exp.id)} className="p-1.5 rounded-lg text-red-400 hover:bg-red-50 hover:text-red-600 transition-colors" title="Eliminar"><Trash2 size={15} /></button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="text-left bg-white rounded-2xl border shadow-sm p-5 transition-colors border-slate-200 hover:border-slate-300">
+            <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Total Gastos</p>
+            <p className="text-2xl font-black text-slate-800">${totalCost.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
+            <p className="text-[10px] text-slate-400 mt-1">{countedExpenses.length} gasto{countedExpenses.length !== 1 ? 's' : ''} contabilizado{countedExpenses.length !== 1 ? 's' : ''}</p>
+          </div>
+          <div className="text-left bg-white rounded-2xl border shadow-sm p-5 transition-colors border-emerald-200 hover:border-emerald-300">
+            <p className="text-[10px] font-black text-emerald-500 uppercase mb-1">Total Pagado</p>
+            <p className="text-2xl font-black text-emerald-600">${totalPaid.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
+            <p className="text-[10px] text-emerald-400 mt-1">{countedExpenses.filter(e => !!e.paid).length} pagado{countedExpenses.filter(e => !!e.paid).length !== 1 ? 's' : ''}</p>
+          </div>
+          <div className="text-left bg-white rounded-2xl border shadow-sm p-5 transition-colors border-amber-200 hover:border-amber-300">
+            <p className="text-[10px] font-black text-amber-500 uppercase mb-1">Pendiente por Pagar</p>
+            <p className="text-2xl font-black text-amber-600">${totalPending.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
+            <p className="text-[10px] text-amber-400 mt-1">{countedExpenses.filter(e => !e.paid).length} pendiente{countedExpenses.filter(e => !e.paid).length !== 1 ? 's' : ''}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4">
+          <div className="text-left bg-slate-50 rounded-2xl border border-slate-200 shadow-sm p-5 transition-colors hover:border-slate-300">
+            <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Gastos no contabilizados</p>
+            <p className="text-2xl font-black text-slate-700">${totalUncounted.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
+            <p className="text-[10px] text-slate-500 mt-1">{uncountedExpenses.length} registro{uncountedExpenses.length !== 1 ? 's' : ''} fuera de totales</p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-amber-200 shadow-sm p-5 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[10px] font-black text-amber-700 uppercase">Saldo pendiente de devolución</p>
+            <p className="text-lg font-black text-amber-700">${totalPendingRefund.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
+          </div>
+          <p className="text-xs text-slate-600">
+            Este saldo ya no figura dentro del balance neto, pero se mantiene dentro de lo recaudado.
+            Si se marca como donación, se elimina de esta lista y vuelve a sumarse al balance neto.
+          </p>
+          {pendingRefundRows.length === 0 ? (
+            <p className="text-xs text-slate-400 italic">No hay saldos pendientes de devolución.</p>
+          ) : (
+            <div className="space-y-2">
+              {pendingRefundRows.map((p) => (
+                <div key={`refund-${p.id}`} className="flex items-center justify-between gap-3 bg-amber-50/50 border border-amber-100 rounded-xl px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-slate-800 truncate">{p.name || 'Sin nombre'}</p>
+                    <p className="text-[11px] text-slate-500">Sede: {p.location || '—'} · ID: {p.vnpPersonId || '—'}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-black text-amber-700">${p._refundPendingAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
+                    <button
+                      type="button"
+                      onClick={() => markCancelledRefundAsDonation(p.id)}
+                      className="px-2.5 py-1.5 rounded-lg text-[11px] font-black bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors"
+                    >
+                      Marcar como donación
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className={`rounded-2xl border shadow-sm p-5 ${balanceNeto >= 0 ? 'bg-indigo-50 border-indigo-200' : 'bg-red-50 border-red-200'}`}>
+            <p className={`text-[10px] font-black uppercase mb-1 ${balanceNeto >= 0 ? 'text-indigo-500' : 'text-red-500'}`}>Balance Neto ({expenseGross ? 'Bruto' : 'Neto'})</p>
+            <p className={`text-2xl font-black ${balanceNeto >= 0 ? 'text-indigo-700' : 'text-red-700'}`}>${balanceNeto.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
+            <p className={`text-[10px] mt-1 ${balanceNeto >= 0 ? 'text-indigo-400' : 'text-red-400'}`}>Recaudación − Costo ({formatMoney(realCostNum)} × {totalRegs})</p>
+          </div>
+          <div className={`rounded-2xl border shadow-sm p-5 ${balanceFinal >= 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
+            <p className={`text-[10px] font-black uppercase mb-1 ${balanceFinal >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>Balance Neto − Gastos</p>
+            <p className={`text-2xl font-black ${balanceFinal >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>${balanceFinal.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
+            <p className={`text-[10px] mt-1 ${balanceFinal >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{balanceFinal >= 0 ? 'Saldo positivo' : 'Saldo negativo'}</p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderSummary = () => {
     const totalRegs = summary.globalStats.all.count;
     const totalScholarship = summary.globalStats.all.scholarship;
-    const percentScholarship = totalRegs > 0 ? (totalScholarship / totalRegs) * 100 : 0;
+    const _percentScholarship = totalRegs > 0 ? (totalScholarship / totalRegs) * 100 : 0;
+    const realCostNum = Number(currentEvent?.realCost) || 0;
+    const eventDonations = donations.filter(d => d.eventId === currentEvent?.id);
+    const donationsTotal = eventDonations.reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
+    const paidFromRegistrations = showGrossWithoutCommission
+      ? (summary.globalStats.all.paidGross ?? summary.globalStats.all.paid)
+      : summary.globalStats.all.paid;
+    const paidDisplayedTotal = paidFromRegistrations + donationsTotal;
+    const balanceNeto = paidDisplayedTotal - (realCostNum * totalRegs);
+
+    // Listados al hacer click en "Registrados" / "Becados"
+    const rosterLocations = (visibleLocations && visibleLocations.length) ? visibleLocations : (currentEvent?.locations || []);
+    const rosterRegulars = rosterLocations.flatMap((loc) => (data[loc] || []).filter((p) => p.isScholarship !== 'Sí'));
+    const rosterScholarship = rosterLocations.flatMap((loc) => (data[loc] || []).filter((p) => p.isScholarship === 'Sí'));
+
+    const pastorChildren = rosterRegulars.filter((p) => p.isPastorChild === 'Sí');
+    const pastorWithoutPay = pastorChildren.filter((p) => p.pastorChildWithoutPay === 'Sí');
+    const pastorNeedsTransport = pastorWithoutPay.filter((p) => !resolveLlegaEnCarro(p));
+    const rosterListForModal = summaryRosterModal.type === 'scholarship' ? rosterScholarship : rosterRegulars;
+
+    // Sección 1: filtros y gráficas por Método/Servicio (Neto o Bruto)
+    const efectivoNetTotal = summary.paymentMethodTotals?.efectivo?.net ?? 0;
+    const tarjetaNetTotal = summary.paymentMethodTotals?.tarjeta?.net ?? 0;
+    const efectivoGrossTotal = summary.paymentMethodTotals?.efectivo?.gross ?? 0;
+    const tarjetaGrossTotal = summary.paymentMethodTotals?.tarjeta?.gross ?? 0;
+    const efectivoModeTotal = showGrossWithoutCommission ? efectivoGrossTotal : efectivoNetTotal;
+    const tarjetaModeTotal = showGrossWithoutCommission ? tarjetaGrossTotal : tarjetaNetTotal;
+    const efectivoNetSelected = filterPaymentMethod.efectivo ? efectivoModeTotal : 0;
+    const tarjetaNetSelected = filterPaymentMethod.tarjeta ? tarjetaModeTotal : 0;
+    const methodNetSelectedTotal = efectivoNetSelected + tarjetaNetSelected;
+
+    const _getMethodPieGradient = () => {
+      if (methodNetSelectedTotal <= 0) return '#f1f5f9';
+      let cur = 0;
+      const segs = [];
+      if (filterPaymentMethod.efectivo && efectivoNetTotal > 0) {
+        const per = (efectivoNetSelected / methodNetSelectedTotal) * 100;
+        const start = cur;
+        const end = cur + per;
+        segs.push(`${'#10b981'} ${start}% ${end}%`);
+        cur = end;
+      }
+      if (filterPaymentMethod.tarjeta && tarjetaNetTotal > 0) {
+        const per = (tarjetaNetSelected / methodNetSelectedTotal) * 100;
+        const start = cur;
+        const end = cur + per;
+        segs.push(`${'#4f46e5'} ${start}% ${end}%`);
+        cur = end;
+      }
+      return `conic-gradient(${segs.join(', ')})`;
+    };
 
     const getTableStats = (loc) => {
       let count = 0, scholarship = 0, servers = 0, paid = 0, pending = 0, expected = 0;
@@ -1106,14 +5731,16 @@ const App = () => {
           if (summaryServerView === 'No' && p.isServer === 'Sí') return;
         }
         const isBecado = p.isScholarship === 'Sí';
-        const baseCost = p.registeredCost != null ? Number(p.registeredCost) : getPersonCost(p, currentPricing);
+        const baseCost = resolveRegisteredCost(p, currentPricing);
+        const liq = getLiquidationTarget(p);
         const pPaid = parseFloat(p.paid || 0);
         count++;
         if (isBecado) scholarship++;
         if (p.isServer === 'Sí') servers++;
         paid += pPaid;
         if (isBecado) {
-          expected += pPaid;
+          expected += liq;
+          pending += Math.max(0, liq - pPaid);
         } else {
           expected += baseCost;
           pending += (baseCost - pPaid);
@@ -1122,9 +5749,7 @@ const App = () => {
       return { count, scholarship, servers, paid, pending, expected };
     };
 
-    const tableData = (currentEvent?.locations || [])
-      .filter(loc => isLocOpen(loc))
-      .map(loc => ({ loc, stats: getTableStats(loc) }));
+    const tableData = (currentEvent?.locations || []).map(loc => ({ loc, stats: getTableStats(loc) }));
 
     const globalTableStats = tableData.reduce((acc, { stats }) => {
       acc.count += stats.count; acc.scholarship += stats.scholarship; acc.servers += stats.servers;
@@ -1134,112 +5759,472 @@ const App = () => {
 
     return (
       <div className="p-6 space-y-8 animate-in fade-in duration-500">
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-6">
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100"><div className="flex items-center gap-2 mb-3"><div className="bg-blue-100 p-2 rounded-lg text-blue-600"><Users size={18} /></div><span className="text-xs font-bold text-slate-500">Registrados</span></div><p className="text-2xl font-black text-slate-800">{totalRegs}</p></div>
-          {isCampa && <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100"><div className="flex items-center gap-2 mb-3"><div className="bg-purple-100 p-2 rounded-lg text-purple-600"><GraduationCap size={18} /></div><span className="text-xs font-bold text-slate-500">Becados</span></div><p className="text-2xl font-black text-slate-800">{totalScholarship}</p></div>}
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100"><div className="flex items-center gap-2 mb-3"><div className="bg-green-100 p-2 rounded-lg text-green-600"><DollarSign size={18} /></div><span className="text-xs font-bold text-slate-500">Recaudado</span></div><p className="text-2xl font-black text-slate-800">{formatMoney(summary.globalStats.all.paid)}</p></div>
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100"><div className="flex items-center gap-2 mb-3"><div className="bg-orange-100 p-2 rounded-lg text-orange-600"><ShieldAlert size={18} /></div><span className="text-xs font-bold text-slate-500">Pendiente</span></div><p className="text-2xl font-black text-slate-800">{formatMoney(summary.globalStats.all.pending)}</p></div>
+        {summaryRosterModal.isOpen && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-3xl w-full max-w-5xl max-h-[85vh] overflow-hidden shadow-2xl">
+              <div className="p-6 border-b border-slate-100 flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                    {summaryRosterModal.type === 'scholarship' ? <GraduationCap size={20} className="text-purple-600" /> : <Users size={20} className="text-blue-600" />}
+                    {summaryRosterModal.type === 'scholarship' ? 'Becados' : 'Registrados (Regulares)'}
+                  </h3>
+                  <p className="text-sm text-slate-500 mt-1">
+                    Total: <strong>{rosterListForModal.length}</strong>
+                    {summaryRosterModal.type === 'regular' && pastorChildren.length > 0 ? ` · Hijos de pastores: ${pastorChildren.length}` : ''}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSummaryRosterModal({ isOpen: false, type: summaryRosterModal.type })}
+                  className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl transition-colors"
+                  title="Cerrar"
+                >
+                  <XCircle size={22} />
+                </button>
+              </div>
 
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2"><div className="bg-blue-100 p-2 rounded-lg text-blue-600"><CalendarRange size={18} /></div><span className="text-xs font-bold text-slate-500">Fecha Evento</span></div>
-              {currentUser?.role === 'Administrador' && (
-                <label className="relative flex items-center justify-center p-2 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer" title="Modificar fecha">
-                  <CalendarRange size={16} className="relative z-10 pointer-events-none" />
-                  <input type="date" value={tempEventDate} onChange={(e) => setTempEventDate(e.target.value)}
-                    onBlur={async (e) => {
-                      const newVal = e.target.value;
-                      if (newVal !== (currentEvent.date || '')) {
-                        await updateEventConfig({ date: newVal });
-                        addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`);
-                      }
-                    }}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20" />
-                </label>
+              {summaryRosterModal.type === 'regular' && (
+                <div className="p-6 border-b border-slate-100 bg-indigo-50/20">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="rounded-xl border border-indigo-100 bg-white p-4">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700">Hijos de pastores</p>
+                      <p className="text-2xl font-black text-slate-800">{pastorChildren.length}</p>
+                    </div>
+                    <div className="rounded-xl border border-amber-100 bg-white p-4">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">Van sin pagar</p>
+                      <p className="text-2xl font-black text-slate-800">{pastorWithoutPay.length}</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-100 bg-white p-4">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-700">Necesitan transporte (camión)</p>
+                      <p className="text-2xl font-black text-slate-800">{pastorNeedsTransport.length}</p>
+                    </div>
+                  </div>
+                </div>
               )}
-            </div>
-            <div className="flex items-center text-lg md:text-xl font-black text-slate-800 mt-1 capitalize leading-tight">
-              {currentEvent.date ? new Date(currentEvent.date + 'T00:00:00').toLocaleDateString('es-MX', { year: 'numeric', month: 'short', day: 'numeric' }) : 'Sin fecha'}
+
+              <div className="p-6 overflow-y-auto">
+                <div className="overflow-x-auto border border-slate-100 rounded-xl">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                        <th className="px-4 py-3">Nombre</th>
+                        <th className="px-4 py-3">Sede</th>
+                        {summaryRosterModal.type === 'regular' && <th className="px-4 py-3">Hijo de pastor</th>}
+                        {summaryRosterModal.type === 'regular' && <th className="px-4 py-3">Sin pagar</th>}
+                        {summaryRosterModal.type === 'regular' && <th className="px-4 py-3">Transporte</th>}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {rosterListForModal.length ? (
+                        rosterListForModal
+                          .slice()
+                          .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+                          .map((p) => (
+                            <tr key={p.id} className="hover:bg-slate-50/50">
+                              <td className="px-4 py-3 font-bold text-slate-700">
+                                <div className="flex items-center gap-2">
+                                  <span className="truncate">{p.name}</span>
+                                  {p.alias ? (
+                                    <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">
+                                      Alias: {p.alias}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-slate-600">{p.location}</td>
+                              {summaryRosterModal.type === 'regular' && (
+                                <>
+                                  <td className="px-4 py-3 text-slate-600">{p.isPastorChild === 'Sí' ? 'Sí' : 'No'}</td>
+                                  <td className="px-4 py-3 text-slate-600">
+                                    {p.isPastorChild === 'Sí' ? (p.pastorChildWithoutPay === 'Sí' ? 'Sí' : 'No') : '—'}
+                                  </td>
+                                  <td className="px-4 py-3 text-slate-600">{resolveTransportSummary(p)}</td>
+                                </>
+                              )}
+                            </tr>
+                          ))
+                      ) : (
+                        <tr>
+                          <td colSpan={summaryRosterModal.type === 'regular' ? 5 : 2} className="px-4 py-8 text-center text-slate-400 text-xs italic">
+                            No hay registros para mostrar.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           </div>
-
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2"><div className="bg-indigo-100 p-2 rounded-lg text-indigo-600"><BarChart3 size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Base</span></div>
-              {currentUser?.role === 'Administrador' && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
-            </div>
-            <div className="flex items-center text-2xl font-black text-slate-800">{showMoney ? `$${currentPricing.global}` : '$***'}</div>
-            {currentEvent.pricingType === 'dynamic' && <p className="text-[10px] text-indigo-500 font-bold mt-1 uppercase">Precio Dinámico</p>}
+        )}
+        {hasAdminRights && (
+          <div className="flex justify-end">
+            <button
+              onClick={() => setShowGrossWithoutCommission(prev => !prev)}
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs flex items-center gap-2"
+              title="Alternar vista de datos financieros"
+            >
+              <Wallet size={14} /> {showGrossWithoutCommission ? 'Ver con comisión (Neto)' : 'Ver sin comisión (Bruto)'}
+            </button>
           </div>
+        )}
+        
+        {viewPrefs.statsConfig && (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+            <button type="button" onClick={() => setSummaryRosterModal({ isOpen: true, type: 'regular' })} className="text-left">
+              <StatCard icon={Users} iconColor="text-blue-600" bgIcon="bg-blue-100" title="Registrados" value={totalRegs} />
+            </button>
+            {isCampa && (
+              <button type="button" onClick={() => setSummaryRosterModal({ isOpen: true, type: 'scholarship' })} className="text-left">
+                <StatCard icon={GraduationCap} iconColor="text-purple-600" bgIcon="bg-purple-100" title="Becados" value={totalScholarship} />
+              </button>
+            )}
+            <StatCard icon={DollarSign} iconColor="text-green-600" bgIcon="bg-green-100" title={`Recaudado (${showGrossWithoutCommission ? 'Bruto' : 'Neto'})`} value={formatMoney(paidDisplayedTotal)} />
+            <StatCard icon={ShieldAlert} iconColor="text-orange-600" bgIcon="bg-orange-100" title="Pendiente" value={formatMoney(summary.globalStats.all.pending)} />
 
-          {isCampa && (
+            {hasAdminRights && (
+              <button type="button" onClick={() => setDonationsListOpen(true)} className="text-left">
+                <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 h-full">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="bg-emerald-100 p-2 rounded-lg text-emerald-600"><Receipt size={18} /></div>
+                    <span className="text-xs font-bold text-slate-500">Donaciones</span>
+                  </div>
+                  <p className="text-2xl font-black text-slate-800">{formatMoney(donationsTotal)}</p>
+                  <p className="text-[10px] text-slate-400 font-bold mt-1">{eventDonations.length} donación{eventDonations.length !== 1 ? 'es' : ''}</p>
+                </div>
+              </button>
+            )}
+
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
               <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2"><div className="bg-amber-100 p-2 rounded-lg text-amber-600"><Users size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Servidor (Ambos)</span></div>
-                {currentUser?.role === 'Administrador' && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
+                <div className="flex items-center gap-2"><div className="bg-blue-100 p-2 rounded-lg text-blue-600"><CalendarRange size={18} /></div><span className="text-xs font-bold text-slate-500">Fecha Evento</span></div>
+                {hasAdminRights && (
+                  <label className="relative flex items-center justify-center p-2 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer overflow-hidden" title="Modificar fecha">
+                    <CalendarRange size={16} className="relative z-10 pointer-events-none" />
+                    <input type="date" value={tempEventDate} onChange={(e) => setTempEventDate(e.target.value)}
+                      onBlur={async (e) => {
+                        const newVal = e.target.value;
+                        if (newVal !== (currentEvent.date || '')) {
+                          await updateEventConfig({ date: newVal });
+                          addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                        }
+                      }}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer" />
+                  </label>
+)}
               </div>
-              <div className="flex items-center text-2xl font-black text-slate-800">{showMoney ? `$${currentPricing.server}` : '$***'}</div>
+              <div className="flex items-center text-lg md:text-xl font-black text-slate-800 mt-1 capitalize leading-tight">
+                {currentEvent.date ? new Date(currentEvent.date + 'T00:00:00').toLocaleDateString('es-MX', { year: 'numeric', month: 'short', day: 'numeric' }) : 'Sin fecha'}
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2"><div className="bg-indigo-100 p-2 rounded-lg text-indigo-600"><BarChart3 size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Base</span></div>
+                {hasAdminRights && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
+              </div>
+              <div className="flex items-center text-2xl font-black text-slate-800">{canSeeMoney ? `$${currentPricing.global}` : '$***'}</div>
+              {currentEvent.pricingType === 'dynamic' && <p className="text-[10px] text-indigo-500 font-bold mt-1 uppercase">Precio Dinámico</p>}
+            </div>
+
+            {isCampa && (
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2"><div className="bg-amber-100 p-2 rounded-lg text-amber-600"><Users size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Servidor (Ambos)</span></div>
+                  {hasAdminRights && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
+                </div>
+                <div className="flex items-center text-2xl font-black text-slate-800">{canSeeMoney ? `$${currentPricing.server}` : '$***'}</div>
+              </div>
+            )}
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex items-center gap-2 mb-3"><div className="bg-teal-100 p-2 rounded-lg text-teal-600"><Wallet size={18} /></div><span className="text-xs font-bold text-slate-500">Apartado Mín.</span></div>
+              <div className="flex items-center text-2xl font-black text-slate-800">
+                {canSeeMoney ? (
+                  <><span className="mr-1">$</span>
+                    <input type="number" value={tempDeposit} disabled={!hasAdminRights} onChange={e => setTempDeposit(e.target.value)}
+                      onBlur={async (e) => {
+                        const newVal = parseFloat(e.target.value) || 0;
+                        if (newVal !== currentEvent.minDeposit) {
+                          await updateEventConfig({ minDeposit: newVal });
+                          addLog('Configuración', `Apartado mín: $${currentEvent.minDeposit} -> $${newVal}`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                        }
+                      }}
+                      className={`bg-transparent border-b-2 outline-none w-20 transition-colors ${!hasAdminRights ? 'border-transparent cursor-not-allowed' : 'border-transparent hover:border-slate-200 focus:border-indigo-500'}`} /></>
+                ) : <span>$***</span>}
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex items-center gap-2 mb-3"><div className="bg-red-100 p-2 rounded-lg text-red-600"><DollarSign size={18} /></div><span className="text-xs font-bold text-slate-500">Costo Real</span></div>
+              <div className="flex items-center text-2xl font-black text-slate-800">
+                {canSeeMoney ? (
+                  <><span className="mr-1">$</span>
+                    <input type="number" value={tempRealCost} disabled={!hasAdminRights} onChange={e => setTempRealCost(e.target.value)}
+                      onBlur={async (e) => {
+                        const newVal = parseFloat(e.target.value) || 0;
+                        if (newVal !== (currentEvent.realCost || 0)) {
+                          await updateEventConfig({ realCost: newVal });
+                          addLog('Configuración', `Costo Real: $${currentEvent.realCost || 0} -> $${newVal}`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                        }
+                      }}
+                      className={`bg-transparent border-b-2 outline-none w-24 transition-colors ${!hasAdminRights ? 'border-transparent cursor-not-allowed' : 'border-transparent hover:border-slate-200 focus:border-indigo-500'}`} /></>
+                ) : <span>$***</span>}
+              </div>
+              {hasAdminRights && <p className="text-[10px] text-slate-400 font-bold mt-1">Costo real por persona</p>}
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex items-center gap-2 mb-3">
+                <div className={`p-2 rounded-lg ${balanceNeto >= 0 ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>
+                  <Activity size={18} />
+                </div>
+                <span className="text-xs font-bold text-slate-500">Balance Neto</span>
+              </div>
+              <p className={`text-2xl font-black ${balanceNeto >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                {formatMoney(balanceNeto)}
+              </p>
+              <p className="text-[10px] text-slate-400 font-bold mt-1">Recaudado - (Costo Real × #Registrados)</p>
+            </div>
+          </div>
+        )}
+
+        {hasAdminRights && (
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 mt-6 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setCupoSedeOpen(prev => !prev)}
+              className="w-full p-5 flex items-center justify-between text-left hover:bg-slate-50/50 transition-colors"
+            >
+              <h3 className="text-sm font-black text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                <Users size={16} className="text-indigo-600" /> Cupo por Sede
+              </h3>
+              {cupoSedeOpen ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+            </button>
+            {cupoSedeOpen && <div className="px-5 pb-5 border-t border-slate-100">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
+              {(currentEvent?.locations || []).map((loc) => {
+                const currentCap = Number(tempLocationCaps?.[loc] ?? currentEvent?.locationCaps?.[loc] ?? 0);
+                const activeCount = (data[loc] || []).length;
+                return (
+                  <div key={`cap-${loc}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-xs font-black text-slate-700 mb-2">{loc}</p>
+                    <div className="flex items-center gap-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase">Cupo</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={currentCap}
+                        onChange={(e) => setTempLocationCaps(prev => ({ ...prev, [loc]: Math.max(0, parseInt(e.target.value || '0', 10) || 0) }))}
+                        onBlur={async () => {
+                          const prevCap = Number(currentEvent?.locationCaps?.[loc] || 0);
+                          const nextCap = Number(tempLocationCaps?.[loc] ?? 0);
+                          if (prevCap === nextCap) return;
+                          const updatedCaps = { ...(currentEvent?.locationCaps || {}), [loc]: nextCap };
+                          await updateEventConfig({ locationCaps: updatedCaps });
+                          addLog('Configuración', `Cupo en ${loc}: ${prevCap || 'Ilimitado'} -> ${nextCap || 'Ilimitado'}`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                        }}
+                        className="w-24 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-2">
+                      Activos: <strong>{activeCount}</strong> / {currentCap > 0 ? currentCap : 'Ilimitado'}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-slate-400 font-bold mt-3">Usa 0 para cupo ilimitado. Al llenarse, “Registrar” envía automáticamente a lista de espera.</p>
+
+            <div className="mt-5 border-t border-slate-100 pt-4">
+              <h4 className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Cupo vs Espera por Sede</h4>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                      <th className="px-4 py-2.5">Sede</th>
+                      <th className="px-4 py-2.5 text-center">Activos</th>
+                      <th className="px-4 py-2.5 text-center">Cupo</th>
+                      <th className="px-4 py-2.5 text-center">Espera</th>
+                      <th className="px-4 py-2.5 text-center">Estado</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {(currentEvent?.locations || []).map((loc) => {
+                      const activeCount = (data[loc] || []).length;
+                      const cap = Number(tempLocationCaps?.[loc] ?? currentEvent?.locationCaps?.[loc] ?? 0);
+                      const waitCount = (waitlistData[loc] || []).length;
+                      const isFull = cap > 0 && activeCount >= cap;
+                      return (
+                        <tr key={`cap-wait-${loc}`} className="hover:bg-slate-50/60 transition-colors">
+                          <td className="px-4 py-2.5 font-bold text-slate-700">{loc}</td>
+                          <td className="px-4 py-2.5 text-center font-semibold text-slate-700">{activeCount}</td>
+                          <td className="px-4 py-2.5 text-center font-semibold text-slate-700">{cap > 0 ? cap : 'Ilimitado'}</td>
+                          <td className={`px-4 py-2.5 text-center font-black ${waitCount > 0 ? 'text-amber-600' : 'text-slate-500'}`}>{waitCount}</td>
+                          <td className="px-4 py-2.5 text-center">
+                            <span className={`text-[10px] font-black px-2 py-0.5 rounded border ${isFull ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-emerald-100 text-emerald-700 border-emerald-200'}`}>
+                              {isFull ? 'Lleno' : 'Disponible'}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            </div>}
+          </div>
+        )}
+
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-8">
+          
+          {viewPrefs.chartLocations && (
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex justify-between items-start mb-2">
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><MapPin className="text-indigo-500" size={20} /> Registrados por Sede</h3>
+                <button onClick={() => setShowLocChartValues(!showLocChartValues)} className="px-2 py-1 bg-slate-50 text-slate-500 hover:bg-slate-100 rounded-md text-[10px] font-bold transition-colors border border-slate-200">
+                  {showLocChartValues ? 'Ver %' : 'Ver #'}
+                </button>
+              </div>
+              <p className="text-xs text-slate-400 mb-6">Proporción de inscritos totales</p>
+              <div className="flex flex-col items-center justify-center gap-6">
+                <div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('count') }} />
+                <div className="w-full grid grid-cols-2 gap-2">
+                  {(currentEvent?.locations || []).map((loc) => { 
+                    const i = currentEvent.locations.indexOf(loc); 
+                    const locCount = summary.locationStats[loc].all.count; 
+                    const percent = totalRegs > 0 ? ((locCount / totalRegs) * 100).toFixed(1) : 0; 
+                    return (
+                      <div key={loc} className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div>
+                        <span className="font-bold text-slate-800">{showLocChartValues ? locCount : `${percent}%`}</span>
+                      </div>
+                    ); 
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {viewPrefs.chartIncome && (
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex justify-between items-start mb-2">
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><PieChart className="text-green-500" size={20} /> Ingresos por Sede ({showGrossWithoutCommission ? 'Bruto' : 'Neto'})</h3>
+                <button onClick={() => setShowIncChartValues(!showIncChartValues)} className="px-2 py-1 bg-slate-50 text-slate-500 hover:bg-slate-100 rounded-md text-[10px] font-bold transition-colors border border-slate-200">
+                  {showIncChartValues ? 'Ver %' : 'Ver $'}
+                </button>
+              </div>
+              <p className="text-xs text-slate-400 mb-6">Porcentaje de recaudación</p>
+              <div className="flex flex-col items-center justify-center gap-6">
+                <div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('paid') }} />
+                <div className="w-full grid grid-cols-2 gap-2">
+                  {(currentEvent?.locations || []).map((loc) => { 
+                    const i = currentEvent.locations.indexOf(loc); 
+                    const locPaid = showGrossWithoutCommission
+                      ? (summary.locationStats[loc].all.paidGross ?? summary.locationStats[loc].all.paid)
+                      : summary.locationStats[loc].all.paid;
+                    const totalPaidForChart = showGrossWithoutCommission
+                      ? (summary.globalStats.all.paidGross ?? summary.globalStats.all.paid)
+                      : summary.globalStats.all.paid;
+                    const percent = totalPaidForChart > 0 ? ((locPaid / totalPaidForChart) * 100).toFixed(1) : 0; 
+                    return (
+                      <div key={loc} className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div>
+                        <span className="font-bold text-slate-800">{showIncChartValues ? formatMoney(locPaid) : `${percent}%`}</span>
+                      </div>
+                    ); 
+                  })}
+                </div>
+              </div>
             </div>
           )}
 
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
-            <div className="flex items-center gap-2 mb-3"><div className="bg-teal-100 p-2 rounded-lg text-teal-600"><Wallet size={18} /></div><span className="text-xs font-bold text-slate-500">Apartado Mín.</span></div>
-            <div className="flex items-center text-2xl font-black text-slate-800">
-              {showMoney ? (
-                <><span className="mr-1">$</span>
-                  <input type="number" value={tempDeposit} disabled={currentUser?.role === 'Lector'} onChange={e => setTempDeposit(e.target.value)}
-                    onBlur={async (e) => {
-                      const newVal = parseFloat(e.target.value) || 0;
-                      if (newVal !== currentEvent.minDeposit) {
-                        await updateEventConfig({ minDeposit: newVal });
-                        addLog('Configuración', `Apartado mín: $${currentEvent.minDeposit} -> $${newVal}`);
-                      }
-                    }}
-                    className="bg-transparent border-b-2 border-transparent hover:border-slate-200 focus:border-indigo-500 outline-none w-20 transition-colors" /></>
-              ) : <span>$***</span>}
+          {viewPrefs.chartPaymentStatus && (
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+              <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Receipt className="text-emerald-500" size={20} /> Estado de Pagos</h3>
+              <p className="text-xs text-slate-400 mb-6">Liquidados vs Con Saldo Pendiente</p>
+              <div className="space-y-5 w-full mt-2">
+                <ProgressBar label="Liquidados (o Becados)" value={summary.totalPaidOff} max={totalRegs} colorClass="text-emerald-600" bgClass="bg-emerald-500" />
+                <ProgressBar label="Con Saldo Pendiente" value={summary.totalWithDebt} max={totalRegs} colorClass="text-orange-600" bgClass="bg-orange-500" />
+              </div>
             </div>
-          </div>
-        </div>
+          )}
+          
+          {viewPrefs.chartGender && (
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Inscritos por Género</h3><p className="text-xs text-slate-400 mb-6">Comparativa de inscripciones por género</p><div className="flex-1 flex flex-col justify-center gap-6 mt-4 pb-2 w-full"><ProgressBar label="Hombres" value={summary.totalMen} max={summary.totalMen + summary.totalWomen} colorClass="text-blue-600" bgClass="bg-blue-500" /><ProgressBar label="Mujeres" value={summary.totalWomen} max={summary.totalMen + summary.totalWomen} colorClass="text-pink-600" bgClass="bg-pink-500" /></div></div>
+          )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><MapPin className="text-indigo-500" size={20} /> Registrados por Sede</h3><p className="text-xs text-slate-400 mb-6">Proporción de inscritos totales</p><div className="flex flex-col items-center justify-center gap-6"><div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('count') }} /><div className="w-full grid grid-cols-2 gap-2">{(currentEvent?.locations || []).filter(loc => isLocOpen(loc)).map((loc) => { const i = currentEvent.locations.indexOf(loc); const locCount = summary.locationStats[loc].all.count; const percent = totalRegs > 0 ? ((locCount / totalRegs) * 100).toFixed(1) : 0; return (<div key={loc} className="flex items-center justify-between text-xs"><div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div><span className="font-bold text-slate-800">{percent}%</span></div>); })}</div></div></div>
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><PieChart className="text-green-500" size={20} /> Ingresos por Sede</h3><p className="text-xs text-slate-400 mb-6">Porcentaje de recaudación</p><div className="flex flex-col items-center justify-center gap-6"><div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('paid') }} /><div className="w-full grid grid-cols-2 gap-2">{(currentEvent?.locations || []).filter(loc => isLocOpen(loc)).map((loc) => { const i = currentEvent.locations.indexOf(loc); const locPaid = summary.locationStats[loc].all.paid; const percent = summary.globalStats.all.paid > 0 ? ((locPaid / summary.globalStats.all.paid) * 100).toFixed(1) : 0; return (<div key={loc} className="flex items-center justify-between text-xs"><div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} /><span className="font-semibold text-slate-600 truncate max-w-[60px]" title={loc}>{loc}</span></div><span className="font-bold text-slate-800">{percent}%</span></div>); })}</div></div></div>
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Inscritos por Género</h3><p className="text-xs text-slate-400 mb-6">Comparativa de inscripciones por género</p><div className="flex-1 flex flex-col justify-center gap-6 mt-4 pb-2 w-full"><div className="w-full"><div className="flex justify-between items-end mb-2"><span className="text-xs font-black text-slate-500 uppercase">Hombres</span><span className="text-sm font-bold text-blue-600">{summary.totalMen}</span></div><div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden"><div className="bg-blue-500 h-full transition-all duration-1000 ease-out" style={{ width: `${summary.totalMen + summary.totalWomen > 0 ? (summary.totalMen / (summary.totalMen + summary.totalWomen)) * 100 : 0}%` }} /></div></div><div className="w-full"><div className="flex justify-between items-end mb-2"><span className="text-xs font-black text-slate-500 uppercase">Mujeres</span><span className="text-sm font-bold text-pink-600">{summary.totalWomen}</span></div><div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden"><div className="bg-pink-500 h-full transition-all duration-1000 ease-out" style={{ width: `${summary.totalMen + summary.totalWomen > 0 ? (summary.totalWomen / (summary.totalMen + summary.totalWomen)) * 100 : 0}%` }} /></div></div></div></div>
+          {viewPrefs.chartAgeBrackets && (
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+              <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><UserCircle className="text-cyan-500" size={20} /> Rangos de Edad</h3>
+              <p className="text-xs text-slate-400 mb-6">Distribución detallada por edades</p>
+              <div className="space-y-4 w-full mt-2 max-h-64 overflow-y-auto pr-2">
+                <ProgressBar label="Niños (< 13)" value={summary.ageBrackets.kids} max={totalRegs} colorClass="text-cyan-600" bgClass="bg-cyan-500" />
+                <ProgressBar label="Adolescentes (13 - 17)" value={summary.ageBrackets.teens} max={totalRegs} colorClass="text-blue-600" bgClass="bg-blue-500" />
+                <ProgressBar label="Jóvenes (18 - 25)" value={summary.ageBrackets.youngAdults} max={totalRegs} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
+                <ProgressBar label="Adultos (26 - 40)" value={summary.ageBrackets.adults} max={totalRegs} colorClass="text-purple-600" bgClass="bg-purple-500" />
+                <ProgressBar label="Mayores (41+)" value={summary.ageBrackets.seniors} max={totalRegs} colorClass="text-pink-600" bgClass="bg-pink-500" />
+              </div>
+            </div>
+          )}
 
           {isCampa && (
             <>
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><GraduationCap className="text-purple-500" size={20} /> Estado de Beca</h3><p className="text-xs text-slate-400 mb-6">Proporción de becados vs regulares</p><div className="flex items-center justify-around gap-6"><div className="w-36 h-36 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: totalRegs > 0 ? `conic-gradient(#a855f7 0% ${percentScholarship}%, #cbd5e1 ${percentScholarship}% 100%)` : '#f1f5f9' }} /><div className="space-y-4"><div><div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-purple-500" /><span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Becados</span></div><p className="text-2xl font-black text-slate-800 mt-1">{totalScholarship}</p></div><div><div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-slate-300" /><span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Regulares</span></div><p className="text-2xl font-black text-slate-800 mt-1">{totalRegs - totalScholarship}</p></div></div></div></div>
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Droplets className="text-blue-500" size={20} /> Habilidades Acuáticas</h3><p className="text-xs text-slate-400 mb-6">Capacidad de nado de los inscritos</p><div className="space-y-5 w-full mt-2"><div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Saben Nadar</span><span className="text-blue-600 font-black">{summary.totalSwimmers}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-blue-500 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (summary.totalSwimmers / totalRegs) * 100 : 0}%` }} /></div></div><div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">No Saben Nadar</span><span className="text-slate-500 font-black">{summary.totalNonSwimmers}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-slate-400 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (summary.totalNonSwimmers / totalRegs) * 100 : 0}%` }} /></div></div></div></div>
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Activity className="text-red-500" size={20} /> Condiciones de Salud</h3><p className="text-xs text-slate-400 mb-6">Incidencia de condiciones médicas especiales</p><div className="space-y-5 w-full mt-2"><div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Con Alergias</span><span className="text-orange-600 font-black">{summary.totalAllergies}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-orange-500 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (summary.totalAllergies / totalRegs) * 100 : 0}%` }} /></div></div><div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Con Enfermedades</span><span className="text-red-600 font-black">{summary.totalDiseases}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-red-500 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (summary.totalDiseases / totalRegs) * 100 : 0}%` }} /></div></div><div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Con Discapacidades</span><span className="text-purple-600 font-black">{summary.totalDisabilities}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-purple-500 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (summary.totalDisabilities / totalRegs) * 100 : 0}%` }} /></div></div></div></div>
-
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
-                <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-amber-500" size={20} /> Servidores</h3>
-                <p className="text-xs text-slate-400 mb-6">Distribución de servidores por asignación</p>
-                <div className="space-y-5 w-full mt-2">
-                  <div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Total Servidores</span><span className="text-amber-600 font-black">{summary.totalServers}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-amber-500 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (summary.totalServers / totalRegs) * 100 : 0}%` }} /></div></div>
-                  <div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Teens</span><span className="text-indigo-600 font-black">{allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Teens').length}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-indigo-400 h-full transition-all duration-1000 ease-out" style={{ width: `${summary.totalServers > 0 ? (allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Teens').length / summary.totalServers) * 100 : 0}%` }} /></div></div>
-                  <div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Jóvenes</span><span className="text-blue-600 font-black">{allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes').length}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-blue-400 h-full transition-all duration-1000 ease-out" style={{ width: `${summary.totalServers > 0 ? (allParticipants.filter(p => p.eventId === currentEvent?.id && p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes').length / summary.totalServers) * 100 : 0}%` }} /></div></div>
-                  <div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Ambos</span><span className="text-amber-600 font-black">{summary.totalServersBoth}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-amber-400 h-full transition-all duration-1000 ease-out" style={{ width: `${summary.totalServers > 0 ? (summary.totalServersBoth / summary.totalServers) * 100 : 0}%` }} /></div></div>
+              {viewPrefs.chartBloodType && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Droplets className="text-red-500" size={20} /> Tipos de Sangre</h3>
+                  <p className="text-xs text-slate-400 mb-6">Distribución de participantes por tipo de sangre</p>
+                  <div className="flex-1 flex flex-col justify-center gap-4 mt-4 pb-2 w-full max-h-64 overflow-y-auto pr-2">
+                    {Object.entries(summary.bloodTypeStats).sort((a,b)=>b[1]-a[1]).map(([bt, count]) => count > 0 && (
+                      <ProgressBar key={bt} label={bt} value={count} max={totalRegs} colorClass="text-red-600" bgClass="bg-red-500" />
+                    ))}
+                    {Object.values(summary.bloodTypeStats).every(v => v === 0) && <p className="text-xs text-slate-400 italic">No hay datos registrados aún.</p>}
+                  </div>
                 </div>
-              </div>
-
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
-                <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Edades y Eventos</h3>
-                <p className="text-xs text-slate-400 mb-6">Teens (&lt;18) vs Jóvenes (18+)</p>
-                <div className="space-y-5 w-full mt-2">
-                  <div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Teens (&lt;18)</span><span className="text-indigo-600 font-black">{summary.totalMinors}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-indigo-500 h-full transition-all duration-1000 ease-out" style={{ width: `${(summary.totalMinors / (summary.totalMinors + summary.totalAdults || 1)) * 100}%` }} /></div></div>
-                  <div><div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider">Jóvenes (18+)</span><span className="text-blue-500 font-black">{summary.totalAdults}</span></div><div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden"><div className="bg-blue-400 h-full transition-all duration-1000 ease-out" style={{ width: `${(summary.totalAdults / (summary.totalMinors + summary.totalAdults || 1)) * 100}%` }} /></div></div>
-                  {summary.totalServersBoth > 0 && (
-                    <div className="pt-4 mt-2 border-t border-slate-100">
-                      <div className="flex justify-between text-xs font-bold"><span className="text-amber-600 uppercase tracking-wider">Servidores en Ambos</span><span className="text-amber-600 font-black">{summary.totalServersBoth}</span></div>
-                    </div>
-                  )}
+              )}
+              
+              {viewPrefs.chartSwimming && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Droplets className="text-blue-500" size={20} /> Habilidades Acuáticas</h3><p className="text-xs text-slate-400 mb-6">Capacidad de nado de los inscritos</p><div className="space-y-5 w-full mt-2"><ProgressBar label="Saben Nadar" value={summary.totalSwimmers} max={totalRegs} colorClass="text-blue-600" bgClass="bg-blue-500" /><ProgressBar label="No Saben Nadar" value={summary.totalNonSwimmers} max={totalRegs} colorClass="text-slate-500" bgClass="bg-slate-400" /></div></div>
+              )}
+              
+              {viewPrefs.chartMedical && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Activity className="text-red-500" size={20} /> Condiciones de Salud</h3><p className="text-xs text-slate-400 mb-6">Incidencia de condiciones médicas especiales</p><div className="space-y-5 w-full mt-2"><ProgressBar label="Con Alergias" value={summary.totalAllergies} max={totalRegs} colorClass="text-orange-600" bgClass="bg-orange-500" /><ProgressBar label="Con Enfermedades" value={summary.totalDiseases} max={totalRegs} colorClass="text-red-600" bgClass="bg-red-500" /><ProgressBar label="Con Discapacidades" value={summary.totalDisabilities} max={totalRegs} colorClass="text-purple-600" bgClass="bg-purple-500" /></div></div>
+              )}
+              
+              {viewPrefs.chartServers && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-amber-500" size={20} /> Servidores</h3>
+                  <p className="text-xs text-slate-400 mb-6">Distribución de servidores por asignación</p>
+                  <div className="space-y-5 w-full mt-2">
+                    <ProgressBar label="Total Servidores" value={summary.totalServers} max={totalRegs} colorClass="text-amber-600" bgClass="bg-amber-500" />
+                    <ProgressBar label="Teens" value={allParticipants.filter(p => p.eventId === currentEvent?.id && participantIsActiveInEvent(p) && p.isServer === 'Sí' && p.serverAssignment === 'Teens').length} max={summary.totalServers} colorClass="text-indigo-600" bgClass="bg-indigo-400" />
+                    <ProgressBar label="Jóvenes" value={allParticipants.filter(p => p.eventId === currentEvent?.id && participantIsActiveInEvent(p) && p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes').length} max={summary.totalServers} colorClass="text-blue-600" bgClass="bg-blue-400" />
+                    <ProgressBar label="Ambos" value={summary.totalServersBoth} max={summary.totalServers} colorClass="text-amber-600" bgClass="bg-amber-400" />
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {viewPrefs.chartAges && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Asignación a Eventos</h3>
+                  <p className="text-xs text-slate-400 mb-6">Teens (&lt;18) vs Jóvenes (18+)</p>
+                  <div className="space-y-5 w-full mt-2">
+                    <ProgressBar label="Teens (<18)" value={summary.totalMinors} max={summary.totalMinors + summary.totalAdults} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
+                    <ProgressBar label="Jóvenes (18+)" value={summary.totalAdults} max={summary.totalMinors + summary.totalAdults} colorClass="text-blue-500" bgClass="bg-blue-400" />
+                    {summary.totalServersBoth > 0 && (
+                      <div className="pt-4 mt-2 border-t border-slate-100">
+                        <div className="flex justify-between text-xs font-bold"><span className="text-amber-600 uppercase tracking-wider">Servidores en Ambos</span><span className="text-amber-600 font-black">{summary.totalServersBoth}</span></div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </>
           )}
 
-          {isGeneral && currentEvent.customFields && currentEvent.customFields.map((field, idx) => {
+          {isGeneral && currentEvent.customFields && viewPrefs.chartCustom && currentEvent.customFields.map((field, idx) => {
             const stats = summary.customFieldsStats[field] || {};
             const entries = Object.entries(stats).sort((a, b) => b[1] - a[1]);
             return (
@@ -1248,10 +6233,7 @@ const App = () => {
                 <p className="text-xs text-slate-400 mb-6">Distribución de respuestas</p>
                 <div className="space-y-4 w-full mt-2 max-h-48 overflow-y-auto pr-2">
                   {entries.map(([val, count], i) => (
-                    <div key={i}>
-                      <div className="flex justify-between text-xs font-bold mb-1.5"><span className="text-slate-600 uppercase tracking-wider truncate mr-2">{val}</span><span className="text-indigo-600 font-black">{count}</span></div>
-                      <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden"><div className="bg-indigo-500 h-full transition-all duration-1000 ease-out" style={{ width: `${totalRegs > 0 ? (count / totalRegs) * 100 : 0}%` }} /></div>
-                    </div>
+                    <ProgressBar key={i} label={val} value={count} max={totalRegs} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
                   ))}
                   {entries.length === 0 && <p className="text-xs text-slate-400 italic">No hay datos registrados aún.</p>}
                 </div>
@@ -1260,88 +6242,131 @@ const App = () => {
           })}
         </div>
 
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-          <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="bg-slate-100 p-2 rounded-lg text-slate-600"><TableProperties size={20} /></div>
-              <div><h3 className="text-lg font-bold text-slate-800">Visualización de Datos Generales</h3><p className="text-xs text-slate-400">Desglose detallado por sede</p></div>
+        {viewPrefs.tableDetails && (
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mt-8">
+            <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="bg-slate-100 p-2 rounded-lg text-slate-600"><TableProperties size={20} /></div>
+                <div><h3 className="text-lg font-bold text-slate-800">Visualización de Datos Generales</h3><p className="text-xs text-slate-400">Desglose detallado por sede</p></div>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                {isCampa && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <Filter size={14} className="text-slate-400" />
+                      <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={summaryView} onChange={(e) => setSummaryView(e.target.value)}>
+                        <option value="all">Becados/Regulares</option>
+                        <option value="regular">Regulares</option>
+                        <option value="scholarship">Becados</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Users size={14} className="text-slate-400" />
+                      <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={summaryServerView} onChange={(e) => setSummaryServerView(e.target.value)}>
+                        <option value="all">Servidores: Todos</option>
+                        <option value="Sí">Servidores</option>
+                        <option value="No">Camperos</option>
+                      </select>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
-              {isCampa && (
-                <>
-                  <div className="flex items-center gap-2">
-                    <Filter size={14} className="text-slate-400" />
-                    <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={summaryView} onChange={(e) => setSummaryView(e.target.value)}>
-                      <option value="all">Tipos: Todos</option>
-                      <option value="regular">Solo Regulares</option>
-                      <option value="scholarship">Solo Becados</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Users size={14} className="text-slate-400" />
-                    <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={summaryServerView} onChange={(e) => setSummaryServerView(e.target.value)}>
-                      <option value="all">Servidores: Todos</option>
-                      <option value="Sí">Solo Servidores</option>
-                      <option value="No">No Servidores</option>
-                    </select>
-                  </div>
-                </>
-              )}
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                    <th className="px-6 py-4">Sede</th>
+                    <th className="px-6 py-4 text-center">Inscritos</th>
+                    {isCampa && summaryView === 'all' && <th className="px-6 py-4 text-center text-purple-600">Becados</th>}
+                    {isCampa && summaryServerView === 'all' && <th className="px-6 py-4 text-center text-amber-600">Servidores</th>}
+                    <th className="px-6 py-4 text-right">Recaudado</th>
+                    <th className="px-6 py-4 text-right">Pendiente</th>
+                    <th className="px-6 py-4 text-right">Total Esperado</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {tableData.map(({ loc, stats }) => (
+                    <tr key={loc} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="px-6 py-3 font-bold text-slate-700">{loc}</td>
+                      <td className="px-6 py-3 text-center font-medium text-slate-600">{stats.count}</td>
+                      {isCampa && summaryView === 'all' && <td className="px-6 py-3 text-center text-purple-600 font-bold">{stats.scholarship}</td>}
+                      {isCampa && summaryServerView === 'all' && <td className="px-6 py-3 text-center text-amber-600 font-bold">{stats.servers}</td>}
+                      <td className="px-6 py-3 text-right font-bold text-green-600">{formatMoney(stats.paid)}</td>
+                      <td className="px-6 py-3 text-right font-bold text-orange-500">{formatMoney(stats.pending)}</td>
+                      <td className="px-6 py-3 text-right font-black text-slate-800">{formatMoney(stats.expected)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-indigo-50 border-t-2 border-indigo-100">
+                    <td className="px-6 py-4 font-black text-indigo-900 uppercase">Global</td>
+                    <td className="px-6 py-4 text-center font-black text-indigo-900">{globalTableStats.count}</td>
+                    {isCampa && summaryView === 'all' && <td className="px-6 py-4 text-center font-black text-purple-700">{globalTableStats.scholarship}</td>}
+                    {isCampa && summaryServerView === 'all' && <td className="px-6 py-4 text-center font-black text-amber-700">{globalTableStats.servers}</td>}
+                    <td className="px-6 py-4 text-right font-black text-green-700">{formatMoney(globalTableStats.paid)}</td>
+                    <td className="px-6 py-4 text-right font-black text-orange-600">{formatMoney(globalTableStats.pending)}</td>
+                    <td className="px-6 py-4 text-right font-black text-indigo-900">{formatMoney(globalTableStats.expected)}</td>
+                  </tr>
+                </tfoot>
+              </table>
             </div>
+          </div>
+        )}
+
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mt-8">
+          <div className="p-6 border-b border-slate-100">
+            <h3 className="text-lg font-bold text-slate-800">Salida y Regreso por Sede</h3>
+            <p className="text-xs text-slate-400">Cantidad de registrados que salen de una sede y regresan a otra.</p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
                 <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                  <th className="px-6 py-4">Sede</th>
-                  <th className="px-6 py-4 text-center">Inscritos</th>
-                  {isCampa && summaryView === 'all' && <th className="px-6 py-4 text-center text-purple-600">Becados</th>}
-                  {isCampa && summaryServerView === 'all' && <th className="px-6 py-4 text-center text-amber-600">Servidores</th>}
-                  <th className="px-6 py-4 text-right">Recaudado</th>
-                  <th className="px-6 py-4 text-right">Pendiente</th>
-                  <th className="px-6 py-4 text-right">Total Esperado</th>
+                  <th className="px-6 py-4">Sale de</th>
+                  <th className="px-6 py-4">Regresa a</th>
+                  <th className="px-6 py-4 text-right">Cantidad</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {tableData.map(({ loc, stats }) => (
-                  <tr key={loc} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="px-6 py-3 font-bold text-slate-700">{loc}</td>
-                    <td className="px-6 py-3 text-center font-medium text-slate-600">{stats.count}</td>
-                    {isCampa && summaryView === 'all' && <td className="px-6 py-3 text-center text-purple-600 font-bold">{stats.scholarship}</td>}
-                    {isCampa && summaryServerView === 'all' && <td className="px-6 py-3 text-center text-amber-600 font-bold">{stats.servers}</td>}
-                    <td className="px-6 py-3 text-right font-bold text-green-600">{formatMoney(stats.paid)}</td>
-                    <td className="px-6 py-3 text-right font-bold text-orange-500">{formatMoney(stats.pending)}</td>
-                    <td className="px-6 py-3 text-right font-black text-slate-800">{formatMoney(stats.expected)}</td>
+                {(currentEvent?.locations || []).flatMap(from =>
+                  (currentEvent?.locations || []).map(to => ({ from, to, count: summary.travelStats?.[from]?.[to] || 0 }))
+                ).map(({ from, to, count }) => (
+                  <tr key={`${from}-${to}`} className="hover:bg-slate-50/50 transition-colors">
+                    <td className="px-6 py-3 font-bold text-slate-700">{from}</td>
+                    <td className="px-6 py-3 font-medium text-slate-600">{to}</td>
+                    <td className="px-6 py-3 text-right font-black text-slate-800">{count}</td>
                   </tr>
                 ))}
               </tbody>
-              <tfoot>
-                <tr className="bg-indigo-50 border-t-2 border-indigo-100">
-                  <td className="px-6 py-4 font-black text-indigo-900 uppercase">Global</td>
-                  <td className="px-6 py-4 text-center font-black text-indigo-900">{globalTableStats.count}</td>
-                  {isCampa && summaryView === 'all' && <td className="px-6 py-4 text-center font-black text-purple-700">{globalTableStats.scholarship}</td>}
-                  {isCampa && summaryServerView === 'all' && <td className="px-6 py-4 text-center font-black text-amber-700">{globalTableStats.servers}</td>}
-                  <td className="px-6 py-4 text-right font-black text-green-700">{formatMoney(globalTableStats.paid)}</td>
-                  <td className="px-6 py-4 text-right font-black text-orange-600">{formatMoney(globalTableStats.pending)}</td>
-                  <td className="px-6 py-4 text-right font-black text-indigo-900">{formatMoney(globalTableStats.expected)}</td>
-                </tr>
-              </tfoot>
             </table>
           </div>
         </div>
+
       </div>
     );
   };
 
-  const renderLocationSheet = (loc) => (
+  const renderLocationSheet = (loc) => {
+    const visibleParticipants = getProcessedParticipantsForLocation(loc);
+    return (
     <div className="p-6 space-y-6 animate-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
         <div className="flex items-center gap-4">
           <div className={`p-3 rounded-xl ${isLocOpen(loc) ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}><MapPin size={24} /></div>
-          <div><h2 className="text-2xl font-bold text-slate-800">Sede {loc}</h2><div className="flex items-center gap-2"><div className={`w-2 h-2 rounded-full ${isLocOpen(loc) ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} /><p className="text-xs font-bold uppercase text-slate-400">Registro {isLocOpen(loc) ? 'Abierto' : 'Cerrado'}</p></div></div>
+          <div>
+            <h2 className="text-2xl font-bold text-slate-800">Sede {loc}</h2>
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className={`w-2 h-2 rounded-full ${isLocOpen(loc) ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+              <p className="text-xs font-bold uppercase text-slate-400">Registro {isLocOpen(loc) ? 'Abierto' : 'Cerrado'}</p>
+              <span className={`text-[10px] font-black px-2 py-0.5 rounded border ${isLocationFull(loc) ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-indigo-50 text-indigo-700 border-indigo-100'}`}>
+                Cupo: {getActiveCountByLocation(loc)} / {getLocationCap(loc) > 0 ? getLocationCap(loc) : 'Ilimitado'}
+              </span>
+            </div>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {currentUser?.role === 'Administrador' && (
+          {hasAdminRights && (
             <button onClick={() => toggleRegStatus(loc)} className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm transition-all border ${isLocOpen(loc) ? 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100' : 'bg-green-50 text-green-600 border-green-100 hover:bg-green-100'}`}><Power size={16} />{isLocOpen(loc) ? 'Desactivar Registro' : 'Activar Registro'}</button>
           )}
         </div>
@@ -1351,108 +6376,912 @@ const App = () => {
         <div className={`bg-white p-6 rounded-2xl shadow-sm border border-slate-100 transition-opacity ${!isLocOpen(loc) ? 'opacity-50 pointer-events-none' : ''}`}>
           <div className="flex justify-between items-center mb-6">
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2"><Plus size={14} /> Nuevo Registro</h3>
-            {isGeneral && currentUser?.role === 'Administrador' && (
+            {isGeneral && hasAdminRights && (
               <button onClick={() => setCustomFieldsModal({ isOpen: true })} className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg border border-indigo-100 hover:bg-indigo-100 transition-colors"><ListPlus size={14} /> Configurar Campos Extra</button>
             )}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Nombre Completo</label><input placeholder="Ej. Juan Pérez" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.name} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, name: e.target.value })} /></div>
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Teléfono Personal</label><input placeholder="55-1234-5678" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.phone} onChange={e => setNewEntry({ ...newEntry, phone: formatPhoneNumber(e.target.value) })} /></div>
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Edad {!isCampa && "(Opcional)"}</label><input type="number" placeholder="Años" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.age} onChange={e => setNewEntry({ ...newEntry, age: e.target.value })} /></div>
-            <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Género {!isCampa && "(Opcional)"}</label>
-              <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.gender} onChange={e => setNewEntry({ ...newEntry, gender: e.target.value })}>
-                <option value="">Seleccionar {!isCampa && "(Opcional)"}</option>
-                {GENDERS.map(g => <option key={g} value={g}>{g}</option>)}
-              </select>
-            </div>
-
-            {(isCampa || isGeneral) && (
-              <>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Contacto Emergencia {isGeneral && "(Opcional)"}</label><input placeholder="Nombre contacto" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.emergencyContact} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, emergencyContact: e.target.value })} /></div>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Tel. Emergencia {isGeneral && "(Opcional)"}</label><input placeholder="55-1234-5678" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.emergencyPhone} onChange={e => setNewEntry({ ...newEntry, emergencyPhone: formatPhoneNumber(e.target.value) })} /></div>
-              </>
+          <div className="mb-5 p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+              <Database size={14} className="text-indigo-500" /> Buscar persona en eventos anteriores
+            </p>
+            <p className="text-[11px] text-slate-500">
+              Escribe nombre, ID VNPM o al menos 4 dígitos del teléfono. Se incluyen personas de todos los eventos (activos y archivados/eliminados). Lo que no aplique al formulario actual se descarta al usar datos.
+            </p>
+            {pastProfilesForImport.length === 0 && (
+              <p className="text-[11px] text-amber-800 bg-amber-50 px-3 py-2 rounded-lg border border-amber-100">
+                No hay otros eventos con participantes registrados.
+              </p>
             )}
-
-            {isCampa && (
-              <>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Alergias</label><div className="flex gap-2"><select className={`p-3 bg-slate-50 border rounded-xl outline-none text-sm transition-colors ${newEntry.hasAllergy === 'Sí' ? 'border-orange-300 text-orange-700 bg-orange-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasAllergy} onChange={e => setNewEntry({ ...newEntry, hasAllergy: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>{newEntry.hasAllergy === 'Sí' && <input placeholder="¿Cuál?" className="flex-1 p-3 bg-slate-50 border border-orange-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-sm" value={newEntry.allergyDetails} onChange={e => setNewEntry({ ...newEntry, allergyDetails: e.target.value })} />}</div></div>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Enfermedades</label><div className="flex gap-2"><select className={`p-3 bg-slate-50 border rounded-xl outline-none text-sm transition-colors ${newEntry.hasDisease === 'Sí' ? 'border-red-300 text-red-700 bg-red-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasDisease} onChange={e => setNewEntry({ ...newEntry, hasDisease: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>{newEntry.hasDisease === 'Sí' && <input placeholder="Especifique" className="flex-1 p-3 bg-slate-50 border border-red-300 rounded-xl outline-none focus:ring-2 focus:ring-red-500 text-sm" value={newEntry.diseaseDetails} onChange={e => setNewEntry({ ...newEntry, diseaseDetails: e.target.value })} />}</div></div>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Discapacidades</label><div className="flex gap-2"><select className={`p-3 bg-slate-50 border rounded-xl outline-none text-sm transition-colors ${newEntry.hasDisability === 'Sí' ? 'border-purple-300 text-purple-700 bg-purple-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasDisability} onChange={e => setNewEntry({ ...newEntry, hasDisability: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>{newEntry.hasDisability === 'Sí' && <input placeholder="Detalles" className="flex-1 p-3 bg-slate-50 border border-purple-300 rounded-xl outline-none focus:ring-2 focus:ring-purple-500 text-sm" value={newEntry.disabilityDetails} onChange={e => setNewEntry({ ...newEntry, disabilityDetails: e.target.value })} />}</div></div>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Sangre / Nadar</label><div className="flex gap-2"><select className="flex-1 p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm" value={newEntry.bloodType} onChange={e => setNewEntry({ ...newEntry, bloodType: e.target.value })}>{BLOOD_TYPES.map(bt => <option key={bt} value={bt}>{bt}</option>)}</select><button type="button" onClick={() => setNewEntry({ ...newEntry, canSwim: newEntry.canSwim === 'Sí' ? 'No' : 'Sí' })} className={`px-3 py-3 rounded-xl text-[10px] font-bold uppercase transition-all border ${newEntry.canSwim === 'Sí' ? 'bg-blue-500 text-white border-blue-400' : 'bg-slate-100 text-slate-400 border-slate-200'}`}>Nado: {newEntry.canSwim}</button></div></div>
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Becado</label><button type="button" onClick={() => setNewEntry({ ...newEntry, isScholarship: newEntry.isScholarship === 'Sí' ? 'No' : 'Sí' })} className={`w-full px-4 py-3 rounded-xl text-sm font-bold transition-all border flex items-center justify-center gap-2 ${newEntry.isScholarship === 'Sí' ? 'bg-purple-500 text-white border-purple-400 shadow-md shadow-purple-100' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}><GraduationCap size={18} className={newEntry.isScholarship === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isScholarship}</button></div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Servidor</label>
-                  <button type="button" onClick={() => setNewEntry({ ...newEntry, isServer: newEntry.isServer === 'Sí' ? 'No' : 'Sí', serverAssignment: '' })} className={`w-full px-4 py-3 rounded-xl text-sm font-bold transition-all border flex items-center justify-center gap-2 ${newEntry.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400 shadow-md shadow-amber-100' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}><Users size={18} className={newEntry.isServer === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isServer}</button>
-                </div>
-                {newEntry.isServer === 'Sí' && (
-                  <div className="space-y-1 md:col-span-2">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Asignación de Servidor</label>
-                    <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 text-sm font-semibold text-slate-700" value={newEntry.serverAssignment} onChange={e => setNewEntry({ ...newEntry, serverAssignment: e.target.value })}>
-                      <option value="">Selecciona a qué evento servirá...</option>
-                      <option value="Teens">Teens (Menores de 18)</option>
-                      <option value="Jóvenes">Jóvenes (Mayores de 18)</option>
-                      <option value="Ambos">Ambos Eventos</option>
-                    </select>
-                  </div>
-                )}
-              </>
-            )}
-
-            {isGeneral && currentEvent.customFields && currentEvent.customFields.map((field, idx) => (
-              <div className="space-y-1" key={idx}>
-                <label className="text-[10px] font-bold text-slate-400 uppercase px-1 truncate block" title={field}>{field}</label>
-                <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm" value={newEntry.customData?.[field] || ''} onChange={e => setNewEntry({ ...newEntry, customData: { ...(newEntry.customData || {}), [field]: e.target.value } })} />
-              </div>
-            ))}
-
-            <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-400 uppercase px-1 flex items-center justify-between">
-                <span>Abono Inicial ($)</span>
-                {!(isCampa && newEntry.isScholarship === 'Sí') && <span className="text-indigo-400 normal-case tracking-normal">Mín. ${currentEvent.minDeposit}</span>}
-              </label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
-                <input
-                  type="number"
-                  className="w-full pl-7 pr-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-green-600 outline-none focus:ring-2 focus:ring-green-500"
-                  value={newEntry.paid}
-                  placeholder="0.00"
-                  onChange={e => {
-                    let val = e.target.value;
-                    if (val === '') { setNewEntry({ ...newEntry, paid: '' }); return; }
-                    let numVal = parseFloat(val);
-                    if (numVal < 0) numVal = 0;
-                    const bc = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
-                    if (numVal > bc) numVal = bc;
-                    setNewEntry({ ...newEntry, paid: numVal });
-                  }}
-                />
-                {!(isCampa && newEntry.isScholarship === 'Sí') && newEntry.paid !== '' && parseFloat(newEntry.paid) < currentEvent.minDeposit && (
-                  <span className="text-[10px] text-red-500 font-bold px-1 absolute top-full left-0 mt-0.5 whitespace-nowrap z-10">Falta ${currentEvent.minDeposit - (parseFloat(newEntry.paid) || 0)} para el apartado</span>
-                )}
-              </div>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <input
+                type="text"
+                className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="Nombre, ID VNPM o teléfono…"
+                value={newRegProfileSearch}
+                onChange={(e) => setNewRegProfileSearch(e.target.value)}
+              />
             </div>
+            {newEntry.vnpPersonId ? (
+              <p className="text-[11px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-lg">
+                ID VNPM vinculado: <strong>{newEntry.vnpPersonId}</strong> (nuevo registro reutilizará este ID)
+              </p>
+            ) : null}
+            {profileImportMatches.length > 0 && (
+              <ul className="divide-y divide-slate-100 border border-slate-200 rounded-xl bg-white max-h-52 overflow-y-auto shadow-sm">
+                {profileImportMatches.map((p) => {
+                  const evName = events.find((e) => e.id === p.eventId)?.name || 'Evento';
+                  const isArchived = participantIsArchived(p);
+                  const archivedHere = isArchived && p.eventId === currentEvent?.id;
+                  return (
+                    <li key={`${p.eventId}-${p.id}`} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 text-xs">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-bold text-slate-800 truncate">{p.name}</p>
+                        <p className="text-slate-500">{p.phone} · {evName}{isArchived ? ' · Archivado' : ''}</p>
+                        {archivedHere ? (
+                          <p className="text-[10px] font-bold text-amber-700 mt-0.5">Archivado en este evento</p>
+                        ) : isArchived ? (
+                          <p className="text-[10px] font-bold text-slate-500 mt-0.5">Registro eliminado (datos conservados)</p>
+                        ) : null}
+                        {p.vnpPersonId ? <p className="text-[10px] font-mono text-indigo-600 mt-0.5">{p.vnpPersonId}</p> : null}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => applyImportedProfile(p, loc)}
+                        className="shrink-0 py-2 px-3 rounded-lg font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 hover:bg-indigo-100 transition-colors"
+                      >
+                        Usar datos
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
 
-          <div className="mt-6 flex justify-end">
-            <button onClick={() => handleAddEntry(loc)} disabled={!isFormValid || !isLocOpen(loc)} className={`px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all shadow-lg active:scale-95 ${isFormValid && isLocOpen(loc) ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-100' : 'bg-slate-300 text-slate-400 cursor-not-allowed shadow-none'}`}><Plus size={20} /> Registrar</button>
+          <div className="space-y-4">
+            {/* 1. Datos generales */}
+            <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+              <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">1 · Datos generales</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="space-y-1">
+                  <label className={labelClasses}>Nombre completo</label>
+                  <input placeholder="Ej. Juan Pérez López" className={`${inputClasses} ${getRequiredFieldClass(!hasValidFullName(newEntry.name || ''))}`} value={newEntry.name} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, name: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <label className={labelClasses}>Teléfono personal</label>
+                  <input placeholder="55-1234-5678" className={`${inputClasses} ${getRequiredFieldClass(!isValidPhone(newEntry.phone || ''))}`} value={newEntry.phone} onChange={e => setNewEntry({ ...newEntry, phone: formatPhoneNumber(e.target.value) })} />
+                </div>
+                <div className="space-y-1">
+                  <label className={labelClasses}>Fecha de nacimiento {!isCampa && '(Opcional)'}</label>
+                  <input
+                    type="date"
+                    className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(newEntry.birthDate || '').trim())}`}
+                    value={newEntry.birthDate || ''}
+                    onChange={e => {
+                      const birthDate = e.target.value;
+                      setNewEntry({ ...newEntry, birthDate, age: calculateAgeFromBirthDate(birthDate) });
+                    }}
+                  />
+                  <p className="text-[10px] text-slate-500 font-semibold px-1">Edad calculada: {newEntry.age || '—'}</p>
+                </div>
+                {(() => {
+                  const ageNum = parseInt(newEntry.age, 10);
+                  const isMinor = Number.isFinite(ageNum) && ageNum > 0 && ageNum < 18;
+                  if (!isMinor) return null;
+                  return (
+                    <div className="space-y-1">
+                      <label className={labelClasses}>Responsiva (menor de edad)</label>
+                      <select
+                        className={`${inputClasses} ${getRequiredFieldClass(!(newEntry.responsivaStatus || '').trim())}`}
+                        value={newEntry.responsivaStatus || ''}
+                        onChange={e => setNewEntry({ ...newEntry, responsivaStatus: e.target.value })}
+                      >
+                        <option value="">Seleccionar</option>
+                        {RESPONSIVA_STATUSES.map((st) => <option key={st} value={st}>{st}</option>)}
+                      </select>
+                    </div>
+                  );
+                })()}
+                <div className="space-y-1">
+                  <label className={labelClasses}>Género {!isCampa && '(Opcional)'}</label>
+                  <select className={`${inputClasses} ${getRequiredFieldClass(isCampa && !String(newEntry.gender || '').trim())}`} value={newEntry.gender} onChange={e => setNewEntry({ ...newEntry, gender: e.target.value })}>
+                    <option value="">Seleccionar {!isCampa && '(Opcional)'}</option>
+                    {GENDERS.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1 md:col-span-2 lg:col-span-2">
+                  <label className={labelClasses}>Alias (opcional)</label>
+                  <input placeholder="Ej. Juanito" className={inputClasses} value={newEntry.alias} onChange={e => setNewEntry({ ...newEntry, alias: e.target.value })} />
+                </div>
+              </div>
+              {isGeneral && currentEvent.customFields && currentEvent.customFields.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mt-3 pt-3 border-t border-slate-200">
+                  {currentEvent.customFields.map((field, idx) => (
+                    <div className="space-y-1" key={idx}>
+                      <label className="text-[10px] font-black text-slate-400 uppercase px-1 truncate block tracking-widest" title={field}>{field}</label>
+                      <input className={inputClasses} value={newEntry.customData?.[field] || ''} onChange={e => setNewEntry({ ...newEntry, customData: { ...(newEntry.customData || {}), [field]: e.target.value } })} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* 2. Contacto de emergencia */}
+            {(isCampa || isGeneral) && (
+              <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+                <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">2 · Contacto de emergencia</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className={labelClasses}>Nombre del contacto {isGeneral && '(Opcional)'}</label>
+                    <input placeholder="Nombre contacto" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(newEntry.emergencyContact || '').trim())}`} value={newEntry.emergencyContact} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, emergencyContact: e.target.value })} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className={labelClasses}>Teléfono de emergencia {isGeneral && '(Opcional)'}</label>
+                    <input placeholder="55-1234-5678" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !isValidPhone(newEntry.emergencyPhone || ''))}`} value={newEntry.emergencyPhone} onChange={e => setNewEntry({ ...newEntry, emergencyPhone: formatPhoneNumber(e.target.value) })} />
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {/* 3. Datos médicos (Campa) */}
+            {isCampa && (
+              <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+                <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">3 · Datos médicos</h4>
+                <div className="flex flex-col gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className={labelClasses}>Tipo de sangre</label>
+                      <select className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm" value={newEntry.bloodType} onChange={e => setNewEntry({ ...newEntry, bloodType: e.target.value })}>
+                        {BLOOD_TYPES.map(bt => <option key={bt} value={bt}>{bt}</option>)}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className={labelClasses}>¿Sabe nadar?</label>
+                      <button type="button" onClick={() => setNewEntry({ ...newEntry, canSwim: newEntry.canSwim === 'Sí' ? 'No' : 'Sí' })} className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border ${newEntry.canSwim === 'Sí' ? 'bg-blue-500 text-white border-blue-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}>{newEntry.canSwim}</button>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className={labelClasses}>Alergias</label>
+                      {hasAdminRights && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAllergyOptionsForm(globalConfig?.allergyOptions?.length ? [...globalConfig.allergyOptions] : [...DEFAULT_ALLERGY_OPTIONS]);
+                            setAllergyOptionsModal({ isOpen: true });
+                          }}
+                          className="text-[10px] font-bold text-orange-600 hover:text-orange-700 flex items-center gap-1"
+                        >
+                          <Settings2 size={12} /> Categorías
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex gap-2 flex-wrap">
+                      <select className={`p-2.5 bg-slate-50 border rounded-lg outline-none text-sm ${newEntry.hasAllergy === 'Sí' ? 'border-orange-300 text-orange-700 bg-orange-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasAllergy} onChange={e => setNewEntry({ ...newEntry, hasAllergy: e.target.value, allergyCategory: e.target.value === 'Sí' ? (newEntry.allergyCategory || '') : '', allergyDetails: e.target.value === 'Sí' ? (newEntry.allergyDetails || '') : '' })}><option value="No">No</option><option value="Sí">Sí</option></select>
+                      {newEntry.hasAllergy === 'Sí' && (
+                        <>
+                          <select className="flex-1 min-w-[150px] p-2.5 bg-slate-50 border border-orange-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-orange-500" value={newEntry.allergyCategory || ''} onChange={e => setNewEntry({ ...newEntry, allergyCategory: e.target.value })}>
+                            <option value="">Categoría (opcional)</option>
+                            {(globalConfig?.allergyOptions?.length ? globalConfig.allergyOptions : DEFAULT_ALLERGY_OPTIONS).map((opt) => <option key={`allergy-opt-${opt}`} value={opt}>{opt}</option>)}
+                          </select>
+                          <input placeholder="Detalle (opcional si eliges categoría)" className={`flex-1 min-w-[180px] p-2.5 bg-slate-50 border border-orange-300 rounded-lg text-sm ${getRequiredFieldClass(!(newEntry.allergyDetails || '').trim() && !(newEntry.allergyCategory || '').trim())}`} value={newEntry.allergyDetails} onChange={e => setNewEntry({ ...newEntry, allergyDetails: e.target.value })} />
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className={labelClasses}>Enfermedades</label>
+                    <div className="flex gap-2 flex-wrap">
+                      <select className={`p-2.5 bg-slate-50 border rounded-lg outline-none text-sm ${newEntry.hasDisease === 'Sí' ? 'border-red-300 text-red-700 bg-red-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasDisease} onChange={e => setNewEntry({ ...newEntry, hasDisease: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>
+                      {newEntry.hasDisease === 'Sí' && (
+                        <>
+                          <input placeholder="Enfermedad" className={`flex-1 min-w-[120px] p-2.5 bg-slate-50 border border-red-300 rounded-lg text-sm ${getRequiredFieldClass(!(newEntry.diseaseDetails || '').trim())}`} value={newEntry.diseaseDetails} onChange={e => setNewEntry({ ...newEntry, diseaseDetails: e.target.value })} />
+                          <input placeholder="Medicamento (opc.)" className="flex-1 min-w-[120px] p-2.5 bg-slate-50 border border-red-300 rounded-lg text-sm" value={newEntry.diseaseMedication || ''} onChange={e => setNewEntry({ ...newEntry, diseaseMedication: e.target.value })} />
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className={labelClasses}>Discapacidades</label>
+                    <div className="flex gap-2">
+                      <select className={`p-2.5 bg-slate-50 border rounded-lg outline-none text-sm ${newEntry.hasDisability === 'Sí' ? 'border-purple-300 text-purple-700 bg-purple-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasDisability} onChange={e => setNewEntry({ ...newEntry, hasDisability: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>
+                      {newEntry.hasDisability === 'Sí' && <input placeholder="Detalles" className={`flex-1 p-2.5 bg-slate-50 border border-purple-300 rounded-lg text-sm ${getRequiredFieldClass(!(newEntry.disabilityDetails || '').trim())}`} value={newEntry.disabilityDetails} onChange={e => setNewEntry({ ...newEntry, disabilityDetails: e.target.value })} />}
+                    </div>
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {/* 4. Tipo de asistencia (Campa) */}
+            {isCampa && (
+              <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+                <div className="flex items-center justify-between mb-3 pb-1.5 border-b border-slate-200">
+                  <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em]">4 · Tipo de asistencia</h4>
+                  {hasAdminRights && (
+                    <button type="button" onClick={() => { setServeAreaOptionsForm(globalConfig?.serveAreaOptions?.length ? [...globalConfig.serveAreaOptions] : [...DEFAULT_SERVE_AREA_OPTIONS]); setServeAreaOptionsModal({ isOpen: true }); }} className="text-[10px] font-bold text-amber-600 hover:text-amber-700 flex items-center gap-1">
+                      <Settings2 size={12} /> Áreas para servir
+                    </button>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className="space-y-1">
+                    <label className={labelClasses}>Becado</label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = newEntry.isScholarship === 'Sí' ? 'No' : 'Sí';
+                        setNewEntry({
+                          ...newEntry,
+                          isScholarship: next,
+                          scholarshipType: 'total',
+                          scholarshipPartialAmount: '',
+                          isPastorChild: next === 'Sí' ? 'No' : newEntry.isPastorChild,
+                          pastorChildWithoutPay: next === 'Sí' ? 'No' : newEntry.pastorChildWithoutPay,
+                          pastorChildSpecialDonationFinanceId: next === 'Sí' ? '' : newEntry.pastorChildSpecialDonationFinanceId,
+                        });
+                        if (next === 'Sí') setSendToWaitlist(false);
+                      }}
+                      className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.isScholarship === 'Sí' ? 'bg-purple-500 text-white border-purple-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}
+                    >
+                      <GraduationCap size={14} className={newEntry.isScholarship === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isScholarship}
+                    </button>
+                  </div>
+                  <div className="space-y-1">
+                    <label className={labelClasses}>Servidor</label>
+                    <button type="button" onClick={() => setNewEntry({
+                      ...newEntry,
+                      isServer: newEntry.isServer === 'Sí' ? 'No' : 'Sí',
+                      serverAssignment: '',
+                      isMarried: 'No',
+                      spouseName: '',
+                      goesWithChildren: 'No',
+                      childrenCount: '',
+                      servedOtherCampa: 'No',
+                      servedAreas: '',
+                      preferredServeArea: '',
+                      servesInCongress: 'No',
+                      congressServeArea: '',
+                    })} className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}><Users size={14} className={newEntry.isServer === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isServer}</button>
+                  </div>
+
+                  {newEntry.isServer === 'Sí' && (
+                    <div className="space-y-1">
+                      <label className={labelClasses}>Asignación de servidor</label>
+                      <select className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(newEntry.isServer === 'Sí' && !String(newEntry.serverAssignment || '').trim())}`} value={newEntry.serverAssignment} onChange={e => setNewEntry({ ...newEntry, serverAssignment: e.target.value })}>
+                        <option value="Teens">Teens</option>
+                        <option value="Jóvenes">Jóvenes</option>
+                        <option value="Ambos">Ambos</option>
+                      </select>
+                    </div>
+                  )}
+
+                  {newEntry.isScholarship === 'Sí' && (
+                    <div className="md:col-span-2 lg:col-span-4 space-y-2 p-3 rounded-xl bg-purple-50 border border-purple-100">
+                      <p className="text-[10px] font-black text-purple-800 uppercase tracking-wider">Solicitud de beca → lista de espera</p>
+                      <p className="text-[11px] text-purple-900/80 leading-snug">
+                        No ocupa cupo hasta que un administrador promueva el registro. En beca parcial, el monto que indiques es lo único que cuenta como aporte de esa persona al recaudado (pueden pagarlo en cualquier momento); el resto del costo de lista queda saldado por la beca.
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setNewEntry({ ...newEntry, scholarshipType: 'total', scholarshipPartialAmount: '' })}
+                          className={`px-3 py-2 rounded-lg text-xs font-bold border transition-all ${newEntry.scholarshipType !== 'partial' ? 'bg-purple-600 text-white border-purple-500' : 'bg-white text-slate-600 border-slate-200'}`}
+                        >
+                          Beca total
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewEntry({ ...newEntry, scholarshipType: 'partial' })}
+                          className={`px-3 py-2 rounded-lg text-xs font-bold border transition-all ${newEntry.scholarshipType === 'partial' ? 'bg-purple-600 text-white border-purple-500' : 'bg-white text-slate-600 border-slate-200'}`}
+                        >
+                          Beca parcial
+                        </button>
+                      </div>
+                      {newEntry.scholarshipType === 'partial' && (
+                        <div className="space-y-1 max-w-md">
+                          <label className={labelClasses}>¿Cuánto puede abonar?</label>
+                          <p className="text-[10px] text-purple-900/85 leading-snug mb-1">
+                            Solo este monto cuenta como lo que aportan al recaudado del evento; pueden pagarlo en cualquier momento. El resto del costo de lista queda saldado por la beca.
+                          </p>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            placeholder="Ej. 500"
+                            className={`${inputClasses} ${getRequiredFieldClass(newEntry.isScholarship === 'Sí' && newEntry.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(newEntry.scholarshipPartialAmount)) || parseFloat(newEntry.scholarshipPartialAmount) <= 0 || parseFloat(newEntry.scholarshipPartialAmount) >= ((newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global)))}`}
+                            value={newEntry.scholarshipPartialAmount}
+                            onChange={(e) => setNewEntry({ ...newEntry, scholarshipPartialAmount: e.target.value })}
+                          />
+                          <p className="text-[10px] text-purple-800/90">
+                            {(() => {
+                              const list = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
+                              const p = parseFloat(newEntry.scholarshipPartialAmount || 0);
+                              if (!Number.isFinite(p) || p <= 0) {
+                                return <>Costo lista sede: ${list.toLocaleString('es-MX')} · Indica arriba su aporte para ver cuánto cubre la beca.</>;
+                              }
+                              const beca = Math.max(0, list - p);
+                              return (
+                                <>
+                                  Costo lista sede: ${list.toLocaleString('es-MX')} · Aporte al recaudado (ellos): ${p.toLocaleString('es-MX')} · Cubre la beca: ${beca.toLocaleString('es-MX')}
+                                </>
+                              );
+                            })()}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {newEntry.isScholarship !== 'Sí' && (
+                    <div className="md:col-span-2 lg:col-span-4 flex flex-wrap items-center gap-4">
+                      <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none p-2 bg-white border border-slate-200 rounded-lg">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 accent-indigo-600 rounded"
+                          checked={newEntry.isPastorChild === 'Sí'}
+                          onChange={(e) => setNewEntry({
+                            ...newEntry,
+                            isPastorChild: e.target.checked ? 'Sí' : 'No',
+                            pastorChildWithoutPay: e.target.checked ? newEntry.pastorChildWithoutPay : 'No',
+                            pastorChildSpecialDonationFinanceId: '',
+                          })}
+                        />
+                        Hijo de pastor
+                      </label>
+                      {newEntry.isPastorChild === 'Sí' && (
+                        <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none p-2 bg-white border border-slate-200 rounded-lg">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-amber-600 rounded"
+                            checked={newEntry.pastorChildWithoutPay === 'Sí'}
+                            onChange={(e) => setNewEntry({
+                              ...newEntry,
+                              pastorChildWithoutPay: e.target.checked ? 'Sí' : 'No',
+                              pastorChildSpecialDonationFinanceId: '',
+                            })}
+                          />
+                          ¿Va sin pagar?
+                        </label>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {newEntry.isServer === 'Sí' && (
+                  <div className="mt-3 p-3 bg-amber-50/50 border border-amber-100 rounded-lg">
+                    <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-2">Información adicional de servidor (opcional)</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className={labelClasses}>¿Es casado?</label>
+                        <select className={inputClasses} value={newEntry.isMarried || 'No'} onChange={e => setNewEntry({ ...newEntry, isMarried: e.target.value, spouseName: e.target.value === 'Sí' ? newEntry.spouseName : '' })}>
+                          <option value="No">No</option><option value="Sí">Sí</option>
+                        </select>
+                      </div>
+                      {newEntry.isMarried === 'Sí' && (
+                        <div className="space-y-1">
+                          <label className={labelClasses}>Nombre de pareja</label>
+                          <input className={inputClasses} value={newEntry.spouseName || ''} onChange={e => setNewEntry({ ...newEntry, spouseName: e.target.value })} />
+                        </div>
+                      )}
+                      <div className="space-y-1">
+                        <label className={labelClasses}>¿Va con hijos?</label>
+                        <select className={inputClasses} value={newEntry.goesWithChildren || 'No'} onChange={e => setNewEntry({ ...newEntry, goesWithChildren: e.target.value, childrenCount: e.target.value === 'Sí' ? newEntry.childrenCount : '' })}>
+                          <option value="No">No</option><option value="Sí">Sí</option>
+                        </select>
+                      </div>
+                      {newEntry.goesWithChildren === 'Sí' && (
+                        <div className="space-y-1">
+                          <label className={labelClasses}>¿Cuántos?</label>
+                          <input type="number" min="1" className={inputClasses} placeholder="Número" value={newEntry.childrenCount || ''} onChange={e => setNewEntry({ ...newEntry, childrenCount: e.target.value })} />
+                        </div>
+                      )}
+                      <div className="space-y-1">
+                        <label className={labelClasses}>¿Han servido en otro campa?</label>
+                        <select className={inputClasses} value={newEntry.servedOtherCampa || 'No'} onChange={e => setNewEntry({ ...newEntry, servedOtherCampa: e.target.value, servedAreas: e.target.value === 'Sí' ? newEntry.servedAreas : '' })}>
+                          <option value="No">No</option><option value="Sí">Sí</option>
+                        </select>
+                      </div>
+                      {newEntry.servedOtherCampa === 'Sí' && (
+                        <div className="space-y-1">
+                          <label className={labelClasses}>¿En qué áreas?</label>
+                          {(() => {
+                            const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
+                            const { selected, otroText } = parsePreferredServeArea(newEntry.servedAreas, opts);
+                            const isOpen = openServedAreasLoc === loc;
+                            const toggle = (opt) => {
+                              const next = new Set(selected);
+                              if (next.has(opt)) next.delete(opt); else next.add(opt);
+                              const txt = opt === 'Otro' ? (next.has('Otro') ? otroText : '') : otroText;
+                              setNewEntry({ ...newEntry, servedAreas: formatPreferredServeArea(next, txt) });
+                            };
+                            return (
+                              <div className="relative" data-dropdown-root="new-served-areas">
+                                <button type="button" onClick={() => setOpenServedAreasLoc(isOpen ? null : loc)} className={`w-full ${inputClasses} text-left flex items-center justify-between`}>
+                                  <span>{selected.size ? [...selected].map(s => s === 'Otro' && otroText ? `Otro: ${otroText}` : s).join(', ') : 'Seleccionar...'}</span>
+                                  {isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                                </button>
+                                {isOpen && (
+                                  <>
+                                    <div className="absolute inset-0 -inset-y-20 z-10" onClick={() => setOpenServedAreasLoc(null)} aria-hidden />
+                                    <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-lg p-2 max-h-56 overflow-auto">
+                                      {opts.map(opt => (
+                                        <div key={opt}>
+                                          <label className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700">
+                                            <input type="checkbox" className="h-4 w-4 accent-indigo-600 rounded" checked={selected.has(opt)} onChange={() => toggle(opt)} />
+                                            {opt}
+                                          </label>
+                                          {opt === 'Otro' && selected.has('Otro') && (
+                                            <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm" value={otroText} onChange={e => setNewEntry({ ...newEntry, servedAreas: formatPreferredServeArea(selected, e.target.value) })} onClick={e => e.stopPropagation()} />
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                      <div className="space-y-1 sm:col-span-2">
+                        <label className={labelClasses}>¿En qué área les gustaría servir?</label>
+                        {(() => {
+                          const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
+                          const { selected, otroText } = parsePreferredServeArea(newEntry.preferredServeArea, opts);
+                          const isOpen = openPreferredServeLoc === loc;
+                          const toggle = (opt) => {
+                            const next = new Set(selected);
+                            if (next.has(opt)) next.delete(opt);
+                            else next.add(opt);
+                            if (opt === 'Otro' && !next.has('Otro')) setNewEntry({ ...newEntry, preferredServeArea: formatPreferredServeArea(next, '') });
+                            else setNewEntry({ ...newEntry, preferredServeArea: formatPreferredServeArea(next, opt === 'Otro' ? otroText : '') });
+                          };
+                          return (
+                            <div className="relative" data-dropdown-root="new-preferred-areas">
+                              <button type="button" onClick={() => setOpenPreferredServeLoc(isOpen ? null : loc)} className={`w-full ${inputClasses} text-left flex items-center justify-between`}>
+                                <span>{selected.size ? [...selected].map(s => s === 'Otro' && otroText ? `Otro: ${otroText}` : s).join(', ') : 'Seleccionar...'}</span>
+                                {isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                              </button>
+                              {isOpen && (
+                                <>
+                                  <div className="absolute inset-0 -inset-y-20 z-10" onClick={() => setOpenPreferredServeLoc(null)} aria-hidden />
+                                  <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-lg p-2 max-h-56 overflow-auto">
+                                    {opts.map(opt => (
+                                      <div key={opt}>
+                                        <label className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700">
+                                          <input type="checkbox" className="h-4 w-4 accent-indigo-600 rounded" checked={selected.has(opt)} onChange={() => toggle(opt)} />
+                                          {opt}
+                                        </label>
+                                        {opt === 'Otro' && selected.has('Otro') && (
+                                          <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm" value={otroText} onChange={e => setNewEntry({ ...newEntry, preferredServeArea: formatPreferredServeArea(selected, e.target.value) })} onClick={e => e.stopPropagation()} />
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                      <div className="space-y-1">
+                        <label className={labelClasses}>¿Sirven en sus congres?</label>
+                        <select className={inputClasses} value={newEntry.servesInCongress || 'No'} onChange={e => setNewEntry({ ...newEntry, servesInCongress: e.target.value, congressServeArea: e.target.value === 'Sí' ? newEntry.congressServeArea : '' })}>
+                          <option value="No">No</option><option value="Sí">Sí</option>
+                        </select>
+                      </div>
+                      {newEntry.servesInCongress === 'Sí' && (
+                        <div className="space-y-1">
+                          <label className={labelClasses}>¿En qué área?</label>
+                          <input className={inputClasses} value={newEntry.congressServeArea || ''} onChange={e => setNewEntry({ ...newEntry, congressServeArea: e.target.value })} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* 5. Transporte */}
+            <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+              <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">5 · Transporte</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="space-y-1">
+                  <label className={labelClasses}>Sale de sede</label>
+                  <select className={inputClasses} value={newEntry.travelFrom || loc} onChange={e => setNewEntry({ ...newEntry, travelFrom: e.target.value })}>
+                    {(currentEvent?.locations || []).map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className={labelClasses}>Regresa a sede</label>
+                  <select className={inputClasses} value={newEntry.travelTo || loc} onChange={e => setNewEntry({ ...newEntry, travelTo: e.target.value })}>
+                    {(currentEvent?.locations || []).map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1 md:col-span-2">
+                  <label className={labelClasses}>Transporte (checkboxes)</label>
+                  <div className="flex flex-wrap gap-3">
+                    <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-lg px-2.5 py-2 cursor-pointer hover:bg-slate-50 transition-colors">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-indigo-600 rounded"
+                        checked={!!newEntry.llegaEnCarro}
+                        onChange={(e) => setNewEntry({ ...newEntry, llegaEnCarro: e.target.checked })}
+                      />
+                      Llega en carro
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-lg px-2.5 py-2 cursor-pointer hover:bg-slate-50 transition-colors">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-indigo-600 rounded"
+                        checked={!!newEntry.regresaEnCarro}
+                        onChange={(e) => setNewEntry({ ...newEntry, regresaEnCarro: e.target.checked })}
+                      />
+                      Regresa en carro
+                    </label>
+                  </div>
+                  <p className="text-[10px] text-slate-500">Si no marcas ninguno: llega en camión y regresa en camión.</p>
+                </div>
+              </div>
+            </section>
+
+            {/* 6. Información de pago */}
+            <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+              <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">6 · Información de pago</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className={labelClasses}>Método de pago</label>
+                  <select
+                    className={inputClasses}
+                    value={newEntry.paymentMethod}
+                    onChange={(e) => {
+                      const method = e.target.value === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+                      setNewEntry({ ...newEntry, paymentMethod: method, cardReference: method === 'Tarjeta' ? newEntry.cardReference : '' });
+                    }}
+                  >
+                    {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1 flex items-center justify-between">
+                    <span>Abono inicial ($)</span>
+                    {!(isCampa && newEntry.isScholarship === 'Sí') && <span className="text-indigo-400 normal-case tracking-normal">Mín. ${currentEvent.minDeposit}</span>}
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
+                    <input
+                      type="number"
+                      className={`w-full pl-7 pr-3 py-2.5 bg-white border border-slate-200 rounded-lg text-sm font-bold text-green-600 outline-none focus:ring-2 focus:ring-green-500 ${getRequiredFieldClass(missingInitialPaid)}`}
+                      value={newEntry.paid}
+                      placeholder="0.00"
+                      onChange={e => {
+                        let val = e.target.value;
+                        if (val === '') { setNewEntry({ ...newEntry, paid: '' }); return; }
+                        let numVal = parseFloat(val);
+                        if (numVal < 0) numVal = 0;
+                        const bc = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
+                        if (numVal > bc) numVal = bc;
+                        setNewEntry({ ...newEntry, paid: numVal });
+                      }}
+                    />
+                    {!(isCampa && newEntry.isScholarship === 'Sí') && newEntry.paid !== '' && parseFloat(newEntry.paid) < currentEvent.minDeposit && (
+                      <span className="text-[10px] text-red-500 font-bold px-1 absolute top-full left-0 mt-0.5 whitespace-nowrap z-10">Falta ${currentEvent.minDeposit - (parseFloat(newEntry.paid) || 0)} para el apartado</span>
+                    )}
+                  </div>
+                </div>
+                {newEntry.paymentMethod === 'Tarjeta' && (
+                  <div className="space-y-1 md:col-span-2">
+                    <label className={labelClasses}>Folio / referencia (opcional)</label>
+                    <input
+                      className={inputClasses}
+                      value={newEntry.cardReference}
+                      placeholder="Ej. folio / transacción"
+                      onChange={(e) => setNewEntry({ ...newEntry, cardReference: e.target.value })}
+                    />
+                  </div>
+                )}
+              </div>
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  {hasAdminRights && (
+                    <button
+                      type="button"
+                      onClick={() => setDonationModal({ isOpen: true, amount: '', donorName: '' })}
+                      className="px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors"
+                    >
+                      <Receipt size={16} /> Donación
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className={`inline-flex items-center gap-2 text-sm ${isCampa && newEntry.isScholarship === 'Sí' ? 'text-slate-400 cursor-not-allowed' : 'text-slate-600'}`}>
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
+                      checked={sendToWaitlist}
+                      onChange={(e) => setSendToWaitlist(e.target.checked)}
+                      disabled={!isLocOpen(loc) || (isCampa && newEntry.isScholarship === 'Sí')}
+                    />
+                    Lista de espera
+                    {isCampa && newEntry.isScholarship === 'Sí' ? (
+                      <span className="text-[10px] font-bold text-purple-600 normal-case">(la beca ya va a espera)</span>
+                    ) : null}
+                  </label>
+                  <button
+                    onClick={() => (sendToWaitlist ? handleAddToWaitlist(loc) : handleAddEntry(loc))}
+                    disabled={!isFormValid || !isLocOpen(loc)}
+                    className={`px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all shadow-lg active:scale-95 ${isFormValid && isLocOpen(loc) ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-100' : 'bg-slate-300 text-slate-400 cursor-not-allowed shadow-none'}`}
+                  >
+                    <Plus size={20} />{' '}
+                    {isCampa && newEntry.isScholarship === 'Sí'
+                      ? 'Enviar solicitud de beca'
+                      : sendToWaitlist || isLocationFull(loc)
+                        ? 'Registrar (a espera)'
+                        : 'Registrar'}
+                  </button>
+                </div>
+              </div>
+            </section>
           </div>
         </div>
       )}
 
-      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col lg:flex-row gap-4 justify-between items-center">
-        <div className="relative w-full lg:w-1/4"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} /><input type="text" placeholder="Buscar..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div>
-        <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
-          <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><ArrowUpDown size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="none">Ordenar...</option><option value="name-asc">Nombre (A-Z)</option><option value="name-desc">Nombre (Z-A)</option><option value="debt-asc">Deuda (Menor a Mayor)</option><option value="debt-desc">Deuda (Mayor a Menor)</option></select></div>
-          {isCampa && (
-            <>
-              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><GraduationCap size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterScholarship} onChange={e => setFilterScholarship(e.target.value)}><option value="all">Tipo: Todos</option><option value="Sí">Solo Becados</option><option value="No">Regulares</option></select></div>
-              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Filter size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterMedical} onChange={e => setFilterMedical(e.target.value)}><option value="all">Salud: Todos</option><option value="allergy">Con Alergias</option><option value="disease">Con Enfermedades</option><option value="disability">Con Discapacidades</option></select></div>
-              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Filter size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterSwim} onChange={e => setFilterSwim(e.target.value)}><option value="all">Nado: Todos</option><option value="Sí">Saben nadar</option><option value="No">No saben nadar</option></select></div>
-              <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><Users size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={filterServer} onChange={e => setFilterServer(e.target.value)}><option value="all">Servidores: Todos</option><option value="Sí">Solo Servidores</option><option value="No">No Servidores</option><option value="Teens">Asig. Teens</option><option value="Jóvenes">Asig. Jóvenes</option><option value="Ambos">Asig. Ambos</option></select></div>
-            </>
-          )}
+      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col xl:flex-row gap-4 justify-between items-center">
+        <div className="relative w-full xl:w-1/4"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} /><input type="text" placeholder="Nombre, teléfono o ID VNPM…" className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div>
+        <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
+          <button onClick={() => exportPendingWhatsAppToExcel(loc)} className="flex items-center gap-2 bg-indigo-50 text-indigo-700 px-3 py-2 rounded-xl border border-indigo-100 hover:bg-indigo-100 transition-colors text-xs font-black uppercase tracking-wider">
+            <Download size={14} /> WhatsApp pendientes de enviar ({getPendingWhatsAppRowsForLocation(loc).length})
+          </button>
+          <div className="relative flex-1 lg:flex-none" data-dropdown-root="filters">
+            <button
+              type="button"
+              onClick={() => setFiltersDropdownOpen((v) => !v)}
+              className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-100 transition-colors text-xs font-black text-slate-700"
+            >
+              <Filter size={14} className="text-slate-500" />
+              Filtros
+            </button>
+            {filtersDropdownOpen && (
+              <div className="absolute top-full left-0 mt-2 z-30 w-[320px] max-w-[90vw] bg-white border border-slate-200 rounded-xl shadow-xl p-3 space-y-3">
+                <div>
+                  <p className="text-[10px] font-black text-slate-500 uppercase mb-1">WhatsApp</p>
+                  {[
+                    { id: 'all', label: 'Todos' },
+                    { id: 'pending', label: 'Pendiente de enviar' },
+                  ].map((op) => (
+                    <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded accent-indigo-600"
+                        checked={filterWhatsAppPending === op.id}
+                        onChange={() => setFilterWhatsAppPending(filterWhatsAppPending === op.id ? 'all' : op.id)}
+                      />
+                      {op.label}
+                    </label>
+                  ))}
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-slate-500 uppercase mb-1">ID VNPM</p>
+                  {[
+                    { id: 'all', label: 'Todos' },
+                    { id: 'first', label: 'Primera vez' },
+                    { id: 'not-first', label: 'No primera vez' },
+                  ].map((op) => (
+                    <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded accent-indigo-600"
+                        checked={filterFirstTimeId === op.id}
+                        onChange={() => setFilterFirstTimeId(filterFirstTimeId === op.id ? 'all' : op.id)}
+                      />
+                      {op.label}
+                    </label>
+                  ))}
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Estado de registro</p>
+                  {[
+                    { id: 'all', label: 'Todos' },
+                    { id: 'active', label: 'Activos' },
+                    { id: 'cancelled', label: 'Cancelados' },
+                  ].map((op) => (
+                    <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded accent-indigo-600"
+                        checked={filterCancelled === op.id}
+                        onChange={() => setFilterCancelled(filterCancelled === op.id ? 'all' : op.id)}
+                      />
+                      {op.label}
+                    </label>
+                  ))}
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Responsiva</p>
+                  {[
+                    { id: 'all', label: 'Todos' },
+                    { id: 'pending', label: 'Pendiente' },
+                    { id: 'delivered', label: 'Entregada' },
+                    { id: 'na', label: 'No aplica' },
+                  ].map((op) => (
+                    <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded accent-indigo-600"
+                        checked={filterResponsiva === op.id}
+                        onChange={() => setFilterResponsiva(filterResponsiva === op.id ? 'all' : op.id)}
+                      />
+                      {op.label}
+                    </label>
+                  ))}
+                </div>
+                {isCampa && (
+                  <>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asignación</p>
+                      {['all', 'Teens', 'Jóvenes', 'Ambos'].map((op) => (
+                        <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterAssignment === op} onChange={() => setFilterAssignment(filterAssignment === op ? 'all' : op)} />
+                          {op === 'all' ? 'Todas' : op}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Beca</p>
+                      {[
+                        { id: 'all', label: 'Todos' },
+                        { id: 'No', label: 'No' },
+                        { id: 'partial', label: 'Parcial' },
+                        { id: 'total', label: 'Total' },
+                      ].map((op) => (
+                        <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterScholarship === op.id} onChange={() => setFilterScholarship(filterScholarship === op.id ? 'all' : op.id)} />
+                          {op.label}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Género</p>
+                      {['all', ...GENDERS].map((op) => (
+                        <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterGender === op} onChange={() => setFilterGender(filterGender === op ? 'all' : op)} />
+                          {op === 'all' ? 'Todos' : op}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Transporte</p>
+                      {[
+                        { id: 'all', label: 'Todos' },
+                        { id: 'go-bus', label: 'Llega en camión' },
+                        { id: 'return-bus', label: 'Regresa en camión' },
+                        { id: 'go-car', label: 'Llega en carro' },
+                        { id: 'return-car', label: 'Regresa en carro' },
+                      ].map((op) => (
+                        <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterTransport === op.id} onChange={() => setFilterTransport(filterTransport === op.id ? 'all' : op.id)} />
+                          {op.label}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Tipo de pago</p>
+                      {['all', 'Efectivo', 'Tarjeta'].map((op) => (
+                        <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterPaymentType === op} onChange={() => setFilterPaymentType(filterPaymentType === op ? 'all' : op)} />
+                          {op === 'all' ? 'Todos' : op}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Sede de salida</p>
+                      {['all', ...(currentEvent?.locations || [])].map((op) => (
+                        <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterTravelFrom === op} onChange={() => setFilterTravelFrom(filterTravelFrom === op ? 'all' : op)} />
+                          {op === 'all' ? 'Todas' : op}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Sede de regreso</p>
+                      {['all', ...(currentEvent?.locations || [])].map((op) => (
+                        <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterTravelTo === op} onChange={() => setFilterTravelTo(filterTravelTo === op ? 'all' : op)} />
+                          {op === 'all' ? 'Todas' : op}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Hijo de pastor</p>
+                      {['all', 'Sí', 'No'].map((op) => (
+                        <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterPastorChild === op} onChange={() => setFilterPastorChild(filterPastorChild === op ? 'all' : op)} />
+                          {op === 'all' ? 'Todos' : op}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Va sin pagar</p>
+                      {['all', 'Sí', 'No'].map((op) => (
+                        <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterWithoutPay === op} onChange={() => setFilterWithoutPay(filterWithoutPay === op ? 'all' : op)} />
+                          {op === 'all' ? 'Todos' : op}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Salud</p>
+                      {[
+                        { id: 'all', label: 'Todos' },
+                        { id: 'allergy', label: 'Con alergias' },
+                        { id: 'disease', label: 'Con enfermedades' },
+                        { id: 'disability', label: 'Con discapacidades' },
+                      ].map((op) => (
+                        <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterMedical === op.id} onChange={() => setFilterMedical(filterMedical === op.id ? 'all' : op.id)} />
+                          {op.label}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Nado</p>
+                      {['all', 'Sí', 'No'].map((op) => (
+                        <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterSwim === op} onChange={() => setFilterSwim(filterSwim === op ? 'all' : op)} />
+                          {op === 'all' ? 'Todos' : op}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Servidor</p>
+                      {[
+                        { id: 'all', label: 'Todos' },
+                        { id: 'Sí', label: 'Servidores' },
+                        { id: 'No', label: 'Camperos' },
+                        { id: 'Teens', label: 'Asig. Teens' },
+                        { id: 'Jóvenes', label: 'Asig. Jóvenes' },
+                        { id: 'Ambos', label: 'Asig. Ambos' },
+                      ].map((op) => (
+                        <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterServer === op.id} onChange={() => setFilterServer(filterServer === op.id ? 'all' : op.id)} />
+                          {op.label}
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )}
+                <div className="pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilterWhatsAppPending('all');
+                      setFilterResponsiva('all');
+                      setFilterGender('all');
+                      setFilterTransport('all');
+                      setFilterPaymentType('all');
+                      setFilterTravelFrom('all');
+                      setFilterTravelTo('all');
+                      setFilterPastorChild('all');
+                      setFilterWithoutPay('all');
+                      setFilterFirstTimeId('all');
+                      setFilterCancelled('all');
+                      setFilterAssignment('all');
+                      setFilterScholarship('all');
+                      setFilterMedical('all');
+                      setFilterSwim('all');
+                      setFilterServer('all');
+                    }}
+                    className="w-full py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-black text-slate-700 transition-colors"
+                  >
+                    Limpiar filtros
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><ArrowUpDown size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="none">Ordenar...</option><option value="name-asc">Nombre (A-Z)</option><option value="name-desc">Nombre (Z-A)</option><option value="age-asc">Edad (Menor a Mayor)</option><option value="age-desc">Edad (Mayor a Menor)</option><option value="debt-asc">Deuda (Menor a Mayor)</option><option value="debt-desc">Deuda (Mayor a Menor)</option></select></div>
         </div>
       </div>
 
@@ -1469,32 +7298,20 @@ const App = () => {
             </thead>
             <tbody className="divide-y divide-slate-50">
               {(() => {
-                let processedData = [...(data[loc] || [])];
-                if (searchTerm) processedData = processedData.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
-                if (isCampa) {
-                  if (filterSwim !== 'all') processedData = processedData.filter(p => p.canSwim === filterSwim);
-                  if (filterScholarship !== 'all') processedData = processedData.filter(p => p.isScholarship === filterScholarship);
-                  if (filterServer === 'Sí') processedData = processedData.filter(p => p.isServer === 'Sí');
-                  else if (filterServer === 'No') processedData = processedData.filter(p => p.isServer !== 'Sí');
-                  else if (filterServer === 'Teens') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Teens');
-                  else if (filterServer === 'Jóvenes') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes');
-                  else if (filterServer === 'Ambos') processedData = processedData.filter(p => p.isServer === 'Sí' && p.serverAssignment === 'Ambos');
-                  if (filterMedical === 'allergy') processedData = processedData.filter(p => p.hasAllergy === 'Sí');
-                  else if (filterMedical === 'disease') processedData = processedData.filter(p => p.hasDisease === 'Sí');
-                  else if (filterMedical === 'disability') processedData = processedData.filter(p => p.hasDisability === 'Sí');
+                if (visibleParticipants.length === 0) {
+                  const emptyMsg =
+                    filterWhatsAppPending === 'pending'
+                      ? `No hay inscritos con aviso de WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
+                      : `No hay registros para mostrar en ${loc}.`;
+                  return <tr><td colSpan="4" className="px-6 py-16 text-center text-slate-400 italic font-medium">{emptyMsg}</td></tr>;
                 }
-                const getDebt = (p) => p.isScholarship === 'Sí' ? 0 : (p.registeredCost != null ? Number(p.registeredCost) : getPersonCost(p, currentPricing)) - parseFloat(p.paid || 0);
-                if (sortBy === 'name-asc') processedData.sort((a, b) => a.name.localeCompare(b.name));
-                if (sortBy === 'name-desc') processedData.sort((a, b) => b.name.localeCompare(a.name));
-                if (sortBy === 'debt-asc') processedData.sort((a, b) => getDebt(a) - getDebt(b));
-                if (sortBy === 'debt-desc') processedData.sort((a, b) => getDebt(b) - getDebt(a));
-                if (processedData.length === 0) return <tr><td colSpan="4" className="px-6 py-16 text-center text-slate-400 italic font-medium">No hay registros para mostrar en {loc}.</td></tr>;
 
-                return processedData.map((person) => {
+                return visibleParticipants.map((person) => {
                   const isExpanded = expandedRows.has(person.id);
                   const isBecado = isCampa && person.isScholarship === 'Sí';
-                  const baseCost = person.registeredCost != null ? Number(person.registeredCost) : getPersonCost(person, currentPricing);
-                  const balance = isBecado ? 0 : baseCost - parseFloat(person.paid || 0);
+                  const listPrice = resolveRegisteredCost(person, currentPricing);
+                  const liquidationTarget = getLiquidationTarget(person);
+                  const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
                   const payHistory = person.paymentHistory || [];
 
                   return (
@@ -1503,11 +7320,50 @@ const App = () => {
                         <td className="px-4 py-4 align-top">
                           <div className="space-y-1">
                             <div className="flex items-center flex-wrap gap-2">
-                              <p className="font-bold text-slate-800 text-sm">{person.name}</p>
-                              {isBecado && <span className="bg-purple-100 text-purple-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><GraduationCap size={10} /> Becado</span>}
-                              {person.isServer === 'Sí' && <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>}
+                              <p className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                                <span>{person.name}</span>
+                                {person.alias ? (
+                                  <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">
+                                    Alias: {person.alias}
+                                  </span>
+                                ) : null}
+                                {person.isFirstVnpId ? (
+                                  <span className="text-[8px] font-black uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded">
+                                    Primera vez
+                                  </span>
+                                ) : null}
+                                {participantIsCancelled(person) ? (
+                                  <span className="text-[8px] font-black uppercase bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0.5 rounded">
+                                    Cancelado
+                                  </span>
+                                ) : null}
+                                {resolveResponsivaStatus(person) === 'Pendiente' ? (
+                                  <span className="text-[8px] font-black uppercase bg-rose-50 text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded">
+                                    Responsiva pendiente
+                                  </span>
+                                ) : null}
+                                {person._isDebug && person._debugSessionId === globalConfig?.debugSessionId && (
+                                  <Bug size={14} className="text-orange-500 inline-block" title="Cambio no permanente" />
+                                )}
+                              </p>
+                              {isBecado && (
+                                <span className="bg-purple-100 text-purple-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1">
+                                  <GraduationCap size={10} />{' '}
+                                  {person.scholarshipType === 'partial' ? 'Beca parcial' : 'Becado'}
+                                </span>
+                              )}
+                              {person.isServer === 'Sí' ? (
+                                <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>
+                              ) : (
+                                isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes')}</span>
+                              )}
                             </div>
-                            <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1"><span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone}</span></div>
+                            <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1">
+                              <span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone}</span>
+                              {person.vnpPersonId && (
+                                <span className="text-[10px] font-mono text-indigo-600 font-bold tracking-tight">VNPM {person.vnpPersonId}</span>
+                              )}
+                            </div>
                           </div>
                         </td>
                         {isCampa ? (
@@ -1525,9 +7381,21 @@ const App = () => {
                           <div className="flex flex-col gap-2 w-full max-w-[140px]">
                             <div className="text-left space-y-0.5">
                               <p className="text-xs font-black text-green-600 flex justify-between"><span>Pagado:</span> <span>{formatMoney(person.paid || 0)}</span></p>
-                              <p className={`text-[10px] font-bold flex justify-between ${isBecado ? 'text-purple-600' : balance > 0 ? 'text-orange-500' : 'text-green-600'}`}><span>Restante:</span> <span>{isBecado ? 'No requerido' : balance > 0 ? formatMoney(balance) : 'Liquidado'}</span></p>
+                              <p className={`text-[10px] font-bold flex justify-between ${isBecado && liquidationTarget <= 0 ? 'text-purple-600' : balance > 0 ? 'text-orange-500' : 'text-green-600'}`}>
+                                <span>Restante:</span>{' '}
+                                <span>
+                                  {liquidationTarget <= 0 ? 'No requerido' : balance > 0 ? formatMoney(balance) : 'Liquidado'}
+                                </span>
+                              </p>
                             </div>
-                            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1"><div className="h-full bg-green-500 transition-all" style={{ width: `${Math.min(((person.paid || 0) / baseCost) * 100, 100)}%` }} /></div>
+                            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1">
+                              <div
+                                className="h-full bg-green-50 transition-all"
+                                style={{
+                                  width: `${liquidationTarget > 0 ? Math.min(((parseFloat(person.paid || 0) / liquidationTarget) * 100), 100) : 100}%`,
+                                }}
+                              />
+                            </div>
                           </div>
                         </td>
                         <td className="px-4 py-4 align-top text-center">
@@ -1535,9 +7403,44 @@ const App = () => {
                             <button onClick={() => toggleRow(person.id)} className={`p-2 rounded-lg transition-all ${isExpanded ? 'bg-indigo-50 text-indigo-600' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`} title="Detalles">{isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
                             {currentUser?.role !== 'Lector' && (
                               <>
-                                <button onClick={() => setEditRegistryModal({ isOpen: true, loc, data: { ...person, registeredCost: baseCost } })} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all" title="Editar Registro"><Edit3 size={18} /></button>
-                                <button onClick={() => setPaymentModal({ isOpen: true, loc, id: person.id, personName: person.name, amount: '', currentPaid: parseFloat(person.paid || 0), error: '', isScholarship: isBecado ? 'Sí' : 'No', baseCost })} className="p-2 text-slate-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all" title="Abonar Pago"><CreditCard size={18} /></button>
-                                <button onClick={() => removeEntry(loc, person.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all" title="Eliminar Registro"><Trash2 size={18} /></button>
+                                <button onClick={() => setEditRegistryModal({
+                                  isOpen: true,
+                                  loc,
+                                  data: {
+                                    ...person,
+                                    location: person.location || loc,
+                                    travelFrom: person.travelFrom || person.location || loc,
+                                    travelTo: person.travelTo || person.location || loc,
+                                    registeredCost: listPrice,
+                                    campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes'),
+                                    scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
+                                    scholarshipPartialAmount:
+                                      person.scholarshipType === 'partial' && person.scholarshipPartialAmount != null && person.scholarshipPartialAmount !== ''
+                                        ? String(person.scholarshipPartialAmount)
+                                        : '',
+                                  }
+                                })} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all" title="Editar Registro"><Edit3 size={18} /></button>
+                                <button onClick={() => setPaymentModal({
+                                  isOpen: true,
+                                  loc,
+                                  id: person.id,
+                                  personName: person.name,
+                                  amount: '',
+                                  currentPaid: parseFloat(person.paid || 0),
+                                  error: '',
+                                  isScholarship: isBecado ? 'Sí' : 'No',
+                                  baseCost: liquidationTarget,
+                                  paymentMethod: 'Efectivo',
+                                  paymentService: getAutoPaymentService(new Date()),
+                                  cardReference: ''
+                                })} className="p-2 text-slate-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all" title="Abonar Pago"><CreditCard size={18} /></button>
+                                <button onClick={() => openWhatsAppModal(person, loc)} className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all" title="Enviar WhatsApp"><MessageCircle size={18} /></button>
+                                {!participantIsCancelled(person) ? (
+                                  <button onClick={() => cancelEntry(loc, person.id)} className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-all" title="Dar de baja (queda visible, no cuenta en inscritos/becados/servidores)"><Scissors size={18} /></button>
+                                ) : (
+                                  <button onClick={() => reactivateEntry(loc, person.id)} className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all" title="Reactivar registro"><CheckCircle2 size={18} /></button>
+                                )}
+                                <button onClick={() => removeEntry(loc, person.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all" title="Archivar registro (deja de contar en el evento; datos e ID VNPM siguen para precargar)"><Trash2 size={18} /></button>
                               </>
                             )}
                           </div>
@@ -1549,7 +7452,20 @@ const App = () => {
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs items-start">
                               <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
                                 <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Detalles Generales</p>
-                                <p className="mb-1 text-slate-600"><strong>Edad:</strong> {person.age || 'N/A'}</p>
+                                {person.vnpPersonId ? (
+                                  <p className="mb-2 text-[11px] font-mono text-indigo-700 bg-indigo-50 px-2 py-1 rounded border border-indigo-100"><strong>ID VNPM:</strong> {person.vnpPersonId}</p>
+                                ) : (
+                                  <p className="mb-2 text-[10px] text-amber-700 bg-amber-50 px-2 py-1 rounded border border-amber-100">Sin ID VNPM (se asignará al guardar en editar).</p>
+                                )}
+                                {person.alias ? <p className="mb-1 text-slate-600"><strong>Alias:</strong> {person.alias}</p> : null}
+                                <p className="mb-1 text-slate-600"><strong>Transporte:</strong> {resolveTransportSummary(person)}</p>
+                                {person.isPastorChild === 'Sí' ? (
+                                  <>
+                                    <p className="mb-1 text-slate-600"><strong>Hijo de pastor:</strong> Sí</p>
+                                    <p className="mb-1 text-slate-600"><strong>¿Va sin pagar?:</strong> {person.pastorChildWithoutPay || 'No'}</p>
+                                  </>
+                                ) : null}
+                                <p className="text-slate-600"><strong>Edad:</strong> {person.age || 'N/A'}</p>
                                 <p className="text-slate-600"><strong>Género:</strong> {person.gender || 'N/A'}</p>
                               </div>
                               {(isCampa || isGeneral) ? (
@@ -1559,7 +7475,7 @@ const App = () => {
                                 </div>
                               ) : <div />}
                               {isCampa && (
-                                <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100"><p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Condiciones Especiales</p><div className="space-y-1.5"><p className="text-slate-600"><strong>Alergias:</strong> {person.hasAllergy === 'Sí' ? <span className="text-orange-600 font-bold">{person.allergyDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Enfermedades:</strong> {person.hasDisease === 'Sí' ? <span className="text-red-600 font-bold">{person.diseaseDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Discapacidades:</strong> {person.hasDisability === 'Sí' ? <span className="text-purple-600 font-bold">{person.disabilityDetails}</span> : <span>Ninguna</span>}</p></div></div>
+                                <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100"><p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Condiciones Especiales</p><div className="space-y-1.5"><p className="text-slate-600"><strong>Alergias:</strong> {person.hasAllergy === 'Sí' ? <span className="text-orange-600 font-bold">{person.allergyDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Enfermedades:</strong> {person.hasDisease === 'Sí' ? <span className="text-red-600 font-bold">{person.diseaseDetails}</span> : <span>Ninguna</span>}</p>{person.hasDisease === 'Sí' && <p className="text-slate-600"><strong>Medicamento:</strong> {person.diseaseMedication ? <span className="text-red-600 font-bold">{person.diseaseMedication}</span> : <span>No especificado</span>}</p>}<p className="text-slate-600"><strong>Discapacidades:</strong> {person.hasDisability === 'Sí' ? <span className="text-purple-600 font-bold">{person.disabilityDetails}</span> : <span>Ninguna</span>}</p></div></div>
                               )}
                               {isGeneral && person.customData && Object.keys(person.customData).length > 0 && (
                                 <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
@@ -1570,14 +7486,104 @@ const App = () => {
                             </div>
                             <div className="mt-4 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
                               <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between"><p className="font-bold text-indigo-900 uppercase tracking-wider text-[10px] flex items-center gap-2"><Receipt size={12} className="text-green-500" /> Historial de Pagos</p><span className="text-[10px] font-bold bg-green-50 text-green-600 px-2 py-0.5 rounded-full border border-green-100">{payHistory.length} {payHistory.length === 1 ? 'movimiento' : 'movimientos'}</span></div>
-                              {payHistory.length === 0 ? <div className="px-4 py-6 text-center"><p className="text-[11px] text-slate-400 italic">Sin movimientos registrados.</p></div> : (
+                              {payHistory.length === 0 ? (
+                                <>
+                                  <div className="px-4 py-6 text-center">
+                                    <p className="text-[11px] text-slate-400 italic">Sin movimientos registrados.</p>
+                                  </div>
+                                  <div className="px-4 py-3 bg-slate-50/60 border-t border-slate-100">
+                                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Agregar comentario</p>
+                                    <textarea
+                                      className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-semibold"
+                                      rows={2}
+                                      placeholder="Escribe un comentario para este registro…"
+                                      value={commentDrafts[String(person.id)] || ''}
+                                      onChange={(e) => setCommentDrafts(prev => ({ ...prev, [String(person.id)]: e.target.value }))}
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAddComment(loc, person)}
+                                      className="mt-2 w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow-md active:scale-95 text-xs flex items-center justify-center gap-2"
+                                    >
+                                      Guardar comentario
+                                    </button>
+                                  </div>
+                                </>
+                              ) : (
                                 <div className="divide-y divide-slate-50">
                                   {payHistory.map((pay, idx) => (
                                     <div key={pay.id} className="px-4 py-2.5 flex items-center justify-between hover:bg-slate-50/50 transition-colors">
-                                      <div className="flex items-center gap-3"><span className="w-5 h-5 rounded-full bg-slate-100 text-slate-500 text-[9px] font-black flex items-center justify-center flex-shrink-0">{idx + 1}</span><div><p className="text-[11px] font-mono text-slate-500">{pay.date}</p><div className="flex items-center gap-1.5 mt-0.5"><UserCircle size={10} className="text-slate-400" /><p className="text-[10px] text-slate-400 font-semibold">{pay.registeredBy}</p>{pay.isManualAdjustment && <span className="text-[9px] bg-amber-50 text-amber-600 border border-amber-100 px-1.5 py-0.5 rounded font-bold uppercase">Ajuste Admin</span>}</div></div></div>
-                                      <div className="text-right"><p className={`text-sm font-black ${pay.amount < 0 ? 'text-red-500' : 'text-green-600'}`}>{pay.amount < 0 ? '-' : '+'}{formatMoney(Math.abs(pay.amount))}</p></div>
+                                      <div className="flex items-center gap-3">
+                                        <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-500 text-[9px] font-black flex items-center justify-center flex-shrink-0">{idx + 1}</span>
+                                        <div>
+                                          <p className="text-[11px] font-mono text-slate-500">{pay.date}</p>
+                                          <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                                            <UserCircle size={10} className="text-slate-400" />
+                                            <p className="text-[10px] text-slate-400 font-semibold">{pay.registeredBy}</p>
+                                            {pay.kind === 'comment' ? (
+                                              <span className="text-[9px] bg-slate-50 text-slate-600 border border-slate-100 px-2 py-0.5 rounded font-bold uppercase">
+                                                Comentario
+                                              </span>
+                                            ) : (
+                                              <>
+                                                {pay.isManualAdjustment && <span className="text-[9px] bg-amber-50 text-amber-600 border border-amber-100 px-1.5 py-0.5 rounded font-bold uppercase">Ajuste Admin</span>}
+                                                {(() => {
+                                                  const inferredMethod = pay.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
+                                                  const inferredService = pay.service || (SERVICE_OPTIONS.includes(person.paymentService) ? person.paymentService : 'Primero');
+                                                  return (
+                                                    <>
+                                                      <span className={`text-[9px] border px-2 py-0.5 rounded font-black uppercase ${inferredMethod === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>
+                                                        {inferredMethod}
+                                                      </span>
+                                                      <span className="text-[9px] bg-slate-50 text-slate-600 border border-slate-100 px-2 py-0.5 rounded font-bold uppercase">
+                                                        Serv: {inferredService}
+                                                      </span>
+                                                      {inferredMethod === 'Tarjeta' && pay.reference && (
+                                                        <span className="text-[9px] bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded font-bold uppercase">
+                                                          Ref: {String(pay.reference).slice(0, 10)}
+                                                        </span>
+                                                      )}
+                                                    </>
+                                                  );
+                                                })()}
+                                              </>
+                                            )}
+                                            {pay.kind === 'comment' && (
+                                              <span className="w-full text-[12px] text-slate-700 font-semibold mt-0.5">
+                                                {pay.commentText || pay.comment || ''}
+                                              </span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <div className="text-right">
+                                        {pay.kind === 'comment' ? (
+                                          <p className="text-sm font-black text-slate-400">—</p>
+                                        ) : (
+                                          <p className={`text-sm font-black ${pay.amount < 0 ? 'text-red-500' : 'text-green-600'}`}>{pay.amount < 0 ? '-' : '+'}{formatMoney(Math.abs(pay.amount))}</p>
+                                        )}
+                                      </div>
                                     </div>
                                   ))}
+
+                                  <div className="px-4 py-3 bg-slate-50/60 border-t border-slate-100">
+                                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Agregar comentario</p>
+                                    <textarea
+                                      className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-semibold"
+                                      rows={2}
+                                      placeholder="Escribe un comentario para este registro…"
+                                      value={commentDrafts[String(person.id)] || ''}
+                                      onChange={(e) => setCommentDrafts(prev => ({ ...prev, [String(person.id)]: e.target.value }))}
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAddComment(loc, person)}
+                                      className="mt-2 w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow-md active:scale-95 text-xs flex items-center justify-center gap-2"
+                                    >
+                                      Guardar comentario
+                                    </button>
+                                  </div>
+
                                   <div className="px-4 py-2.5 bg-green-50 flex items-center justify-between"><span className="text-[10px] font-black text-green-800 uppercase tracking-wider">Total acumulado</span><span className="text-sm font-black text-green-700">{formatMoney(person.paid || 0)}</span></div>
                                 </div>
                               )}
@@ -1593,8 +7599,192 @@ const App = () => {
           </table>
         </div>
       </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+        <div className="px-4 py-4 border-b border-slate-100 flex items-center justify-between">
+          <h3 className="text-sm font-black text-slate-700 uppercase tracking-wider flex items-center gap-2">
+            <CalendarRange size={16} className="text-amber-600" /> Lista de Espera - {loc}
+          </h3>
+          <span className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-100 px-2 py-1 rounded-lg">
+            {(waitlistData[loc] || []).length} en espera
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                <th className="px-4 py-3">Participante</th>
+                <th className="px-4 py-3">Contacto</th>
+                <th className="px-4 py-3 text-center">Acciones</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {(waitlistData[loc] || []).length === 0 ? (
+                <tr><td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">Sin personas en lista de espera en {loc}.</td></tr>
+              ) : (() => {
+                const sortedWaitlist = getSortedWaitlistForLocation(loc);
+                const wlFiltered = applyRosterLikeFilters(sortedWaitlist, sortBy === 'none');
+                if (wlFiltered.length === 0) {
+                  return (
+                    <tr>
+                      <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">
+                        {filterWhatsAppPending === 'pending'
+                          ? `Nadie en lista de espera con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
+                          : `Ninguna entrada coincide con la búsqueda en lista de espera (${loc}).`}
+                      </td>
+                    </tr>
+                  );
+                }
+                return wlFiltered.map((person) => {
+                    const listPrice = resolveRegisteredCost(person, currentPricing);
+                    return (
+                    <tr key={`wait-${person.id}`} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="px-4 py-3">
+                        <p className="font-bold text-slate-800 text-sm">{person.name}</p>
+                        {person.vnpPersonId && <p className="text-[10px] font-mono text-indigo-600">{person.vnpPersonId}</p>}
+                        {resolveResponsivaStatus(person) === 'Pendiente' ? (
+                          <p className="mt-1 text-[10px] font-black text-rose-700 bg-rose-50 border border-rose-100 rounded-lg px-2 py-1 inline-block">
+                            Menor de edad · responsiva pendiente
+                          </p>
+                        ) : null}
+                        {person.isScholarship === 'Sí' && (
+                          <p className="mt-1 text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-100 rounded-lg px-2 py-1 inline-block">
+                            Solicitud beca {person.scholarshipType === 'partial' ? 'parcial' : 'total'}
+                            {person.scholarshipType === 'partial'
+                              ? ` · aporte recaudado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}`
+                              : ''}{' '}
+                            (pendiente al promover)
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-slate-600">
+                        <span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone}</span>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <div className="flex items-center justify-center gap-2">
+                          {currentUser?.role !== 'Lector' && (
+                            <button
+                              type="button"
+                              onClick={() => setEditRegistryModal({
+                                isOpen: true,
+                                loc,
+                                data: {
+                                  ...person,
+                                  location: person.location || loc,
+                                  travelFrom: person.travelFrom || person.location || loc,
+                                  travelTo: person.travelTo || person.location || loc,
+                                  registeredCost: listPrice,
+                                  campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes'),
+                                  scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
+                                  scholarshipPartialAmount:
+                                    person.scholarshipType === 'partial' && person.scholarshipPartialAmount != null && person.scholarshipPartialAmount !== ''
+                                      ? String(person.scholarshipPartialAmount)
+                                      : '',
+                                }
+                              })}
+                              className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                              title="Editar registro en lista de espera"
+                            >
+                              <Edit3 size={17} />
+                            </button>
+                          )}
+                          {currentUser?.role !== 'Lector' && (
+                            <button
+                              type="button"
+                              onClick={() => openWhatsAppModal(person, loc)}
+                              className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                              title="Enviar WhatsApp (saldo u avisos en cola)"
+                            >
+                              <MessageCircle size={17} />
+                            </button>
+                          )}
+                          <button onClick={() => promoteWaitlistEntry(loc, person.id)} className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors" title="Promover a inscritos"><CheckCircle2 size={17} /></button>
+                          <button onClick={() => removeWaitlistEntry(loc, person.id)} className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Archivar de la lista (datos e ID VNPM siguen para precargar)"><Trash2 size={17} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                    );
+                  });
+              })()}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
+};
+
+  const renderServerProfilesPage = () => {
+    const rows = allParticipants
+      .filter((p) => p.eventId === currentEvent?.id && participantIsActiveInEvent(p) && p.isServer === 'Sí')
+      .filter((p) => serverPageFromFilter === 'all' || (p.travelFrom || p.location) === serverPageFromFilter)
+      .filter((p) => serverPageToFilter === 'all' || (p.travelTo || p.location) === serverPageToFilter)
+      .filter((p) => serverPageAssignmentFilter === 'all' || (p.serverAssignment || '') === serverPageAssignmentFilter)
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+    return (
+      <div className="p-6 space-y-5 animate-in fade-in duration-300">
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+          <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Users className="text-amber-500" size={18} /> Servidores - Página adicional</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <select className={inputClasses} value={serverPageFromFilter} onChange={(e) => setServerPageFromFilter(e.target.value)}>
+              <option value="all">Filtrar sede de origen: Todas</option>
+              {(currentEvent?.locations || []).map((l) => <option key={`spf-${l}`} value={l}>{l}</option>)}
+            </select>
+            <select className={inputClasses} value={serverPageToFilter} onChange={(e) => setServerPageToFilter(e.target.value)}>
+              <option value="all">Filtrar sede destino: Todas</option>
+              {(currentEvent?.locations || []).map((l) => <option key={`spt-${l}`} value={l}>{l}</option>)}
+            </select>
+            <select className={inputClasses} value={serverPageAssignmentFilter} onChange={(e) => setServerPageAssignmentFilter(e.target.value)}>
+              <option value="all">Asignación: Todas</option>
+              <option value="Teens">Teens</option>
+              <option value="Jóvenes">Jóvenes</option>
+              <option value="Ambos">Ambos</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="bg-slate-50 text-slate-500 uppercase tracking-wider font-black">
+                <th className="px-3 py-3">Servidor</th>
+                <th className="px-3 py-3">Sale de</th>
+                <th className="px-3 py-3">Regresa a</th>
+                <th className="px-3 py-3">Asignación</th>
+                <th className="px-3 py-3">Casado / Pareja</th>
+                <th className="px-3 py-3">Hijos</th>
+                <th className="px-3 py-3">Sirvió en otro campa</th>
+                <th className="px-3 py-3">Áreas previas</th>
+                <th className="px-3 py-3">Área deseada</th>
+                <th className="px-3 py-3">Sirve en congreso</th>
+                <th className="px-3 py-3">Área en congreso</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {rows.length === 0 ? (
+                <tr><td className="px-4 py-8 text-slate-400 italic" colSpan="11">Sin servidores con esos filtros.</td></tr>
+              ) : rows.map((p) => (
+                <tr key={`srv-${p.id}`} className="hover:bg-slate-50/60">
+                  <td className="px-3 py-2 font-bold text-slate-700">{p.name}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.travelFrom || p.location || '—'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.travelTo || p.location || '—'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.serverAssignment || '—'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.isMarried === 'Sí' ? `Sí${p.spouseName ? ` (${p.spouseName})` : ''}` : 'No'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.goesWithChildren === 'Sí' ? `Sí${(p.childrenCount && String(p.childrenCount).trim()) ? ` (${p.childrenCount})` : ''}` : 'No'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.servedOtherCampa || 'No'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.servedAreas || '—'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.preferredServeArea || '—'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.servesInCongress || 'No'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.congressServeArea || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 flex overflow-hidden relative">
@@ -1604,45 +7794,56 @@ const App = () => {
         </div>
       )}
 
-      <aside className="w-80 bg-slate-900 text-white flex-shrink-0 flex-col hidden lg:flex">
+      {debugToast && currentUser && selectedEventId && (
+        <div className="fixed bottom-6 left-6 bg-slate-900 text-white p-4 rounded-xl shadow-2xl z-50 max-w-sm animate-in slide-in-from-bottom-5 border-l-4 border-orange-500 flex items-start gap-3">
+          <Bug className="text-orange-500 flex-shrink-0 mt-0.5" size={20} />
+          <p className="text-xs font-bold leading-relaxed">{debugToast.msg}</p>
+        </div>
+      )}
+
+      {/* Overlay del Menú Móvil */}
+      {isMobileMenuOpen && (
+         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-30 lg:hidden transition-opacity duration-300" onClick={() => setIsMobileMenuOpen(false)} />
+      )}
+
+      {/* Sidebar Responsive */}
+      <aside className={`fixed inset-y-0 left-0 z-40 w-80 bg-slate-900 text-white flex flex-col transition-transform duration-300 lg:relative lg:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="p-8 pb-4">
           <div className="flex items-start gap-3 mb-2">
             <div className="bg-indigo-600 p-2 rounded-xl shadow-lg shadow-indigo-500/20 mt-1"><Edit3 size={20} /></div>
             <div className="w-full">
-              <textarea
-                value={tempEventName}
-                disabled={currentUser?.role === 'Lector'}
-                onChange={(e) => setTempEventName(e.target.value)}
-                onBlur={async (e) => {
-                  const newVal = e.target.value;
-                  if (newVal !== currentEvent.name) {
-                    await updateEventConfig({ name: newVal });
-                    addLog('Evento', `Nombre: "${currentEvent.name}" -> "${newVal}"`);
-                  }
-                }}
-                className="bg-transparent border-b border-dashed border-slate-600 text-white font-black text-lg leading-tight w-full focus:outline-none focus:border-indigo-400 transition-colors pb-1 resize-none overflow-hidden"
-                placeholder="Nombre del Evento" rows={2}
-              />
-              <div className="flex items-center gap-2 mt-2">
+              <div className="flex items-start gap-2 pr-2">
+                <h2 className="text-white font-black text-lg leading-tight w-full" style={{ wordBreak: 'break-word' }}>
+                  {currentEvent?.name}
+                </h2>
+                {hasAdminRights && (
+                  <button onClick={() => setRenameModal({isOpen: true, id: currentEvent.id, name: currentEvent.name})} className="text-slate-400 hover:text-indigo-300 mt-1 flex-shrink-0 transition-colors" title="Renombrar Evento">
+                    <Edit3 size={16} />
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 mt-3">
                 <CalendarRange size={14} className="text-white" />
                 <input
                   type="date"
                   value={tempEventDate}
-                  disabled={currentUser?.role === 'Lector'}
+                  disabled={!hasAdminRights}
                   onChange={(e) => setTempEventDate(e.target.value)}
                   onBlur={async (e) => {
                     const newVal = e.target.value;
                     if (newVal !== (currentEvent.date || '')) {
-                      await updateEventConfig({ date: newVal });
-                      addLog('Evento', `Fecha: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`);
+                      const payload = { date: newVal };
+                      if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
+                      await updateDoc(getDocRef('app_events', currentEvent.id), payload);
+                      addLog('Evento', `Fecha: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                     }
                   }}
-                  className="bg-transparent border-b border-dashed border-slate-600 text-indigo-200 text-xs font-bold focus:outline-none focus:border-indigo-400 transition-colors pb-0.5 cursor-pointer [color-scheme:dark]"
+                  className={`bg-transparent border-b border-dashed border-slate-600 text-indigo-200 text-xs font-bold focus:outline-none focus:border-indigo-400 transition-colors pb-0.5 [color-scheme:dark] ${hasAdminRights ? 'cursor-pointer' : 'cursor-default border-transparent'}`}
                 />
               </div>
             </div>
           </div>
-          <div className="flex items-center justify-between mt-2">
+          <div className="flex items-center justify-between mt-4">
             <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1">Registros Vida Nueva</p>
             <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-500/30 uppercase font-bold">{currentEvent.eventType}</span>
           </div>
@@ -1655,61 +7856,164 @@ const App = () => {
         </div>
         <nav className="flex-1 px-4 space-y-1 overflow-y-auto pb-6">
           <div className="pt-2 pb-2 px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Principal</div>
-          <button onClick={() => setActiveTab("Summary")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-4 ${activeTab === 'Summary' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><BarChart3 size={20} className={activeTab === 'Summary' ? 'text-indigo-400' : ''} /><span className="font-bold">Resumen General</span></div>{activeTab === 'Summary' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
+          <button onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Summary' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><BarChart3 size={20} className={activeTab === 'Summary' ? 'text-indigo-400' : ''} /><span className="font-bold">Resumen General</span></div>{activeTab === 'Summary' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
+          {isCampa && (
+            <button onClick={() => goTo(systemView, selectedEventId, "ServersPage")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'ServersPage' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Users size={20} className={activeTab === 'ServersPage' ? 'text-amber-400' : ''} /><span className="font-bold">Página Servidores</span></div>{activeTab === 'ServersPage' && <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />}</button>
+          )}
+          {hasAdminRights && (
+            <>
+              <button
+                onClick={() => goTo(systemView, selectedEventId, 'Becados')}
+                className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Becados' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+              >
+                <div className="flex items-center gap-3">
+                  <GraduationCap size={20} className={activeTab === 'Becados' ? 'text-purple-400' : ''} />
+                  <span className="font-bold">Becados</span>
+                </div>
+                {activeTab === 'Becados' && <div className="w-1.5 h-1.5 rounded-full bg-purple-400" />}
+              </button>
+              <button onClick={() => goTo(systemView, selectedEventId, "CashCut")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'CashCut' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Scissors size={20} className={activeTab === 'CashCut' ? 'text-green-400' : ''} /><span className="font-bold">Corte de Caja</span></div>{activeTab === 'CashCut' && <div className="w-1.5 h-1.5 rounded-full bg-green-400" />}</button>
+            </>
+          )}
+          {canAccessExpenses && (
+            <button onClick={() => goTo(systemView, selectedEventId, "ExpenseList")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'ExpenseList' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Receipt size={20} className={activeTab === 'ExpenseList' ? 'text-emerald-400' : ''} /><span className="font-bold">Lista de Gastos</span></div>{activeTab === 'ExpenseList' && <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />}</button>
+          )}
+          
           <div className="flex items-center justify-between py-2 px-4 border-t border-slate-800/50 pt-4">
             <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Sedes Disponibles</span>
-            {currentUser?.role !== 'Lector' && <button onClick={() => setIsAddLocModalOpen(true)} className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 p-1 rounded transition-colors" title="Añadir Sede"><Plus size={14} /></button>}
+            {hasAdminRights && <button onClick={() => setIsAddLocModalOpen(true)} className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 p-1 rounded transition-colors" title="Añadir Sede"><Plus size={14} /></button>}
           </div>
-          {(currentEvent?.locations || []).map(loc => (
+          {visibleLocations.map(loc => (
             <div key={loc} className="flex flex-col mb-1">
-              <button onClick={() => setActiveTab(loc)} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all group ${activeTab === loc ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/40' : 'text-slate-500 hover:bg-white/5 hover:text-slate-300'}`}>
+              <button onClick={() => goTo(systemView, selectedEventId, loc)} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all group ${activeTab === loc ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/40' : 'text-slate-500 hover:bg-white/5 hover:text-slate-300'}`}>
                 <div className="flex items-center gap-3"><MapPin size={20} className={activeTab === loc ? 'text-white' : 'text-slate-700 group-hover:text-slate-500'} /><span className="font-bold">{loc}</span></div>
                 <div className="flex items-center gap-2">
                   {!isLocOpen(loc) && <span className="text-[8px] bg-red-500/20 text-red-400 px-1.5 rounded uppercase font-bold border border-red-500/30">Cerrada</span>}
                   <div className={`text-[10px] px-2 py-0.5 rounded-full font-black ${activeTab === loc ? 'bg-indigo-500 text-white' : 'bg-slate-800 text-slate-500'}`}>{(data[loc] || []).length}</div>
-                  {currentUser?.role !== 'Lector' && <div onClick={(e) => { e.stopPropagation(); handleDeleteLocation(loc); }} className={`p-1.5 rounded-lg transition-colors ${activeTab === loc ? 'hover:bg-indigo-500 text-indigo-200 hover:text-white' : 'text-slate-600 hover:bg-slate-800 hover:text-red-400'}`} title="Eliminar Sede"><Trash2 size={14} /></div>}
+                  {hasAdminRights && <div onClick={(e) => { e.stopPropagation(); handleDeleteLocation(loc); }} className={`p-1.5 rounded-lg transition-colors ${activeTab === loc ? 'hover:bg-indigo-500 text-indigo-200 hover:text-white' : 'text-slate-600 hover:bg-slate-800 hover:text-red-400'}`} title="Eliminar Sede"><Trash2 size={14} /></div>}
                 </div>
               </button>
               {locError === loc && <span className="text-[10px] text-red-400 font-bold px-4 pt-1 animate-in slide-in-from-top-1 text-left">Sede con registros.</span>}
             </div>
           ))}
-          <div className="pt-6 pb-2 px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.2em] border-t border-slate-800/50 mt-4">Sistema</div>
-          {/* Se añadió navegación para ver usuarios o logs desde dentro de un evento */}
-          <button onClick={() => { setSelectedEventId(null); setSystemView('users'); }} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><UserCog size={20} /><span className="font-bold">Usuarios Globales</span></div></button>
-          <button onClick={() => { setSelectedEventId(null); setSystemView('logs'); }} className="w-full flex items-center justify-between p-4 rounded-2xl transition-all text-slate-500 hover:text-slate-300"><div className="flex items-center gap-3"><History size={20} /><span className="font-bold">Logs de Actividad</span></div></button>
         </nav>
-        <div className="p-4 border-t border-slate-800 space-y-2">
-          <button onClick={() => { setSelectedEventId(null); setActiveTab("Summary"); setSystemView('events'); }} className="w-full flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl font-bold transition-all text-sm"><LayoutDashboard size={16} /> Cambiar de Evento</button>
-          <button onClick={handleLogout} className="w-full flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-700 text-red-400 hover:bg-red-500/20 hover:text-red-300 rounded-xl font-bold transition-all text-sm"><LogOut size={16} /> Cerrar Sesión</button>
-        </div>
       </aside>
 
       <main className="flex-1 overflow-y-auto bg-[#f8fafc]">
-        <header className="sticky top-0 z-10 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 md:px-8 py-4 flex items-center justify-between lg:justify-end">
-          <div className="lg:hidden flex items-center gap-3 flex-1 mr-4">
-            <input
-              type="text"
-              value={tempEventName}
-              onChange={(e) => setTempEventName(e.target.value)}
-              onBlur={async (e) => {
-                const newVal = e.target.value;
-                if (newVal !== currentEvent.name) {
-                  await updateEventConfig({ name: newVal });
-                  addLog('Evento', `Nombre: "${currentEvent.name}" -> "${newVal}"`);
-                }
-              }}
-              className="bg-transparent border-b border-dashed border-slate-300 text-slate-800 font-black text-base w-full focus:outline-none focus:border-indigo-500 truncate"
-            />
+        <header className="sticky top-0 z-10 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 md:px-8 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3 flex-1 min-w-0 mr-4">
+            
+            {/* Botón Hamburguesa para Móviles */}
+            <button onClick={() => setIsMobileMenuOpen(true)} className="lg:hidden p-2 bg-slate-100 text-slate-600 hover:text-indigo-600 hover:bg-slate-200 rounded-xl transition-colors flex-shrink-0" title="Abrir Menú">
+              <Menu size={20} />
+            </button>
+
+            {navHistory.length > 0 && (
+              <button
+                onClick={goBack}
+                className="p-2 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 hover:text-indigo-600 transition-colors flex-shrink-0"
+                title="Regresar"
+              >
+                <ArrowLeft size={18} />
+              </button>
+            )}
+
+            <div className="lg:hidden flex items-center gap-3 flex-1 min-w-0">
+              <h2 className="text-slate-800 font-black text-base truncate flex-1 flex items-center gap-2">
+                {currentEvent?.name}
+                {currentEvent?._isDebug && currentEvent?._debugSessionId === globalConfig?.debugSessionId && <Bug size={14} className="text-orange-500" title="Cambio no permanente" />}
+              </h2>
+            </div>
           </div>
-          <div className="flex items-center gap-2 md:gap-4">
-            <div className="hidden lg:flex items-center gap-2 mr-4 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
-            <button onClick={() => setShowMoney(!showMoney)} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors">{showMoney ? <EyeOff size={14} /> : <Eye size={14} />}<span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span></button>
-            <div className="bg-slate-100 rounded-full p-1 hidden sm:flex"><button onClick={() => setActiveTab("Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button></div>
-            <button onClick={() => { setSelectedEventId(null); setActiveTab("Summary"); }} className="lg:hidden bg-indigo-50 text-indigo-600 p-2 rounded-xl"><LayoutDashboard size={18} /></button>
+          
+          <div className="flex items-center gap-1 md:gap-2 flex-shrink-0 relative">
+            <div className="hidden lg:flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
+            
+            <button onClick={() => goTo('events', null, "Summary")} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Cambiar de Evento">
+              <LayoutDashboard size={14} /><span className="hidden sm:inline">Eventos</span>
+            </button>
+            {hasAdminRights && (
+              <button onClick={() => goTo('users', null, 'Summary')} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Gestión de Usuarios">
+                <UserCog size={14} /><span className="hidden sm:inline">Usuarios</span>
+              </button>
+            )}
+            {currentUser?.role !== 'Lector' && (
+              <button onClick={() => goTo('logs', null, 'Summary')} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors" title="Logs Globales">
+                <History size={14} /><span className="hidden sm:inline">Logs</span>
+              </button>
+            )}
+
+            {/* BOTÓN EXPORTAR EXCEL */}
+            <button onClick={handleExportExcel} disabled={isExporting} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-green-700 bg-green-100 hover:bg-green-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Exportar Todo a Excel">
+              {isExporting ? <span className="animate-spin">⏳</span> : <FileSpreadsheet size={14} />}
+              <span className="hidden sm:inline">{isExporting ? 'Generando...' : 'Exportar Excel'}</span>
+            </button>
+            
+            {hasFinancialAccess && (
+              <button onClick={() => setShowMoney(!showMoney)} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors" title={showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}>{showMoney ? <EyeOff size={14} /> : <Eye size={14} />}<span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span></button>
+            )}
+            
+            {activeTab === "Summary" && (
+              <div className="relative">
+                <button onClick={() => setShowViewSettings(!showViewSettings)} className={`flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold transition-colors ${showViewSettings ? 'bg-indigo-100 text-indigo-600' : 'text-slate-500 hover:bg-slate-100'}`} title="Configurar Vista">
+                  <SlidersHorizontal size={14} /><span className="hidden sm:inline">Vista</span>
+                </button>
+                {showViewSettings && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowViewSettings(false)}></div>
+                    <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-2xl shadow-xl border border-slate-100 p-4 z-50 animate-in slide-in-from-top-2">
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 border-b border-slate-100 pb-2">Configurar Resumen</h4>
+                      <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+                        {[
+                          { key: 'statsConfig', label: 'Tarjetas Principales' },
+                          { key: 'chartLocations', label: 'Gráfica: Sedes' },
+                          { key: 'chartIncome', label: 'Gráfica: Ingresos' },
+                          { key: 'chartPaymentStatus', label: 'Gráfica: Estado de Pagos' },
+                          { key: 'chartGender', label: 'Gráfica: Género' },
+                          { key: 'chartAgeBrackets', label: 'Gráfica: Rangos de Edad' },
+                          { key: 'chartBloodType', label: 'Gráfica: Tipo de Sangre', show: isCampa },
+                          { key: 'chartScholarship', label: 'Gráfica: Becas', show: isCampa },
+                          { key: 'chartSwimming', label: 'Gráfica: Nado', show: isCampa },
+                          { key: 'chartMedical', label: 'Gráfica: Salud', show: isCampa },
+                          { key: 'chartServers', label: 'Gráfica: Servidores', show: isCampa },
+                          { key: 'chartAges', label: 'Gráfica: Asignación', show: isCampa },
+                          { key: 'chartCustom', label: 'Gráfica: Campos Extra', show: isGeneral && currentEvent?.customFields?.length > 0 },
+                          { key: 'tableDetails', label: 'Tabla de Desglose General' },
+                        ].filter(item => item.show !== false).map(item => (
+                          <label key={item.key} className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-50 rounded-xl transition-colors">
+                            <span className="text-xs font-bold text-slate-600">{item.label}</span>
+                            <div className="relative flex items-center">
+                              <input type="checkbox" className="sr-only peer" checked={viewPrefs[item.key] !== false} onChange={() => togglePref(item.key)} />
+                              <div className="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-500"></div>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            <div className="bg-slate-100 rounded-full p-1 hidden sm:flex ml-1">
+              <button onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button>
+              {isCampa && <button onClick={() => goTo(systemView, selectedEventId, "ServersPage")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'ServersPage' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Servidores</button>}
+              {hasAdminRights && <button onClick={() => goTo(systemView, selectedEventId, 'Becados')} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Becados' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Becados</button>}
+              {hasAdminRights && <button onClick={() => goTo(systemView, selectedEventId, "CashCut")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'CashCut' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Corte de Caja</button>}
+              {canAccessExpenses && <button onClick={() => goTo(systemView, selectedEventId, "ExpenseList")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'ExpenseList' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Gastos</button>}
+            </div>
+            
+            <button onClick={handleLogout} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-red-500 bg-red-50 hover:bg-red-100 transition-colors ml-1" title="Cerrar Sesión">
+              <LogOut size={14} /><span className="hidden sm:inline">Salir</span>
+            </button>
           </div>
         </header>
         {activeTab === "Summary" && renderSummary()}
-        {(currentEvent?.locations || []).includes(activeTab) && renderLocationSheet(activeTab)}
+        {activeTab === "ServersPage" && isCampa && renderServerProfilesPage()}
+        {activeTab === 'Becados' && hasAdminRights && renderBecadosPage()}
+        {activeTab === "CashCut" && hasAdminRights && renderCashCutPage()}
+        {activeTab === "ExpenseList" && canAccessExpenses && renderExpenseListPage()}
+        {visibleLocations.includes(activeTab) && renderLocationSheet(activeTab)}
       </main>
 
       {/* EDIT REGISTRY MODAL */}
@@ -1717,30 +8021,138 @@ const App = () => {
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl my-auto animate-in zoom-in-95 duration-200 overflow-hidden">
             <div className="bg-indigo-600 p-6 text-white flex justify-between items-center">
-              <div><h3 className="text-xl font-bold flex items-center gap-2"><Edit3 /> Editar Participante</h3><p className="text-indigo-100 text-xs">Actualizando registro de {editRegistryModal.data.name}</p></div>
-              <button onClick={() => setEditRegistryModal({ isOpen: false, loc: '', data: null })} className="bg-white/10 hover:bg-white/20 p-2 rounded-full transition-colors"><XCircle size={24} /></button>
+              <div>
+                <h3 className="text-xl font-bold flex items-center gap-2"><Edit3 /> Editar Participante</h3>
+                <p className="text-indigo-100 text-xs mt-1">
+                  Actualizando registro de {editRegistryModal.data.name}
+                  {(editRegistryModal.data.status || 'active') === 'waitlist' ? (
+                    <span className="block mt-1.5 font-bold text-amber-200">En lista de espera: al guardar permanece en espera hasta que lo promuevan de forma individual.</span>
+                  ) : null}
+                </p>
+              </div>
+              <button onClick={() => { setEditRegistryModal({ isOpen: false, loc: '', data: null }); setEditPreferredServeDropdownOpen(false); setEditServedAreasDropdownOpen(false); }} className="bg-white/10 hover:bg-white/20 p-2 rounded-full transition-colors"><XCircle size={24} /></button>
             </div>
             <form onSubmit={handleUpdateEntry} className="p-8 space-y-6 max-h-[85vh] overflow-y-auto">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Nombre Completo</label><input type="text" required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.name} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, name: e.target.value } })} /></div>
-                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Teléfono</label><input type="text" required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.phone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, phone: formatPhoneNumber(e.target.value) } })} /></div>
-                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Edad {!isCampa && "(Opcional)"}</label><input type="number" required={isCampa} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.age} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, age: e.target.value } })} /></div>
-                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Género {!isCampa && "(Opcional)"}</label>
-                  <select required={isCampa} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.gender} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, gender: e.target.value } })}>
+                <div className="space-y-1">
+                  <label className={labelClasses}>Nombre Completo</label>
+                  <input type="text" required className={`${inputClasses} ${getRequiredFieldClass(!hasValidFullName(editRegistryModal.data.name || ''))}`} value={editRegistryModal.data.name} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, name: e.target.value } })} />
+                  <label className={labelClasses}>Alias (opcional)</label>
+                  <input type="text" className={inputClasses} value={editRegistryModal.data.alias || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, alias: e.target.value } })} />
+                </div>
+                <div className="space-y-1"><label className={labelClasses}>Teléfono</label><input type="text" required className={`${inputClasses} ${getRequiredFieldClass(!isValidPhone(editRegistryModal.data.phone || ''))}`} value={editRegistryModal.data.phone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, phone: formatPhoneNumber(e.target.value) } })} /></div>
+                <div className="space-y-1 md:col-span-2">
+                  <label className={labelClasses}>ID VNPM (único, lectura)</label>
+                  <input
+                    type="text"
+                    readOnly
+                    className={`${inputClasses} bg-slate-100 text-slate-600 cursor-default font-mono text-xs`}
+                    value={editRegistryModal.data.vnpPersonId || '— Se generará al guardar si aún no existe —'}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className={labelClasses}>Fecha de nacimiento {!isCampa && "(Opcional)"}</label>
+                  <input
+                    type="date"
+                    required={isCampa}
+                    className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(editRegistryModal.data.birthDate || '').trim())}`}
+                    value={editRegistryModal.data.birthDate || ''}
+                    onChange={e => {
+                      const birthDate = e.target.value;
+                      setEditRegistryModal({
+                        ...editRegistryModal,
+                        data: { ...editRegistryModal.data, birthDate, age: calculateAgeFromBirthDate(birthDate) }
+                      });
+                    }}
+                  />
+                  <p className="text-[10px] text-slate-500 font-semibold px-1">Edad calculada: {editRegistryModal.data.age || '—'}</p>
+                </div>
+                {(() => {
+                  const ageNum = parseInt(editRegistryModal.data.age, 10);
+                  const isMinor = Number.isFinite(ageNum) && ageNum > 0 && ageNum < 18;
+                  if (!isMinor) return null;
+                  return (
+                    <div className="space-y-1">
+                      <label className={labelClasses}>Responsiva (menor de edad)</label>
+                      <select
+                        className={`${inputClasses} ${getRequiredFieldClass(!(editRegistryModal.data.responsivaStatus || '').trim())}`}
+                        value={editRegistryModal.data.responsivaStatus || ''}
+                        onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, responsivaStatus: e.target.value } })}
+                      >
+                        <option value="">Seleccionar</option>
+                        {RESPONSIVA_STATUSES.map((st) => <option key={st} value={st}>{st}</option>)}
+                      </select>
+                    </div>
+                  );
+                })()}
+                <div className="space-y-1"><label className={labelClasses}>Género {!isCampa && "(Opcional)"}</label>
+                  <select required={isCampa} className={`${inputClasses} ${getRequiredFieldClass(isCampa && !String(editRegistryModal.data.gender || '').trim())}`} value={editRegistryModal.data.gender} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, gender: e.target.value } })}>
                     <option value="">Seleccionar {!isCampa && "(Opcional)"}</option>
                     {GENDERS.map(g => <option key={g} value={g}>{g}</option>)}
                   </select>
                 </div>
+                <div className="space-y-1">
+                  <label className={labelClasses}>Sede de registro</label>
+                  {hasAdminRights ? (
+                    <select className={inputClasses} value={editRegistryModal.data.location || editRegistryModal.loc} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, location: e.target.value } })}>
+                      {(currentEvent?.locations || []).map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  ) : (
+                    <input className={inputClasses} value={editRegistryModal.data.location || editRegistryModal.loc} disabled />
+                  )}
+                </div>
+                <div className="space-y-1">
+                  <label className={labelClasses}>Sale de sede</label>
+                  <select className={inputClasses} value={editRegistryModal.data.travelFrom || (editRegistryModal.data.location || editRegistryModal.loc)} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, travelFrom: e.target.value } })}>
+                    {(currentEvent?.locations || []).map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className={labelClasses}>Regresa a sede</label>
+                  <select className={inputClasses} value={editRegistryModal.data.travelTo || (editRegistryModal.data.location || editRegistryModal.loc)} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, travelTo: e.target.value } })}>
+                    {(currentEvent?.locations || []).map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className={labelClasses}>Transporte</label>
+                  <div className="flex flex-wrap gap-3">
+                    <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-600 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 cursor-pointer hover:bg-slate-100 transition-colors">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-indigo-600 rounded"
+                        checked={resolveLlegaEnCarro(editRegistryModal.data)}
+                        onChange={(e) => setEditRegistryModal({
+                          ...editRegistryModal,
+                          data: { ...editRegistryModal.data, llegaEnCarro: e.target.checked }
+                        })}
+                      />
+                      Llega en carro
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-600 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 cursor-pointer hover:bg-slate-100 transition-colors">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-indigo-600 rounded"
+                        checked={resolveRegresaEnCarro(editRegistryModal.data)}
+                        onChange={(e) => setEditRegistryModal({
+                          ...editRegistryModal,
+                          data: { ...editRegistryModal.data, regresaEnCarro: e.target.checked }
+                        })}
+                      />
+                      Regresa en carro
+                    </label>
+                  </div>
+                </div>
                 {(isCampa || isGeneral) && (
                   <>
-                    <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Contacto Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.emergencyContact} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyContact: e.target.value } })} /></div>
-                    <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Tel. Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.emergencyPhone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyPhone: formatPhoneNumber(e.target.value) } })} /></div>
+                    <div className="space-y-1"><label className={labelClasses}>Contacto Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(editRegistryModal.data.emergencyContact || '').trim())}`} value={editRegistryModal.data.emergencyContact} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyContact: e.target.value } })} /></div>
+                    <div className="space-y-1"><label className={labelClasses}>Tel. Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className={`${inputClasses} ${getRequiredFieldClass(isCampa && !isValidPhone(editRegistryModal.data.emergencyPhone || ''))}`} value={editRegistryModal.data.emergencyPhone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyPhone: formatPhoneNumber(e.target.value) } })} /></div>
                   </>
                 )}
                 {isGeneral && currentEvent.customFields && currentEvent.customFields.map((field, idx) => (
                   <div className="space-y-1" key={idx}>
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1 truncate block" title={field}>{field}</label>
-                    <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-semibold" value={editRegistryModal.data.customData?.[field] || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, customData: { ...(editRegistryModal.data.customData || {}), [field]: e.target.value } } })} />
+                    <label className={`${labelClasses} truncate`} title={field}>{field}</label>
+                    <input className={inputClasses} value={editRegistryModal.data.customData?.[field] || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, customData: { ...(editRegistryModal.data.customData || {}), [field]: e.target.value } } })} />
                   </div>
                 ))}
               </div>
@@ -1748,9 +8160,23 @@ const App = () => {
               {isCampa && (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 p-6 bg-red-50/30 rounded-2xl border border-red-100">
                   <h4 className="col-span-full text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] pb-2 border-b border-red-100">Condiciones Médicas</h4>
-                  <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Alergias</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasAllergy === 'Sí' ? 'border-orange-300 text-orange-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasAllergy} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasAllergy: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasAllergy === 'Sí' && <input placeholder="¿Cuál?" className="flex-1 p-2.5 bg-white border border-orange-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-xs font-semibold" value={editRegistryModal.data.allergyDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, allergyDetails: e.target.value } })} />}</div></div>
-                  <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Enfermedades</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasDisease === 'Sí' ? 'border-red-300 text-red-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasDisease} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasDisease: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasDisease === 'Sí' && <input placeholder="¿Cuál?" className="flex-1 p-2.5 bg-white border border-red-200 rounded-xl outline-none focus:ring-2 focus:ring-red-500 text-xs font-semibold" value={editRegistryModal.data.diseaseDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, diseaseDetails: e.target.value } })} />}</div></div>
-                  <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Discapacidades</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasDisability === 'Sí' ? 'border-purple-300 text-purple-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasDisability} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasDisability: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasDisability === 'Sí' && <input placeholder="¿Cuál?" className="flex-1 p-2.5 bg-white border border-purple-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500 text-xs font-semibold" value={editRegistryModal.data.disabilityDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, disabilityDetails: e.target.value } })} />}</div></div>
+                  <div className="space-y-1">
+                    <label className={labelClasses}>Alergias</label>
+                    <div className="flex gap-2 flex-wrap">
+                      <select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasAllergy === 'Sí' ? 'border-orange-300 text-orange-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasAllergy} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasAllergy: e.target.value, allergyCategory: e.target.value === 'Sí' ? (editRegistryModal.data.allergyCategory || '') : '', allergyDetails: e.target.value === 'Sí' ? (editRegistryModal.data.allergyDetails || '') : '' } })}><option value="No">No</option><option value="Sí">Sí</option></select>
+                      {editRegistryModal.data.hasAllergy === 'Sí' && (
+                        <>
+                          <select className="flex-1 min-w-[150px] p-2.5 bg-white border border-orange-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-xs font-semibold" value={editRegistryModal.data.allergyCategory || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, allergyCategory: e.target.value } })}>
+                            <option value="">Categoría (opcional)</option>
+                            {(globalConfig?.allergyOptions?.length ? globalConfig.allergyOptions : DEFAULT_ALLERGY_OPTIONS).map((opt) => <option key={`edit-allergy-opt-${opt}`} value={opt}>{opt}</option>)}
+                          </select>
+                          <input placeholder="Detalle (opcional si eliges categoría)" className={`flex-1 min-w-[180px] p-2.5 bg-white border border-orange-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-xs font-semibold ${getRequiredFieldClass(!(editRegistryModal.data.allergyDetails || '').trim() && !(editRegistryModal.data.allergyCategory || '').trim())}`} value={editRegistryModal.data.allergyDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, allergyDetails: e.target.value } })} />
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-1"><label className={labelClasses}>Enfermedades</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasDisease === 'Sí' ? 'border-red-300 text-red-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasDisease} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasDisease: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasDisease === 'Sí' && <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-2"><input placeholder="¿Cuál?" className={`p-2.5 bg-white border border-red-200 rounded-xl outline-none focus:ring-2 focus:ring-red-500 text-xs font-semibold ${getRequiredFieldClass(!(editRegistryModal.data.diseaseDetails || '').trim())}`} value={editRegistryModal.data.diseaseDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, diseaseDetails: e.target.value } })} /><input placeholder="Medicamento requerido (opcional)" className="p-2.5 bg-white border border-red-200 rounded-xl outline-none focus:ring-2 focus:ring-red-500 text-xs font-semibold" value={editRegistryModal.data.diseaseMedication || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, diseaseMedication: e.target.value } })} /></div>}</div></div>
+                  <div className="space-y-1"><label className={labelClasses}>Discapacidades</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasDisability === 'Sí' ? 'border-purple-300 text-purple-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasDisability} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasDisability: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasDisability === 'Sí' && <input placeholder="¿Cuál?" className={`flex-1 p-2.5 bg-white border border-purple-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500 text-xs font-semibold ${getRequiredFieldClass(!(editRegistryModal.data.disabilityDetails || '').trim())}`} value={editRegistryModal.data.disabilityDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, disabilityDetails: e.target.value } })} />}</div></div>
                 </div>
               )}
 
@@ -1760,31 +8186,305 @@ const App = () => {
                     <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] border-b border-slate-200 pb-2">Tipo de Sangre y Nado</h4>
                     <div className="flex gap-3">
                       <div className="flex-1 space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Tipo de Sangre</label>
+                        <label className={labelClasses}>Tipo de Sangre</label>
                         <select className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-500" value={editRegistryModal.data.bloodType || 'O+'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, bloodType: e.target.value } })}>
                           {BLOOD_TYPES.map(bt => <option key={bt} value={bt}>{bt}</option>)}
                         </select>
                       </div>
                       <div className="flex-1 space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase px-1">¿Sabe Nadar?</label>
-                        <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, canSwim: editRegistryModal.data.canSwim === 'Sí' ? 'No' : 'Sí' } })} className={`w-full py-3 rounded-xl text-sm font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.canSwim === 'Sí' ? 'bg-blue-600 text-white border-blue-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Droplets size={16} /> Nado: {editRegistryModal.data.canSwim}</button>
+                        <label className={labelClasses}>¿Sabe nadar?</label>
+                        <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, canSwim: editRegistryModal.data.canSwim === 'Sí' ? 'No' : 'Sí' } })} className={`w-full py-3 rounded-xl text-sm font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.canSwim === 'Sí' ? 'bg-blue-600 text-white border-blue-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Droplets size={16} /> ¿Sabe nadar?: {editRegistryModal.data.canSwim}</button>
                       </div>
                     </div>
                   </div>
                   <div className="space-y-4">
                     <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] border-b border-slate-200 pb-2">Configuración Especial</h4>
                     <div className="flex flex-wrap gap-2">
-                      <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, isScholarship: editRegistryModal.data.isScholarship === 'Sí' ? 'No' : 'Sí' } })} className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.isScholarship === 'Sí' ? 'bg-purple-600 text-white border-purple-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><GraduationCap size={16} /> Becado: {editRegistryModal.data.isScholarship}</button>
-                      <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, isServer: editRegistryModal.data.isServer === 'Sí' ? 'No' : 'Sí', serverAssignment: '' } })} className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Users size={16} /> Servidor: {editRegistryModal.data.isServer || 'No'}</button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = editRegistryModal.data.isScholarship === 'Sí' ? 'No' : 'Sí';
+                          setEditRegistryModal({
+                            ...editRegistryModal,
+                            data: {
+                              ...editRegistryModal.data,
+                              isScholarship: next,
+                              scholarshipType: next === 'Sí' ? 'total' : 'none',
+                              scholarshipPartialAmount: next === 'Sí' ? '' : '',
+                              isPastorChild: next === 'Sí' ? 'No' : editRegistryModal.data.isPastorChild,
+                              pastorChildWithoutPay: next === 'Sí' ? 'No' : editRegistryModal.data.pastorChildWithoutPay,
+                              pastorChildSpecialDonationFinanceId: next === 'Sí' ? '' : editRegistryModal.data.pastorChildSpecialDonationFinanceId
+                            }
+                          });
+                        }}
+                        className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.isScholarship === 'Sí' ? 'bg-purple-600 text-white border-purple-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}
+                      >
+                        <GraduationCap size={16} /> Becado: {editRegistryModal.data.isScholarship}
+                      </button>
+                      <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: {
+                        ...editRegistryModal.data,
+                        isServer: editRegistryModal.data.isServer === 'Sí' ? 'No' : 'Sí',
+                        serverAssignment: '',
+                        isPastorChild: 'No',
+                        pastorChildWithoutPay: 'No',
+                        pastorChildSpecialDonationFinanceId: '',
+                        isMarried: 'No',
+                        spouseName: '',
+                        goesWithChildren: 'No',
+                        childrenCount: '',
+                        servedOtherCampa: 'No',
+                        servedAreas: '',
+                        preferredServeArea: '',
+                        servesInCongress: 'No',
+                        congressServeArea: '',
+                      } })} className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Users size={16} /> Servidor: {editRegistryModal.data.isServer || 'No'}</button>
                     </div>
-                    {editRegistryModal.data.isServer === 'Sí' && (
-                      <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Asignación de Servidor</label>
-                        <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 text-sm font-semibold text-slate-700" value={editRegistryModal.data.serverAssignment || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, serverAssignment: e.target.value } })}>
-                          <option value="">Selecciona a qué evento servirá...</option>
+
+                    {editRegistryModal.data.isScholarship === 'Sí' && (
+                      <div className="p-4 bg-purple-50/80 border border-purple-100 rounded-xl mt-3 space-y-2">
+                        <p className="text-[10px] font-black text-purple-800 uppercase tracking-widest">Tipo de beca</p>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setEditRegistryModal({
+                              ...editRegistryModal,
+                              data: { ...editRegistryModal.data, scholarshipType: 'total', scholarshipPartialAmount: '' },
+                            })}
+                            className={`px-3 py-2 rounded-lg text-xs font-bold border ${editRegistryModal.data.scholarshipType !== 'partial' ? 'bg-purple-600 text-white border-purple-500' : 'bg-white text-slate-600 border-slate-200'}`}
+                          >
+                            Total
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditRegistryModal({
+                              ...editRegistryModal,
+                              data: { ...editRegistryModal.data, scholarshipType: 'partial' },
+                            })}
+                            className={`px-3 py-2 rounded-lg text-xs font-bold border ${editRegistryModal.data.scholarshipType === 'partial' ? 'bg-purple-600 text-white border-purple-500' : 'bg-white text-slate-600 border-slate-200'}`}
+                          >
+                            Parcial
+                          </button>
+                        </div>
+                        {editRegistryModal.data.scholarshipType === 'partial' && (
+                          <div className="space-y-1 max-w-md">
+                            <label className={labelClasses}>¿Cuánto puede abonar?</label>
+                            <p className="text-[10px] text-purple-900/85 leading-snug">
+                              Solo este monto cuenta como aporte al recaudado; puede pagarse en cualquier momento. El resto del costo de lista queda saldado por la beca.
+                            </p>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              className={`${inputClasses} ${getRequiredFieldClass(editRegistryModal.data.isScholarship === 'Sí' && editRegistryModal.data.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(editRegistryModal.data.scholarshipPartialAmount)) || parseFloat(editRegistryModal.data.scholarshipPartialAmount) <= 0 || parseFloat(editRegistryModal.data.scholarshipPartialAmount) >= (Number(editRegistryModal.data.registeredCost) || 0)))}`}
+                              value={editRegistryModal.data.scholarshipPartialAmount ?? ''}
+                              onChange={(e) => setEditRegistryModal({
+                                ...editRegistryModal,
+                                data: { ...editRegistryModal.data, scholarshipPartialAmount: e.target.value },
+                              })}
+                            />
+                            <p className="text-[10px] text-purple-800/90">
+                              {(() => {
+                                const list = Number(editRegistryModal.data.registeredCost) || 0;
+                                const p = parseFloat(editRegistryModal.data.scholarshipPartialAmount || 0);
+                                if (!list || !Number.isFinite(p) || p <= 0) {
+                                  return <>Costo de lista del registro: {list ? `$${list.toLocaleString('es-MX')}` : '—'} · Completa el monto para ver el desglose.</>;
+                                }
+                                const beca = Math.max(0, list - p);
+                                return (
+                                  <>
+                                    Costo lista: ${list.toLocaleString('es-MX')} · Aporte al recaudado: ${p.toLocaleString('es-MX')} · Cubre la beca: ${beca.toLocaleString('es-MX')}
+                                  </>
+                                );
+                              })()}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {editRegistryModal.data.isScholarship !== 'Sí' && (
+                      <div className="p-4 bg-indigo-50/60 border border-indigo-100 rounded-xl mt-3">
+                        <p className="text-[10px] font-black text-indigo-700 uppercase tracking-widest mb-2">Donación especial (hijos de pastores)</p>
+                        <label className="inline-flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-indigo-600 rounded"
+                            checked={editRegistryModal.data.isPastorChild === 'Sí'}
+                            onChange={(e) => setEditRegistryModal({
+                              ...editRegistryModal,
+                              data: {
+                                ...editRegistryModal.data,
+                                isPastorChild: e.target.checked ? 'Sí' : 'No',
+                                pastorChildWithoutPay: e.target.checked ? editRegistryModal.data.pastorChildWithoutPay : 'No',
+                                pastorChildSpecialDonationFinanceId: e.target.checked ? editRegistryModal.data.pastorChildSpecialDonationFinanceId : '',
+                              }
+                            })}
+                          />
+                          Hijo de pastor
+                        </label>
+
+                        {editRegistryModal.data.isPastorChild === 'Sí' && (
+                          <label className="inline-flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer select-none ml-0 mt-3">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 accent-amber-600 rounded"
+                              checked={editRegistryModal.data.pastorChildWithoutPay === 'Sí'}
+                              onChange={(e) => setEditRegistryModal({
+                                ...editRegistryModal,
+                                data: { ...editRegistryModal.data, pastorChildWithoutPay: e.target.checked ? 'Sí' : 'No' }
+                              })}
+                            />
+                            ¿Va sin pagar?
+                          </label>
+                        )}
+                      </div>
+                    )}
+
+                    {editRegistryModal.data.isServer === 'Sí' ? (
+                      <div className="space-y-3 mt-3">
+                        <div className="space-y-1">
+                          <label className={labelClasses}>Asignación de Servidor</label>
+                          <select className={inputClasses} value={editRegistryModal.data.serverAssignment || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, serverAssignment: e.target.value } })}>
+                            <option value="Teens">Teens</option>
+                            <option value="Jóvenes">Jóvenes</option>
+                            <option value="Ambos">Ambos</option>
+                          </select>
+                        </div>
+                        <div className="p-4 bg-amber-50/60 border border-amber-100 rounded-xl">
+                          <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-3">Información adicional de servidor (opcional)</p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <label className={labelClasses}>¿Es casado?</label>
+                              <select className={inputClasses} value={editRegistryModal.data.isMarried || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, isMarried: e.target.value, spouseName: e.target.value === 'Sí' ? (editRegistryModal.data.spouseName || '') : '' } })}>
+                                <option value="No">No</option><option value="Sí">Sí</option>
+                              </select>
+                            </div>
+                            {editRegistryModal.data.isMarried === 'Sí' && (
+                              <div className="space-y-1">
+                                <label className={labelClasses}>Nombre de pareja</label>
+                                <input className={inputClasses} value={editRegistryModal.data.spouseName || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, spouseName: e.target.value } })} />
+                              </div>
+                            )}
+                            <div className="space-y-1">
+                              <label className={labelClasses}>¿Va con hijos?</label>
+                              <select className={inputClasses} value={editRegistryModal.data.goesWithChildren || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, goesWithChildren: e.target.value, childrenCount: e.target.value === 'Sí' ? (editRegistryModal.data.childrenCount ?? '') : '' } })}>
+                                <option value="No">No</option><option value="Sí">Sí</option>
+                              </select>
+                            </div>
+                            {editRegistryModal.data.goesWithChildren === 'Sí' && (
+                              <div className="space-y-1">
+                                <label className={labelClasses}>¿Cuántos?</label>
+                                <input type="number" min="1" className={inputClasses} placeholder="Número" value={editRegistryModal.data.childrenCount || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, childrenCount: e.target.value } })} />
+                              </div>
+                            )}
+                            <div className="space-y-1">
+                              <label className={labelClasses}>¿Han servido en otro campa?</label>
+                              <select className={inputClasses} value={editRegistryModal.data.servedOtherCampa || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, servedOtherCampa: e.target.value, servedAreas: e.target.value === 'Sí' ? (editRegistryModal.data.servedAreas || '') : '' } })}>
+                                <option value="No">No</option><option value="Sí">Sí</option>
+                              </select>
+                            </div>
+                            {editRegistryModal.data.servedOtherCampa === 'Sí' && (
+                              <div className="space-y-1">
+                                <label className={labelClasses}>¿En qué áreas?</label>
+                                {(() => {
+                                  const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
+                                  const { selected, otroText } = parsePreferredServeArea(editRegistryModal.data.servedAreas || '', opts);
+                                  const toggle = (opt) => {
+                                    const next = new Set(selected);
+                                    if (next.has(opt)) next.delete(opt); else next.add(opt);
+                                    const txt = opt === 'Otro' ? (next.has('Otro') ? otroText : '') : otroText;
+                                    setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, servedAreas: formatPreferredServeArea(next, txt) } });
+                                  };
+                                  return (
+                                    <div className="relative" data-dropdown-root="edit-served-areas">
+                                      <button type="button" onClick={() => setEditServedAreasDropdownOpen(!editServedAreasDropdownOpen)} className={`w-full ${inputClasses} text-left flex items-center justify-between`}>
+                                        <span>{selected.size ? [...selected].map(s => s === 'Otro' && otroText ? `Otro: ${otroText}` : s).join(', ') : 'Seleccionar...'}</span>
+                                        {editServedAreasDropdownOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                                      </button>
+                                      {editServedAreasDropdownOpen && (
+                                        <>
+                                          <div className="absolute inset-0 -inset-y-20 z-10" onClick={() => setEditServedAreasDropdownOpen(false)} aria-hidden />
+                                          <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-lg p-2 max-h-56 overflow-auto">
+                                            {opts.map(opt => (
+                                              <div key={opt}>
+                                                <label className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700">
+                                                  <input type="checkbox" className="h-4 w-4 accent-indigo-600 rounded" checked={selected.has(opt)} onChange={() => toggle(opt)} />
+                                                  {opt}
+                                                </label>
+                                                {opt === 'Otro' && selected.has('Otro') && (
+                                                  <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm" value={otroText} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, servedAreas: formatPreferredServeArea(selected, e.target.value) } })} onClick={e => e.stopPropagation()} />
+                                                )}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            )}
+                            <div className="space-y-1 sm:col-span-2">
+                              <label className={labelClasses}>¿En qué área les gustaría servir?</label>
+                              {(() => {
+                                const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
+                                const { selected, otroText } = parsePreferredServeArea(editRegistryModal.data.preferredServeArea || '', opts);
+                                const toggle = (opt) => {
+                                  const next = new Set(selected);
+                                  if (next.has(opt)) next.delete(opt);
+                                  else next.add(opt);
+                                  const txt = opt === 'Otro' ? (next.has('Otro') ? otroText : '') : otroText;
+                                  setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, preferredServeArea: formatPreferredServeArea(next, txt) } });
+                                };
+                                return (
+                                  <div className="relative" data-dropdown-root="edit-preferred-areas">
+                                    <button type="button" onClick={() => setEditPreferredServeDropdownOpen(!editPreferredServeDropdownOpen)} className={`w-full ${inputClasses} text-left flex items-center justify-between`}>
+                                      <span>{selected.size ? [...selected].map(s => s === 'Otro' && otroText ? `Otro: ${otroText}` : s).join(', ') : 'Seleccionar...'}</span>
+                                      {editPreferredServeDropdownOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                                    </button>
+                                    {editPreferredServeDropdownOpen && (
+                                      <>
+                                        <div className="absolute inset-0 -inset-y-20 z-10" onClick={() => setEditPreferredServeDropdownOpen(false)} aria-hidden />
+                                        <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-lg p-2 max-h-56 overflow-auto">
+                                          {opts.map(opt => (
+                                            <div key={opt}>
+                                              <label className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700">
+                                                <input type="checkbox" className="h-4 w-4 accent-indigo-600 rounded" checked={selected.has(opt)} onChange={() => toggle(opt)} />
+                                                {opt}
+                                              </label>
+                                              {opt === 'Otro' && selected.has('Otro') && (
+                                                <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm" value={otroText} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, preferredServeArea: formatPreferredServeArea(selected, e.target.value) } })} onClick={e => e.stopPropagation()} />
+                                              )}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                            <div className="space-y-1">
+                              <label className={labelClasses}>¿Sirven en sus congres?</label>
+                              <select className={inputClasses} value={editRegistryModal.data.servesInCongress || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, servesInCongress: e.target.value, congressServeArea: e.target.value === 'Sí' ? (editRegistryModal.data.congressServeArea || '') : '' } })}>
+                                <option value="No">No</option><option value="Sí">Sí</option>
+                              </select>
+                            </div>
+                            {editRegistryModal.data.servesInCongress === 'Sí' && (
+                              <div className="space-y-1">
+                                <label className={labelClasses}>¿En qué área?</label>
+                                <input className={inputClasses} value={editRegistryModal.data.congressServeArea || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, congressServeArea: e.target.value } })} />
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1 mt-3">
+                        <label className={labelClasses}>Asignación de Campista</label>
+                        <select className={inputClasses} value={editRegistryModal.data.campAssignment} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, campAssignment: e.target.value } })}>
                           <option value="Teens">Teens (Menores de 18)</option>
                           <option value="Jóvenes">Jóvenes (Mayores de 18)</option>
-                          <option value="Ambos">Ambos Eventos</option>
                         </select>
                       </div>
                     )}
@@ -1795,13 +8495,13 @@ const App = () => {
               <div className="p-6 bg-slate-50 rounded-2xl border border-slate-100">
                 <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] border-b border-slate-200 pb-2 mb-4 flex items-center justify-between">
                   <span>Costo Fijado (Total a Cobrar)</span>
-                  {currentUser?.role !== 'Administrador' && <span className="flex items-center gap-1 text-amber-500 normal-case tracking-normal text-[9px]"><Lock size={10} /> Solo Administrador</span>}
+                  {!hasAdminRights && <span className="flex items-center gap-1 text-amber-500 normal-case tracking-normal text-[9px]"><Lock size={10} /> Solo Administrador</span>}
                 </h4>
-                {currentUser?.role === 'Administrador' ? (
+                {hasAdminRights ? (
                   <div className="relative max-w-xs">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold text-slate-400">$</span>
                     <input type="number" className="w-full pl-8 pr-4 py-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500 text-slate-800 font-bold"
-                      value={editRegistryModal.data.registeredCost !== undefined ? editRegistryModal.data.registeredCost : getPersonCost(editRegistryModal.data, currentPricing)}
+                      value={editRegistryModal.data.registeredCost !== undefined ? editRegistryModal.data.registeredCost : resolveRegisteredCost(editRegistryModal.data, currentPricing)}
                       onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, registeredCost: e.target.value } })}
                     />
                   </div>
@@ -1817,7 +8517,7 @@ const App = () => {
               </div>
 
               <div className="flex gap-4 pt-4 border-t border-slate-100">
-                <button type="button" onClick={() => setEditRegistryModal({ isOpen: false, loc: '', data: null })} className="flex-1 py-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-2xl transition-all text-sm uppercase">Cancelar</button>
+                <button type="button" onClick={() => { setEditRegistryModal({ isOpen: false, loc: '', data: null }); setEditPreferredServeDropdownOpen(false); setEditServedAreasDropdownOpen(false); }} className="flex-1 py-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-2xl transition-all text-sm uppercase">Cancelar</button>
                 <button type="submit" className="flex-1 py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all shadow-xl shadow-indigo-200 flex justify-center items-center gap-2 text-sm uppercase"><CheckCircle2 size={20} /> Guardar Cambios</button>
               </div>
             </form>
@@ -1837,17 +8537,17 @@ const App = () => {
             </div>
             {pricingForm.type === 'fixed' ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 p-6 rounded-2xl border border-slate-200">
-                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Costo Base</label><input type="number" className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" value={pricingForm.globalCost} onChange={e => setPricingForm({ ...pricingForm, globalCost: e.target.value })} /></div>
-                {isCampa && <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Costo Servidor (Ambos)</label><input type="number" className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" value={pricingForm.serverCost} onChange={e => setPricingForm({ ...pricingForm, serverCost: e.target.value })} /></div>}
+                <div className="space-y-1"><label className={labelClasses}>Costo Base</label><input type="number" className={inputClasses} value={pricingForm.globalCost} onChange={e => setPricingForm({ ...pricingForm, globalCost: e.target.value })} /></div>
+                {isCampa && <div className="space-y-1"><label className={labelClasses}>Costo Servidor (Ambos)</label><input type="number" className={inputClasses} value={pricingForm.serverCost} onChange={e => setPricingForm({ ...pricingForm, serverCost: e.target.value })} /></div>}
               </div>
             ) : (
               <div className="space-y-4">
                 <div className="bg-indigo-50/50 p-4 rounded-2xl border border-indigo-100 space-y-4 max-h-[300px] overflow-y-auto">
                   {pricingForm.phases.map((phase, index) => (
                     <div key={phase.id} className="flex flex-wrap md:flex-nowrap items-end gap-3 bg-white p-3 rounded-xl shadow-sm border border-slate-100">
-                      <div className="w-full md:w-auto flex-1 space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase">Hasta la fecha</label><input type="date" max={currentEvent.date || undefined} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold outline-none focus:border-indigo-400" value={phase.dateUntil} onChange={e => { const newPhases = [...pricingForm.phases]; newPhases[index].dateUntil = e.target.value; setPricingForm({ ...pricingForm, phases: newPhases }); }} /></div>
-                      <div className="w-full md:w-auto flex-1 space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase">Costo Base</label><input type="number" className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold outline-none focus:border-indigo-400" value={phase.globalCost} onChange={e => { const newPhases = [...pricingForm.phases]; newPhases[index].globalCost = e.target.value; setPricingForm({ ...pricingForm, phases: newPhases }); }} /></div>
-                      {isCampa && <div className="w-full md:w-auto flex-1 space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase">Costo Serv. (Ambos)</label><input type="number" className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold outline-none focus:border-indigo-400" value={phase.serverCost} onChange={e => { const newPhases = [...pricingForm.phases]; newPhases[index].serverCost = e.target.value; setPricingForm({ ...pricingForm, phases: newPhases }); }} /></div>}
+                      <div className="w-full md:w-auto flex-1 space-y-1"><label className={labelClasses}>Hasta la fecha</label><input type="date" max={currentEvent.date || undefined} className={inputClasses} value={phase.dateUntil} onChange={e => { const newPhases = [...pricingForm.phases]; newPhases[index].dateUntil = e.target.value; setPricingForm({ ...pricingForm, phases: newPhases }); }} /></div>
+                      <div className="w-full md:w-auto flex-1 space-y-1"><label className={labelClasses}>Costo Base</label><input type="number" className={inputClasses} value={phase.globalCost} onChange={e => { const newPhases = [...pricingForm.phases]; newPhases[index].globalCost = e.target.value; setPricingForm({ ...pricingForm, phases: newPhases }); }} /></div>
+                      {isCampa && <div className="w-full md:w-auto flex-1 space-y-1"><label className={labelClasses}>Costo Serv. (Ambos)</label><input type="number" className={inputClasses} value={phase.serverCost} onChange={e => { const newPhases = [...pricingForm.phases]; newPhases[index].serverCost = e.target.value; setPricingForm({ ...pricingForm, phases: newPhases }); }} /></div>}
                       <button onClick={() => { const newPhases = pricingForm.phases.filter((_, i) => i !== index); setPricingForm({ ...pricingForm, phases: newPhases }); }} className="p-2 mb-0.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={18} /></button>
                     </div>
                   ))}
@@ -1856,15 +8556,91 @@ const App = () => {
                 <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 mt-4">
                   <p className="text-xs font-bold text-slate-600 mb-3">Precio Final (Cuando pasen todas las fechas anteriores):</p>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Costo Base Final</label><input type="number" className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" value={pricingForm.globalCost} onChange={e => setPricingForm({ ...pricingForm, globalCost: e.target.value })} /></div>
-                    {isCampa && <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase px-1">Costo Servidor Final (Ambos)</label><input type="number" className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" value={pricingForm.serverCost} onChange={e => setPricingForm({ ...pricingForm, serverCost: e.target.value })} /></div>}
+                    <div className="space-y-1"><label className={labelClasses}>Costo Base Final</label><input type="number" className={inputClasses} value={pricingForm.globalCost} onChange={e => setPricingForm({ ...pricingForm, globalCost: e.target.value })} /></div>
+                    {isCampa && <div className="space-y-1"><label className={labelClasses}>Costo Servidor Final (Ambos)</label><input type="number" className={inputClasses} value={pricingForm.serverCost} onChange={e => setPricingForm({ ...pricingForm, serverCost: e.target.value })} /></div>}
                   </div>
                 </div>
               </div>
             )}
             <div className="flex gap-4 pt-6 mt-6 border-t border-slate-100">
-              <button onClick={() => setPricingModal({ isOpen: false })} className="flex-1 py-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-2xl transition-all text-sm">Cancelar</button>
-              <button onClick={handleSavePricing} className="flex-1 py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all shadow-xl shadow-indigo-200 flex justify-center items-center gap-2 text-sm"><CheckCircle2 size={20} /> Guardar Precios</button>
+              <button onClick={() => setPricingModal({ isOpen: false })} className={btnSecondary}>Cancelar</button>
+              <button onClick={handleSavePricing} className={btnPrimary}><CheckCircle2 size={20} /> Guardar Precios</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {serviceSlotsModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-xl animate-in zoom-in-95 duration-200">
+            <h3 className="text-xl font-black text-slate-800 mb-2 flex items-center gap-2"><Settings2 className="text-indigo-600" /> Horarios de Servicio</h3>
+            <p className="text-sm text-slate-500 mb-6">Define el rango horario para Primero, Segundo y Tercero.</p>
+            <div className="space-y-4">
+              {SERVICE_OPTIONS.map((s) => (
+                <div key={s} className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-slate-50 border border-slate-200 rounded-2xl p-4 items-end">
+                  <div className="text-sm font-black text-slate-700">{s}</div>
+                  <div className="space-y-1">
+                    <label className={labelClasses}>Inicio</label>
+                    <input type="time" className={inputClasses} value={serviceSlotsForm?.[s]?.start || ''} onChange={e => setServiceSlotsForm(prev => ({ ...prev, [s]: { ...(prev?.[s] || {}), start: e.target.value } }))} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className={labelClasses}>Fin</label>
+                    <input type="time" className={inputClasses} value={serviceSlotsForm?.[s]?.end || ''} onChange={e => setServiceSlotsForm(prev => ({ ...prev, [s]: { ...(prev?.[s] || {}), end: e.target.value } }))} />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-4 pt-6 mt-6 border-t border-slate-100">
+              <button onClick={() => setServiceSlotsModal({ isOpen: false })} className={btnSecondary}>Cancelar</button>
+              <button onClick={handleSaveServiceSlots} className={btnPrimary}><CheckCircle2 size={20} /> Guardar Horarios</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {serveAreaOptionsModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-xl animate-in zoom-in-95 duration-200">
+            <h3 className="text-xl font-black text-slate-800 mb-2 flex items-center gap-2"><Users className="text-amber-600" /> Opciones: ¿En qué área les gustaría servir?</h3>
+            <p className="text-sm text-slate-500 mb-4">Agrega o quita opciones. Debe incluirse &quot;Otro&quot; para la opción personalizada.</p>
+            <div className="space-y-2 max-h-72 overflow-auto">
+              {serveAreaOptionsForm.map((opt, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input type="text" className={inputClasses + ' flex-1'} value={opt} onChange={e => setServeAreaOptionsForm(prev => prev.map((o, j) => j === i ? e.target.value : o))} placeholder="Nombre de opción" />
+                  <button type="button" onClick={() => setServeAreaOptionsForm(prev => prev.filter((_, j) => j !== i))} className="p-2 text-red-500 hover:bg-red-50 rounded-lg" title="Quitar"><Trash2 size={18} /></button>
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={() => setServeAreaOptionsForm(prev => [...prev, ''])} className="mt-3 text-sm font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-2">
+              <Plus size={16} /> Agregar opción
+            </button>
+            <div className="flex gap-4 pt-6 mt-6 border-t border-slate-100">
+              <button onClick={() => setServeAreaOptionsModal({ isOpen: false })} className={btnSecondary}>Cancelar</button>
+              <button onClick={handleSaveServeAreaOptions} className={btnPrimary}><CheckCircle2 size={20} /> Guardar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {allergyOptionsModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-xl animate-in zoom-in-95 duration-200">
+            <h3 className="text-xl font-black text-slate-800 mb-2 flex items-center gap-2"><Activity className="text-orange-600" /> Categorías de alergias</h3>
+            <p className="text-sm text-slate-500 mb-4">Agrega o elimina categorías para seleccionar en el registro.</p>
+            <div className="space-y-2 max-h-72 overflow-auto">
+              {allergyOptionsForm.map((opt, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input type="text" className={inputClasses + ' flex-1'} value={opt} onChange={e => setAllergyOptionsForm(prev => prev.map((o, j) => j === i ? e.target.value : o))} placeholder="Nombre de categoría" />
+                  <button type="button" onClick={() => setAllergyOptionsForm(prev => prev.filter((_, j) => j !== i))} className="p-2 text-red-500 hover:bg-red-50 rounded-lg" title="Quitar"><Trash2 size={18} /></button>
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={() => setAllergyOptionsForm(prev => [...prev, ''])} className="mt-3 text-sm font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-2">
+              <Plus size={16} /> Agregar categoría
+            </button>
+            <div className="flex gap-4 pt-6 mt-6 border-t border-slate-100">
+              <button onClick={() => setAllergyOptionsModal({ isOpen: false })} className={btnSecondary}>Cancelar</button>
+              <button onClick={handleSaveAllergyOptions} className={btnPrimary}><CheckCircle2 size={20} /> Guardar</button>
             </div>
           </div>
         </div>
@@ -1878,17 +8654,127 @@ const App = () => {
             <p className="text-sm text-slate-500 mb-6">Registrando abono para <strong className="text-slate-700">{paymentModal.personName}</strong></p>
             <div className="space-y-6">
               <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase">Monto a abonar ($)</label>
+                <label className={labelClasses}>Monto a abonar ($)</label>
                 <div className="relative mt-1">
                   <span className={`absolute left-3 top-1/2 -translate-y-1/2 font-bold ${paymentModal.error ? 'text-red-400' : 'text-slate-400'}`}>$</span>
                   <input type="number" autoFocus className={`w-full pl-8 pr-4 py-3 bg-slate-50 border rounded-xl outline-none focus:ring-2 font-bold ${paymentModal.error ? 'border-red-300 text-red-700 focus:ring-red-500' : 'border-slate-200 text-green-700 focus:ring-green-500'}`} placeholder="0.00" value={paymentModal.amount} onChange={e => setPaymentModal({ ...paymentModal, amount: e.target.value, error: '' })} onKeyDown={e => e.key === 'Enter' && submitAbono()} />
-                  {paymentModal.isScholarship === 'No' && !paymentModal.error && <span className="text-[10px] text-red-500 font-bold px-1 absolute top-full left-0 mt-1 whitespace-nowrap z-10">Resta para liquidar: ${paymentModal.baseCost - paymentModal.currentPaid}</span>}
+                  {!paymentModal.error && paymentModal.baseCost > paymentModal.currentPaid && (
+                    <span className="text-[10px] text-red-500 font-bold px-1 absolute top-full left-0 mt-1 whitespace-nowrap z-10">
+                      Resta para liquidar: ${paymentModal.baseCost - paymentModal.currentPaid}
+                    </span>
+                  )}
                 </div>
                 {paymentModal.error && <p className="text-[10px] text-red-500 font-bold mt-1 px-1 animate-in slide-in-from-top-1">{paymentModal.error}</p>}
               </div>
+
+              <div>
+                <div className="space-y-1">
+                  <label className={labelClasses}>Método</label>
+                  <select
+                    className={inputClasses}
+                    value={paymentModal.paymentMethod}
+                    onChange={(e) => {
+                      const method = e.target.value === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+                      setPaymentModal({ ...paymentModal, paymentMethod: method, cardReference: method === 'Tarjeta' ? paymentModal.cardReference : '' });
+                    }}
+                  >
+                    {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+
+                {paymentModal.paymentMethod === 'Tarjeta' && (
+                  <div className="space-y-1 mt-3">
+                    <label className={labelClasses}>Referencia de pago (opcional)</label>
+                    <input
+                      className={inputClasses}
+                      value={paymentModal.cardReference}
+                      placeholder="Ej. folio / transacción"
+                      onChange={(e) => setPaymentModal({ ...paymentModal, cardReference: e.target.value })}
+                    />
+                  </div>
+                )}
+              </div>
+
               <div className="flex gap-3 pt-2">
-                <button onClick={() => setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0 })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
+                <button onClick={() => setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' })} className={btnSecondary}>Cancelar</button>
                 <button onClick={submitAbono} className="flex-1 py-3 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl transition-colors shadow-lg shadow-green-200 text-sm flex justify-center items-center gap-2"><CreditCard size={18} /> Guardar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WHATSAPP MODAL */}
+      {whatsAppModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-lg animate-in zoom-in-95 duration-200">
+            <h3 className="text-lg font-bold text-slate-800 mb-1 flex items-center gap-2"><MessageCircle size={18} className="text-emerald-600" /> Enviar WhatsApp</h3>
+            <p className="text-sm text-slate-500 mb-1">Mensaje para <strong className="text-slate-700">{whatsAppModal.personName}</strong>.</p>
+            {whatsAppModal.pendingNotificationMarkKey ? (
+              <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 mb-3">
+                Último movimiento financiero en cola (registro, abono, promoción desde espera o baja). Al abrir WhatsApp se marca como enviado. Si cambias el texto, deja de marcarse solo.
+              </p>
+            ) : (
+              <p className="text-[11px] text-slate-400 mb-3">Sin avisos en cola: mensaje genérico de saldo. Tras registro, abono o promoción, aquí se precarga el texto del aviso pendiente más reciente.</p>
+            )}
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className={labelClasses}>Teléfono (WhatsApp)</label>
+                <input
+                  type="text"
+                  className={inputClasses}
+                  value={whatsAppModal.phone}
+                  onChange={(e) =>
+                    setWhatsAppModal({ ...whatsAppModal, phone: formatPhoneNumber(e.target.value), error: '' })
+                  }
+                  placeholder="55-1234-5678 o +52..."
+                />
+              </div>
+              <div className="space-y-1">
+                <label className={labelClasses}>Mensaje</label>
+                <textarea
+                  rows={7}
+                  className={`${inputClasses} resize-y`}
+                  value={whatsAppModal.message}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    const unchanged =
+                      whatsAppModal.pendingNotificationMarkKey &&
+                      whatsAppModal.whatsAppQueuedMessageSnapshot != null &&
+                      next.trim() === String(whatsAppModal.whatsAppQueuedMessageSnapshot).trim();
+                    setWhatsAppModal({
+                      ...whatsAppModal,
+                      message: next,
+                      error: '',
+                      ...(unchanged
+                        ? {}
+                        : { pendingNotificationMarkKey: null, whatsAppQueuedMessageSnapshot: null }),
+                    });
+                  }}
+                  placeholder="Escribe el mensaje a enviar..."
+                />
+              </div>
+              {whatsAppModal.error && <p className="text-[11px] text-red-600 font-bold">{whatsAppModal.error}</p>}
+              <div className="flex gap-3 pt-1">
+                <button
+                  onClick={() =>
+                    setWhatsAppModal({
+                      isOpen: false,
+                      personId: null,
+                      personName: '',
+                      eventName: '',
+                      phone: '',
+                      message: '',
+                      error: '',
+                      pendingNotificationMarkKey: null,
+                      whatsAppQueuedMessageSnapshot: null,
+                    })
+                  }
+                  className={btnSecondary}
+                >
+                  Cancelar
+                </button>
+                <button onClick={sendWhatsAppMessage} className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition-colors shadow-lg shadow-emerald-200 text-sm flex justify-center items-center gap-2"><MessageCircle size={18} /> Abrir WhatsApp</button>
               </div>
             </div>
           </div>
@@ -1914,15 +8800,191 @@ const App = () => {
               ) : <p className="text-center text-sm italic text-slate-400 py-4">No hay campos extra configurados.</p>}
             </div>
             <div className="space-y-2 pt-4 border-t border-slate-100">
-              <label className="text-[10px] font-bold text-slate-400 uppercase px-1">Añadir Nuevo Campo</label>
+              <label className={labelClasses}>Añadir Nuevo Campo</label>
               <div className="flex gap-2">
-                <input type="text" className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700 text-sm" placeholder="Ej. Talla de playera" value={newCustomField} onChange={e => setNewCustomField(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddCustomField()} />
-                <button onClick={handleAddCustomField} disabled={!newCustomField.trim()} className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold rounded-xl transition-colors shadow-md shadow-indigo-200"><Plus size={18} /></button>
+                <input type="text" className={inputClasses} placeholder="Ej. Talla de playera" value={newCustomField} onChange={e => setNewCustomField(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddCustomField()} />
+                <button onClick={handleAddCustomField} disabled={!newCustomField.trim()} className={btnPrimary}><Plus size={18} /></button>
               </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* DONATION MODAL */}
+      {donationModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200">
+            <div className="flex justify-between items-start mb-6">
+              <div>
+                <h3 className="text-xl font-black text-slate-800 mb-1 flex items-center gap-2">
+                  <Receipt size={24} className="text-green-600" /> Registrar Donación
+                </h3>
+                <p className="text-sm text-slate-500">Suma una cantidad al total recaudado.</p>
+              </div>
+              <button onClick={() => setDonationModal({ isOpen: false, amount: '', donorName: '' })} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
+            </div>
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className={labelClasses}>Cantidad *</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  autoFocus
+                  className={inputClasses}
+                  placeholder="$0.00"
+                  value={donationModal.amount}
+                  onChange={e => setDonationModal({ ...donationModal, amount: e.target.value })}
+                  onKeyDown={e => e.key === 'Enter' && handleAddDonation()}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className={labelClasses}>Nombre del donador <span className="text-slate-400 font-normal">(opcional)</span></label>
+                <input
+                  type="text"
+                  className={inputClasses}
+                  placeholder="Ej. Juan Pérez"
+                  value={donationModal.donorName}
+                  onChange={e => setDonationModal({ ...donationModal, donorName: e.target.value })}
+                  onKeyDown={e => e.key === 'Enter' && handleAddDonation()}
+                />
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button onClick={() => setDonationModal({ isOpen: false, amount: '', donorName: '' })} className={btnSecondary}>Cancelar</button>
+                <button onClick={handleAddDonation} disabled={!donationModal.amount || parseFloat(donationModal.amount) <= 0} className={btnPrimary}>
+                  <Plus size={18} /> Registrar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DONATIONS LIST MODAL */}
+      {donationsListOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-lg animate-in zoom-in-95 duration-200 max-h-[80vh] flex flex-col">
+            <div className="flex justify-between items-start mb-6">
+              <div>
+                <h3 className="text-xl font-black text-slate-800 mb-1 flex items-center gap-2">
+                  <Receipt size={24} className="text-green-600" /> Donaciones
+                </h3>
+                <p className="text-sm text-slate-500">
+                  {(() => {
+                    const eventDonations = donations.filter(d => d.eventId === currentEvent?.id);
+                    const total = eventDonations.reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
+                    return `${eventDonations.length} donación${eventDonations.length !== 1 ? 'es' : ''} · Total: ${formatMoney(total)}`;
+                  })()}
+                </p>
+              </div>
+              <button onClick={() => setDonationsListOpen(false)} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
+            </div>
+            <div className="overflow-y-auto flex-1 space-y-2">
+              {donations.filter(d => d.eventId === currentEvent?.id).length === 0 ? (
+                <p className="text-center text-sm italic text-slate-400 py-8">No hay donaciones registradas.</p>
+              ) : (
+                donations
+                  .filter(d => d.eventId === currentEvent?.id)
+                  .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+                  .map(don => (
+                    <div key={don.id} className="flex items-center justify-between bg-slate-50 border border-slate-200 p-3 rounded-xl">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-bold text-slate-800 text-sm">{formatMoney(don.amount)}</p>
+                        <p className="text-xs text-slate-500 truncate">
+                          {don.donorName ? don.donorName : <span className="italic">Sin nombre</span>}
+                          {' · '}{don.createdBy} · {don.createdAt ? new Date(don.createdAt).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
+                        </p>
+                      </div>
+                      {hasAdminRights && (
+                        <button
+                          onClick={() => { if (window.confirm(`¿Eliminar donación de $${(don.amount || 0).toLocaleString()}?`)) handleDeleteDonation(don.id); }}
+                          className="text-red-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors ml-2 flex-shrink-0"
+                          title="Eliminar donación"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
+                  ))
+              )}
+            </div>
+            <div className="flex gap-3 pt-4 mt-4 border-t border-slate-100">
+              <button onClick={() => setDonationsListOpen(false)} className={`${btnSecondary} flex-1`}>Cerrar</button>
+              {hasAdminRights && (
+                <button onClick={() => { setDonationsListOpen(false); setDonationModal({ isOpen: true, amount: '', donorName: '' }); }} className={`${btnPrimary} flex-1`}>
+                  <Plus size={18} /> Nueva Donación
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EXPENSE EDIT MODAL */}
+      {expenseEditModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-md animate-in zoom-in-95 duration-200">
+            <div className="flex justify-between items-start mb-6">
+              <h3 className="text-xl font-black text-slate-800 flex items-center gap-2"><Edit3 size={24} className="text-indigo-600" /> Editar Gasto</h3>
+              <button onClick={() => setExpenseEditModal({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' })} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-bold text-slate-500 mb-1 block">Nombre</label>
+                <input type="text" autoFocus value={expenseEditModal.name} onChange={e => setExpenseEditModal({ ...expenseEditModal, name: e.target.value })} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-bold text-slate-500 mb-1 block">Cantidad</label>
+                  <input type="number" min="1" value={expenseEditModal.quantity} onChange={e => setExpenseEditModal({ ...expenseEditModal, quantity: e.target.value })} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none" />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-500 mb-1 block">Precio unitario</label>
+                  <input type="number" min="0" step="0.01" value={expenseEditModal.unitPrice} onChange={e => setExpenseEditModal({ ...expenseEditModal, unitPrice: e.target.value })} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none" />
+                </div>
+              </div>
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
+                <span className="text-[10px] font-bold text-slate-400 uppercase">Nuevo total: </span>
+                <span className="text-lg font-black text-slate-800">${((parseInt(expenseEditModal.quantity) || 0) * (parseFloat(expenseEditModal.unitPrice) || 0)).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button onClick={() => setExpenseEditModal({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' })} className={btnSecondary}>Cancelar</button>
+                <button onClick={handleEditExpense} className="flex-1 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-sm transition-colors flex items-center justify-center gap-2"><CheckCircle2 size={18} /> Guardar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EXPENSE PARTIAL PAYMENT MODAL */}
+      {expensePartialModal.isOpen && (() => {
+        const exp = expenses.find(e => e.id === expensePartialModal.expenseId);
+        const remaining = exp ? (exp.totalPrice || 0) - (exp.paidAmount || 0) : 0;
+        return (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200">
+              <div className="flex justify-between items-start mb-6">
+                <div>
+                  <h3 className="text-xl font-black text-slate-800 mb-1 flex items-center gap-2"><DollarSign size={24} className="text-emerald-600" /> Abono Parcial</h3>
+                  <p className="text-sm text-slate-500">{exp?.name || 'Gasto'}</p>
+                  <p className="text-xs text-slate-400 mt-1">Pendiente: <span className="font-bold text-amber-600">${remaining.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span></p>
+                </div>
+                <button onClick={() => setExpensePartialModal({ isOpen: false, expenseId: null, amount: '' })} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
+              </div>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs font-bold text-slate-500 mb-1 block">Cantidad a abonar</label>
+                  <input type="number" min="0" max={remaining} step="0.01" autoFocus placeholder="$0.00" value={expensePartialModal.amount} onChange={e => setExpensePartialModal({ ...expensePartialModal, amount: e.target.value })} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-lg font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 outline-none" />
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <button onClick={() => setExpensePartialModal({ isOpen: false, expenseId: null, amount: '' })} className={btnSecondary}>Cancelar</button>
+                  <button onClick={handleExpensePartialPayment} className="flex-1 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm transition-colors flex items-center justify-center gap-2"><CheckCircle2 size={18} /> Abonar</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ADD LOCATION MODAL */}
       {isAddLocModalOpen && (
@@ -1931,10 +8993,10 @@ const App = () => {
             <h3 className="text-lg font-bold text-slate-800 mb-1">Añadir Nueva Sede</h3>
             <p className="text-sm text-slate-500 mb-6">Ingresa el nombre de la nueva ubicación para este evento.</p>
             <div className="space-y-4">
-              <input type="text" autoFocus className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" placeholder="Ej. Querétaro" value={newLocationName} onChange={e => setNewLocationName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddLocation()} />
+              <input type="text" autoFocus className={inputClasses} placeholder="Ej. Querétaro" value={newLocationName} onChange={e => setNewLocationName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddLocation()} />
               <div className="flex gap-3 pt-2">
-                <button onClick={() => { setIsAddLocModalOpen(false); setNewLocationName(''); }} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
-                <button onClick={handleAddLocation} disabled={!newLocationName.trim()} className="flex-1 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold rounded-xl transition-colors text-sm flex justify-center items-center gap-2"><Plus size={18} /> Añadir</button>
+                <button onClick={() => { setIsAddLocModalOpen(false); setNewLocationName(''); }} className={btnSecondary}>Cancelar</button>
+                <button onClick={handleAddLocation} disabled={!newLocationName.trim()} className={btnPrimary}><Plus size={18} /> Añadir</button>
               </div>
             </div>
           </div>
