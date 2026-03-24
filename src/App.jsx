@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   Users, MapPin, PieChart, Plus, Trash2, DollarSign, CheckCircle2, XCircle,
-  LayoutDashboard, Phone, ShieldAlert, Power, BarChart3, Edit3, TableProperties,
+  LayoutDashboard, PanelLeft, Phone, ShieldAlert, Power, BarChart3, Edit3, TableProperties,
   Eye, EyeOff, Search, Filter, ArrowUpDown, CreditCard, ChevronDown, ChevronUp,
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock,
   UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft,
@@ -124,6 +124,41 @@ const defaultViewPrefs = {
   tableDetails: true
 };
 
+/** Menú lateral del evento: SuperUsuario define qué ven Editor y Lector. Administrador y SuperUsuario no se limitan. */
+const DEFAULT_PANEL_NAV = {
+  serversPage: true,
+  becados: true,
+  cashCut: true,
+  expenseList: true,
+  registroGlobal: true,
+  locations: true
+};
+
+const PANEL_NAV_TAB_KEYS = {
+  ServersPage: 'serversPage',
+  ExpenseList: 'expenseList',
+  CashCut: 'cashCut',
+  Becados: 'becados',
+  RegistroGlobal: 'registroGlobal'
+};
+
+const PANEL_NAV_CONFIG_ITEMS = [
+  { key: 'serversPage', label: 'Página Servidores', hint: 'Visible en campamentos cuando está activa.' },
+  { key: 'becados', label: 'Becados', hint: 'Quienes ya tenían permiso de administración siguen viéndola.' },
+  { key: 'cashCut', label: 'Corte de caja', hint: 'Igual: respeta rol de administrador.' },
+  { key: 'expenseList', label: 'Lista de gastos', hint: 'Además debe tener permiso de gastos en su usuario.' },
+  { key: 'registroGlobal', label: 'Registro global', hint: 'Tabla consolidada del evento.' },
+  { key: 'locations', label: 'Sedes en el menú', hint: 'Accesos directos a cada sede en el lateral.' }
+];
+
+const lsKeyShowGrossCommission = (userId) => `vina_show_gross_commission_${userId}`;
+
+/** Texto mostrado en lugar del nombre del gasto cuando el creador oculta el concepto a otros. */
+const MASKED_EXPENSE_CONCEPT_LABEL = 'Oculto';
+
+/** Por defecto los conceptos propios están ocultos a otros; solo `hideMyExpenseConcepts === false` desactiva explícitamente. */
+const isHideMyExpenseConceptsOn = (userLike) => userLike?.hideMyExpenseConcepts !== false;
+
 // Helper: Formatear fecha a DD-MMM-YYYY
 const formatDisplayDate = (dateString) => {
   if (!dateString) return 'Sin fecha';
@@ -133,6 +168,42 @@ const formatDisplayDate = (dateString) => {
   } catch {
     return dateString;
   }
+};
+
+/** Valor para input datetime-local (zona local del navegador). */
+const toDatetimeLocalValue = (isoOrMs) => {
+  let d;
+  if (typeof isoOrMs === 'number') d = new Date(isoOrMs);
+  else if (typeof isoOrMs === 'string' && isoOrMs) d = new Date(isoOrMs);
+  else return '';
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+const fromDatetimeLocalToIso = (localStr) => {
+  if (!localStr || typeof localStr !== 'string') return null;
+  const d = new Date(localStr);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
+
+const formatPayHistoryRowDate = (pay) => {
+  if (pay?.recordedAt) {
+    try {
+      const t = new Date(pay.recordedAt).getTime();
+      if (!Number.isNaN(t)) return new Date(pay.recordedAt).toLocaleString('es-MX');
+    } catch { /* usar pay.date */ }
+  }
+  return pay?.date || '—';
+};
+
+const getPaymentHistoryTimestamp = (h) => {
+  if (h?.recordedAt) {
+    const t = new Date(h.recordedAt).getTime();
+    if (!Number.isNaN(t)) return t;
+  }
+  if (typeof h?.id === 'number') return h.id;
+  return Date.now();
 };
 
 // UI Reusable Classes
@@ -446,6 +517,8 @@ const App = () => {
   // Preferences State
   const [viewPrefs, setViewPrefs] = useState(defaultViewPrefs);
   const [showViewSettings, setShowViewSettings] = useState(false);
+  const [panelNavModalOpen, setPanelNavModalOpen] = useState(false);
+  const [panelNavForm, setPanelNavForm] = useState(() => ({ ...DEFAULT_PANEL_NAV }));
 
   // Debug Toast & Watcher
   const [debugToast, setDebugToast] = useState(null);
@@ -496,6 +569,38 @@ const App = () => {
     if (!allowedLocs.length) return currentEvent.locations || [];
     return (currentEvent.locations || []).filter(loc => allowedLocs.includes(loc));
   }, [currentEvent, currentUser, getUserAllowedLocations]);
+
+  const panelNavMerged = useMemo(() => {
+    const o = globalConfig?.panelNav && typeof globalConfig.panelNav === 'object' ? globalConfig.panelNav : {};
+    return { ...DEFAULT_PANEL_NAV, ...o };
+  }, [globalConfig?.panelNav]);
+
+  const bypassPanelNavRestrictions = isSuperUser || hasAdminRights;
+
+  const isPanelNavSectionAllowed = useCallback(
+    (key) => {
+      if (bypassPanelNavRestrictions) return true;
+      return panelNavMerged[key] !== false;
+    },
+    [bypassPanelNavRestrictions, panelNavMerged]
+  );
+
+  /** Concepto visible si el creador no oculta sus gastos, o el visor es el creador, o SuperUsuario. */
+  const canSeeExpenseConceptForRow = useCallback(
+    (exp) => {
+      if (!exp || exp._autoScholarshipExpense) return true;
+      const creatorUsername = exp.createdBy || '';
+      const creatorById = exp.createdByUserId != null && exp.createdByUserId !== '' ? String(exp.createdByUserId) : '';
+      const creatorUser = users.find(
+        (u) => (creatorById && String(u.id) === creatorById) || (creatorUsername && u.username === creatorUsername)
+      );
+      if (!creatorUser || !isHideMyExpenseConceptsOn(creatorUser)) return true;
+      if (isSuperUser) return true;
+      if (String(currentUser?.id) === String(creatorUser.id)) return true;
+      return false;
+    },
+    [users, currentUser?.id, isSuperUser]
+  );
 
   const getPricing = useCallback((event) => {
     if (!event) return { global: 0, server: 0 };
@@ -698,6 +803,15 @@ const App = () => {
   const [expenseSearch, setExpenseSearch] = useState('');
   const [expensePartialModal, setExpensePartialModal] = useState({ isOpen: false, expenseId: null, amount: '' });
   const [expenseEditModal, setExpenseEditModal] = useState({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' });
+  const [superDateEditModal, setSuperDateEditModal] = useState({
+    isOpen: false,
+    mode: '',
+    personId: null,
+    loc: '',
+    paymentIndex: null,
+    paymentId: null,
+    datetimeLocal: '',
+  });
   const [expenseFiltersDropdownOpen, setExpenseFiltersDropdownOpen] = useState(false);
   const [expenseFilters, setExpenseFilters] = useState({
     paid: false,
@@ -890,10 +1004,25 @@ const App = () => {
       return;
     }
     const eventNavTabsWithoutLocation = ['Summary', 'ServersPage', 'ExpenseList', 'CashCut', 'Becados', 'RegistroGlobal'];
-    if (view === 'events' && eventId && tab && !eventNavTabsWithoutLocation.includes(tab) && !hasLocationAccess(tab)) {
-      showToast("No tienes acceso a esta sede.");
-      setIsMobileMenuOpen(false);
-      return;
+    if (view === 'events' && eventId && tab) {
+      const panelKey = PANEL_NAV_TAB_KEYS[tab];
+      if (panelKey && !isPanelNavSectionAllowed(panelKey)) {
+        showToast('Esta sección no está habilitada en el menú para tu usuario.');
+        setIsMobileMenuOpen(false);
+        return;
+      }
+      if (!eventNavTabsWithoutLocation.includes(tab)) {
+        if (!hasLocationAccess(tab)) {
+          showToast("No tienes acceso a esta sede.");
+          setIsMobileMenuOpen(false);
+          return;
+        }
+        if (!isPanelNavSectionAllowed('locations')) {
+          showToast('El acceso a sedes desde el menú no está habilitado para tu usuario.');
+          setIsMobileMenuOpen(false);
+          return;
+        }
+      }
     }
     if (view === systemView && eventId === selectedEventId && tab === activeTab) {
       setIsMobileMenuOpen(false);
@@ -905,7 +1034,7 @@ const App = () => {
     setActiveTab(tab);
     setShowViewSettings(false);
     setIsMobileMenuOpen(false);
-  }, [systemView, selectedEventId, activeTab, hasEventAccess, hasLocationAccess, showToast]);
+  }, [systemView, selectedEventId, activeTab, hasEventAccess, hasLocationAccess, isPanelNavSectionAllowed, showToast]);
 
   const goBack = useCallback(() => {
     setNavHistory(prev => {
@@ -931,6 +1060,32 @@ const App = () => {
         setViewPrefs(defaultViewPrefs);
       }
     }
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    try {
+      const raw = localStorage.getItem(lsKeyShowGrossCommission(currentUser.id));
+      if (raw == null) return;
+      const v = JSON.parse(raw);
+      if (typeof v === 'boolean') setShowGrossWithoutCommission(v);
+    } catch {
+      /* ignore */
+    }
+  }, [currentUser?.id]);
+
+  const toggleShowGrossWithoutCommission = useCallback(() => {
+    setShowGrossWithoutCommission((prev) => {
+      const next = !prev;
+      if (currentUser?.id) {
+        try {
+          localStorage.setItem(lsKeyShowGrossCommission(currentUser.id), JSON.stringify(next));
+        } catch {
+          /* ignore */
+        }
+      }
+      return next;
+    });
   }, [currentUser?.id]);
 
   const togglePref = (key) => {
@@ -1056,6 +1211,7 @@ const App = () => {
       if (!target.closest('[data-dropdown-root="expense-filters"]')) setExpenseFiltersDropdownOpen(false);
       if (!target.closest('[data-dropdown-root="scholarship-locations-filters"]')) setScholarshipLocationsDropdownOpen(false);
       if (!target.closest('[data-dropdown-root="global-locations-filters"]')) setGlobalLocationsDropdownOpen(false);
+      if (!target.closest('[data-dropdown-root="view-settings"]')) setShowViewSettings(false);
     };
 
     document.addEventListener('pointerdown', handleGlobalPointerDown);
@@ -1091,10 +1247,19 @@ const App = () => {
       return;
     }
     const eventNavTabsWithoutLocation = ['Summary', 'ServersPage', 'ExpenseList', 'CashCut', 'Becados', 'RegistroGlobal'];
-    if (selectedEventId && !eventNavTabsWithoutLocation.includes(activeTab) && !hasLocationAccess(activeTab)) {
+    if (!selectedEventId) return;
+    if (eventNavTabsWithoutLocation.includes(activeTab)) {
+      const pk = PANEL_NAV_TAB_KEYS[activeTab];
+      if (pk && !isPanelNavSectionAllowed(pk)) {
+        setActiveTab('Summary');
+        return;
+      }
+    } else if (!hasLocationAccess(activeTab)) {
+      setActiveTab('Summary');
+    } else if (!isPanelNavSectionAllowed('locations')) {
       setActiveTab('Summary');
     }
-  }, [currentUser, selectedEventId, activeTab, hasEventAccess, hasLocationAccess]);
+  }, [currentUser, selectedEventId, activeTab, hasEventAccess, hasLocationAccess, isPanelNavSectionAllowed]);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -1132,7 +1297,8 @@ const App = () => {
           cardCommissionRate: 0.04,
           serviceSlots: DEFAULT_SERVICE_SLOTS,
           serveAreaOptions: DEFAULT_SERVE_AREA_OPTIONS,
-          allergyOptions: DEFAULT_ALLERGY_OPTIONS
+          allergyOptions: DEFAULT_ALLERGY_OPTIONS,
+          panelNav: { ...DEFAULT_PANEL_NAV }
         });
         setGlobalLocations(defaultLocations);
       }
@@ -1163,7 +1329,7 @@ const App = () => {
       if (!snap.empty) {
         setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       } else {
-        const initialUser = { username: 'admin', password: '123', role: 'SuperUsuario', canViewFinances: true, canViewHiddenDonations: true };
+        const initialUser = { username: 'admin', password: '123', role: 'SuperUsuario', canViewFinances: true, canViewHiddenDonations: true, hideMyExpenseConcepts: true };
         setDoc(getDocRef('app_users', '1'), initialUser);
       }
     }, console.error);
@@ -1238,7 +1404,7 @@ const App = () => {
     return getActiveCountByLocation(loc) >= cap;
   }, [getLocationCap, getActiveCountByLocation]);
 
-  const addLog = useCallback(async (action, details, overrideUsername = null, targetEvent = null, revertInfo = null) => {
+  const addLog = useCallback(async (action, details, overrideUsername = null, targetEvent = null, revertInfo = null, logOptions = null) => {
     const username = overrideUsername || currentUser?.username;
     if (!username) return;
 
@@ -1250,10 +1416,44 @@ const App = () => {
       eventName: ev?.name || 'Sistema',
       timestamp: new Date().toLocaleString('es-MX'),
       username, action, details, revertInfo,
-      ...(globalConfig?.isDebugMode ? { isDebug: true, debugSessionId: globalConfig.debugSessionId } : {})
+      ...(globalConfig?.isDebugMode ? { isDebug: true, debugSessionId: globalConfig.debugSessionId } : {}),
+      ...(logOptions?.isHidden ? { isHidden: true } : {}),
     };
     await setDoc(getDocRef('app_logs', String(newLogId)), newLog);
   }, [currentUser, currentEvent, globalConfig]);
+
+  const handleSavePanelNavConfig = useCallback(async () => {
+    if (!isSuperUser) return;
+    try {
+      await updateDoc(getDocRef('app_data', 'config'), {
+        panelNav: { ...DEFAULT_PANEL_NAV, ...panelNavForm }
+      });
+      addLog('Configuración', 'Actualizó qué secciones del menú lateral ven los usuarios con rol Editor o Lector.');
+      setPanelNavModalOpen(false);
+      showToast('Menú lateral (Editor/Lector) actualizado.');
+    } catch (e) {
+      console.error(e);
+      showToast('No se pudo guardar la configuración del menú.');
+    }
+  }, [isSuperUser, panelNavForm, addLog, showToast]);
+
+  const handleToggleHideMyExpenseConcepts = useCallback(async () => {
+    if (!canAccessExpenses || !currentUser?.id) return;
+    const live = users.find((u) => String(u.id) === String(currentUser.id));
+    const next = !isHideMyExpenseConceptsOn(live);
+    try {
+      await updateDoc(getDocRef('app_users', String(currentUser.id)), { hideMyExpenseConcepts: next });
+      addLog('Gastos', 'Movimiento en lista de gastos: cambio de preferencia de privacidad de conceptos (auditoría sin detalle).');
+      showToast(
+        next
+          ? 'Los gastos que registres se mostrarán como «Oculto» a otros (tú y SuperUsuario verán el concepto).'
+          : 'Tus conceptos de gasto vuelven a ser visibles para quien tenga acceso a la lista.'
+      );
+    } catch (e) {
+      console.error(e);
+      showToast('No se pudo guardar la preferencia.');
+    }
+  }, [canAccessExpenses, currentUser?.id, users, addLog, showToast]);
 
 
   const summary = useMemo(() => {
@@ -1875,10 +2075,11 @@ const App = () => {
         const prevLocAccess = getUserAllowedLocations(currentUser).slice().sort().join('|');
         const nextLocAccess = getUserAllowedLocations(liveUser).slice().sort().join('|');
         const preferenceChanged = (liveUser.preferredLandingTab || 'Summary') !== (currentUser.preferredLandingTab || 'Summary');
+        const hideExpenseConceptsChanged = isHideMyExpenseConceptsOn(liveUser) !== isHideMyExpenseConceptsOn(currentUser);
         const eventRestrictionChanged = prevEventAccess !== nextEventAccess;
         const locationRestrictionChanged = prevLocAccess !== nextLocAccess;
 
-        if (roleChanged || financesChanged || expensesChanged || eventRestrictionChanged || locationRestrictionChanged || preferenceChanged) {
+        if (roleChanged || financesChanged || expensesChanged || eventRestrictionChanged || locationRestrictionChanged || preferenceChanged || hideExpenseConceptsChanged) {
           setCurrentUser(prev => ({
             ...prev,
             role: liveUser.role,
@@ -1888,7 +2089,8 @@ const App = () => {
             restrictedLocation: liveUser.restrictedLocation || '',
             allowedEventIds: getUserAllowedEventIds(liveUser),
             allowedLocations: getUserAllowedLocations(liveUser),
-            preferredLandingTab: liveUser.preferredLandingTab || 'Summary'
+            preferredLandingTab: liveUser.preferredLandingTab || 'Summary',
+            hideMyExpenseConcepts: isHideMyExpenseConceptsOn(liveUser)
           }));
           if (financesChanged && liveUser.role === 'Lector') {
             showToast(`Atención: Tus permisos han cambiado. Ahora ${liveUser.canViewFinances ? 'PUEDES' : 'NO PUEDES'} ver información financiera.`);
@@ -1902,7 +2104,7 @@ const App = () => {
         }
       }
     }
-  }, [users, currentUser, currentUser?.id, currentUser?.role, currentUser?.canViewFinances, currentUser?.canViewExpenses, currentUser?.restrictedEventId, currentUser?.restrictedLocation, currentUser?.allowedEventIds, currentUser?.allowedLocations, currentUser?.preferredLandingTab, showToast, getUserAllowedEventIds, getUserAllowedLocations]);
+  }, [users, currentUser, currentUser?.id, currentUser?.role, currentUser?.canViewFinances, currentUser?.canViewExpenses, currentUser?.restrictedEventId, currentUser?.restrictedLocation, currentUser?.allowedEventIds, currentUser?.allowedLocations, currentUser?.preferredLandingTab, currentUser?.hideMyExpenseConcepts, showToast, getUserAllowedEventIds, getUserAllowedLocations]);
 
   const handleCreateEvent = async () => {
     if (!newEventData.name.trim()) return;
@@ -2098,9 +2300,10 @@ const App = () => {
       paidAmount: 0,
       countInTotals: true,
       createdAt: new Date().toISOString(),
-      createdBy: currentUser?.username || 'Desconocido'
+      createdBy: currentUser?.username || 'Desconocido',
+      createdByUserId: currentUser?.id != null ? String(currentUser.id) : ''
     });
-    addLog('Gastos', `Agregó gasto: ${name}`);
+    addLog('Gastos', 'Movimiento en lista de gastos: registro de nuevo ítem (auditoría sin concepto ni montos).');
     setExpenseForm({ name: '', quantity: 1, unitPrice: '' });
     showToast('Gasto agregado.');
   };
@@ -2110,7 +2313,7 @@ const App = () => {
     const exp = expenses.find(e => e.id === expenseId);
     if (!exp) return;
     await deleteDoc(getDocRef('app_expenses', expenseId));
-    addLog('Gastos', `Eliminó un gasto`);
+    addLog('Gastos', 'Movimiento en lista de gastos: eliminación de ítem (auditoría sin detalle).');
     showToast('Gasto eliminado.');
   };
 
@@ -2125,7 +2328,7 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', `Marcó gasto como ${newPaid ? 'pagado' : 'no pagado'}`);
+    addLog('Gastos', 'Movimiento en lista de gastos: cambio de estado de pago (auditoría sin detalle).');
   };
 
   const handleToggleExpenseCountInTotals = async (expenseId) => {
@@ -2138,7 +2341,7 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', `Marcó gasto como ${newCountInTotals ? 'contabilizado' : 'no contabilizado'} en totales`);
+    addLog('Gastos', 'Movimiento en lista de gastos: cambio de contabilización en totales (auditoría sin detalle).');
   };
 
   const handleExpensePartialPayment = async () => {
@@ -2154,7 +2357,7 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', `Abono parcial a gasto`);
+    addLog('Gastos', 'Movimiento en lista de gastos: abono parcial (auditoría sin montos).');
     setExpensePartialModal({ isOpen: false, expenseId: null, amount: '' });
     showToast('Abono registrado.');
   };
@@ -2179,7 +2382,7 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', `Editó un gasto`);
+    addLog('Gastos', 'Movimiento en lista de gastos: edición de ítem (auditoría sin concepto ni cantidades).');
     setExpenseEditModal({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' });
     showToast('Gasto actualizado.');
   };
@@ -2214,7 +2417,8 @@ const App = () => {
       allowedLocations,
       preferredLandingTab,
       restrictedEventId: allowedEventIds[0] || '',
-      restrictedLocation: allowedLocations[0] || ''
+      restrictedLocation: allowedLocations[0] || '',
+      hideMyExpenseConcepts: true
     };
 
     await setDoc(getDocRef('app_users', newId), userToSave);
@@ -2873,9 +3077,12 @@ const App = () => {
     const commission = paymentMethod === 'Tarjeta' ? (initialPaidGross * commissionRate) : 0;
     const initialPaidNet = paymentMethod === 'Tarjeta' ? (initialPaidGross - commission) : initialPaidGross;
 
+    const regInstant = new Date();
+    const regIso = regInstant.toISOString();
     const initialHistory = initialPaidGross > 0 ? [{
       id: Date.now() + 1,
-      date: new Date().toLocaleString('es-MX'),
+      date: regInstant.toLocaleString('es-MX'),
+      recordedAt: regIso,
       amount: initialPaidGross,      // bruto
       netAmount: initialPaidNet,    // neto
       method: paymentMethod,
@@ -2901,6 +3108,7 @@ const App = () => {
       ...newEntry, 
       id: newPersonId, 
       status: 'active',
+      registeredAt: regIso,
       vnpPersonId: finalVnpPersonId,
       isFirstVnpId: !idExistsAnywhere,
       location: loc, 
@@ -3185,8 +3393,11 @@ const App = () => {
       const commission = adjustmentMethod === 'Tarjeta' ? grossDelta * commissionRate : 0;
       const netDelta = adjustmentMethod === 'Tarjeta' ? (grossDelta - commission) : grossDelta;
 
+      const adjInstant = new Date();
       updatedHistory = [...updatedHistory, {
-        id: Date.now(), date: new Date().toLocaleString('es-MX'),
+        id: Date.now(),
+        date: adjInstant.toLocaleString('es-MX'),
+        recordedAt: adjInstant.toISOString(),
         amount: grossDelta,           // bruto
         netAmount: netDelta,         // neto
         method: adjustmentMethod,
@@ -3480,7 +3691,7 @@ const App = () => {
       refundPendingAmount: 0,
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
     });
-    addLog('Gastos', `Marcó como donación el saldo pendiente de devolución de ${person.name}.`);
+    addLog('Gastos', 'Movimiento en lista de gastos: saldo pendiente de devolución marcado como donación (auditoría sin detalle de participante).');
     showToast('Saldo marcado como donación. Vuelve a sumarse al balance neto.');
   };
 
@@ -3518,6 +3729,7 @@ const App = () => {
     const payload = {
       status: 'active',
       scholarshipPendingApproval: false,
+      registeredAt: person.registeredAt || new Date(promoteAt).toISOString(),
       whatsAppFinanceNotifications: [...(person.whatsAppFinanceNotifications || []), promoteNotification],
     };
     if (globalConfig?.isDebugMode) {
@@ -3586,9 +3798,11 @@ const App = () => {
     const commission = paymentMethod === 'Tarjeta' ? (addedAmount * commissionRate) : 0;
     const netAmount = paymentMethod === 'Tarjeta' ? (addedAmount - commission) : addedAmount;
 
+    const abonoInstant = new Date();
     const newPaymentRecord = {
       id: Date.now(),
-      date: new Date().toLocaleString('es-MX'),
+      date: abonoInstant.toLocaleString('es-MX'),
+      recordedAt: abonoInstant.toISOString(),
       amount: addedAmount, // bruto
       netAmount,
       method: paymentMethod,
@@ -3680,9 +3894,11 @@ const App = () => {
     }
 
     const prevHistory = person.paymentHistory || [];
+    const commentInstant = new Date();
     const newHistoryItem = {
       id: Date.now(),
-      date: new Date().toLocaleString('es-MX'),
+      date: commentInstant.toLocaleString('es-MX'),
+      recordedAt: commentInstant.toISOString(),
       kind: 'comment',
       commentText: draft,
       registeredBy: currentUser?.username
@@ -3703,13 +3919,151 @@ const App = () => {
     showToast("Comentario guardado.");
   };
 
+  const closeSuperDateEditModal = () =>
+    setSuperDateEditModal({
+      isOpen: false,
+      mode: '',
+      personId: null,
+      loc: '',
+      paymentIndex: null,
+      paymentId: null,
+      datetimeLocal: '',
+    });
+
+  const openSuperRegistrationDateEdit = (person, personLoc) => {
+    if (!isSuperUser) return;
+    const hist = person.paymentHistory || [];
+    let base = person.registeredAt;
+    if (!base) {
+      const firstPay = hist.find((h) => h && h.kind !== 'comment');
+      if (firstPay?.recordedAt) base = firstPay.recordedAt;
+      else if (firstPay && typeof firstPay.id === 'number') base = firstPay.id;
+    }
+    if (base == null || base === '') base = Date.now();
+    setSuperDateEditModal({
+      isOpen: true,
+      mode: 'registration',
+      personId: person.id,
+      loc: personLoc,
+      paymentIndex: null,
+      paymentId: null,
+      datetimeLocal: toDatetimeLocalValue(base),
+    });
+  };
+
+  const openSuperPaymentDateEdit = (person, personLoc, paymentIndex) => {
+    if (!isSuperUser) return;
+    const hist = person.paymentHistory || [];
+    const pay = hist[paymentIndex];
+    if (!pay || pay.kind === 'comment') return;
+    let base = pay.recordedAt;
+    if (!base && typeof pay.id === 'number') base = pay.id;
+    if (base == null || base === '') base = Date.now();
+    setSuperDateEditModal({
+      isOpen: true,
+      mode: 'payment',
+      personId: person.id,
+      loc: personLoc,
+      paymentIndex,
+      paymentId: pay.id ?? null,
+      datetimeLocal: toDatetimeLocalValue(base),
+    });
+  };
+
+  const handleSuperSaveDateEdit = async () => {
+    if (!isSuperUser || !superDateEditModal.isOpen) return;
+    const iso = fromDatetimeLocalToIso(superDateEditModal.datetimeLocal);
+    if (!iso) {
+      showToast('Indica una fecha y hora válidas.');
+      return;
+    }
+    const personId = superDateEditModal.personId;
+    const person = allParticipants.find((p) => String(p.id) === String(personId));
+    if (!person) {
+      showToast('Participante no encontrado.');
+      return;
+    }
+    const debugExtras = globalConfig?.isDebugMode
+      ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId }
+      : {};
+    const locLabel = superDateEditModal.loc || person.location || '';
+    try {
+      if (superDateEditModal.mode === 'registration') {
+        await updateDoc(getDocRef('app_participants', String(personId)), {
+          registeredAt: iso,
+          ...debugExtras,
+        });
+        addLog(
+          'Sistema',
+          `SuperUsuario ajustó la fecha de registro de ${person.name || 'participante'} (sede ${locLabel}).`,
+          null,
+          null,
+          { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
+          { isHidden: true }
+        );
+      } else if (superDateEditModal.mode === 'payment') {
+        const idx = superDateEditModal.paymentIndex;
+        const hist = [...(person.paymentHistory || [])];
+        if (idx == null || idx < 0 || idx >= hist.length) {
+          showToast('Movimiento no encontrado.');
+          return;
+        }
+        const row = hist[idx];
+        if (superDateEditModal.paymentId != null && String(row.id) !== String(superDateEditModal.paymentId)) {
+          showToast('El historial cambió; vuelve a abrir el editor.');
+          return;
+        }
+        if (row.kind === 'comment') {
+          showToast('Este movimiento no admite cambio de fecha aquí.');
+          return;
+        }
+        const d = new Date(iso);
+        hist[idx] = { ...row, recordedAt: iso, date: d.toLocaleString('es-MX') };
+        await updateDoc(getDocRef('app_participants', String(personId)), {
+          paymentHistory: hist,
+          ...debugExtras,
+        });
+        addLog(
+          'Sistema',
+          `SuperUsuario ajustó la fecha de un movimiento en el historial de pagos de ${person.name || 'participante'} (sede ${locLabel}).`,
+          null,
+          null,
+          { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
+          { isHidden: true }
+        );
+      } else {
+        return;
+      }
+      closeSuperDateEditModal();
+      showToast('Fecha actualizada.');
+    } catch (err) {
+      console.error(err);
+      showToast('No se pudo guardar la fecha.');
+    }
+  };
+
   // ─────────────────────────────────────────────
   // REUSABLE COMPONENTS
   // ─────────────────────────────────────────────
   const renderUsers = () => (
     <div className="p-6 space-y-8 animate-in fade-in duration-500">
       <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-        <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2"><UserCog className="text-indigo-500" /> Gestión de Usuarios</h2>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+          <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><UserCog className="text-indigo-500" /> Gestión de Usuarios</h2>
+          {isSuperUser && (
+            <button
+              type="button"
+              onClick={() => {
+                setPanelNavForm({ ...DEFAULT_PANEL_NAV, ...panelNavMerged });
+                setPanelNavModalOpen(true);
+              }}
+              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-sm bg-violet-50 hover:bg-violet-100 text-violet-700 border border-violet-200 w-full sm:w-auto"
+              title="Secciones del menú lateral visibles para Editor y Lector"
+            >
+              <PanelLeft size={16} /> Menú lateral
+            </button>
+          )}
+        </div>
         {hasAdminRights ? (
           <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-8 bg-slate-50 p-4 rounded-xl border border-slate-100 items-end">
             <div className="space-y-1"><label className={labelClasses}>Usuario</label><input type="text" required placeholder="Nuevo usuario" className={inputClasses} value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} /></div>
@@ -4139,6 +4493,45 @@ const App = () => {
     );
   };
 
+  const panelNavModalEl = currentUser && isSuperUser && panelNavModalOpen && (
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4" onClick={() => setPanelNavModalOpen(false)}>
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md animate-in zoom-in-95 duration-200 max-h-[85vh] overflow-y-auto border border-slate-100" onClick={(e) => e.stopPropagation()}>
+        <div className="p-6 border-b border-slate-100 flex justify-between items-start gap-3">
+          <div>
+            <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
+              <PanelLeft className="text-violet-600 shrink-0" size={22} /> Menú lateral del evento
+            </h3>
+            <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+              Activa o desactiva entradas del panel para usuarios con rol <span className="font-bold text-slate-700">Editor</span> o <span className="font-bold text-slate-700">Lector</span>.
+              Los <span className="font-bold text-slate-700">Administradores</span> y el <span className="font-bold text-slate-700">SuperUsuario</span> siempre ven el menú completo. <span className="font-bold text-slate-700">Resumen general</span> no se oculta.
+            </p>
+          </div>
+          <button type="button" onClick={() => setPanelNavModalOpen(false)} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full shrink-0"><XCircle size={20} /></button>
+        </div>
+        <div className="p-6 space-y-2">
+          {PANEL_NAV_CONFIG_ITEMS.map((item) => (
+            <label key={item.key} className="flex items-start gap-3 p-3 rounded-xl border border-slate-100 hover:bg-slate-50/80 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 accent-violet-600 rounded shrink-0"
+                checked={panelNavForm[item.key] !== false}
+                onChange={(e) => setPanelNavForm((prev) => ({ ...prev, [item.key]: e.target.checked }))}
+              />
+              <div className="min-w-0">
+                <span className="text-sm font-bold text-slate-800">{item.label}</span>
+                <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">{item.hint}</p>
+              </div>
+            </label>
+          ))}
+        </div>
+        <div className="p-6 border-t border-slate-100 flex gap-3">
+          <button type="button" onClick={() => setPanelNavModalOpen(false)} className={`${btnSecondary} flex-1`}>Cancelar</button>
+          <button type="button" onClick={handleSavePanelNavConfig} className={`${btnPrimary} flex-1`}>Guardar</button>
+        </div>
+      </div>
+    </div>
+  );
+
   // ─────────────────────────────────────────────
   //  SCREEN 1: LOGIN
   // ─────────────────────────────────────────────
@@ -4224,7 +4617,7 @@ const App = () => {
             </div>
             <div className="flex flex-wrap items-center gap-4 border-t md:border-t-0 md:border-l border-slate-100 pt-4 md:pt-0 md:pl-6">
               {isSuperUser && (
-                <button onClick={toggleDebugMode} className={`flex items-center gap-1 md:gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-colors shadow-sm ${globalConfig?.isDebugMode ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-500'}`} title="Modo de prueba aislada">
+                <button type="button" onClick={toggleDebugMode} className={`flex items-center gap-1 md:gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-colors shadow-sm ${globalConfig?.isDebugMode ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-500'}`} title="Modo de prueba aislada">
                   <Bug size={14} /><span className="hidden sm:inline">{globalConfig?.isDebugMode ? 'Salir Depuración' : 'Depurar'}</span>
                 </button>
               )}
@@ -4595,6 +4988,7 @@ const App = () => {
             </div>
           </div>
         )}
+        {panelNavModalEl}
       </div>
     );
   }
@@ -4785,7 +5179,7 @@ const App = () => {
       (data[loc] || []).forEach(person => {
         (person.paymentHistory || []).forEach(h => {
           if (h.kind === 'comment') return;
-          const ts = typeof h.id === 'number' ? h.id : Date.now();
+          const ts = getPaymentHistoryTimestamp(h);
           allPayments.push({
             ...h,
             _ts: ts,
@@ -5487,6 +5881,7 @@ const App = () => {
   };
 
   const renderExpenseListPage = () => {
+    const hideMyExpenseConceptsChecked = isHideMyExpenseConceptsOn(users.find((u) => String(u.id) === String(currentUser?.id)));
     const eventId = currentEvent?.id;
     const eventExpensesBase = expenses.filter((e) => e.eventId === eventId);
     const scholarshipAutoExpenses = (() => {
@@ -5572,18 +5967,43 @@ const App = () => {
 
     return (
       <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div className="flex flex-col lg:flex-row items-start lg:items-start justify-between gap-4">
           <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3"><Receipt className="text-emerald-500" size={28} /> Lista de Gastos</h2>
-          <button onClick={() => setExpenseGross(p => !p)} className={getCommissionToggleBtnClasses(expenseGross)}>
-            <Wallet size={15} /> {getCommissionToggleLabel(expenseGross)}
-          </button>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 w-full lg:w-auto lg:max-w-xl">
+            <label className={`flex items-start gap-2 rounded-xl border px-3 py-2.5 text-left ${hideMyExpenseConceptsChecked ? 'border-amber-200 bg-amber-50/60' : 'border-slate-200 bg-slate-50'}`}>
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 rounded accent-slate-700 shrink-0"
+                checked={hideMyExpenseConceptsChecked}
+                disabled={!canAccessExpenses}
+                onChange={() => { void handleToggleHideMyExpenseConcepts(); }}
+              />
+              <span className="min-w-0">
+                <span className="text-xs font-black text-slate-800 block">Ocultar mis conceptos para otros</span>
+                <span className="text-[10px] text-slate-500 font-semibold leading-snug block mt-1">
+                  {hideMyExpenseConceptsChecked
+                    ? 'Por defecto está activada: los gastos que registraste muestran «Oculto» a otros; tú y el SuperUsuario veis el concepto. Desmarca para que todos vean tus nombres de concepto.'
+                    : 'Has desactivado la opción: los conceptos de los gastos que registres serán visibles para quien tenga acceso a esta lista. Vuelve a marcar para ocultarlos a otros.'}
+                </span>
+              </span>
+            </label>
+            <button type="button" onClick={() => setExpenseGross(p => !p)} className={`${getCommissionToggleBtnClasses(expenseGross)} shrink-0 self-start`}>
+              <Wallet size={15} /> {getCommissionToggleLabel(expenseGross)}
+            </button>
+          </div>
         </div>
 
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
           <div className="flex flex-col sm:flex-row gap-3">
             <div className="relative flex-1">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input type="text" placeholder="Buscar gasto por nombre…" value={expenseSearch} onChange={e => setExpenseSearch(e.target.value)} className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
+              <input
+                type="text"
+                placeholder="Buscar gasto por nombre…"
+                value={expenseSearch}
+                onChange={e => setExpenseSearch(e.target.value)}
+                className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
+              />
             </div>
             <div className="relative" data-dropdown-root="expense-filters">
               <button
@@ -5670,6 +6090,7 @@ const App = () => {
                 ) : sorted.map(exp => {
                   const pending = (exp.totalPrice || 0) - (exp.paidAmount || 0);
                   const isAutoScholarship = !!exp._autoScholarshipExpense;
+                  const rowConceptVisible = canSeeExpenseConceptForRow(exp);
                   return (
                     <tr key={exp.id} className={`border-b border-slate-100 hover:bg-slate-50 transition-colors ${exp.paid ? 'bg-emerald-50/50' : ''}`}>
                       <td className="px-4 py-3 text-center">
@@ -5691,7 +6112,7 @@ const App = () => {
                         />
                       </td>
                       <td className={`px-4 py-3 text-sm font-semibold ${exp.paid ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
-                        {exp.name}
+                        {rowConceptVisible ? (exp.name || '—') : MASKED_EXPENSE_CONCEPT_LABEL}
                         {isAutoScholarship ? (
                           <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-purple-50 text-purple-700 border border-purple-100">
                             Automático
@@ -5708,11 +6129,35 @@ const App = () => {
                           <span className="text-[10px] font-bold text-slate-400">Auto</span>
                         ) : (
                           <div className="flex items-center justify-center gap-1">
-                            <button onClick={() => setExpenseEditModal({ isOpen: true, id: exp.id, name: exp.name, quantity: exp.quantity, unitPrice: exp.unitPrice })} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" title="Editar"><Edit3 size={15} /></button>
+                            <button
+                              type="button"
+                              disabled={!rowConceptVisible}
+                              onClick={() => setExpenseEditModal({ isOpen: true, id: exp.id, name: exp.name, quantity: exp.quantity, unitPrice: exp.unitPrice })}
+                              className={`p-1.5 rounded-lg transition-colors ${rowConceptVisible ? 'text-slate-400 hover:bg-slate-100 hover:text-slate-600' : 'text-slate-200 cursor-not-allowed'}`}
+                              title={rowConceptVisible ? 'Editar' : 'No disponible: concepto oculto por el usuario que lo registró'}
+                            >
+                              <Edit3 size={15} />
+                            </button>
                             {!exp.paid && (
-                              <button onClick={() => setExpensePartialModal({ isOpen: true, expenseId: exp.id, amount: '' })} className="p-1.5 rounded-lg text-indigo-500 hover:bg-indigo-50 transition-colors" title="Abono parcial"><DollarSign size={15} /></button>
+                              <button
+                                type="button"
+                                disabled={!rowConceptVisible}
+                                onClick={() => setExpensePartialModal({ isOpen: true, expenseId: exp.id, amount: '' })}
+                                className={`p-1.5 rounded-lg transition-colors ${rowConceptVisible ? 'text-indigo-500 hover:bg-indigo-50' : 'text-slate-200 cursor-not-allowed'}`}
+                                title={rowConceptVisible ? 'Abono parcial' : 'No disponible: concepto oculto por el usuario que lo registró'}
+                              >
+                                <DollarSign size={15} />
+                              </button>
                             )}
-                            <button onClick={() => handleDeleteExpense(exp.id)} className="p-1.5 rounded-lg text-red-400 hover:bg-red-50 hover:text-red-600 transition-colors" title="Eliminar"><Trash2 size={15} /></button>
+                            <button
+                              type="button"
+                              disabled={!rowConceptVisible}
+                              onClick={() => handleDeleteExpense(exp.id)}
+                              className={`p-1.5 rounded-lg transition-colors ${rowConceptVisible ? 'text-red-400 hover:bg-red-50 hover:text-red-600' : 'text-slate-200 cursor-not-allowed'}`}
+                              title={rowConceptVisible ? 'Eliminar' : 'No disponible: concepto oculto por el usuario que lo registró'}
+                            >
+                              <Trash2 size={15} />
+                            </button>
                           </div>
                         )}
                       </td>
@@ -5856,39 +6301,35 @@ const App = () => {
       return `conic-gradient(${segs.join(', ')})`;
     };
 
-    const tableRows = (currentEvent?.locations || []).flatMap((loc) =>
-      applyRosterLikeFilters(data[loc] || [], true).map((p) => {
+    const tableByLocation = (currentEvent?.locations || []).map((loc) => {
+      const filtered = applyRosterLikeFilters(data[loc] || [], true);
+      const stats = filtered.reduce((acc, p) => {
         const liq = getLiquidationTarget(p);
-        const pPaid = parseFloat(p.paid || 0) || 0;
-        return {
-          id: p.id,
-          loc,
-          name: p.name || 'Sin nombre',
-          gender: p.gender || '—',
-          scholarship: p.isScholarship === 'Sí' ? (p.scholarshipType === 'partial' ? 'Parcial' : 'Total') : 'No',
-          server: p.isServer === 'Sí' ? (p.serverAssignment || 'Sí') : 'No',
-          transport: resolveTransportSummary(p),
-          from: p.travelFrom || p.location || loc,
-          to: p.travelTo || p.location || loc,
-          paymentType: getLastPaymentMethodForFilter(p),
-          status: participantIsCancelled(p) ? 'Cancelado' : 'Activo',
-          refundPending: (Number(p.refundPendingAmount || 0) || 0) > 0 ? 'Sí' : 'No',
-          paid: pPaid,
-          pending: Math.max(0, liq - pPaid),
-          expected: liq
-        };
-      })
-    );
+        const paid = parseFloat(p.paid || 0) || 0;
+        acc.count += 1;
+        if (p.isScholarship === 'Sí') acc.scholarship += 1;
+        if (p.isServer === 'Sí') acc.servers += 1;
+        if (participantIsCancelled(p)) acc.cancelled += 1;
+        if ((Number(p.refundPendingAmount || 0) || 0) > 0) acc.refund += 1;
+        acc.paid += paid;
+        acc.pending += Math.max(0, liq - paid);
+        acc.expected += liq;
+        return acc;
+      }, { count: 0, scholarship: 0, servers: 0, cancelled: 0, refund: 0, paid: 0, pending: 0, expected: 0 });
+      return { loc, stats };
+    });
 
-    const globalTableStats = tableRows.reduce((acc, row) => {
-      acc.count += 1;
-      if (row.scholarship !== 'No') acc.scholarship += 1;
-      if (row.server !== 'No') acc.servers += 1;
-      acc.paid += row.paid;
-      acc.pending += row.pending;
-      acc.expected += row.expected;
+    const globalTableStats = tableByLocation.reduce((acc, { stats }) => {
+      acc.count += stats.count;
+      acc.scholarship += stats.scholarship;
+      acc.servers += stats.servers;
+      acc.cancelled += stats.cancelled;
+      acc.refund += stats.refund;
+      acc.paid += stats.paid;
+      acc.pending += stats.pending;
+      acc.expected += stats.expected;
       return acc;
-    }, { count: 0, scholarship: 0, servers: 0, paid: 0, pending: 0, expected: 0 });
+    }, { count: 0, scholarship: 0, servers: 0, cancelled: 0, refund: 0, paid: 0, pending: 0, expected: 0 });
 
     return (
       <div className="p-6 space-y-8 animate-in fade-in duration-500">
@@ -5993,7 +6434,8 @@ const App = () => {
         {hasAdminRights && (
           <div className="flex justify-end">
             <button
-              onClick={() => setShowGrossWithoutCommission(prev => !prev)}
+              type="button"
+              onClick={toggleShowGrossWithoutCommission}
               className={getCommissionToggleBtnClasses(showGrossWithoutCommission)}
               title="Alternar vista de datos financieros"
             >
@@ -6380,7 +6822,18 @@ const App = () => {
             <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="bg-slate-100 p-2 rounded-lg text-slate-600"><TableProperties size={20} /></div>
-                <div><h3 className="text-lg font-bold text-slate-800">Visualización de Datos Generales</h3><p className="text-xs text-slate-400">Usa los filtros concatenados de Registros por sede para refinar este listado.</p></div>
+                <div><h3 className="text-lg font-bold text-slate-800">Visualización de Datos Generales</h3><p className="text-xs text-slate-400">Resumen por sede (aplica filtros concatenados activos).</p></div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold text-slate-500">Filtros:</span>
+                <button
+                  type="button"
+                  onClick={() => setFiltersDropdownOpen((v) => !v)}
+                  className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-100 transition-colors text-xs font-black text-slate-700"
+                >
+                  <Filter size={14} className="text-slate-500" />
+                  Ver filtros
+                </button>
               </div>
             </div>
             <div className="overflow-x-auto">
@@ -6388,58 +6841,43 @@ const App = () => {
                 <thead>
                   <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
                     <th className="px-6 py-4">Sede</th>
-                    <th className="px-6 py-4">Participante</th>
-                    <th className="px-6 py-4">Género</th>
-                    <th className="px-6 py-4">Beca</th>
-                    <th className="px-6 py-4">Servidor</th>
-                    <th className="px-6 py-4">Transporte</th>
-                    <th className="px-6 py-4">Pago</th>
-                    <th className="px-6 py-4">Sale de</th>
-                    <th className="px-6 py-4">Regresa a</th>
-                    <th className="px-6 py-4">Estado</th>
-                    <th className="px-6 py-4">Devolución</th>
+                    <th className="px-6 py-4 text-center">Inscritos</th>
+                    <th className="px-6 py-4 text-center">Becados</th>
+                    <th className="px-6 py-4 text-center">Servidores</th>
+                    <th className="px-6 py-4 text-center">Cancelados</th>
+                    <th className="px-6 py-4 text-center">Con devolución</th>
                     <th className="px-6 py-4 text-right">Recaudado</th>
                     <th className="px-6 py-4 text-right">Pendiente</th>
                     <th className="px-6 py-4 text-right">Total Esperado</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
-                  {tableRows.length === 0 ? (
+                  {tableByLocation.every(({ stats }) => stats.count === 0) ? (
                     <tr>
-                      <td colSpan="14" className="px-6 py-10 text-center text-slate-400 italic font-medium">No hay registros con los filtros actuales.</td>
+                      <td colSpan="9" className="px-6 py-10 text-center text-slate-400 italic font-medium">No hay registros con los filtros actuales.</td>
                     </tr>
-                  ) : tableRows.map((row) => (
-                    <tr key={`${row.loc}-${row.id}`} className="hover:bg-slate-50/50 transition-colors">
-                      <td className="px-6 py-3 font-bold text-slate-700">{row.loc}</td>
-                      <td className="px-6 py-3 font-semibold text-slate-700">{row.name}</td>
-                      <td className="px-6 py-3 text-slate-600">{row.gender}</td>
-                      <td className="px-6 py-3 text-slate-600">{row.scholarship}</td>
-                      <td className="px-6 py-3 text-slate-600">{row.server}</td>
-                      <td className="px-6 py-3 text-slate-600">{row.transport}</td>
-                      <td className="px-6 py-3 text-slate-600">{row.paymentType}</td>
-                      <td className="px-6 py-3 text-slate-600">{row.from}</td>
-                      <td className="px-6 py-3 text-slate-600">{row.to}</td>
-                      <td className="px-6 py-3 text-slate-600">{row.status}</td>
-                      <td className="px-6 py-3 text-slate-600">{row.refundPending}</td>
-                      <td className="px-6 py-3 text-right font-bold text-green-600">{formatMoney(row.paid)}</td>
-                      <td className="px-6 py-3 text-right font-bold text-orange-500">{formatMoney(row.pending)}</td>
-                      <td className="px-6 py-3 text-right font-black text-slate-800">{formatMoney(row.expected)}</td>
+                  ) : tableByLocation.map(({ loc, stats }) => (
+                    <tr key={`sum-${loc}`} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="px-6 py-3 font-bold text-slate-700">{loc}</td>
+                      <td className="px-6 py-3 text-center font-medium text-slate-700">{stats.count}</td>
+                      <td className="px-6 py-3 text-center text-purple-700 font-bold">{stats.scholarship}</td>
+                      <td className="px-6 py-3 text-center text-amber-700 font-bold">{stats.servers}</td>
+                      <td className="px-6 py-3 text-center text-slate-700 font-bold">{stats.cancelled}</td>
+                      <td className="px-6 py-3 text-center text-amber-700 font-bold">{stats.refund}</td>
+                      <td className="px-6 py-3 text-right font-bold text-green-600">{formatMoney(stats.paid)}</td>
+                      <td className="px-6 py-3 text-right font-bold text-orange-500">{formatMoney(stats.pending)}</td>
+                      <td className="px-6 py-3 text-right font-black text-slate-800">{formatMoney(stats.expected)}</td>
                     </tr>
                   ))}
                 </tbody>
                 <tfoot>
                   <tr className="bg-indigo-50 border-t-2 border-indigo-100">
                     <td className="px-6 py-4 font-black text-indigo-900 uppercase">Global</td>
-                    <td className="px-6 py-4 text-center font-black text-indigo-900">{globalTableStats.count} registros</td>
-                    <td className="px-6 py-4 text-center font-black text-indigo-900">—</td>
-                    <td className="px-6 py-4 text-center font-black text-indigo-900">{globalTableStats.scholarship} becados</td>
-                    <td className="px-6 py-4 text-center font-black text-indigo-900">{globalTableStats.servers} servidores</td>
-                    <td className="px-6 py-4 text-center font-black text-indigo-900">—</td>
-                    <td className="px-6 py-4 text-center font-black text-indigo-900">—</td>
-                    <td className="px-6 py-4 text-center font-black text-indigo-900">—</td>
-                    <td className="px-6 py-4 text-center font-black text-indigo-900">—</td>
-                    <td className="px-6 py-4 text-center font-black text-indigo-900">—</td>
-                    <td className="px-6 py-4 text-center font-black text-indigo-900">—</td>
+                    <td className="px-6 py-4 text-center font-black text-indigo-900">{globalTableStats.count}</td>
+                    <td className="px-6 py-4 text-center font-black text-purple-700">{globalTableStats.scholarship}</td>
+                    <td className="px-6 py-4 text-center font-black text-amber-700">{globalTableStats.servers}</td>
+                    <td className="px-6 py-4 text-center font-black text-slate-700">{globalTableStats.cancelled}</td>
+                    <td className="px-6 py-4 text-center font-black text-amber-700">{globalTableStats.refund}</td>
                     <td className="px-6 py-4 text-right font-black text-green-700">{formatMoney(globalTableStats.paid)}</td>
                     <td className="px-6 py-4 text-right font-black text-orange-600">{formatMoney(globalTableStats.pending)}</td>
                     <td className="px-6 py-4 text-right font-black text-indigo-900">{formatMoney(globalTableStats.expected)}</td>
@@ -7663,6 +8101,25 @@ const App = () => {
                                 ) : (
                                   <p className="mb-2 text-[10px] text-amber-700 bg-amber-50 px-2 py-1 rounded border border-amber-100">Sin ID VNPM (se asignará al guardar en editar).</p>
                                 )}
+                                <p className="mb-2 text-slate-600 flex flex-wrap items-center gap-2">
+                                  <span>
+                                    <strong>Fecha de registro:</strong>{' '}
+                                    {person.registeredAt ? (
+                                      new Date(person.registeredAt).toLocaleString('es-MX')
+                                    ) : (
+                                      <span className="text-slate-400 font-normal">Sin fecha guardada (registros antiguos)</span>
+                                    )}
+                                  </span>
+                                  {isSuperUser && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openSuperRegistrationDateEdit(person, loc)}
+                                      className="text-[9px] font-black uppercase text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-lg hover:bg-violet-100 transition-colors"
+                                    >
+                                      Cambiar
+                                    </button>
+                                  )}
+                                </p>
                                 {person.alias ? <p className="mb-1 text-slate-600"><strong>Alias:</strong> {person.alias}</p> : null}
                                 <p className="mb-1 text-slate-600"><strong>Transporte:</strong> {resolveTransportSummary(person)}</p>
                                 {person.isPastorChild === 'Sí' ? (
@@ -7722,7 +8179,7 @@ const App = () => {
                                       <div className="flex items-center gap-3">
                                         <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-500 text-[9px] font-black flex items-center justify-center flex-shrink-0">{idx + 1}</span>
                                         <div>
-                                          <p className="text-[11px] font-mono text-slate-500">{pay.date}</p>
+                                          <p className="text-[11px] font-mono text-slate-500">{formatPayHistoryRowDate(pay)}</p>
                                           <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
                                             <UserCircle size={10} className="text-slate-400" />
                                             <p className="text-[10px] text-slate-400 font-semibold">{pay.registeredBy}</p>
@@ -7762,11 +8219,22 @@ const App = () => {
                                           </div>
                                         </div>
                                       </div>
-                                      <div className="text-right">
+                                      <div className="text-right flex flex-col items-end gap-1">
                                         {pay.kind === 'comment' ? (
                                           <p className="text-sm font-black text-slate-400">—</p>
                                         ) : (
-                                          <p className={`text-sm font-black ${pay.amount < 0 ? 'text-red-500' : 'text-green-600'}`}>{pay.amount < 0 ? '-' : '+'}{formatMoney(Math.abs(pay.amount))}</p>
+                                          <>
+                                            <p className={`text-sm font-black ${pay.amount < 0 ? 'text-red-500' : 'text-green-600'}`}>{pay.amount < 0 ? '-' : '+'}{formatMoney(Math.abs(pay.amount))}</p>
+                                            {isSuperUser && (
+                                              <button
+                                                type="button"
+                                                onClick={() => openSuperPaymentDateEdit(person, loc, idx)}
+                                                className="text-[9px] font-black uppercase text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-lg hover:bg-violet-100 transition-colors"
+                                              >
+                                                Cambiar fecha
+                                              </button>
+                                            )}
+                                          </>
                                         )}
                                       </div>
                                     </div>
@@ -8343,33 +8811,35 @@ const App = () => {
         <nav className="flex-1 px-4 space-y-1 overflow-y-auto pb-6">
           <div className="pt-2 pb-2 px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Principal</div>
           <button onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Summary' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><BarChart3 size={20} className={activeTab === 'Summary' ? 'text-indigo-400' : ''} /><span className="font-bold">Resumen General</span></div>{activeTab === 'Summary' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
-          {isCampa && (
+          {isCampa && isPanelNavSectionAllowed('serversPage') && (
             <button onClick={() => goTo(systemView, selectedEventId, "ServersPage")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'ServersPage' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Users size={20} className={activeTab === 'ServersPage' ? 'text-amber-400' : ''} /><span className="font-bold">Página Servidores</span></div>{activeTab === 'ServersPage' && <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />}</button>
           )}
-          {hasAdminRights && (
-            <>
-              <button
-                onClick={() => goTo(systemView, selectedEventId, 'Becados')}
-                className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Becados' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}
-              >
-                <div className="flex items-center gap-3">
-                  <GraduationCap size={20} className={activeTab === 'Becados' ? 'text-purple-400' : ''} />
-                  <span className="font-bold">Becados</span>
-                </div>
-                {activeTab === 'Becados' && <div className="w-1.5 h-1.5 rounded-full bg-purple-400" />}
-              </button>
-              <button onClick={() => goTo(systemView, selectedEventId, "CashCut")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'CashCut' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Scissors size={20} className={activeTab === 'CashCut' ? 'text-green-400' : ''} /><span className="font-bold">Corte de Caja</span></div>{activeTab === 'CashCut' && <div className="w-1.5 h-1.5 rounded-full bg-green-400" />}</button>
-            </>
+          {hasAdminRights && isPanelNavSectionAllowed('becados') && (
+            <button
+              onClick={() => goTo(systemView, selectedEventId, 'Becados')}
+              className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Becados' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+            >
+              <div className="flex items-center gap-3">
+                <GraduationCap size={20} className={activeTab === 'Becados' ? 'text-purple-400' : ''} />
+                <span className="font-bold">Becados</span>
+              </div>
+              {activeTab === 'Becados' && <div className="w-1.5 h-1.5 rounded-full bg-purple-400" />}
+            </button>
           )}
-          {canAccessExpenses && (
+          {hasAdminRights && isPanelNavSectionAllowed('cashCut') && (
+            <button onClick={() => goTo(systemView, selectedEventId, "CashCut")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'CashCut' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Scissors size={20} className={activeTab === 'CashCut' ? 'text-green-400' : ''} /><span className="font-bold">Corte de Caja</span></div>{activeTab === 'CashCut' && <div className="w-1.5 h-1.5 rounded-full bg-green-400" />}</button>
+          )}
+          {canAccessExpenses && isPanelNavSectionAllowed('expenseList') && (
             <button onClick={() => goTo(systemView, selectedEventId, "ExpenseList")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'ExpenseList' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Receipt size={20} className={activeTab === 'ExpenseList' ? 'text-emerald-400' : ''} /><span className="font-bold">Lista de Gastos</span></div>{activeTab === 'ExpenseList' && <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />}</button>
           )}
           
+          {isPanelNavSectionAllowed('locations') && (
           <div className="flex items-center justify-between py-2 px-4 border-t border-slate-800/50 pt-4">
             <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Sedes Disponibles</span>
             {hasAdminRights && <button onClick={() => setIsAddLocModalOpen(true)} className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 p-1 rounded transition-colors" title="Añadir Sede"><Plus size={14} /></button>}
           </div>
-          {visibleLocations.map(loc => (
+          )}
+          {isPanelNavSectionAllowed('locations') && visibleLocations.map(loc => (
             <div key={loc} className="flex flex-col mb-1">
               <button onClick={() => goTo(systemView, selectedEventId, loc)} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all group ${activeTab === loc ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/40' : 'text-slate-500 hover:bg-white/5 hover:text-slate-300'}`}>
                 <div className="flex items-center gap-3"><MapPin size={20} className={activeTab === loc ? 'text-white' : 'text-slate-700 group-hover:text-slate-500'} /><span className="font-bold">{loc}</span></div>
@@ -8382,6 +8852,8 @@ const App = () => {
               {locError === loc && <span className="text-[10px] text-red-400 font-bold px-4 pt-1 animate-in slide-in-from-top-1 text-left">Sede con registros.</span>}
             </div>
           ))}
+          {isPanelNavSectionAllowed('registroGlobal') && (
+          <>
           <div className="flex items-center justify-between py-2 px-4 border-t border-slate-800/50 mt-2 pt-4">
             <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Consolidado</span>
           </div>
@@ -8395,6 +8867,8 @@ const App = () => {
             </div>
             {activeTab === 'RegistroGlobal' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}
           </button>
+          </>
+          )}
         </nav>
       </aside>
 
@@ -8428,11 +8902,11 @@ const App = () => {
           <div className="flex items-center gap-1 md:gap-2 flex-shrink-0 relative">
             <div className="hidden lg:flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
             
-            <button onClick={() => goTo('events', null, "Summary")} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Cambiar de Evento">
+            <button type="button" onClick={() => goTo('events', null, "Summary")} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Cambiar de Evento">
               <LayoutDashboard size={14} /><span className="hidden sm:inline">Eventos</span>
             </button>
             {hasAdminRights && (
-              <button onClick={() => goTo('users', null, 'Summary')} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Gestión de Usuarios">
+              <button type="button" onClick={() => goTo('users', null, 'Summary')} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Gestión de Usuarios">
                 <UserCog size={14} /><span className="hidden sm:inline">Usuarios</span>
               </button>
             )}
@@ -8453,15 +8927,38 @@ const App = () => {
             )}
             
             {activeTab === "Summary" && (
-              <div className="relative">
+              <div className="relative" data-dropdown-root="view-settings">
                 <button onClick={() => setShowViewSettings(!showViewSettings)} className={`flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold transition-colors ${showViewSettings ? 'bg-indigo-100 text-indigo-600' : 'text-slate-500 hover:bg-slate-100'}`} title="Configurar Vista">
                   <SlidersHorizontal size={14} /><span className="hidden sm:inline">Vista</span>
                 </button>
                 {showViewSettings && (
                   <>
-                    <div className="fixed inset-0 z-40" onClick={() => setShowViewSettings(false)}></div>
                     <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-2xl shadow-xl border border-slate-100 p-4 z-50 animate-in slide-in-from-top-2">
                       <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 border-b border-slate-100 pb-2">Configurar Resumen</h4>
+                      <div className="grid grid-cols-2 gap-2 mb-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = Object.keys(defaultViewPrefs).reduce((acc, k) => ({ ...acc, [k]: true }), {});
+                            setViewPrefs(next);
+                            if (currentUser?.id) localStorage.setItem(`vina_prefs_${currentUser.id}`, JSON.stringify(next));
+                          }}
+                          className="py-1.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-black uppercase tracking-wider"
+                        >
+                          Activar todas
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = Object.keys(defaultViewPrefs).reduce((acc, k) => ({ ...acc, [k]: false }), {});
+                            setViewPrefs(next);
+                            if (currentUser?.id) localStorage.setItem(`vina_prefs_${currentUser.id}`, JSON.stringify(next));
+                          }}
+                          className="py-1.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-black uppercase tracking-wider"
+                        >
+                          Desactivar
+                        </button>
+                      </div>
                       <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
                         {[
                           { key: 'statsConfig', label: 'Tarjetas Principales' },
@@ -8495,12 +8992,12 @@ const App = () => {
             )}
 
             <div className="bg-slate-100 rounded-full p-1 hidden sm:flex ml-1">
-              <button onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button>
-              {isCampa && <button onClick={() => goTo(systemView, selectedEventId, "ServersPage")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'ServersPage' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Servidores</button>}
-              {hasAdminRights && <button onClick={() => goTo(systemView, selectedEventId, 'Becados')} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Becados' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Becados</button>}
-              <button onClick={() => goTo(systemView, selectedEventId, 'RegistroGlobal')} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'RegistroGlobal' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Registro Global</button>
-              {hasAdminRights && <button onClick={() => goTo(systemView, selectedEventId, "CashCut")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'CashCut' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Corte de Caja</button>}
-              {canAccessExpenses && <button onClick={() => goTo(systemView, selectedEventId, "ExpenseList")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'ExpenseList' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Gastos</button>}
+              <button type="button" onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button>
+              {isCampa && isPanelNavSectionAllowed('serversPage') && <button type="button" onClick={() => goTo(systemView, selectedEventId, "ServersPage")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'ServersPage' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Servidores</button>}
+              {hasAdminRights && isPanelNavSectionAllowed('becados') && <button type="button" onClick={() => goTo(systemView, selectedEventId, 'Becados')} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Becados' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Becados</button>}
+              {isPanelNavSectionAllowed('registroGlobal') && <button type="button" onClick={() => goTo(systemView, selectedEventId, 'RegistroGlobal')} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'RegistroGlobal' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Registro Global</button>}
+              {hasAdminRights && isPanelNavSectionAllowed('cashCut') && <button type="button" onClick={() => goTo(systemView, selectedEventId, "CashCut")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'CashCut' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Corte de Caja</button>}
+              {canAccessExpenses && isPanelNavSectionAllowed('expenseList') && <button type="button" onClick={() => goTo(systemView, selectedEventId, "ExpenseList")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'ExpenseList' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Gastos</button>}
             </div>
             
             <button onClick={handleLogout} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-red-500 bg-red-50 hover:bg-red-100 transition-colors ml-1" title="Cerrar Sesión">
@@ -8509,12 +9006,12 @@ const App = () => {
           </div>
         </header>
         {activeTab === "Summary" && renderSummary()}
-        {activeTab === "ServersPage" && isCampa && renderServerProfilesPage()}
-        {activeTab === 'Becados' && hasAdminRights && renderBecadosPage()}
-        {activeTab === 'RegistroGlobal' && renderGlobalRegistryPage()}
-        {activeTab === "CashCut" && hasAdminRights && renderCashCutPage()}
-        {activeTab === "ExpenseList" && canAccessExpenses && renderExpenseListPage()}
-        {visibleLocations.includes(activeTab) && renderLocationSheet(activeTab)}
+        {activeTab === "ServersPage" && isCampa && isPanelNavSectionAllowed('serversPage') && renderServerProfilesPage()}
+        {activeTab === 'Becados' && hasAdminRights && isPanelNavSectionAllowed('becados') && renderBecadosPage()}
+        {activeTab === 'RegistroGlobal' && isPanelNavSectionAllowed('registroGlobal') && renderGlobalRegistryPage()}
+        {activeTab === "CashCut" && hasAdminRights && isPanelNavSectionAllowed('cashCut') && renderCashCutPage()}
+        {activeTab === "ExpenseList" && canAccessExpenses && isPanelNavSectionAllowed('expenseList') && renderExpenseListPage()}
+        {visibleLocations.includes(activeTab) && isPanelNavSectionAllowed('locations') && renderLocationSheet(activeTab)}
       </main>
 
       {/* EDIT REGISTRY MODAL */}
@@ -9465,6 +9962,40 @@ const App = () => {
         </div>
       )}
 
+      {superDateEditModal.isOpen && isSuperUser && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-md animate-in zoom-in-95 duration-200">
+            <div className="flex justify-between items-start mb-6">
+              <h3 className="text-xl font-black text-slate-800 flex items-center gap-2">
+                <Calendar size={24} className="text-violet-600" />
+                {superDateEditModal.mode === 'registration' ? 'Fecha de registro' : 'Fecha del movimiento'}
+              </h3>
+              <button type="button" onClick={closeSuperDateEditModal} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
+            </div>
+            <p className="text-xs text-slate-500 mb-4">
+              Solo SuperUsuario. La hora se interpreta según la zona horaria de este equipo.
+            </p>
+            <label className="text-xs font-bold text-slate-500 mb-1 block">Fecha y hora</label>
+            <input
+              type="datetime-local"
+              className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-violet-500 outline-none"
+              value={superDateEditModal.datetimeLocal}
+              onChange={(e) => setSuperDateEditModal((prev) => ({ ...prev, datetimeLocal: e.target.value }))}
+            />
+            <div className="flex gap-3 pt-6">
+              <button type="button" onClick={closeSuperDateEditModal} className={btnSecondary}>Cancelar</button>
+              <button
+                type="button"
+                onClick={handleSuperSaveDateEdit}
+                className="flex-1 px-4 py-2.5 bg-violet-600 hover:bg-violet-700 text-white rounded-xl font-bold text-sm transition-colors flex items-center justify-center gap-2"
+              >
+                <CheckCircle2 size={18} /> Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* EXPENSE EDIT MODAL */}
       {expenseEditModal.isOpen && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -9511,7 +10042,7 @@ const App = () => {
               <div className="flex justify-between items-start mb-6">
                 <div>
                   <h3 className="text-xl font-black text-slate-800 mb-1 flex items-center gap-2"><DollarSign size={24} className="text-emerald-600" /> Abono Parcial</h3>
-                  <p className="text-sm text-slate-500">{exp?.name || 'Gasto'}</p>
+                  <p className="text-sm text-slate-500">{exp && canSeeExpenseConceptForRow(exp) ? (exp?.name || 'Gasto') : MASKED_EXPENSE_CONCEPT_LABEL}</p>
                   <p className="text-xs text-slate-400 mt-1">Pendiente: <span className="font-bold text-amber-600">${remaining.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span></p>
                 </div>
                 <button onClick={() => setExpensePartialModal({ isOpen: false, expenseId: null, amount: '' })} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
@@ -9547,6 +10078,8 @@ const App = () => {
           </div>
         </div>
       )}
+
+      {panelNavModalEl}
 
     </div>
   );
