@@ -4216,6 +4216,7 @@ const App = () => {
         const hist = [...(person.paymentHistory || [])];
         const dNew = new Date(iso);
         const dateStrNew = dNew.toLocaleString('es-MX');
+        const serviceForNewInstant = getAutoPaymentService(dNew);
         const firstPayIdx = hist.findIndex((r) => r && r.kind !== 'comment');
         let historyChanged = false;
         for (let i = 0; i < hist.length; i += 1) {
@@ -4239,11 +4240,11 @@ const App = () => {
             }
           }
           if (tiedToRegistration) {
-            hist[i] = { ...row, recordedAt: iso, date: dateStrNew };
+            hist[i] = { ...row, recordedAt: iso, date: dateStrNew, service: serviceForNewInstant };
             historyChanged = true;
           }
         }
-        const regPayload = { registeredAt: iso, ...debugExtras };
+        const regPayload = { registeredAt: iso, paymentService: serviceForNewInstant, ...debugExtras };
         if (historyChanged) regPayload.paymentHistory = hist;
         await updateDoc(getDocRef('app_participants', String(personId)), regPayload);
         addLog(
@@ -4271,7 +4272,8 @@ const App = () => {
           return;
         }
         const d = new Date(iso);
-        hist[idx] = { ...row, recordedAt: iso, date: d.toLocaleString('es-MX') };
+        const serviceForPayment = getAutoPaymentService(d);
+        hist[idx] = { ...row, recordedAt: iso, date: d.toLocaleString('es-MX'), service: serviceForPayment };
         await updateDoc(getDocRef('app_participants', String(personId)), {
           paymentHistory: hist,
           ...debugExtras,
