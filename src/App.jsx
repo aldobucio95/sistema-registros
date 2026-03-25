@@ -2934,9 +2934,7 @@ const App = () => {
       }
       if (entry.isScholarship === 'Sí') {
       if (entry.scholarshipType === 'partial') {
-        const listPrice = entry.isServer === 'Sí' && entry.serverAssignment === 'Ambos'
-          ? currentPricing.server
-          : currentPricing.global;
+        const listPrice = getPersonCost(entry, currentPricing);
           const montoBecado = parseFloat(entry.scholarshipPartialAmount);
           // Requerimiento: el monto becado puede ser 0.
           if (!Number.isFinite(montoBecado) || montoBecado < 0) return false;
@@ -3922,9 +3920,10 @@ const App = () => {
 
     if (currentEvent.eventType === 'Campa' && editedPerson.isScholarship === 'Sí' && editedPerson.scholarshipType === 'partial') {
       const montoBecado = parseFloat(editedPerson.scholarshipPartialAmount || 0);
-      // Requerimiento: el monto becado puede ser 0.
-      if (!Number.isFinite(montoBecado) || montoBecado < 0 || montoBecado >= finalRegisteredCost) {
-        showToast('Beca parcial: el monto becado debe ser mayor o igual que 0 y menor que el costo de lista del registro.');
+      const partialScholarshipListCap = getPersonCost(editedPerson, currentPricing);
+      // Requerimiento: el monto becado puede ser 0. Tope = costo lista por perfil (servidor Ambos = costo servidor).
+      if (!Number.isFinite(montoBecado) || montoBecado < 0 || montoBecado >= partialScholarshipListCap) {
+        showToast('Beca parcial: el monto becado debe ser mayor o igual que 0 y menor que el costo de lista según asignación (Ambos = costo servidor).');
         return;
       }
     }
@@ -8143,7 +8142,7 @@ const App = () => {
                               min="0"
                               step="0.01"
                               placeholder="0.00"
-                              className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(newEntry.isScholarship === 'Sí' && newEntry.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(newEntry.scholarshipPartialAmount)) || parseFloat(newEntry.scholarshipPartialAmount) <= 0 || parseFloat(newEntry.scholarshipPartialAmount) >= ((newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global)))}`}
+                              className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(newEntry.isScholarship === 'Sí' && newEntry.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(newEntry.scholarshipPartialAmount)) || parseFloat(newEntry.scholarshipPartialAmount) < 0 || parseFloat(newEntry.scholarshipPartialAmount) >= getPersonCost(newEntry, currentPricing)))}`}
                               value={newEntry.scholarshipPartialAmount}
                               onChange={(e) => setNewEntry({ ...newEntry, scholarshipPartialAmount: e.target.value })}
                             />
@@ -10278,7 +10277,7 @@ const App = () => {
                               min="0"
                               step="0.01"
                               placeholder="0.00"
-                              className={`${inputClasses} ${getRequiredFieldClass(editRegistryModal.data.isScholarship === 'Sí' && editRegistryModal.data.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(editRegistryModal.data.scholarshipPartialAmount)) || parseFloat(editRegistryModal.data.scholarshipPartialAmount) <= 0 || parseFloat(editRegistryModal.data.scholarshipPartialAmount) >= resolveRegisteredCost(editRegistryModal.data, currentPricing)))}`}
+                              className={`${inputClasses} ${getRequiredFieldClass(editRegistryModal.data.isScholarship === 'Sí' && editRegistryModal.data.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(editRegistryModal.data.scholarshipPartialAmount)) || parseFloat(editRegistryModal.data.scholarshipPartialAmount) < 0 || parseFloat(editRegistryModal.data.scholarshipPartialAmount) >= getPersonCost(editRegistryModal.data, currentPricing)))}`}
                               value={editRegistryModal.data.scholarshipPartialAmount ?? ''}
                               onChange={(e) => setEditRegistryModal({
                                 ...editRegistryModal,
