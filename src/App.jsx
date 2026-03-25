@@ -610,6 +610,45 @@ const hasValidFullName = (fullName) => {
   return parts.length >= 3;
 };
 
+const NAME_PARTICLES_FOR_FAMILY = new Set(['DE', 'DEL', 'LA', 'LAS', 'LOS', 'Y', 'MC', 'MAC']);
+
+const getNamePartsForFamilyCompare = (fullName) =>
+  normalizeIdText(fullName || '')
+    .replace(/[^A-Z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((w) => !NAME_PARTICLES_FOR_FAMILY.has(w));
+
+/**
+ * Dos apellidos (últimas dos palabras útiles) para excepción de teléfono duplicado en familia.
+ * Con solo 2 palabras (nombre + un apellido) se usa *|apellido para hermanos con mismo apellido.
+ */
+const getFamilySurnamePairKey = (fullName) => {
+  const parts = getNamePartsForFamilyCompare(fullName);
+  if (parts.length < 2) return null;
+  if (parts.length >= 3) return `${parts[parts.length - 2]}|${parts[parts.length - 1]}`;
+  return `*|${parts[parts.length - 1]}`;
+};
+
+const isSameFamilyBySurnames = (nameA, nameB) => {
+  const ka = getFamilySurnamePairKey(nameA);
+  const kb = getFamilySurnamePairKey(nameB);
+  if (ka == null || kb == null) return false;
+  return ka === kb;
+};
+
+/** Mismo teléfono en el evento = duplicado salvo si comparten los dos apellidos (familia). */
+const phoneDuplicateInEvent = (fullName, phoneDigits, participants, eventId, excludeParticipantId) => {
+  if (!phoneDigits || String(phoneDigits).length < 10) return false;
+  return participants.some((p) => {
+    if (p.eventId !== eventId || !participantIsActiveInEvent(p)) return false;
+    if (excludeParticipantId != null && String(p.id) === String(excludeParticipantId)) return false;
+    if (digitsOnlyPhone(p.phone) !== phoneDigits) return false;
+    if (isSameFamilyBySurnames(fullName, p.name)) return false;
+    return true;
+  });
+};
+
 /** Convierte teléfono local/internacional al formato que requiere wa.me */
 const normalizeWhatsAppPhone = (phone) => {
   const digits = digitsOnlyPhone(phone);
@@ -1155,18 +1194,22 @@ const App = () => {
     const qDigits = digitsOnlyPhone(newRegProfileSearch);
     if (q.length < 2 && qDigits.length < 4) return [];
 
-    const phonesInCurrentEvent = new Set(
-      allParticipants
-        .filter((p) => p.eventId === currentEvent.id && participantIsActiveInEvent(p))
-        .map((p) => digitsOnlyPhone(p.phone))
-        .filter((d) => d.length >= 10)
+    const activeInCurrentEvent = allParticipants.filter(
+      (p) => p.eventId === currentEvent.id && participantIsActiveInEvent(p)
     );
 
     const seen = new Set();
     const candidates = [];
     for (const p of pastProfilesForImport) {
       const d = digitsOnlyPhone(p.phone);
-      if (d.length >= 10 && phonesInCurrentEvent.has(d)) continue;
+      if (
+        d.length >= 10 &&
+        activeInCurrentEvent.some(
+          (evp) => digitsOnlyPhone(evp.phone) === d && !isSameFamilyBySurnames(p.name, evp.name)
+        )
+      ) {
+        continue;
+      }
 
       const nameMatch = q.length >= 2 && (p.name || '').toLowerCase().includes(q);
       const phoneMatch = qDigits.length >= 4 && d.includes(qDigits);
@@ -3436,17 +3479,9 @@ const App = () => {
     }
 
     const phoneDigits = digitsOnlyPhone(newEntry.phone);
-    if (phoneDigits.length >= 10) {
-      const dupPhone = allParticipants.some(
-        (p) =>
-          p.eventId === currentEvent.id &&
-          participantIsActiveInEvent(p) &&
-          digitsOnlyPhone(p.phone) === phoneDigits
-      );
-      if (dupPhone) {
-        showToast('Ya hay un registro con este teléfono en este evento.');
-        return;
-      }
+    if (phoneDuplicateInEvent(newEntry.name, phoneDigits, allParticipants, currentEvent.id, null)) {
+      showToast('Ya hay un registro con este teléfono en este evento.');
+      return;
     }
     const vnpId = canonicalizeVnpPersonId(newEntry.vnpPersonId || '');
     const candidateVnpId = vnpId || generateVnpPersonId(newEntry);
@@ -3599,17 +3634,9 @@ const App = () => {
     }
 
     const phoneDigits = digitsOnlyPhone(newEntry.phone);
-    if (phoneDigits.length >= 10) {
-      const dupPhone = allParticipants.some(
-        (p) =>
-          p.eventId === currentEvent.id &&
-          participantIsActiveInEvent(p) &&
-          digitsOnlyPhone(p.phone) === phoneDigits
-      );
-      if (dupPhone) {
-        showToast('Ya existe un registro o espera con este teléfono en este evento.');
-        return;
-      }
+    if (phoneDuplicateInEvent(newEntry.name, phoneDigits, allParticipants, currentEvent.id, null)) {
+      showToast('Ya existe un registro o espera con este teléfono en este evento.');
+      return;
     }
 
     const newPersonId = String(Date.now());
@@ -3748,18 +3775,11 @@ const App = () => {
     if (!validateForm(editedPerson, 0, currentEvent.eventType)) return;
 
     const editDigits = digitsOnlyPhone(editedPerson.phone);
-    if (editDigits.length >= 10) {
-      const dupPhone = allParticipants.some(
-        (p) =>
-          p.eventId === currentEvent.id &&
-          participantIsActiveInEvent(p) &&
-          String(p.id) !== String(editedPerson.id) &&
-          digitsOnlyPhone(p.phone) === editDigits
-      );
-      if (dupPhone) {
-        showToast('Otro registro en este evento ya usa este teléfono.');
-        return;
-      }
+    if (
+      phoneDuplicateInEvent(editedPerson.name, editDigits, allParticipants, currentEvent.id, editedPerson.id)
+    ) {
+      showToast('Otro registro en este evento ya usa este teléfono.');
+      return;
     }
 
     const originalPerson =
