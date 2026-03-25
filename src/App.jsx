@@ -6,7 +6,7 @@ import {
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock,
   UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft,
   SlidersHorizontal, Bug, Download, Database, Menu, FileSpreadsheet, MessageCircle,
-  Scissors, Calendar, Church
+  Scissors, Calendar, Church, Archive
 } from 'lucide-react';
 
 /* global __app_id, __initial_auth_token */
@@ -450,6 +450,91 @@ const buildArchivedProfileSnapshot = (person) => {
   };
 };
 
+/** Índice global en Firebase: un documento por persona (vnp id o teléfono), sin duplicados lógicos. */
+const ARCHIVE_PROFILES_COLLECTION = 'app_archived_profiles';
+
+const getArchiveProfileDocId = (person) => {
+  const vid = String(person?.vnpPersonId || '').trim();
+  if (vid.length >= 4) {
+    const safe = vid.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
+    return `id_${safe}`;
+  }
+  const d = digitsOnlyPhone(person?.phone);
+  if (d.length >= 10) return `ph_${d.slice(-10)}`;
+  const pid = String(person?.id || '').replace(/[^\w-]/g, '');
+  return `pid_${pid || `t_${Date.now()}`}`;
+};
+
+function mergeArchivedFirestoreDocs(existing, incoming, existingTs, incomingTs) {
+  const incomingNewer = incomingTs >= existingTs;
+  const out = { ...existing };
+  for (const k of Object.keys(incoming)) {
+    if (k === '_mergeMeta') continue;
+    const iv = incoming[k];
+    if (iv === undefined) continue;
+    const hasKey = Object.prototype.hasOwnProperty.call(out, k);
+    const ev = out[k];
+    if (!hasKey || ev === undefined) {
+      out[k] = iv;
+      continue;
+    }
+    if (iv !== null && typeof iv === 'object' && !Array.isArray(iv) && ev !== null && typeof ev === 'object' && !Array.isArray(ev)) {
+      out[k] = mergeArchivedFirestoreDocs(ev, iv, existingTs, incomingTs);
+      continue;
+    }
+    if (incomingNewer) out[k] = iv;
+  }
+  const ex = Number(existingTs) || 0;
+  const inn = Number(incomingTs) || 0;
+  out.archivedAt = Math.max(ex, inn, Number(out.archivedAt) || 0);
+  const prevKinds = Array.isArray(existing._mergeMeta?.sourceKinds) ? [...existing._mergeMeta.sourceKinds] : [];
+  const ik = incoming.sourceKind;
+  if (ik && !prevKinds.includes(ik)) prevKinds.push(ik);
+  out._mergeMeta = {
+    lastMergedAt: Date.now(),
+    sourceKinds: prevKinds,
+  };
+  return out;
+}
+
+function buildArchiveIndexIncomingPayload(person, archivedAt, loc, sourceKind, eventName) {
+  return {
+    vnpPersonId: person?.vnpPersonId || '',
+    participantFirebaseId: String(person?.id || ''),
+    eventId: person?.eventId || '',
+    eventName: eventName || '',
+    archivedAt,
+    archivedFromLocation: loc || '',
+    sourceKind,
+    archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
+    customData: person?.customData && typeof person.customData === 'object' ? { ...person.customData } : {},
+    travelFrom: person?.travelFrom || '',
+    travelTo: person?.travelTo || '',
+    llegaEnCarro: person?.llegaEnCarro,
+    regresaEnCarro: person?.regresaEnCarro,
+    transportType: person?.transportType || '',
+    isScholarship: person?.isScholarship || '',
+    scholarshipType: person?.scholarshipType || '',
+    scholarshipPartialAmount: person?.scholarshipPartialAmount,
+    isPastorChild: person?.isPastorChild || '',
+    pastorChildWithoutPay: person?.pastorChildWithoutPay || '',
+    responsivaStatus: person?.responsivaStatus || '',
+    registeredCost: person?.registeredCost,
+    discountCampaignId: person?.discountCampaignId,
+    discountCampaignConcept: person?.discountCampaignConcept,
+    discountCampaignAppliedAt: person?.discountCampaignAppliedAt,
+    paid: person?.paid,
+    paidNet: person?.paidNet,
+    statusBeforeArchive: person?.status || 'active',
+    refundPendingAmount: person?.refundPendingAmount,
+    willBeBaptized: person?.willBeBaptized,
+    baptismSegment: person?.baptismSegment,
+    waitlistCreatedAt: person?.waitlistCreatedAt,
+    email: person?.email || '',
+    notes: person?.notes || '',
+  };
+}
+
 /** ID estable para la misma persona entre eventos (se reutiliza al importar perfil). */
 const normalizeIdText = (txt) =>
   String(txt || '')
@@ -537,11 +622,25 @@ const toLocalISODate = (dateObj) => {
   return `${y}-${m}-${d}`;
 };
 
-const getLogDateISO = (log) => {
-  const idNum = Number(log?.id);
-  if (Number.isFinite(idNum) && idNum > 0) {
-    return toLocalISODate(new Date(idNum));
+/** Para ordenar, limpiar logs y filtros por fecha (soporta id numérico legacy o id string con prefijo temporal). */
+const extractLogMillis = (log) => {
+  if (!log) return 0;
+  if (Number.isFinite(log.createdAt)) return log.createdAt;
+  const id = log.id;
+  if (typeof id === 'number' && Number.isFinite(id) && id > 0) return id;
+  if (typeof id === 'string') {
+    const m = id.match(/^(\d{10,})/);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n)) return n;
+    }
   }
+  return 0;
+};
+
+const getLogDateISO = (log) => {
+  const ms = extractLogMillis(log);
+  if (ms > 0) return toLocalISODate(new Date(ms));
   const ts = String(log?.timestamp || '');
   const m = ts.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if (!m) return '';
@@ -676,6 +775,14 @@ const App = () => {
     if (!allowedLocs.length) return currentEvent.locations || [];
     return (currentEvent.locations || []).filter(loc => allowedLocs.includes(loc));
   }, [currentEvent, currentUser, getUserAllowedLocations]);
+
+  const archivedParticipantsForView = useMemo(
+    () =>
+      allParticipants
+        .filter(participantIsArchived)
+        .sort((a, b) => (Number(b.archivedAt) || 0) - (Number(a.archivedAt) || 0)),
+    [allParticipants]
+  );
 
   const panelNavMerged = useMemo(() => {
     const o = globalConfig?.panelNav && typeof globalConfig.panelNav === 'object' ? globalConfig.panelNav : {};
@@ -900,6 +1007,17 @@ const App = () => {
     preferredLandingTab: 'Summary'
   });
   const [restoreModal, setRestoreModal] = useState({ isOpen: false, log: null, type: 'single' });
+  /** Confirmación in-app: archivar / baja / eliminar donación (sustituye window.confirm). */
+  const [registryConfirmModal, setRegistryConfirmModal] = useState({
+    isOpen: false,
+    type: null,
+    loc: '',
+    personId: '',
+    personName: '',
+    donationId: '',
+    donationAmount: 0,
+  });
+  const [registryConfirmBusy, setRegistryConfirmBusy] = useState(false);
   const [serviceSlotsModal, setServiceSlotsModal] = useState({ isOpen: false });
   const [serviceSlotsForm, setServiceSlotsForm] = useState(DEFAULT_SERVICE_SLOTS);
   const [serveAreaOptionsModal, setServeAreaOptionsModal] = useState({ isOpen: false });
@@ -1118,6 +1236,19 @@ const App = () => {
 
   // Navigation Logic
   const goTo = useCallback((view, eventId, tab) => {
+    if (view === 'archive' || view === 'users' || view === 'logs') {
+      if (view === systemView && !eventId && tab === activeTab) {
+        setIsMobileMenuOpen(false);
+        return;
+      }
+      setNavHistory((prev) => [...prev, { systemView, selectedEventId, activeTab }]);
+      setSystemView(view);
+      setSelectedEventId(null);
+      setActiveTab(tab || 'Summary');
+      setShowViewSettings(false);
+      setIsMobileMenuOpen(false);
+      return;
+    }
     if (view === 'events' && eventId && !hasEventAccess(eventId)) {
       showToast("No tienes acceso a este evento.");
       setIsMobileMenuOpen(false);
@@ -1266,9 +1397,11 @@ const App = () => {
       const newSessionId = Date.now();
       await updateDoc(getDocRef('app_data', 'config'), { isDebugMode: true, debugSessionId: newSessionId });
       
-      const newLogId = Date.now() + 1;
+      const createdAt = Date.now();
+      const newLogId = `${createdAt}${Math.random().toString(36).slice(2, 10)}`;
       await setDoc(getDocRef('app_logs', String(newLogId)), {
         id: newLogId,
+        createdAt,
         eventId: 'Global',
         eventName: 'Sistema',
         timestamp: new Date().toLocaleString('es-MX'),
@@ -1281,7 +1414,7 @@ const App = () => {
       });
     } else {
       const currentSession = globalConfig.debugSessionId;
-      const logsToRevert = logs.filter(l => l.debugSessionId === currentSession && l.revertInfo).sort((a,b) => b.id - a.id);
+      const logsToRevert = logs.filter(l => l.debugSessionId === currentSession && l.revertInfo).sort((a, b) => extractLogMillis(b) - extractLogMillis(a));
       
       for (const l of logsToRevert) {
         await applyRevert(l.revertInfo);
@@ -1289,11 +1422,18 @@ const App = () => {
       
       await updateDoc(getDocRef('app_data', 'config'), { isDebugMode: false, debugSessionId: null });
       
-      const newLogId = Date.now() + 1;
-      await setDoc(getDocRef('app_logs', String(newLogId)), {
-        id: newLogId, eventId: 'Global', eventName: 'Sistema',
+      const createdAtExit = Date.now();
+      const newLogIdExit = `${createdAtExit}${Math.random().toString(36).slice(2, 10)}`;
+      await setDoc(getDocRef('app_logs', String(newLogIdExit)), {
+        id: newLogIdExit,
+        createdAt: createdAtExit,
+        eventId: 'Global',
+        eventName: 'Sistema',
         timestamp: new Date().toLocaleString('es-MX'),
-        username: currentUser.username, action: 'Sistema', details: `Salió de depuración. Se revirtieron ${logsToRevert.length} acciones temporales.`, revertInfo: null
+        username: currentUser.username,
+        action: 'Sistema',
+        details: `Salió de depuración. Se revirtieron ${logsToRevert.length} acciones temporales.`,
+        revertInfo: null,
       });
     }
   };
@@ -1456,7 +1596,7 @@ const App = () => {
 
     const unsubLogs = onSnapshot(getColRef('app_logs'), (snap) => {
       const logsList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      logsList.sort((a, b) => b.id - a.id);
+      logsList.sort((a, b) => extractLogMillis(b) - extractLogMillis(a));
       setLogs(logsList);
     }, console.error);
 
@@ -1529,9 +1669,11 @@ const App = () => {
     if (!username) return;
 
     const ev = targetEvent || currentEvent;
-    const newLogId = Date.now();
+    const createdAt = Date.now();
+    const newLogId = `${createdAt}${Math.random().toString(36).slice(2, 10)}`;
     const newLog = {
       id: newLogId,
+      createdAt,
       eventId: ev?.id || 'Global',
       eventName: ev?.name || 'Sistema',
       timestamp: new Date().toLocaleString('es-MX'),
@@ -1982,7 +2124,7 @@ const App = () => {
     if (!hasAdminRights) return;
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
     const now = Date.now();
-    const logsToDelete = logs.filter(log => (now - log.id) > thirtyDaysMs);
+    const logsToDelete = logs.filter((log) => now - extractLogMillis(log) > thirtyDaysMs);
     if (logsToDelete.length > 0) {
       logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
       addLog('Limpieza de Logs', `Se eliminaron ${logsToDelete.length} registros antiguos (> 30 días).`, null, { id: 'Global', name: 'Sistema' });
@@ -1996,7 +2138,7 @@ const App = () => {
     if (!isSuperUser) return;
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
     const now = Date.now();
-    const logsToDelete = logs.filter(log => (now - log.id) <= thirtyDaysMs);
+    const logsToDelete = logs.filter((log) => now - extractLogMillis(log) <= thirtyDaysMs);
     if (logsToDelete.length > 0) {
       logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
       addLog('Limpieza de Logs', `El SuperUsuario eliminó ${logsToDelete.length} registros recientes (< 30 días).`, null, { id: 'Global', name: 'Sistema' });
@@ -2014,7 +2156,10 @@ const App = () => {
       addLog('Restauración', `Se deshizo el cambio específico: "${log.action}" del usuario ${log.username}.`, null, { id: 'Global', name: 'Sistema' });
       showToast("Cambio revertido exitosamente.");
     } else if (type === 'rollback') {
-      const logsToRevert = logs.filter(l => l.id >= log.id && l.revertInfo && !l.isDebug).sort((a,b) => b.id - a.id);
+      const anchorMs = extractLogMillis(log);
+      const logsToRevert = logs
+        .filter((l) => extractLogMillis(l) >= anchorMs && l.revertInfo && !l.isDebug)
+        .sort((a, b) => extractLogMillis(b) - extractLogMillis(a));
       for (const l of logsToRevert) {
         await applyRevert(l.revertInfo);
       }
@@ -2279,15 +2424,6 @@ const App = () => {
       showToast("Nombre del evento actualizado.");
     }
     setRenameModal({ isOpen: false, id: null, name: '' });
-  };
-
-  const confirmDeleteEvent = async () => {
-    if (!deleteEventModal.id) return;
-    const evToDelete = events.find(e => e.id === deleteEventModal.id);
-    await deleteDoc(getDocRef('app_events', deleteEventModal.id));
-    addLog('Gestión de Eventos', `Eliminó el evento: ${deleteEventModal.name}`, null, evToDelete || { name: deleteEventModal.name }, { collectionName: 'app_events', docId: deleteEventModal.id, action: 'delete', previousData: evToDelete });
-    setDeleteEventModal({ isOpen: false, id: null, name: '' });
-    showToast("Evento eliminado con éxito.");
   };
 
   const handleDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; };
@@ -2771,10 +2907,11 @@ const App = () => {
   }, [currentEvent?.name, currentEvent?.date]);
 
   const buildArchiveWhatsAppMessage = useCallback(
-    (person, loc, fromWaitlist, reportedAtMs = Date.now()) => {
+    (person, loc, fromWaitlist, reportedAtMs = Date.now(), eventDisplayName = null) => {
       const personLoc = person?.location || loc || '';
       const tribuName = `Tribu Vida Nueva${personLoc ? ` ${personLoc}` : ''}`;
       const reportedAtText = new Date(Number(reportedAtMs) || Date.now()).toLocaleString('es-MX');
+      const eventLabel = eventDisplayName != null && String(eventDisplayName).trim() !== '' ? eventDisplayName : (currentEvent?.name || 'el evento');
       const idLine = person?.vnpPersonId
         ? `Tu ID VNPM (${person.vnpPersonId}) se conserva para precargar en otros eventos.`
         : 'Tus datos permanecen disponibles para futuras inscripciones.';
@@ -2783,7 +2920,7 @@ const App = () => {
         : 'Tu registro en el evento fue archivado (dado de baja) y ya no apareces en la nómina activa.';
       return [
         `Hola ${person?.name || ''}, te contactamos de ${tribuName}.`,
-        `Evento: ${currentEvent?.name || 'el evento'} (${loc}).`,
+        `Evento: ${eventLabel} (${loc}).`,
         `Fecha y hora del reporte: ${reportedAtText}.`,
         ctx,
         idLine,
@@ -2792,6 +2929,89 @@ const App = () => {
     },
     [currentEvent?.name]
   );
+
+  const upsertMergedArchiveProfile = useCallback(async (person, archivedAt, loc, sourceKind, eventNameOverride) => {
+    const eventName = eventNameOverride != null && String(eventNameOverride).trim() !== '' ? eventNameOverride : (currentEvent?.name || '');
+    const docId = getArchiveProfileDocId(person);
+    const ref = getDocRef(ARCHIVE_PROFILES_COLLECTION, docId);
+    const incoming = buildArchiveIndexIncomingPayload(person, archivedAt, loc, sourceKind, eventName);
+    const incomingTs = Number(archivedAt) || Date.now();
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, incoming);
+      return;
+    }
+    const existing = snap.data();
+    const existingTs = Number(existing.archivedAt) || 0;
+    const merged = mergeArchivedFirestoreDocs(existing, incoming, existingTs, incomingTs);
+    await setDoc(ref, merged);
+  }, [currentEvent?.name]);
+
+  const archiveParticipantToFirestore = useCallback(
+    async (person, loc, { fromWaitlist, sourceKind, eventDisplayName }) => {
+      if (participantIsArchived(person)) return;
+      const bajaAt = Date.now();
+      const bajaNotification = {
+        id: `wa-bja-${bajaAt}`,
+        kind: 'baja',
+        amount: 0,
+        pendingAmount: 0,
+        isLiquidado: false,
+        createdAt: bajaAt,
+        sent: false,
+        sentAt: null,
+        message: buildArchiveWhatsAppMessage(person, loc, fromWaitlist, bajaAt, eventDisplayName),
+      };
+      const archivePayload = {
+        status: PARTICIPANT_STATUS_ARCHIVED,
+        archivedAt: bajaAt,
+        archivedFromLocation: loc,
+        archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
+        paymentHistory: [],
+        paid: 0,
+        paidNet: 0,
+        whatsAppFinanceNotifications: [...(person.whatsAppFinanceNotifications || []), bajaNotification],
+        scholarshipPendingApproval: false,
+        ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+      };
+      await updateDoc(getDocRef('app_participants', String(person.id)), archivePayload);
+      await upsertMergedArchiveProfile(person, bajaAt, loc, sourceKind, eventDisplayName);
+    },
+    [buildArchiveWhatsAppMessage, globalConfig?.debugSessionId, globalConfig?.isDebugMode, upsertMergedArchiveProfile]
+  );
+
+  const confirmDeleteEvent = async () => {
+    if (!deleteEventModal.id) return;
+    const evToDelete = events.find((e) => e.id === deleteEventModal.id);
+    const id = deleteEventModal.id;
+    const eventName = evToDelete?.name || deleteEventModal.name || '';
+    const toArchive = allParticipants.filter((p) => p.eventId === id && !participantIsArchived(p));
+    try {
+      for (let i = 0; i < toArchive.length; i += 1) {
+        const person = toArchive[i];
+        const loc = person.location || person.cancelledFromLocation || person.archivedFromLocation || '—';
+        const fromWaitlist = (person.status || 'active') === 'waitlist';
+        await archiveParticipantToFirestore(person, loc, {
+          fromWaitlist,
+          sourceKind: fromWaitlist ? 'waitlist' : 'event_deleted',
+          eventDisplayName: eventName,
+        });
+      }
+      await deleteDoc(getDocRef('app_events', id));
+      addLog(
+        'Gestión de Eventos',
+        `Eliminó el evento: ${deleteEventModal.name}. Se archivaron ${toArchive.length} registro(s) antes de borrarlo.`,
+        null,
+        evToDelete || { name: deleteEventModal.name },
+        { collectionName: 'app_events', docId: id, action: 'delete', previousData: evToDelete }
+      );
+      setDeleteEventModal({ isOpen: false, id: null, name: '' });
+      showToast(`Evento eliminado. ${toArchive.length} registro(s) archivados.`);
+    } catch (err) {
+      console.error(err);
+      showToast('No se pudo eliminar el evento (error al archivar o borrar). Revisa la consola.');
+    }
+  };
 
   const buildPromoteFromWaitlistWhatsAppMessage = useCallback(
     (person, loc, reportedAtMs = Date.now()) => {
@@ -3040,16 +3260,12 @@ const App = () => {
       }
     }
 
-    addLog(
-      'WhatsApp',
-      `Exportó ${targets.length} movimiento(s) WhatsApp de sede ${loc} y los marcó como enviados.${failed ? ` Fallos al guardar: ${failed}.` : ''}`
-    );
     if (failed > 0) {
       showToast(`Archivo generado; no se pudo marcar como enviado en ${failed} registro(s). Revisa conexión o permisos.`);
     } else {
       showToast(`Exportados ${targets.length} movimiento(s). Quedaron marcados como enviados hasta el próximo abono o registro.`);
     }
-  }, [currentEvent?.id, hasEventAccess, hasLocationAccess, getPendingWhatsAppRowsForLocation, addLog, showToast]);
+  }, [currentEvent?.id, hasEventAccess, hasLocationAccess, getPendingWhatsAppRowsForLocation, showToast]);
 
   const openWhatsAppModal = useCallback((person, loc) => {
     const liq = getLiquidationTarget(person);
@@ -3082,7 +3298,6 @@ const App = () => {
     }
     const url = `https://wa.me/${waPhone}?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank', 'noopener,noreferrer');
-    addLog('WhatsApp', `Abrió WhatsApp para ${whatsAppModal.personName} (${waPhone}) en evento ${whatsAppModal.eventName}.`);
 
     const { personId, pendingNotificationMarkKey, whatsAppQueuedMessageSnapshot, message: sentBody } = whatsAppModal;
     const messageUnchangedFromQueue =
@@ -3100,7 +3315,6 @@ const App = () => {
             getWhatsAppNotificationMarkKey(n) === pendingNotificationMarkKey ? { ...n, sent: true, sentAt: now } : n
           );
           await updateDoc(ref, { whatsAppFinanceNotifications: next });
-          addLog('WhatsApp', `Marcó como enviado el aviso financiero pendiente de ${whatsAppModal.personName}.`);
         }
       } catch {
         showToast('WhatsApp abierto; no se pudo marcar el aviso como enviado en el servidor.');
@@ -3119,7 +3333,7 @@ const App = () => {
       whatsAppQueuedMessageSnapshot: null
     });
     showToast('WhatsApp abierto en nueva pestaña.');
-  }, [whatsAppModal, addLog, showToast]);
+  }, [whatsAppModal, showToast]);
 
   const getProcessedParticipantsForLocation = useCallback((loc) => {
     return applyRosterLikeFilters(data[loc] || []);
@@ -3330,11 +3544,6 @@ const App = () => {
       message: buildFinanceWhatsAppMessage(personData, loc, initialPaidGross, pendingAfterRegister, isLiquidado, 'registro', registerCreatedAt)
     };
     await updateDoc(getDocRef('app_participants', newPersonId), { whatsAppFinanceNotifications: [registerNotification] });
-    addLog(
-      'WhatsApp',
-      `Encoló notificación financiera de registro para ${personData.name || 'persona'} (sede ${loc}). Pendiente: ${pendingAfterRegister}. Liquida: ${isLiquidado ? 'Sí' : 'No'}.`,
-      null
-    );
     setNewEntry({
       ...EMPTY_ENTRY,
       paymentMethod: 'Efectivo',
@@ -3470,11 +3679,6 @@ const App = () => {
       await updateDoc(getDocRef('app_participants', newPersonId), {
         whatsAppFinanceNotifications: [pendingApprovalNotification],
       });
-      addLog(
-        'WhatsApp',
-        `Encoló notificación de beca pendiente de aprobación para ${personData.name || 'persona'} (sede ${loc}).`,
-        null
-      );
     }
     const becaNote =
       currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí'
@@ -3721,115 +3925,45 @@ const App = () => {
     showToast("Registro actualizado.");
   };
 
-  const removeEntry = async (loc, id) => {
-    if (!hasAdminRights) {
-      showToast("Solo administradores pueden eliminar registros.");
-      return;
-    }
-    const person = (data[loc] || []).find(p => String(p.id) === String(id));
-    if (person) {
-      const confirmArchive = window.confirm(`¿Seguro que deseas archivar a ${person.name || 'este registro'}?`);
-      if (!confirmArchive) return;
-      const bajaAt = Date.now();
-      const bajaNotification = {
-        id: `wa-bja-${bajaAt}`,
-        kind: 'baja',
-        amount: 0,
-        pendingAmount: 0,
-        isLiquidado: false,
-        createdAt: bajaAt,
-        sent: false,
-        sentAt: null,
-        message: buildArchiveWhatsAppMessage(person, loc, false, bajaAt),
-      };
-      const archivePayload = {
-        status: PARTICIPANT_STATUS_ARCHIVED,
-        archivedAt: bajaAt,
-        archivedFromLocation: loc,
-        archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
-        paymentHistory: [],
-        paid: 0,
-        paidNet: 0,
-        whatsAppFinanceNotifications: [...(person.whatsAppFinanceNotifications || []), bajaNotification],
-        scholarshipPendingApproval: false,
-        ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
-      };
-      await updateDoc(getDocRef('app_participants', String(id)), archivePayload);
-      addLog(
-        'WhatsApp',
-        `Encoló aviso de baja/archivo para ${person.name} (sede ${loc}).`,
-        null
-      );
-      addLog(
-        'Eliminación de Registro',
-        `Archivó el registro de ${person.name} en la sede ${loc}. El ID VNPM y los datos personales permanecen en Firebase para precargar en otros eventos.`,
-        null,
-        null,
-        { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
-      );
-      showToast('Registro archivado. Puedes precargar estos datos desde la búsqueda de perfiles.');
-    }
-  };
-
-  const removeWaitlistEntry = async (loc, id) => {
-    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
-      showToast("No tienes permisos para modificar lista de espera en esta sede/evento.");
-      return;
-    }
-    const person = (waitlistData[loc] || []).find(p => String(p.id) === String(id));
-    if (person) {
-      const confirmArchive = window.confirm(`¿Seguro que deseas archivar a ${person.name || 'este registro'} de la lista de espera?`);
-      if (!confirmArchive) return;
-      const bajaAt = Date.now();
-      const bajaNotification = {
-        id: `wa-bja-${bajaAt}`,
-        kind: 'baja',
-        amount: 0,
-        pendingAmount: 0,
-        isLiquidado: false,
-        createdAt: bajaAt,
-        sent: false,
-        sentAt: null,
-        message: buildArchiveWhatsAppMessage(person, loc, true, bajaAt),
-      };
-      const archivePayload = {
-        status: PARTICIPANT_STATUS_ARCHIVED,
-        archivedAt: bajaAt,
-        archivedFromLocation: loc,
-        archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
-        paymentHistory: [],
-        paid: 0,
-        paidNet: 0,
-        whatsAppFinanceNotifications: [...(person.whatsAppFinanceNotifications || []), bajaNotification],
-        scholarshipPendingApproval: false,
-        ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
-      };
-      await updateDoc(getDocRef('app_participants', String(id)), archivePayload);
-      addLog(
-        'WhatsApp',
-        `Encoló aviso de baja/archivo (lista de espera) para ${person.name} (sede ${loc}).`,
-        null
-      );
-      addLog(
-        'Lista de Espera',
-        `Archivó a ${person.name} (lista de espera, sede ${loc}). Los datos personales siguen disponibles para precargar en otros eventos.`,
-        null,
-        null,
-        { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
-      );
-      showToast('Entrada archivada. Puedes precargar estos datos desde la búsqueda de perfiles.');
-    }
-  };
-
-  const cancelEntry = async (loc, id) => {
-    if (!hasAdminRights) {
-      showToast("Solo administradores pueden dar de baja registros.");
-      return;
-    }
+  const performArchiveRosterEntry = async (loc, id) => {
     const person = (data[loc] || []).find((p) => String(p.id) === String(id));
     if (!person) return;
-    const confirmCancel = window.confirm(`¿Confirmas dar de baja a ${person.name || 'este registro'}?`);
-    if (!confirmCancel) return;
+    await archiveParticipantToFirestore(person, loc, {
+      fromWaitlist: false,
+      sourceKind: 'roster',
+      eventDisplayName: currentEvent?.name ?? null,
+    });
+    addLog(
+      'Eliminación de Registro',
+      `Archivó el registro de ${person.name} en la sede ${loc}. El ID VNPM y los datos personales permanecen en Firebase para precargar en otros eventos.`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
+    );
+    showToast('Registro archivado. Puedes precargar estos datos desde la búsqueda de perfiles.');
+  };
+
+  const performArchiveWaitlistEntry = async (loc, id) => {
+    const person = (waitlistData[loc] || []).find((p) => String(p.id) === String(id));
+    if (!person) return;
+    await archiveParticipantToFirestore(person, loc, {
+      fromWaitlist: true,
+      sourceKind: 'waitlist',
+      eventDisplayName: currentEvent?.name ?? null,
+    });
+    addLog(
+      'Lista de Espera',
+      `Archivó a ${person.name} (lista de espera, sede ${loc}). Los datos personales siguen disponibles para precargar en otros eventos.`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
+    );
+    showToast('Entrada archivada. Puedes precargar estos datos desde la búsqueda de perfiles.');
+  };
+
+  const performCancelEntry = async (loc, id) => {
+    const person = (data[loc] || []).find((p) => String(p.id) === String(id));
+    if (!person) return;
     const cancelledAt = Date.now();
     const refundPendingAmount = Math.max(0, parseFloat(person.paid || 0) || 0);
     const existingNotifications = Array.isArray(person.whatsAppFinanceNotifications) ? [...person.whatsAppFinanceNotifications] : [];
@@ -3870,12 +4004,103 @@ const App = () => {
       null,
       { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
     );
-    addLog(
-      'WhatsApp',
-      `Actualizó aviso pendiente de WhatsApp a "baja" para ${person.name || 'persona'} (sede ${loc}).`,
-      null
-    );
     showToast('Registro dado de baja. Ya no cuenta en inscritos/becados/servidores.');
+  };
+
+  const closeRegistryConfirmModal = () => {
+    setRegistryConfirmModal({
+      isOpen: false,
+      type: null,
+      loc: '',
+      personId: '',
+      personName: '',
+      donationId: '',
+      donationAmount: 0,
+    });
+  };
+
+  const handleRegistryConfirmSubmit = async () => {
+    const m = registryConfirmModal;
+    if (!m.isOpen || !m.type) return;
+    setRegistryConfirmBusy(true);
+    try {
+      if (m.type === 'archive_roster') await performArchiveRosterEntry(m.loc, m.personId);
+      else if (m.type === 'archive_waitlist') await performArchiveWaitlistEntry(m.loc, m.personId);
+      else if (m.type === 'cancel_entry') await performCancelEntry(m.loc, m.personId);
+      else if (m.type === 'delete_donation' && m.donationId) await handleDeleteDonation(m.donationId);
+      closeRegistryConfirmModal();
+    } catch (e) {
+      console.error(e);
+      showToast('No se pudo completar la acción. Revisa conexión o permisos.');
+    } finally {
+      setRegistryConfirmBusy(false);
+    }
+  };
+
+  const removeEntry = (loc, id) => {
+    if (!hasAdminRights) {
+      showToast("Solo administradores pueden eliminar registros.");
+      return;
+    }
+    const person = (data[loc] || []).find((p) => String(p.id) === String(id));
+    if (!person) return;
+    setRegistryConfirmModal({
+      isOpen: true,
+      type: 'archive_roster',
+      loc,
+      personId: String(id),
+      personName: person.name || 'este registro',
+      donationId: '',
+      donationAmount: 0,
+    });
+  };
+
+  const removeWaitlistEntry = (loc, id) => {
+    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
+      showToast("No tienes permisos para modificar lista de espera en esta sede/evento.");
+      return;
+    }
+    const person = (waitlistData[loc] || []).find((p) => String(p.id) === String(id));
+    if (!person) return;
+    setRegistryConfirmModal({
+      isOpen: true,
+      type: 'archive_waitlist',
+      loc,
+      personId: String(id),
+      personName: person.name || 'este registro',
+      donationId: '',
+      donationAmount: 0,
+    });
+  };
+
+  const cancelEntry = (loc, id) => {
+    if (!hasAdminRights) {
+      showToast("Solo administradores pueden dar de baja registros.");
+      return;
+    }
+    const person = (data[loc] || []).find((p) => String(p.id) === String(id));
+    if (!person) return;
+    setRegistryConfirmModal({
+      isOpen: true,
+      type: 'cancel_entry',
+      loc,
+      personId: String(id),
+      personName: person.name || 'este registro',
+      donationId: '',
+      donationAmount: 0,
+    });
+  };
+
+  const openDeleteDonationConfirm = (don) => {
+    setRegistryConfirmModal({
+      isOpen: true,
+      type: 'delete_donation',
+      loc: '',
+      personId: '',
+      personName: '',
+      donationId: String(don.id),
+      donationAmount: parseFloat(don.amount) || 0,
+    });
   };
 
   const reactivateEntry = async (loc, id) => {
@@ -3976,11 +4201,6 @@ const App = () => {
         ? `Inscrito (beca parcial). A liquidar: $${Number(liqPromote || 0).toLocaleString('es-MX')}. Abono: $${paidPromote.toLocaleString('es-MX')}.`
         : 'Registro promovido a inscritos.'
     );
-    addLog(
-      'WhatsApp',
-      `Encoló aviso de promoción desde lista de espera para ${person.name} (sede ${loc}). Tipo: ${person.isScholarship === 'Sí' ? 'beca aprobada' : 'promoción a inscritos'}.`,
-      null
-    );
   };
 
   const toggleRegStatus = async (loc) => {
@@ -4080,11 +4300,6 @@ const App = () => {
       null,
       null,
       { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
-    );
-    addLog(
-      'WhatsApp',
-      `Encoló notificación financiera de abono para ${person.name || 'persona'} (sede ${paymentModal.loc}). Pendiente: ${pendingAfterAbono}. Liquida: ${isLiquidado ? 'Sí' : 'No'}.`,
-      null
     );
     setPaymentModal({
       isOpen: false,
@@ -4517,15 +4732,17 @@ const App = () => {
     for (const id of selectedLogs) {
       await deleteDoc(getDocRef('app_logs', String(id)));
     }
+    const createdAtDel = Date.now();
     const logEntry = {
-      id: Date.now(),
+      id: `${createdAtDel}${Math.random().toString(36).slice(2, 10)}`,
+      createdAt: createdAtDel,
       eventId: 'Global',
       eventName: 'Sistema',
       timestamp: new Date().toLocaleString('es-MX'),
       username: currentUser?.username || 'Sistema',
       action: 'Borrado Selectivo',
       details: `El SuperUsuario eliminó ${selectedLogs.size} registro(s) de actividad.`,
-      isHidden: true
+      isHidden: true,
     };
     await setDoc(getDocRef('app_logs', String(logEntry.id)), logEntry);
     showToast(`Se eliminaron ${selectedLogs.size} logs.`);
@@ -4542,6 +4759,7 @@ const App = () => {
     const uniqueMonths = [...new Set(allLogDates.map((d) => d.slice(0, 7)))].sort((a, b) => b.localeCompare(a));
 
     const displayedLogs = logs.filter(log => {
+      if (log.action === 'WhatsApp') return false;
       if (log.isDebug || log.isHidden) {
         if (!hasAdminRights || !showDebugLogs) return false;
       }
@@ -4863,10 +5081,22 @@ const App = () => {
               )}
               <div>
                 <h1 className="text-2xl font-black text-slate-800">
-                  {systemView === 'users' ? 'Gestión de Usuarios' : systemView === 'logs' ? 'Registro de Actividad' : 'Selecciona un Evento'}
+                  {systemView === 'users'
+                    ? 'Gestión de Usuarios'
+                    : systemView === 'logs'
+                      ? 'Registro de Actividad'
+                      : systemView === 'archive'
+                        ? 'Archivo de registros'
+                        : 'Selecciona un Evento'}
                 </h1>
                 <p className="text-sm text-slate-500">
-                  {systemView === 'users' ? 'Administra los accesos al sistema global.' : systemView === 'logs' ? 'Historial global de acciones en el sistema.' : 'Elige el evento que deseas administrar o crea uno nuevo.'}
+                  {systemView === 'users'
+                    ? 'Administra los accesos al sistema global.'
+                    : systemView === 'logs'
+                      ? 'Historial global de acciones en el sistema.'
+                      : systemView === 'archive'
+                        ? 'Solo lectura: registros archivados en Firebase (todos los campos).'
+                        : 'Elige el evento que deseas administrar o crea uno nuevo.'}
                 </p>
               </div>
             </div>
@@ -4884,6 +5114,15 @@ const App = () => {
               {hasAdminRights && systemView !== 'users' && (
                 <button onClick={() => goTo('users', null, 'Summary')} className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl font-bold hover:bg-indigo-100 transition-colors text-xs flex items-center gap-2">
                   <UserCog size={14} /> Usuarios
+                </button>
+              )}
+              {systemView === 'events' && currentUser?.role !== 'Lector' && (
+                <button
+                  type="button"
+                  onClick={() => goTo('archive', null, 'Summary')}
+                  className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors text-xs flex items-center gap-2"
+                >
+                  <Archive size={14} /> Ver archivo
                 </button>
               )}
               {systemView !== 'logs' && currentUser?.role !== 'Lector' && (
@@ -4912,6 +5151,30 @@ const App = () => {
             <div className="-mx-6 -mt-6">{renderUsers()}</div>
           ) : systemView === 'logs' ? (
             <div className="-mx-6 -mt-6">{renderLogs()}</div>
+          ) : systemView === 'archive' ? (
+            <div className="space-y-2 max-w-4xl">
+              <p className="text-xs text-slate-500 mb-2">
+                {archivedParticipantsForView.length} registro(s) archivado(s). Vista de solo lectura.
+              </p>
+              {archivedParticipantsForView.length === 0 ? (
+                <p className="text-sm text-slate-400">No hay registros archivados.</p>
+              ) : (
+                archivedParticipantsForView.map((p) => {
+                  const ev = events.find((e) => e.id === p.eventId);
+                  const summary = `${p.name || '(sin nombre)'} · ${ev?.name || p.eventId || '—'} · ${p.archivedAt ? new Date(p.archivedAt).toLocaleString('es-MX') : '—'}`;
+                  return (
+                    <details key={p.id} className="bg-white border border-slate-200 rounded-lg">
+                      <summary className="px-3 py-2 cursor-pointer text-xs font-bold text-slate-700 hover:bg-slate-50">
+                        {summary}
+                      </summary>
+                      <pre className="px-3 pb-2 pt-0 text-[10px] leading-snug text-slate-600 overflow-x-auto max-h-48 overflow-y-auto border-t border-slate-100 whitespace-pre-wrap break-words">
+                        {JSON.stringify(p, null, 1)}
+                      </pre>
+                    </details>
+                  );
+                })
+              )}
+            </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {visibleEvents.map(ev => {
@@ -5003,7 +5266,9 @@ const App = () => {
             <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center">
               <div className="bg-red-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><ShieldAlert size={32} className="text-red-500" /></div>
               <h3 className="text-xl font-black text-slate-800 mb-2">Eliminar Evento</h3>
-              <p className="text-sm text-slate-500 mb-6">¿Estás seguro de que deseas eliminar <strong>"{deleteEventModal.name}"</strong>? Esta acción no se puede deshacer.</p>
+              <p className="text-sm text-slate-500 mb-6">
+                ¿Estás seguro de que deseas eliminar <strong>&ldquo;{deleteEventModal.name}&rdquo;</strong>? Todos los registros del evento se archivarán antes de borrarlo. Esta acción no se puede deshacer.
+              </p>
               <div className="flex gap-3">
                 <button onClick={() => setDeleteEventModal({ isOpen: false, id: null, name: '' })} className={btnSecondary}>Cancelar</button>
                 <button onClick={confirmDeleteEvent} className="flex-1 py-3 px-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-colors text-sm shadow-lg shadow-red-200">Sí, eliminar</button>
@@ -10243,6 +10508,87 @@ const App = () => {
         </div>
       )}
 
+      {registryConfirmModal.isOpen && registryConfirmModal.type && (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[60] p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !registryConfirmBusy) closeRegistryConfirmModal();
+          }}
+        >
+          <div
+            className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {registryConfirmModal.type === 'delete_donation' || registryConfirmModal.type === 'cancel_entry' ? (
+              <div className="bg-red-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <ShieldAlert size={32} className="text-red-500" />
+              </div>
+            ) : (
+              <div className="bg-amber-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Archive size={32} className="text-amber-600" />
+              </div>
+            )}
+            <h3 className="text-xl font-black text-slate-800 mb-2">
+              {registryConfirmModal.type === 'delete_donation' && 'Eliminar donación'}
+              {registryConfirmModal.type === 'cancel_entry' && 'Dar de baja'}
+              {registryConfirmModal.type === 'archive_waitlist' && 'Archivar lista de espera'}
+              {registryConfirmModal.type === 'archive_roster' && 'Archivar registro'}
+            </h3>
+            <p className="text-sm text-slate-500 mb-6">
+              {registryConfirmModal.type === 'delete_donation' && (
+                <>
+                  ¿Eliminar la donación de{' '}
+                  <strong>${registryConfirmModal.donationAmount.toLocaleString('es-MX')}</strong>? Esta acción no se puede deshacer.
+                </>
+              )}
+              {registryConfirmModal.type === 'cancel_entry' && (
+                <>
+                  ¿Confirmas dar de baja a <strong>{registryConfirmModal.personName}</strong>? Dejará de contar en inscritos; si hubo pagos, puede quedar saldo pendiente de devolución.
+                </>
+              )}
+              {registryConfirmModal.type === 'archive_roster' && (
+                <>
+                  ¿Archivar a <strong>{registryConfirmModal.personName}</strong>? El ID VNPM y los datos personales se conservan para precargar en otros eventos.
+                </>
+              )}
+              {registryConfirmModal.type === 'archive_waitlist' && (
+                <>
+                  ¿Archivar a <strong>{registryConfirmModal.personName}</strong> de la lista de espera? Los datos siguen disponibles para precargar en otros eventos.
+                </>
+              )}
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={closeRegistryConfirmModal}
+                disabled={registryConfirmBusy}
+                className={`flex-1 py-3 px-4 font-bold rounded-xl transition-colors text-sm ${registryConfirmBusy ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-100 hover:bg-slate-200 text-slate-600'}`}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleRegistryConfirmSubmit}
+                disabled={registryConfirmBusy}
+                className={`flex-1 py-3 px-4 text-white font-bold rounded-xl transition-colors text-sm shadow-lg disabled:opacity-60 disabled:cursor-not-allowed ${
+                  registryConfirmModal.type === 'delete_donation' || registryConfirmModal.type === 'cancel_entry'
+                    ? 'bg-red-500 hover:bg-red-600 shadow-red-200'
+                    : 'bg-amber-600 hover:bg-amber-700 shadow-amber-200'
+                }`}
+              >
+                {registryConfirmBusy
+                  ? '…'
+                  : registryConfirmModal.type === 'delete_donation'
+                    ? 'Sí, eliminar'
+                    : registryConfirmModal.type === 'cancel_entry'
+                      ? 'Sí, dar de baja'
+                      : 'Sí, archivar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* PAYMENT MODAL */}
       {paymentModal.isOpen && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -10494,7 +10840,7 @@ const App = () => {
                       </div>
                       {hasAdminRights && (
                         <button
-                          onClick={() => { if (window.confirm(`¿Eliminar donación de $${(don.amount || 0).toLocaleString()}?`)) handleDeleteDonation(don.id); }}
+                          onClick={() => openDeleteDonationConfirm(don)}
                           className="text-red-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors ml-2 flex-shrink-0"
                           title="Eliminar donación"
                         >
