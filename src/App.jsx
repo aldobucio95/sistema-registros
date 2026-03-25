@@ -2938,7 +2938,8 @@ const App = () => {
           ? currentPricing.server
           : currentPricing.global;
           const montoBecado = parseFloat(entry.scholarshipPartialAmount);
-          if (!Number.isFinite(montoBecado) || montoBecado <= 0) return false;
+          // Requerimiento: el monto becado puede ser 0.
+          if (!Number.isFinite(montoBecado) || montoBecado < 0) return false;
           if (montoBecado >= listPrice) return false;
         }
         return true;
@@ -3921,8 +3922,9 @@ const App = () => {
 
     if (currentEvent.eventType === 'Campa' && editedPerson.isScholarship === 'Sí' && editedPerson.scholarshipType === 'partial') {
       const montoBecado = parseFloat(editedPerson.scholarshipPartialAmount || 0);
-      if (!Number.isFinite(montoBecado) || montoBecado <= 0 || montoBecado >= finalRegisteredCost) {
-        showToast('Beca parcial: el monto becado debe ser mayor que 0 y menor que el costo de lista del registro.');
+      // Requerimiento: el monto becado puede ser 0.
+      if (!Number.isFinite(montoBecado) || montoBecado < 0 || montoBecado >= finalRegisteredCost) {
+        showToast('Beca parcial: el monto becado debe ser mayor o igual que 0 y menor que el costo de lista del registro.');
         return;
       }
     }
