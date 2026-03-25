@@ -13,7 +13,7 @@ import {
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBIRKdNeMmaVVofVx4jshciPB-N9J0HqIg",
@@ -515,24 +515,42 @@ function buildArchiveIndexIncomingPayload(person, archivedAt, loc, sourceKind, e
     transportType: person?.transportType || '',
     isScholarship: person?.isScholarship || '',
     scholarshipType: person?.scholarshipType || '',
-    scholarshipPartialAmount: person?.scholarshipPartialAmount,
     isPastorChild: person?.isPastorChild || '',
     pastorChildWithoutPay: person?.pastorChildWithoutPay || '',
     responsivaStatus: person?.responsivaStatus || '',
-    registeredCost: person?.registeredCost,
-    discountCampaignId: person?.discountCampaignId,
-    discountCampaignConcept: person?.discountCampaignConcept,
-    discountCampaignAppliedAt: person?.discountCampaignAppliedAt,
-    paid: person?.paid,
-    paidNet: person?.paidNet,
     statusBeforeArchive: person?.status || 'active',
-    refundPendingAmount: person?.refundPendingAmount,
     willBeBaptized: person?.willBeBaptized,
     baptismSegment: person?.baptismSegment,
     waitlistCreatedAt: person?.waitlistCreatedAt,
     email: person?.email || '',
     notes: person?.notes || '',
   };
+}
+
+const ARCHIVE_INDEX_STRIP_FINANCIAL_KEYS = [
+  'paid',
+  'paidNet',
+  'registeredCost',
+  'discountCampaignId',
+  'discountCampaignConcept',
+  'discountCampaignAppliedAt',
+  'refundPendingAmount',
+  'refundPendingReason',
+  'refundAsDonation',
+  'scholarshipPartialAmount',
+  'whatsAppFinanceNotifications',
+  'paymentHistory',
+  'paymentMethod',
+  'paymentService',
+  'cardReference',
+  'pastorChildSpecialDonationFinanceId',
+];
+
+function stripFinancialFromArchiveIndexDoc(doc) {
+  if (!doc || typeof doc !== 'object') return doc;
+  const o = { ...doc };
+  for (const k of ARCHIVE_INDEX_STRIP_FINANCIAL_KEYS) delete o[k];
+  return o;
 }
 
 /** ID estable para la misma persona entre eventos (se reutiliza al importar perfil). */
@@ -2937,46 +2955,47 @@ const App = () => {
     const incomingTs = Number(archivedAt) || Date.now();
     const snap = await getDoc(ref);
     if (!snap.exists()) {
-      await setDoc(ref, incoming);
+      await setDoc(ref, stripFinancialFromArchiveIndexDoc(incoming));
       return;
     }
     const existing = snap.data();
     const existingTs = Number(existing.archivedAt) || 0;
     const merged = mergeArchivedFirestoreDocs(existing, incoming, existingTs, incomingTs);
-    await setDoc(ref, merged);
+    await setDoc(ref, stripFinancialFromArchiveIndexDoc(merged));
   }, [currentEvent?.name]);
 
   const archiveParticipantToFirestore = useCallback(
-    async (person, loc, { fromWaitlist, sourceKind, eventDisplayName }) => {
+    async (person, loc, { sourceKind, eventDisplayName }) => {
       if (participantIsArchived(person)) return;
       const bajaAt = Date.now();
-      const bajaNotification = {
-        id: `wa-bja-${bajaAt}`,
-        kind: 'baja',
-        amount: 0,
-        pendingAmount: 0,
-        isLiquidado: false,
-        createdAt: bajaAt,
-        sent: false,
-        sentAt: null,
-        message: buildArchiveWhatsAppMessage(person, loc, fromWaitlist, bajaAt, eventDisplayName),
-      };
       const archivePayload = {
         status: PARTICIPANT_STATUS_ARCHIVED,
         archivedAt: bajaAt,
         archivedFromLocation: loc,
         archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
         paymentHistory: [],
-        paid: 0,
-        paidNet: 0,
-        whatsAppFinanceNotifications: [...(person.whatsAppFinanceNotifications || []), bajaNotification],
+        whatsAppFinanceNotifications: [],
         scholarshipPendingApproval: false,
+        paid: deleteField(),
+        paidNet: deleteField(),
+        registeredCost: deleteField(),
+        discountCampaignId: deleteField(),
+        discountCampaignConcept: deleteField(),
+        discountCampaignAppliedAt: deleteField(),
+        refundPendingAmount: deleteField(),
+        refundPendingReason: deleteField(),
+        refundAsDonation: deleteField(),
+        scholarshipPartialAmount: deleteField(),
+        paymentMethod: deleteField(),
+        paymentService: deleteField(),
+        cardReference: deleteField(),
+        pastorChildSpecialDonationFinanceId: deleteField(),
         ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
       };
       await updateDoc(getDocRef('app_participants', String(person.id)), archivePayload);
       await upsertMergedArchiveProfile(person, bajaAt, loc, sourceKind, eventDisplayName);
     },
-    [buildArchiveWhatsAppMessage, globalConfig?.debugSessionId, globalConfig?.isDebugMode, upsertMergedArchiveProfile]
+    [globalConfig?.debugSessionId, globalConfig?.isDebugMode, upsertMergedArchiveProfile]
   );
 
   const confirmDeleteEvent = async () => {
