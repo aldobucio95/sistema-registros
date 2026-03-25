@@ -895,6 +895,23 @@ const App = () => {
     return { global: Number(event.globalCost || 0), server: Number(event.serverCost || 0) };
   }, []);
 
+  const getPricingForDate = useCallback((event, dateMs) => {
+    if (!event) return { global: 0, server: 0 };
+    if (event.pricingType !== 'dynamic' || !Array.isArray(event.dynamicPrices) || event.dynamicPrices.length === 0) {
+      return { global: Number(event.globalCost || 0), server: Number(event.serverCost || 0) };
+    }
+    const tMs = Number(dateMs) || Date.now();
+    const isoDate = new Date(tMs).toISOString().split('T')[0];
+    const sorted = [...event.dynamicPrices].sort((a, b) => a.dateUntil.localeCompare(b.dateUntil));
+    for (const tier of sorted) {
+      if (isoDate <= tier.dateUntil) {
+        return { global: Number(tier.globalCost || 0), server: Number(tier.serverCost || 0) };
+      }
+    }
+    const last = sorted[sorted.length - 1];
+    return { global: Number(last?.globalCost || 0), server: Number(last?.serverCost || 0) };
+  }, []);
+
   const currentPricing = useMemo(() => getPricing(currentEvent), [currentEvent, getPricing]);
   const getActiveDiscountCampaigns = useCallback((eventLike) => {
     const today = new Date().toISOString().split('T')[0];
@@ -1021,6 +1038,7 @@ const App = () => {
   const [filterWhatsAppPending, setFilterWhatsAppPending] = useState("all");
   const [filterServer, setFilterServer] = useState("all");
   const [filterAssignment, setFilterAssignment] = useState("all");
+  const [filterBaptism, setFilterBaptism] = useState('all'); // all | teens | jovenes | no
   const [filtersDropdownOpen, setFiltersDropdownOpen] = useState(false);
   const [globalLocationsDropdownOpen, setGlobalLocationsDropdownOpen] = useState(false);
   const [globalLocationFilters, setGlobalLocationFilters] = useState([]);
@@ -2212,6 +2230,10 @@ const App = () => {
 
   const handleCleanRecentLogs = () => {
     if (!isSuperUser) return;
+    if (globalConfig?.isDebugMode) {
+      showToast('En modo depuración no se pueden borrar logs con menos de 30 días.');
+      return;
+    }
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
     const now = Date.now();
     const logsToDelete = logs.filter((log) => now - extractLogMillis(log) <= thirtyDaysMs);
@@ -3239,6 +3261,15 @@ const App = () => {
         });
       }
       if (filterSwim !== 'all') processedData = processedData.filter((p) => p.canSwim === filterSwim);
+      if (filterBaptism !== 'all') {
+        processedData = processedData.filter((p) => {
+          const seg = getBaptismAccountingSegment(p);
+          if (filterBaptism === 'teens') return seg === 'Teens';
+          if (filterBaptism === 'jovenes') return seg === 'Jóvenes';
+          if (filterBaptism === 'no') return (p.willBeBaptized || 'No') !== 'Sí';
+          return true;
+        });
+      }
       if (filterScholarship === 'partial') processedData = processedData.filter((p) => p.isScholarship === 'Sí' && p.scholarshipType === 'partial');
       else if (filterScholarship === 'total') processedData = processedData.filter((p) => p.isScholarship === 'Sí' && p.scholarshipType !== 'partial');
       else if (filterScholarship === 'No') processedData = processedData.filter((p) => p.isScholarship !== 'Sí');
@@ -3261,7 +3292,7 @@ const App = () => {
       if (sortBy === 'debt-desc') processedData.sort((a, b) => getDebt(b) - getDebt(a));
     }
     return processedData;
-  }, [searchTerm, filterWhatsAppPending, filterFirstTimeId, filterCancelled, filterPendingRefund, filterResponsiva, filterGender, filterTransport, filterPaymentType, filterTravelFrom, filterTravelTo, filterPastorChild, filterWithoutPay, isCampa, filterAssignment, filterSwim, filterScholarship, filterServer, filterMedical, sortBy, getLiquidationTarget, getLastPaymentMethodForFilter]);
+  }, [searchTerm, filterWhatsAppPending, filterFirstTimeId, filterCancelled, filterPendingRefund, filterResponsiva, filterGender, filterTransport, filterPaymentType, filterTravelFrom, filterTravelTo, filterPastorChild, filterWithoutPay, isCampa, filterAssignment, filterSwim, filterBaptism, filterScholarship, filterServer, filterMedical, sortBy, getLiquidationTarget, getLastPaymentMethodForFilter]);
 
   /** Cada fila = un movimiento pendiente de avisar por WhatsApp (registro, abono, promoción, baja, etc.). */
   const getPendingWhatsAppRowsForLocation = useCallback((loc) => {
@@ -4079,13 +4110,15 @@ const App = () => {
   const handleRegistryConfirmSubmit = async () => {
     const m = registryConfirmModal;
     if (!m.isOpen || !m.type) return;
+    if (registryConfirmBusy) return;
     setRegistryConfirmBusy(true);
+    // Cerrar de inmediato para evitar dobles confirmaciones por clicks rápidos.
+    closeRegistryConfirmModal();
     try {
       if (m.type === 'archive_roster') await performArchiveRosterEntry(m.loc, m.personId);
       else if (m.type === 'archive_waitlist') await performArchiveWaitlistEntry(m.loc, m.personId);
       else if (m.type === 'cancel_entry') await performCancelEntry(m.loc, m.personId);
       else if (m.type === 'delete_donation' && m.donationId) await handleDeleteDonation(m.donationId);
-      closeRegistryConfirmModal();
     } catch (e) {
       console.error(e);
       showToast('No se pudo completar la acción. Revisa conexión o permisos.');
@@ -4099,6 +4132,7 @@ const App = () => {
       showToast("Solo administradores pueden eliminar registros.");
       return;
     }
+    if (registryConfirmBusy) return;
     const person = (data[loc] || []).find((p) => String(p.id) === String(id));
     if (!person) return;
     setRegistryConfirmModal({
@@ -4117,6 +4151,7 @@ const App = () => {
       showToast("No tienes permisos para modificar lista de espera en esta sede/evento.");
       return;
     }
+    if (registryConfirmBusy) return;
     const person = (waitlistData[loc] || []).find((p) => String(p.id) === String(id));
     if (!person) return;
     setRegistryConfirmModal({
@@ -4135,6 +4170,7 @@ const App = () => {
       showToast("Solo administradores pueden dar de baja registros.");
       return;
     }
+    if (registryConfirmBusy) return;
     const person = (data[loc] || []).find((p) => String(p.id) === String(id));
     if (!person) return;
     setRegistryConfirmModal({
@@ -4516,7 +4552,45 @@ const App = () => {
             historyChanged = true;
           }
         }
-        const regPayload = { registeredAt: iso, paymentService: serviceForNewInstant, ...debugExtras };
+
+        // Requerimiento: al editar manualmente la fecha, el costo a pagar debe reflejar la fecha nueva,
+        // considerando tanto el precio dinámico como la vigencia de campañas de descuento.
+        const newAnchorMs = dNew.getTime();
+        const isoDate = new Date(newAnchorMs).toISOString().split('T')[0];
+        const pricingForNewDate = getPricingForDate(currentEvent, newAnchorMs);
+        const baseNew = getPersonCost(person, pricingForNewDate);
+
+        const selectedCampaignId = String(person.discountCampaignId || '').trim();
+        const selectedCampaignConcept = String(person.discountCampaignConcept || '').trim();
+        const campaignById = selectedCampaignId ? findDiscountCampaignById(currentEvent, selectedCampaignId) : null;
+        const campaignByConcept = !campaignById && selectedCampaignConcept && Array.isArray(currentEvent?.discountCampaigns)
+          ? currentEvent.discountCampaigns.find(c =>
+            String(c?.concept || '').trim() === selectedCampaignConcept &&
+            campaignMatchesPersonProfile(c, person)
+          ) || null
+          : null;
+        const selectedCampaign = campaignById || campaignByConcept;
+
+        const hasDiscountSelection = selectedCampaignId !== '' || selectedCampaignConcept !== '';
+        const campaignAppliesOnNewDate =
+          selectedCampaign &&
+          campaignMatchesPersonProfile(selectedCampaign, person) &&
+          (!discountCampaignHasDateRange(selectedCampaign) || isDiscountCampaignVigenteOnDate(selectedCampaign, isoDate));
+
+        let nextRegisteredCost = baseNew;
+        if (hasDiscountSelection) {
+          // Si la campaña no aplica por vigencia/fechas, se revierte al costo base del evento para esa fecha.
+          nextRegisteredCost = campaignAppliesOnNewDate
+            ? Math.max(0, Number(selectedCampaign?.finalAmount) || 0)
+            : baseNew;
+        }
+
+        const regPayload = {
+          registeredAt: iso,
+          paymentService: serviceForNewInstant,
+          registeredCost: nextRegisteredCost,
+          ...debugExtras
+        };
         if (historyChanged) regPayload.paymentHistory = hist;
         await updateDoc(getDocRef('app_participants', String(personId)), regPayload);
         addLog(
@@ -4546,10 +4620,60 @@ const App = () => {
         const d = new Date(iso);
         const serviceForPayment = getAutoPaymentService(d);
         hist[idx] = { ...row, recordedAt: iso, date: d.toLocaleString('es-MX'), service: serviceForPayment };
-        await updateDoc(getDocRef('app_participants', String(personId)), {
+
+        // Si el pago editado estaba "anclado" al registro (o no existía registeredAt y es el primer pago),
+        // entonces el costo final (precio dinámico) debe recalcularse usando esta nueva fecha.
+        const firstPayIdx = hist.findIndex((r) => r && r.kind !== 'comment');
+        const oldRegIso = person.registeredAt;
+        const oldRegMs = parseFlexibleInstantMs(oldRegIso);
+        const rowOldMs = parseFlexibleInstantMs(row.recordedAt) ?? (typeof row.id === 'number' && Number.isFinite(row.id) ? row.id : null);
+
+        const isTiedToRegistration =
+          (oldRegIso && row.recordedAt && String(row.recordedAt).trim() === String(oldRegIso).trim()) ||
+          (oldRegMs != null && rowOldMs != null && Math.abs(oldRegMs - rowOldMs) <= 5000) ||
+          (!oldRegIso && idx === firstPayIdx);
+
+        let nextRegisteredCost = null;
+        if (isTiedToRegistration) {
+          // Requerimiento: al editar manualmente la fecha del pago anclado al registro,
+          // el costo a pagar debe reflejar la fecha nueva, incluyendo vigencia de campañas.
+          const anchorNewMs = d.getTime();
+          const isoDate = new Date(anchorNewMs).toISOString().split('T')[0];
+          const pricingForNewDate = getPricingForDate(currentEvent, anchorNewMs);
+          const baseNew = getPersonCost(person, pricingForNewDate);
+
+          const selectedCampaignId = String(person.discountCampaignId || '').trim();
+          const selectedCampaignConcept = String(person.discountCampaignConcept || '').trim();
+          const campaignById = selectedCampaignId ? findDiscountCampaignById(currentEvent, selectedCampaignId) : null;
+          const campaignByConcept = !campaignById && selectedCampaignConcept && Array.isArray(currentEvent?.discountCampaigns)
+            ? currentEvent.discountCampaigns.find(c =>
+              String(c?.concept || '').trim() === selectedCampaignConcept &&
+              campaignMatchesPersonProfile(c, person)
+            ) || null
+            : null;
+          const selectedCampaign = campaignById || campaignByConcept;
+
+          const hasDiscountSelection = selectedCampaignId !== '' || selectedCampaignConcept !== '';
+          const campaignAppliesOnNewDate =
+            selectedCampaign &&
+            campaignMatchesPersonProfile(selectedCampaign, person) &&
+            (!discountCampaignHasDateRange(selectedCampaign) || isDiscountCampaignVigenteOnDate(selectedCampaign, isoDate));
+
+          nextRegisteredCost = baseNew;
+          if (hasDiscountSelection) {
+            nextRegisteredCost = campaignAppliesOnNewDate
+              ? Math.max(0, Number(selectedCampaign?.finalAmount) || 0)
+              : baseNew;
+          }
+        }
+
+        const payload = {
           paymentHistory: hist,
+          ...(isTiedToRegistration ? { registeredAt: iso } : {}),
+          ...(nextRegisteredCost != null ? { registeredCost: nextRegisteredCost } : {}),
           ...debugExtras,
-        });
+        };
+        await updateDoc(getDocRef('app_participants', String(personId)), payload);
         addLog(
           'Sistema',
           `SuperUsuario ajustó la fecha de un movimiento en el historial de pagos de ${person.name || 'participante'} (sede ${locLabel}).`,
@@ -4786,8 +4910,26 @@ const App = () => {
 
   const deleteSelectedLogs = async () => {
     if (selectedLogs.size === 0) return;
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const isDebug = !!globalConfig?.isDebugMode;
+    const logsById = new Map(logs.map((l) => [String(l.id), l]));
+
+    let deletedCount = 0;
+    let blockedCount = 0;
+
     for (const id of selectedLogs) {
+      const log = logsById.get(String(id));
+      const ageMs = log ? now - extractLogMillis(log) : null;
+      const isRecent = ageMs != null ? ageMs <= thirtyDaysMs : false;
+
+      if (isDebug && isRecent) {
+        blockedCount += 1;
+        continue;
+      }
+
       await deleteDoc(getDocRef('app_logs', String(id)));
+      deletedCount += 1;
     }
     const createdAtDel = Date.now();
     const logEntry = {
@@ -4798,11 +4940,15 @@ const App = () => {
       timestamp: new Date().toLocaleString('es-MX'),
       username: currentUser?.username || 'Sistema',
       action: 'Borrado Selectivo',
-      details: `El SuperUsuario eliminó ${selectedLogs.size} registro(s) de actividad.`,
+      details: `El SuperUsuario intentó borrar ${selectedLogs.size} registro(s) de actividad. Eliminados: ${deletedCount}. Protegidos (< 30 días en depuración): ${blockedCount}.`,
       isHidden: true,
     };
     await setDoc(getDocRef('app_logs', String(logEntry.id)), logEntry);
-    showToast(`Se eliminaron ${selectedLogs.size} logs.`);
+    if (blockedCount > 0 && isDebug) {
+      showToast(`Se eliminaron ${deletedCount} logs. En depuración, se protegieron ${blockedCount} log(s) recientes (< 30 días).`);
+    } else {
+      showToast(`Se eliminaron ${deletedCount} logs.`);
+    }
     setSelectedLogs(new Set());
   };
 
@@ -4964,7 +5110,14 @@ const App = () => {
                 </button>
               )}
               {hasAdminRights && selectedLogs.size === 0 && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanOld', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
-              {isSuperUser && selectedLogs.size === 0 && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanRecent', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-500 text-white hover:bg-red-600 border border-red-600 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200"><Trash2 size={14} /> Limpiar &lt; 30 días</button>}
+              {isSuperUser && selectedLogs.size === 0 && !globalConfig?.isDebugMode && (
+                <button
+                  onClick={() => setRestoreModal({ isOpen: true, type: 'cleanRecent', log: null })}
+                  className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-500 text-white hover:bg-red-600 border border-red-600 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200"
+                >
+                  <Trash2 size={14} /> Limpiar &lt; 30 días
+                </button>
+              )}
               <span className="bg-slate-100 text-slate-500 text-xs font-bold px-3 py-1 rounded-full">{displayedLogs.length} eventos</span>
             </div>
           </div>
@@ -6947,6 +7100,81 @@ const App = () => {
 
     return (
       <div className="p-6 space-y-8 animate-in fade-in duration-500">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <h1 className="text-2xl font-black text-slate-800">Resumen General</h1>
+
+          <div className="relative" data-dropdown-root="view-settings">
+            <button
+              onClick={() => setShowViewSettings(!showViewSettings)}
+              className={`flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold transition-colors ${showViewSettings ? 'bg-indigo-100 text-indigo-600' : 'text-slate-500 hover:bg-slate-100'}`}
+              title="Configurar Vista"
+            >
+              <SlidersHorizontal size={14} />
+              <span className="hidden sm:inline">Vista</span>
+            </button>
+
+            {showViewSettings && (
+              <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-2xl shadow-xl border border-slate-100 p-4 z-50 animate-in slide-in-from-top-2">
+                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 border-b border-slate-100 pb-2">Configurar Resumen</h4>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = Object.keys(defaultViewPrefs).reduce((acc, k) => ({ ...acc, [k]: true }), {});
+                      setViewPrefs(next);
+                      if (currentUser?.id) localStorage.setItem(`vina_prefs_${currentUser.id}`, JSON.stringify(next));
+                    }}
+                    className="py-1.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-black uppercase tracking-wider"
+                  >
+                    Activar todas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = Object.keys(defaultViewPrefs).reduce((acc, k) => ({ ...acc, [k]: false }), {});
+                      setViewPrefs(next);
+                      if (currentUser?.id) localStorage.setItem(`vina_prefs_${currentUser.id}`, JSON.stringify(next));
+                    }}
+                    className="py-1.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-black uppercase tracking-wider"
+                  >
+                    Desactivar
+                  </button>
+                </div>
+
+                <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+                  {[
+                    { key: 'statsConfig', label: 'Tarjetas Principales' },
+                    { key: 'chartLocations', label: 'Gráfica: Sedes' },
+                    { key: 'chartIncome', label: 'Gráfica: Ingresos' },
+                    { key: 'chartPaymentStatus', label: 'Gráfica: Estado de Pagos' },
+                    { key: 'chartGender', label: 'Gráfica: Género' },
+                    { key: 'chartAgeBrackets', label: 'Gráfica: Rangos de Edad' },
+                    { key: 'chartBloodType', label: 'Gráfica: Tipo de Sangre', show: isCampa },
+                    { key: 'chartScholarship', label: 'Gráfica: Becas', show: isCampa },
+                    { key: 'chartSwimming', label: 'Gráfica: Nado', show: isCampa },
+                    { key: 'chartMedical', label: 'Gráfica: Salud', show: isCampa },
+                    { key: 'chartServers', label: 'Gráfica: Servidores', show: isCampa },
+                    { key: 'chartAges', label: 'Gráfica: Asignación', show: isCampa },
+                    { key: 'chartBaptism', label: 'Gráfica: Bautizos', show: isCampa },
+                    { key: 'chartCustom', label: 'Gráfica: Campos Extra', show: isGeneral && currentEvent?.customFields?.length > 0 },
+                    { key: 'tableDetails', label: 'Tabla de Desglose General' },
+                  ]
+                    .filter(item => item.show !== false)
+                    .map(item => (
+                      <label key={item.key} className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-50 rounded-xl transition-colors">
+                        <span className="text-xs font-bold text-slate-600">{item.label}</span>
+                        <div className="relative flex items-center">
+                          <input type="checkbox" className="sr-only peer" checked={viewPrefs[item.key] !== false} onChange={() => togglePref(item.key)} />
+                          <div className="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-500"></div>
+                        </div>
+                      </label>
+                    ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
         {summaryRosterModal.isOpen && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-3xl w-full max-w-5xl max-h-[85vh] overflow-hidden shadow-2xl">
@@ -8382,8 +8610,8 @@ const App = () => {
         </div>
       )}
 
-      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col xl:flex-row gap-4 justify-between items-center">
-        <div className="w-full xl:w-1/3 space-y-2">
+      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col gap-3">
+        <div className="w-full lg:w-1/3 space-y-2">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
             <input type="text" placeholder="Nombre, teléfono o ID VNPM…" className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
@@ -8392,7 +8620,7 @@ const App = () => {
             Coincidencias: <span className="text-indigo-700">{visibleParticipants.length}</span>
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
+        <div className="flex flex-wrap items-center gap-2 w-full">
           <button onClick={() => exportPendingWhatsAppToExcel(loc)} className="flex items-center gap-2 bg-indigo-50 text-indigo-700 px-3 py-2 rounded-xl border border-indigo-100 hover:bg-indigo-100 transition-colors text-xs font-black uppercase tracking-wider">
             <Download size={14} /> WhatsApp pendientes de enviar ({getPendingWhatsAppRowsForLocation(loc).length})
           </button>
@@ -8610,6 +8838,25 @@ const App = () => {
                       ))}
                     </div>
                     <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Bautizo</p>
+                      {[
+                        { id: 'all', label: 'Todos' },
+                        { id: 'teens', label: 'Si se bautiza en Teens' },
+                        { id: 'jovenes', label: 'Si se bautiza en Jóvenes' },
+                        { id: 'no', label: 'No se bautiza' },
+                      ].map((op) => (
+                        <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded accent-indigo-600"
+                            checked={filterBaptism === op.id}
+                            onChange={() => setFilterBaptism(filterBaptism === op.id ? 'all' : op.id)}
+                          />
+                          {op.label}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
                       <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Servidor</p>
                       {[
                         { id: 'all', label: 'Todos' },
@@ -8647,6 +8894,7 @@ const App = () => {
                       setFilterScholarship('all');
                       setFilterMedical('all');
                       setFilterSwim('all');
+                      setFilterBaptism('all');
                       setFilterServer('all');
                     }}
                     className="w-full py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-black text-slate-700 transition-colors"
@@ -8657,7 +8905,7 @@ const App = () => {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><ArrowUpDown size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="none">Ordenar...</option><option value="name-asc">Nombre (A-Z)</option><option value="name-desc">Nombre (Z-A)</option><option value="age-asc">Edad (Menor a Mayor)</option><option value="age-desc">Edad (Mayor a Menor)</option><option value="debt-asc">Deuda (Menor a Mayor)</option><option value="debt-desc">Deuda (Mayor a Menor)</option></select></div>
+          <div className="w-full flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200"><ArrowUpDown size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="none">Ordenar...</option><option value="name-asc">Nombre (A-Z)</option><option value="name-desc">Nombre (Z-A)</option><option value="age-asc">Edad (Menor a Mayor)</option><option value="age-desc">Edad (Mayor a Menor)</option><option value="debt-asc">Deuda (Menor a Mayor)</option><option value="debt-desc">Deuda (Mayor a Menor)</option></select></div>
         </div>
       </div>
 
@@ -8700,32 +8948,32 @@ const App = () => {
                               <p className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
                                 <span>{person.name}</span>
                                 {person.alias ? (
-                                  <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">
+                                  <span className="text-[8px] font-black uppercase bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
                                     Alias: {person.alias}
                                   </span>
                                 ) : null}
                                 {person.isFirstVnpId ? (
-                                  <span className="text-[8px] font-black uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded">
-                                    Primera vez
+                                  <span className="text-[8px] font-black uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center justify-center">
+                                    1
                                   </span>
                                 ) : null}
                                 {participantIsCancelled(person) ? (
-                                  <span className="text-[8px] font-black uppercase bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0.5 rounded">
+                                  <span className="text-[8px] font-black uppercase bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
                                     Cancelado
                                   </span>
                                 ) : null}
                                 {(Number(person?.refundPendingAmount || 0) || 0) > 0 ? (
-                                  <span className="text-[8px] font-black uppercase bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded">
+                                  <span className="text-[8px] font-black uppercase bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
                                     Devolución pendiente
                                   </span>
                                 ) : null}
                                 {resolveResponsivaStatus(person) === 'Pendiente' ? (
-                                  <span className="text-[8px] font-black uppercase bg-rose-50 text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded">
+                                  <span className="text-[8px] font-black uppercase bg-rose-50 text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
                                     Responsiva pendiente
                                   </span>
                                 ) : null}
                                 {person._isDebug && person._debugSessionId === globalConfig?.debugSessionId && (
-                                  <Bug size={14} className="text-orange-500 inline-block" title="Cambio no permanente" />
+                                  <Bug size={14} className="text-orange-500 inline-block ml-auto flex-shrink-0" title="Cambio no permanente" />
                                 )}
                               </p>
                               {isBecado && (
@@ -9174,12 +9422,12 @@ const App = () => {
           </div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col xl:flex-row gap-4 justify-between items-center">
-          <div className="relative w-full xl:w-1/3">
+        <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col gap-3">
+          <div className="relative w-full lg:w-1/3">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
             <input type="text" placeholder="Nombre, teléfono o ID VNPM…" className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
           </div>
-          <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
+          <div className="flex flex-wrap items-center gap-2 w-full">
             <div className="relative flex-1 lg:flex-none" data-dropdown-root="filters">
               <button
                 type="button"
@@ -9269,6 +9517,17 @@ const App = () => {
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Va sin pagar</p>{['all', 'Sí', 'No'].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterWithoutPay === op} onChange={() => setFilterWithoutPay(filterWithoutPay === op ? 'all' : op)} />{op === 'all' ? 'Todos' : op}</label>))}</div>
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Salud</p>{[{ id: 'all', label: 'Todos' }, { id: 'allergy', label: 'Con alergias' }, { id: 'disease', label: 'Con enfermedades' }, { id: 'disability', label: 'Con discapacidades' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterMedical === op.id} onChange={() => setFilterMedical(filterMedical === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Nado</p>{['all', 'Sí', 'No'].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterSwim === op} onChange={() => setFilterSwim(filterSwim === op ? 'all' : op)} />{op === 'all' ? 'Todos' : op}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Bautizo</p>{[
+                        { id: 'all', label: 'Todos' },
+                        { id: 'teens', label: 'Si se bautiza en Teens' },
+                        { id: 'jovenes', label: 'Si se bautiza en Jóvenes' },
+                        { id: 'no', label: 'No se bautiza' },
+                      ].map((op) => (
+                        <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterBaptism === op.id} onChange={() => setFilterBaptism(filterBaptism === op.id ? 'all' : op.id)} />
+                          {op.label}
+                        </label>
+                      ))}</div>
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Servidor</p>{[{ id: 'all', label: 'Todos' }, { id: 'Sí', label: 'Servidores' }, { id: 'No', label: 'Camperos' }, { id: 'Teens', label: 'Asig. Teens' }, { id: 'Jóvenes', label: 'Asig. Jóvenes' }, { id: 'Ambos', label: 'Asig. Ambos' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterServer === op.id} onChange={() => setFilterServer(filterServer === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
                     </>
                   )}
@@ -9292,6 +9551,7 @@ const App = () => {
                         setFilterScholarship('all');
                         setFilterMedical('all');
                         setFilterSwim('all');
+                        setFilterBaptism('all');
                         setFilterServer('all');
                       }}
                       className="w-full py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-black text-slate-700 transition-colors"
@@ -9346,7 +9606,7 @@ const App = () => {
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none">
+            <div className="w-full flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
               <ArrowUpDown size={14} className="text-slate-400" />
               <select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={sortBy} onChange={e => setSortBy(e.target.value)}>
                 <option value="none">Ordenar...</option>
@@ -9656,111 +9916,78 @@ const App = () => {
             </div>
           </div>
           
-          <div className="flex items-center gap-1 md:gap-2 flex-shrink-0 relative">
-            <div className="hidden lg:flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
-            
-            <button type="button" onClick={() => goTo('events', null, "Summary")} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Cambiar de Evento">
-              <LayoutDashboard size={14} /><span className="hidden sm:inline">Eventos</span>
-            </button>
-            {hasAdminRights && (
-              <button type="button" onClick={() => goTo('users', null, 'Summary')} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Gestión de Usuarios">
-                <UserCog size={14} /><span className="hidden sm:inline">Usuarios</span>
+          <div className="flex items-start gap-2 flex-shrink-0">
+            <div className="flex flex-wrap items-center justify-end gap-1 md:gap-2">
+              <button type="button" onClick={() => goTo('events', null, "Summary")} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Cambiar de Evento">
+                <LayoutDashboard size={14} /><span className="hidden sm:inline">Eventos</span>
               </button>
-            )}
-            {currentUser?.role !== 'Lector' && (
-              <button onClick={() => goTo('logs', null, 'Summary')} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors" title="Logs Globales">
-                <History size={14} /><span className="hidden sm:inline">Logs</span>
-              </button>
-            )}
-
-            {/* BOTÓN EXPORTAR EXCEL */}
-            <button onClick={handleExportExcel} disabled={isExporting} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-green-700 bg-green-100 hover:bg-green-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Exportar Todo a Excel">
-              {isExporting ? <span className="animate-spin">⏳</span> : <FileSpreadsheet size={14} />}
-              <span className="hidden sm:inline">{isExporting ? 'Generando...' : 'Exportar Excel'}</span>
-            </button>
-            
-            {hasFinancialAccess && (
-              <button onClick={() => setShowMoney(!showMoney)} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors" title={showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}>{showMoney ? <EyeOff size={14} /> : <Eye size={14} />}<span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span></button>
-            )}
-            
-            {activeTab === "Summary" && (
-              <div className="relative" data-dropdown-root="view-settings">
-                <button onClick={() => setShowViewSettings(!showViewSettings)} className={`flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold transition-colors ${showViewSettings ? 'bg-indigo-100 text-indigo-600' : 'text-slate-500 hover:bg-slate-100'}`} title="Configurar Vista">
-                  <SlidersHorizontal size={14} /><span className="hidden sm:inline">Vista</span>
+              {hasAdminRights && (
+                <button type="button" onClick={() => goTo('users', null, 'Summary')} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Gestión de Usuarios">
+                  <UserCog size={14} /><span className="hidden sm:inline">Usuarios</span>
                 </button>
-                {showViewSettings && (
-                  <>
-                    <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-2xl shadow-xl border border-slate-100 p-4 z-50 animate-in slide-in-from-top-2">
-                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 border-b border-slate-100 pb-2">Configurar Resumen</h4>
-                      <div className="grid grid-cols-2 gap-2 mb-3">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const next = Object.keys(defaultViewPrefs).reduce((acc, k) => ({ ...acc, [k]: true }), {});
-                            setViewPrefs(next);
-                            if (currentUser?.id) localStorage.setItem(`vina_prefs_${currentUser.id}`, JSON.stringify(next));
-                          }}
-                          className="py-1.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-black uppercase tracking-wider"
-                        >
-                          Activar todas
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const next = Object.keys(defaultViewPrefs).reduce((acc, k) => ({ ...acc, [k]: false }), {});
-                            setViewPrefs(next);
-                            if (currentUser?.id) localStorage.setItem(`vina_prefs_${currentUser.id}`, JSON.stringify(next));
-                          }}
-                          className="py-1.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-black uppercase tracking-wider"
-                        >
-                          Desactivar
-                        </button>
-                      </div>
-                      <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
-                        {[
-                          { key: 'statsConfig', label: 'Tarjetas Principales' },
-                          { key: 'chartLocations', label: 'Gráfica: Sedes' },
-                          { key: 'chartIncome', label: 'Gráfica: Ingresos' },
-                          { key: 'chartPaymentStatus', label: 'Gráfica: Estado de Pagos' },
-                          { key: 'chartGender', label: 'Gráfica: Género' },
-                          { key: 'chartAgeBrackets', label: 'Gráfica: Rangos de Edad' },
-                          { key: 'chartBloodType', label: 'Gráfica: Tipo de Sangre', show: isCampa },
-                          { key: 'chartScholarship', label: 'Gráfica: Becas', show: isCampa },
-                          { key: 'chartSwimming', label: 'Gráfica: Nado', show: isCampa },
-                          { key: 'chartMedical', label: 'Gráfica: Salud', show: isCampa },
-                          { key: 'chartServers', label: 'Gráfica: Servidores', show: isCampa },
-                          { key: 'chartAges', label: 'Gráfica: Asignación', show: isCampa },
-                          { key: 'chartBaptism', label: 'Gráfica: Bautizos', show: isCampa },
-                          { key: 'chartCustom', label: 'Gráfica: Campos Extra', show: isGeneral && currentEvent?.customFields?.length > 0 },
-                          { key: 'tableDetails', label: 'Tabla de Desglose General' },
-                        ].filter(item => item.show !== false).map(item => (
-                          <label key={item.key} className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-50 rounded-xl transition-colors">
-                            <span className="text-xs font-bold text-slate-600">{item.label}</span>
-                            <div className="relative flex items-center">
-                              <input type="checkbox" className="sr-only peer" checked={viewPrefs[item.key] !== false} onChange={() => togglePref(item.key)} />
-                              <div className="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-500"></div>
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
+              )}
 
-            <div className="bg-slate-100 rounded-full p-1 hidden sm:flex ml-1">
-              <button type="button" onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button>
-              {isCampa && isPanelNavSectionAllowed('serversPage') && <button type="button" onClick={() => goTo(systemView, selectedEventId, "ServersPage")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'ServersPage' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Servidores</button>}
-              {hasAdminRights && isPanelNavSectionAllowed('becados') && <button type="button" onClick={() => goTo(systemView, selectedEventId, 'Becados')} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Becados' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Becados</button>}
-              {isPanelNavSectionAllowed('registroGlobal') && <button type="button" onClick={() => goTo(systemView, selectedEventId, 'RegistroGlobal')} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'RegistroGlobal' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Registro Global</button>}
-              {hasAdminRights && isPanelNavSectionAllowed('cashCut') && <button type="button" onClick={() => goTo(systemView, selectedEventId, "CashCut")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'CashCut' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Corte de Caja</button>}
-              {canAccessExpenses && isPanelNavSectionAllowed('expenseList') && <button type="button" onClick={() => goTo(systemView, selectedEventId, "ExpenseList")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'ExpenseList' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Gastos</button>}
+              {/* BOTÓN EXPORTAR EXCEL */}
+              <button onClick={handleExportExcel} disabled={isExporting} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-green-700 bg-green-100 hover:bg-green-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Exportar Todo a Excel">
+                {isExporting ? <span className="animate-spin">⏳</span> : <FileSpreadsheet size={14} />}
+                <span className="hidden sm:inline">{isExporting ? 'Generando...' : 'Exportar Excel'}</span>
+              </button>
+              
+              {hasFinancialAccess && (
+                <button
+                  onClick={() => setShowMoney(!showMoney)}
+                  className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors"
+                  title={showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}
+                >
+                  {showMoney ? <EyeOff size={14} /> : <Eye size={14} />}
+                  <span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span>
+                </button>
+              )}
+
+              {/* Depurar / Logs / Salir (siempre a la izquierda del username). */}
+              {isSuperUser && (
+                <button
+                  type="button"
+                  onClick={toggleDebugMode}
+                  className={`flex items-center gap-1 md:gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold transition-colors shadow-sm ${
+                    globalConfig?.isDebugMode
+                      ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-red-200'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-500'
+                  }`}
+                  title="Modo de prueba aislada"
+                >
+                  <Bug size={14} />
+                  <span className="hidden sm:inline">
+                    {globalConfig?.isDebugMode ? 'Salir Depuración' : 'Depurar'}
+                  </span>
+                </button>
+              )}
+
+              {currentUser?.role !== 'Lector' && (
+                <button
+                  onClick={() => goTo('logs', null, 'Summary')}
+                  className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
+                  title="Logs Globales"
+                >
+                  <History size={14} /><span className="hidden sm:inline">Logs</span>
+                </button>
+              )}
+
+              <button
+                onClick={handleLogout}
+                className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-red-500 bg-red-50 hover:bg-red-100 transition-colors"
+                title="Cerrar Sesión"
+              >
+                <LogOut size={14} /><span className="hidden sm:inline">Salir</span>
+              </button>
             </div>
-            
-            <button onClick={handleLogout} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-red-500 bg-red-50 hover:bg-red-100 transition-colors ml-1" title="Cerrar Sesión">
-              <LogOut size={14} /><span className="hidden sm:inline">Salir</span>
-            </button>
+
+            <div className="flex flex-col items-end gap-2">
+              <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200">
+                <UserCircle size={16} className="text-slate-400" />
+                <span className="text-xs font-bold text-slate-600 max-w-[180px] truncate">{currentUser.username}</span>
+              </div>
+            </div>
           </div>
         </header>
         {activeTab === "Summary" && renderSummary()}
@@ -10448,14 +10675,17 @@ const App = () => {
                 </div>
               </div>
             )}
-            <div className="mt-5 p-4 rounded-2xl border border-amber-200 bg-amber-50/40 space-y-3">
-              <p className="text-xs font-black text-amber-800 uppercase tracking-wider">Campañas de descuento</p>
-              <p className="text-[11px] text-amber-700">
+            <div className={`mt-5 p-4 rounded-2xl border space-y-3 ${pricingForm.type === 'fixed' ? 'border-indigo-200 bg-indigo-50/50' : 'border-amber-200 bg-amber-50/40'}`}>
+              <p className={`text-xs font-black uppercase tracking-wider ${pricingForm.type === 'fixed' ? 'text-indigo-800' : 'text-amber-800'}`}>Campañas de descuento</p>
+              <p className={`text-[11px] ${pricingForm.type === 'fixed' ? 'text-indigo-700' : 'text-amber-700'}`}>
                 Define concepto y monto a liquidar. <strong>Inicio y fin son opcionales:</strong> con ambas fechas, la campaña puede aplicarse sola cuando esté vigente; sin fechas completas, solo al elegirla en el alta (pago) o al editar un registro.
               </p>
               <div className="space-y-2 max-h-56 overflow-y-auto">
                 {(pricingForm.campaigns || []).map((c, idx) => (
-                  <div key={c.id} className="grid grid-cols-1 md:grid-cols-6 gap-2 bg-white p-2 rounded-xl border border-amber-100 items-end">
+                  <div
+                    key={c.id}
+                    className={`grid grid-cols-1 md:grid-cols-6 gap-2 bg-white p-2 rounded-xl border items-end ${pricingForm.type === 'fixed' ? 'border-indigo-100' : 'border-amber-100'}`}
+                  >
                     <input className={`${inputClasses} md:col-span-2`} placeholder="Concepto" value={c.concept || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], concept: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
                     <select className={inputClasses} value={c.appliesTo || 'all'} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], appliesTo: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }}>
                       <option value="all">Todos</option>
@@ -10464,12 +10694,12 @@ const App = () => {
                     </select>
                     <input type="number" className={inputClasses} placeholder="Liquidar $" value={c.finalAmount || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], finalAmount: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
                     <div className="space-y-0.5">
-                      <label className="text-[9px] font-bold text-amber-800/80 uppercase tracking-wide">Inicio (opcional)</label>
+                      <label className={`text-[9px] font-bold uppercase tracking-wide ${pricingForm.type === 'fixed' ? 'text-indigo-800/80' : 'text-amber-800/80'}`}>Inicio (opcional)</label>
                       <input type="date" className={inputClasses} value={c.startDate || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], startDate: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
                     </div>
                     <div className="flex items-end gap-2">
                       <div className="flex-1 space-y-0.5 min-w-0">
-                        <label className="text-[9px] font-bold text-amber-800/80 uppercase tracking-wide">Fin (opcional)</label>
+                        <label className={`text-[9px] font-bold uppercase tracking-wide ${pricingForm.type === 'fixed' ? 'text-indigo-800/80' : 'text-amber-800/80'}`}>Fin (opcional)</label>
                         <input type="date" className={inputClasses} value={c.endDate || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], endDate: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
                       </div>
                       <button type="button" onClick={() => setPricingForm({ ...pricingForm, campaigns: (pricingForm.campaigns || []).filter((_, i) => i !== idx) })} className="p-2 text-red-500 hover:bg-red-50 rounded-lg"><Trash2 size={16} /></button>
@@ -10477,7 +10707,11 @@ const App = () => {
                   </div>
                 ))}
               </div>
-              <button type="button" onClick={() => setPricingForm({ ...pricingForm, campaigns: [...(pricingForm.campaigns || []), { id: Date.now(), concept: '', appliesTo: 'all', finalAmount: 0, startDate: '', endDate: '', enabled: true }] })} className="w-full py-2 border border-dashed border-amber-300 text-amber-700 rounded-xl font-bold text-xs hover:bg-amber-100 transition-colors">
+              <button
+                type="button"
+                onClick={() => setPricingForm({ ...pricingForm, campaigns: [...(pricingForm.campaigns || []), { id: Date.now(), concept: '', appliesTo: 'all', finalAmount: 0, startDate: '', endDate: '', enabled: true }] })}
+                className={`w-full py-2 border border-dashed rounded-xl font-bold text-xs transition-colors ${pricingForm.type === 'fixed' ? 'border-indigo-300 text-indigo-700 hover:bg-indigo-100' : 'border-amber-300 text-amber-700 hover:bg-amber-100'}`}
+              >
                 + Añadir campaña
               </button>
             </div>
