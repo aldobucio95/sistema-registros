@@ -558,7 +558,22 @@ const normalizeIdText = (txt) =>
   String(txt || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    // ñ/Ñ no se separan en NFD; unificar a N para el algoritmo (solo A–Z en el ID).
+    .replace(/\u00f1/gi, 'n')
+    // ß → SS al pasar a mayúsculas
+    .replace(/ß/g, 'ss')
     .toUpperCase();
+
+/** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A–Z0–9). */
+const canonicalizeVnpPersonId = (raw) => {
+  const t = String(raw || '').trim();
+  if (!t) return '';
+  const m = t.match(/^VNPM-(.*)$/i);
+  if (!m) return t;
+  const rest = normalizeIdText(m[1]).replace(/[^A-Z0-9]/g, '');
+  if (!rest) return '';
+  return `VNPM-${rest}`;
+};
 
 const generateVnpPersonId = (personLike = {}) => {
   const omit = new Set(['DE', 'DEL', 'LA', 'LAS', 'LOS', 'Y', 'MC', 'MAC']);
@@ -582,7 +597,8 @@ const generateVnpPersonId = (personLike = {}) => {
   const genderRaw = normalizeIdText(personLike?.gender || '');
   const genderSuffix = genderRaw.startsWith('H') ? 'H' : (genderRaw.startsWith('M') ? 'M' : 'X');
 
-  return `VNPM-${firstSurname2}${secondSurname1}${firstName1}${yymmdd}${genderSuffix}`;
+  const suffix = `${firstSurname2}${secondSurname1}${firstName1}${yymmdd}${genderSuffix}`.replace(/[^A-Z0-9]/g, '');
+  return `VNPM-${suffix}`;
 };
 
 const hasValidFullName = (fullName) => {
@@ -1178,7 +1194,7 @@ const App = () => {
         age: src.birthDate ? calculateAgeFromBirthDate(src.birthDate) : (src.age != null && src.age !== '' ? String(src.age) : ''),
         gender: src.gender || '',
         responsivaStatus: src.responsivaStatus || '',
-        vnpPersonId: src.vnpPersonId || '',
+        vnpPersonId: canonicalizeVnpPersonId(src.vnpPersonId || '') || src.vnpPersonId || '',
         paymentMethod: 'Efectivo',
         paymentService: getAutoPaymentService(new Date()),
         cardReference: '',
@@ -3432,7 +3448,7 @@ const App = () => {
         return;
       }
     }
-    const vnpId = (newEntry.vnpPersonId || '').trim();
+    const vnpId = canonicalizeVnpPersonId(newEntry.vnpPersonId || '');
     const candidateVnpId = vnpId || generateVnpPersonId(newEntry);
     const idExistsAnywhere = allParticipants.some((p) => String(p.vnpPersonId || '') === String(candidateVnpId));
     const dupVnp = allParticipants.some(
@@ -3597,7 +3613,7 @@ const App = () => {
     }
 
     const newPersonId = String(Date.now());
-    const finalVnpPersonId = (newEntry.vnpPersonId || '').trim() || generateVnpPersonId(newEntry);
+    const finalVnpPersonId = canonicalizeVnpPersonId(newEntry.vnpPersonId || '') || generateVnpPersonId(newEntry);
     const idExistsAnywhere = allParticipants.some((p) => String(p.vnpPersonId || '') === String(finalVnpPersonId));
     const dupVnp = allParticipants.some(
       (p) =>
@@ -3847,6 +3863,9 @@ const App = () => {
 
     if (!payload.vnpPersonId) {
       payload.vnpPersonId = generateVnpPersonId({ ...editedPerson, ...payload });
+    } else {
+      const c = canonicalizeVnpPersonId(payload.vnpPersonId);
+      if (c) payload.vnpPersonId = c;
     }
 
     if (currentEvent.eventType === 'Campa' && editedPerson.isScholarship === 'Sí' && editedPerson.scholarshipType === 'partial') {
