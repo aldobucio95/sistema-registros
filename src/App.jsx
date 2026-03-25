@@ -776,14 +776,6 @@ const App = () => {
     return (currentEvent.locations || []).filter(loc => allowedLocs.includes(loc));
   }, [currentEvent, currentUser, getUserAllowedLocations]);
 
-  const archivedParticipantsForView = useMemo(
-    () =>
-      allParticipants
-        .filter(participantIsArchived)
-        .sort((a, b) => (Number(b.archivedAt) || 0) - (Number(a.archivedAt) || 0)),
-    [allParticipants]
-  );
-
   const panelNavMerged = useMemo(() => {
     const o = globalConfig?.panelNav && typeof globalConfig.panelNav === 'object' ? globalConfig.panelNav : {};
     return { ...DEFAULT_PANEL_NAV, ...o };
@@ -908,6 +900,13 @@ const App = () => {
   const [logSpecificDay, setLogSpecificDay] = useState('');
   const [logSpecificMonth, setLogSpecificMonth] = useState('');
   const [allParticipants, setAllParticipants] = useState([]);
+  const archivedParticipantsForView = useMemo(
+    () =>
+      allParticipants
+        .filter(participantIsArchived)
+        .sort((a, b) => (Number(b.archivedAt) || 0) - (Number(a.archivedAt) || 0)),
+    [allParticipants]
+  );
   const [activeTab, setActiveTab] = useState("Summary");
   const [showMoney, setShowMoney] = useState(true);
   const [showLocChartValues, setShowLocChartValues] = useState(false);
