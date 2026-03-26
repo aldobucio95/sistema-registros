@@ -4,7 +4,7 @@ import {
   LayoutDashboard, PanelLeft, Phone, ShieldAlert, Power, BarChart3, Edit3, TableProperties,
   Eye, EyeOff, Search, Filter, ArrowUpDown, CreditCard, ChevronDown, ChevronUp,
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock,
-  UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft,
+  UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft, RotateCcw,
   SlidersHorizontal, Bug, Download, Database, Menu, FileSpreadsheet, MessageCircle,
   Scissors, Calendar, Church, Archive
 } from 'lucide-react';
@@ -1158,6 +1158,7 @@ const App = () => {
     personName: '',
     donationId: '',
     donationAmount: 0,
+    refundAmount: 0,
   });
   const [registryConfirmBusy, setRegistryConfirmBusy] = useState(false);
   const [serviceSlotsModal, setServiceSlotsModal] = useState({ isOpen: false });
@@ -1363,6 +1364,17 @@ const App = () => {
     },
     [currentEvent, getAutoPaymentService, showToast]
   );
+
+  const handleClearRegistrationForm = useCallback(() => {
+    setNewEntry({
+      ...EMPTY_ENTRY,
+      paymentMethod: 'Efectivo',
+      paymentService: getAutoPaymentService(new Date()),
+      cardReference: ''
+    });
+    setNewRegProfileSearch('');
+    showToast('Formulario limpiado.');
+  }, [getAutoPaymentService, showToast]);
 
   const hasEventAccess = useCallback((eventId) => {
     if (!currentUser) return false;
@@ -4226,6 +4238,7 @@ const App = () => {
       personName: '',
       donationId: '',
       donationAmount: 0,
+      refundAmount: 0,
     });
   };
 
@@ -4241,6 +4254,7 @@ const App = () => {
       else if (m.type === 'archive_waitlist') await performArchiveWaitlistEntry(m.loc, m.personId);
       else if (m.type === 'cancel_entry') await performCancelEntry(m.loc, m.personId);
       else if (m.type === 'delete_donation' && m.donationId) await handleDeleteDonation(m.donationId);
+      else if (m.type === 'remove_pending_refund' && m.personId) await removePendingRefundBySuperUser(m.personId);
     } catch (e) {
       console.error(e);
       showToast('No se pudo completar la acción. Revisa conexión o permisos.');
@@ -4265,6 +4279,7 @@ const App = () => {
       personName: person.name || 'este registro',
       donationId: '',
       donationAmount: 0,
+      refundAmount: 0,
     });
   };
 
@@ -4284,6 +4299,7 @@ const App = () => {
       personName: person.name || 'este registro',
       donationId: '',
       donationAmount: 0,
+      refundAmount: 0,
     });
   };
 
@@ -4303,6 +4319,7 @@ const App = () => {
       personName: person.name || 'este registro',
       donationId: '',
       donationAmount: 0,
+      refundAmount: 0,
     });
   };
 
@@ -4315,6 +4332,7 @@ const App = () => {
       personName: '',
       donationId: String(don.id),
       donationAmount: parseFloat(don.amount) || 0,
+      refundAmount: 0,
     });
   };
 
@@ -4355,6 +4373,54 @@ const App = () => {
     });
     addLog('Gastos', 'Movimiento en lista de gastos: saldo pendiente de devolución marcado como donación (auditoría sin detalle de participante).');
     showToast('Saldo marcado como donación. Vuelve a sumarse al balance neto.');
+  };
+
+  const removePendingRefundBySuperUser = async (personId) => {
+    if (!isSuperUser || !canAccessExpenses) return;
+    const person = allParticipants.find((p) => String(p.id) === String(personId));
+    if (!person || !participantIsCancelled(person)) return;
+    const pendingAmount = person.refundAsDonation
+      ? 0
+      : Math.max(0, Number(person.refundPendingAmount ?? person.paid ?? 0) || 0);
+    if (pendingAmount <= 0) {
+      showToast('Ese saldo ya no está pendiente o fue actualizado.');
+      return;
+    }
+    const payload = {
+      refundPendingAmount: 0,
+      refundAsDonation: false,
+      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+    };
+    await updateDoc(getDocRef('app_participants', String(personId)), payload);
+    addLog(
+      'Gastos',
+      `SuperUsuario eliminó saldo pendiente de devolución (lista de gastos). Monto quitado: $${pendingAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}. Participante doc: ${personId}. Evento: ${currentEvent?.name || currentEvent?.id || '—'}.`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
+      { isHidden: true }
+    );
+    showToast('Saldo eliminado de la lista. El balance neto se actualizó.');
+  };
+
+  const openRemovePendingRefundConfirm = (p) => {
+    if (!isSuperUser || !canAccessExpenses || registryConfirmBusy) return;
+    const person = allParticipants.find((x) => String(x.id) === String(p.id));
+    if (!person || !participantIsCancelled(person)) return;
+    const pendingAmount = person.refundAsDonation
+      ? 0
+      : Math.max(0, Number(person.refundPendingAmount ?? person.paid ?? 0) || 0);
+    if (pendingAmount <= 0) return;
+    setRegistryConfirmModal({
+      isOpen: true,
+      type: 'remove_pending_refund',
+      loc: '',
+      personId: String(p.id),
+      personName: person.name || 'este registro',
+      donationId: '',
+      donationAmount: 0,
+      refundAmount: pendingAmount,
+    });
   };
 
   const promoteWaitlistEntry = async (loc, id) => {
@@ -7108,6 +7174,7 @@ const App = () => {
           <p className="text-xs text-slate-600">
             Este saldo ya no figura dentro del balance neto, pero se mantiene dentro de lo recaudado.
             Si se marca como donación, se elimina de esta lista y vuelve a sumarse al balance neto.
+            El SuperUsuario puede eliminar un renglón: el balance neto deja de restar ese monto (solo auditoría oculta).
           </p>
           {pendingRefundRows.length === 0 ? (
             <p className="text-xs text-slate-400 italic">No hay saldos pendientes de devolución.</p>
@@ -7119,7 +7186,7 @@ const App = () => {
                     <p className="text-sm font-bold text-slate-800 truncate">{p.name || 'Sin nombre'}</p>
                     <p className="text-[11px] text-slate-500">Sede: {p.location || '—'} · ID: {p.vnpPersonId || '—'}</p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-end gap-2">
                     <span className="text-sm font-black text-amber-700">${p._refundPendingAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
                     <button
                       type="button"
@@ -7128,6 +7195,16 @@ const App = () => {
                     >
                       Marcar como donación
                     </button>
+                    {isSuperUser && (
+                      <button
+                        type="button"
+                        onClick={() => openRemovePendingRefundConfirm(p)}
+                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-black bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 transition-colors"
+                        title="Solo SuperUsuario: quita el saldo de la lista y el balance neto deja de restarlo (auditoría oculta)"
+                      >
+                        Eliminar
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -7988,11 +8065,21 @@ const App = () => {
 
       {currentUser?.role !== 'Lector' && (
         <div className={`bg-white p-6 rounded-2xl shadow-sm border border-slate-100 transition-opacity ${!isLocOpen(loc) ? 'opacity-50 pointer-events-none' : ''}`}>
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex justify-between items-center mb-6 gap-2 flex-wrap">
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2"><Plus size={14} /> Nuevo Registro</h3>
-            {isGeneral && hasAdminRights && (
-              <button onClick={() => setCustomFieldsModal({ isOpen: true })} className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg border border-indigo-100 hover:bg-indigo-100 transition-colors"><ListPlus size={14} /> Configurar Campos Extra</button>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleClearRegistrationForm}
+                className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-200 transition-colors"
+                title="Vacía todos los campos del formulario y la búsqueda de perfil"
+              >
+                <RotateCcw size={14} /> Limpiar formulario
+              </button>
+              {isGeneral && hasAdminRights && (
+                <button onClick={() => setCustomFieldsModal({ isOpen: true })} className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg border border-indigo-100 hover:bg-indigo-100 transition-colors"><ListPlus size={14} /> Configurar Campos Extra</button>
+              )}
+            </div>
           </div>
 
           <div className="mb-5 p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
@@ -10958,7 +11045,7 @@ const App = () => {
             className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center"
             onClick={(e) => e.stopPropagation()}
           >
-            {registryConfirmModal.type === 'delete_donation' || registryConfirmModal.type === 'cancel_entry' ? (
+            {registryConfirmModal.type === 'delete_donation' || registryConfirmModal.type === 'cancel_entry' || registryConfirmModal.type === 'remove_pending_refund' ? (
               <div className="bg-red-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
                 <ShieldAlert size={32} className="text-red-500" />
               </div>
@@ -10972,6 +11059,7 @@ const App = () => {
               {registryConfirmModal.type === 'cancel_entry' && 'Dar de baja'}
               {registryConfirmModal.type === 'archive_waitlist' && 'Archivar lista de espera'}
               {registryConfirmModal.type === 'archive_roster' && 'Archivar registro'}
+              {registryConfirmModal.type === 'remove_pending_refund' && 'Eliminar saldo pendiente'}
             </h3>
             <p className="text-sm text-slate-500 mb-6">
               {registryConfirmModal.type === 'delete_donation' && (
@@ -10995,6 +11083,13 @@ const App = () => {
                   ¿Archivar a <strong>{registryConfirmModal.personName}</strong> de la lista de espera? Los datos siguen disponibles para precargar en otros eventos.
                 </>
               )}
+              {registryConfirmModal.type === 'remove_pending_refund' && (
+                <>
+                  ¿Eliminar el saldo pendiente de devolución de <strong>{registryConfirmModal.personName}</strong> (
+                  <strong>${registryConfirmModal.refundAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</strong>
+                  )? Dejará de restarse en el balance neto de esta lista como si esa obligación ya no existiera. No se crea un registro visible en actividad; solo auditoría oculta.
+                </>
+              )}
             </p>
             <div className="flex gap-3">
               <button
@@ -11010,14 +11105,14 @@ const App = () => {
                 onClick={handleRegistryConfirmSubmit}
                 disabled={registryConfirmBusy}
                 className={`flex-1 py-3 px-4 text-white font-bold rounded-xl transition-colors text-sm shadow-lg disabled:opacity-60 disabled:cursor-not-allowed ${
-                  registryConfirmModal.type === 'delete_donation' || registryConfirmModal.type === 'cancel_entry'
+                  registryConfirmModal.type === 'delete_donation' || registryConfirmModal.type === 'cancel_entry' || registryConfirmModal.type === 'remove_pending_refund'
                     ? 'bg-red-500 hover:bg-red-600 shadow-red-200'
                     : 'bg-amber-600 hover:bg-amber-700 shadow-amber-200'
                 }`}
               >
                 {registryConfirmBusy
                   ? '…'
-                  : registryConfirmModal.type === 'delete_donation'
+                  : registryConfirmModal.type === 'delete_donation' || registryConfirmModal.type === 'remove_pending_refund'
                     ? 'Sí, eliminar'
                     : registryConfirmModal.type === 'cancel_entry'
                       ? 'Sí, dar de baja'
