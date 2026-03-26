@@ -799,7 +799,8 @@ const App = () => {
     allowedEventIds: [],
     allowedLocations: [],
     preferredLandingTab: 'Summary',
-    hideMyExpenseConcepts: true
+    hideMyExpenseConcepts: true,
+    canEditRegistryDates: false
   });
   const [globalConfig, setGlobalConfig] = useState(null);
 
@@ -811,6 +812,8 @@ const App = () => {
 
   const hasAdminRights = ['Administrador', 'SuperUsuario'].includes(currentUser?.role);
   const isSuperUser = currentUser?.role === 'SuperUsuario';
+  /** Editar fechas de registro y abonos: SuperUsuario siempre; otros solo si el SuperUsuario lo autoriza en su cuenta. */
+  const canEditRegistryDates = isSuperUser || !!currentUser?.canEditRegistryDates;
   const canAccessExpenses = currentUser ? (isSuperUser || (hasAdminRights && !!currentUser.canViewExpenses)) : false;
 
   const [events, setEvents] = useState([]);
@@ -1160,7 +1163,8 @@ const App = () => {
     allowedEventIds: [],
     allowedLocations: [],
     preferredLandingTab: 'Summary',
-    hideMyExpenseConcepts: true
+    hideMyExpenseConcepts: true,
+    canEditRegistryDates: false
   });
   const [restoreModal, setRestoreModal] = useState({ isOpen: false, log: null, type: 'single' });
   /** Confirmación in-app: archivar / baja / eliminar donación (sustituye window.confirm). */
@@ -1665,8 +1669,8 @@ const App = () => {
 
   useEffect(() => {
     if (systemView !== 'users') {
-      setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true });
-      setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true });
+      setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false });
+      setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false });
     }
   }, [systemView]);
 
@@ -2603,10 +2607,11 @@ const App = () => {
         const nextLocAccess = getUserAllowedLocations(liveUser).slice().sort().join('|');
         const preferenceChanged = (liveUser.preferredLandingTab || 'Summary') !== (currentUser.preferredLandingTab || 'Summary');
         const hideExpenseConceptsChanged = isHideMyExpenseConceptsOn(liveUser) !== isHideMyExpenseConceptsOn(currentUser);
+        const registryDatesChanged = !!liveUser.canEditRegistryDates !== !!currentUser.canEditRegistryDates;
         const eventRestrictionChanged = prevEventAccess !== nextEventAccess;
         const locationRestrictionChanged = prevLocAccess !== nextLocAccess;
 
-        if (roleChanged || financesChanged || expensesChanged || eventRestrictionChanged || locationRestrictionChanged || preferenceChanged || hideExpenseConceptsChanged) {
+        if (roleChanged || financesChanged || expensesChanged || eventRestrictionChanged || locationRestrictionChanged || preferenceChanged || hideExpenseConceptsChanged || registryDatesChanged) {
           setCurrentUser(prev => ({
             ...prev,
             role: liveUser.role,
@@ -2617,7 +2622,8 @@ const App = () => {
             allowedEventIds: getUserAllowedEventIds(liveUser),
             allowedLocations: getUserAllowedLocations(liveUser),
             preferredLandingTab: liveUser.preferredLandingTab || 'Summary',
-            hideMyExpenseConcepts: isHideMyExpenseConceptsOn(liveUser)
+            hideMyExpenseConcepts: isHideMyExpenseConceptsOn(liveUser),
+            canEditRegistryDates: !!liveUser.canEditRegistryDates
           }));
           if (financesChanged && liveUser.role === 'Lector') {
             showToast(`Atención: Tus permisos han cambiado. Ahora ${liveUser.canViewFinances ? 'PUEDES' : 'NO PUEDES'} ver información financiera.`);
@@ -2627,11 +2633,13 @@ const App = () => {
             showToast('Tus restricciones de evento/sede se actualizaron.');
           } else if (preferenceChanged) {
             showToast('Tu preferencia de ventana inicial fue actualizada.');
+          } else if (registryDatesChanged) {
+            showToast(`Permiso de editar fechas de registros/abonos: ${liveUser.canEditRegistryDates ? 'activado' : 'desactivado'}.`);
           }
         }
       }
     }
-  }, [users, currentUser, currentUser?.id, currentUser?.role, currentUser?.canViewFinances, currentUser?.canViewExpenses, currentUser?.restrictedEventId, currentUser?.restrictedLocation, currentUser?.allowedEventIds, currentUser?.allowedLocations, currentUser?.preferredLandingTab, currentUser?.hideMyExpenseConcepts, showToast, getUserAllowedEventIds, getUserAllowedLocations]);
+  }, [users, currentUser, currentUser?.id, currentUser?.role, currentUser?.canViewFinances, currentUser?.canViewExpenses, currentUser?.restrictedEventId, currentUser?.restrictedLocation, currentUser?.allowedEventIds, currentUser?.allowedLocations, currentUser?.preferredLandingTab, currentUser?.hideMyExpenseConcepts, currentUser?.canEditRegistryDates, showToast, getUserAllowedEventIds, getUserAllowedLocations]);
 
   const handleCreateEvent = async () => {
     if (!newEventData.name.trim()) return;
@@ -2943,12 +2951,13 @@ const App = () => {
       preferredLandingTab,
       restrictedEventId: allowedEventIds[0] || '',
       restrictedLocation: allowedLocations[0] || '',
-      hideMyExpenseConcepts: editorCanEditAccessFlags ? (newUser.hideMyExpenseConcepts !== false) : true
+      hideMyExpenseConcepts: editorCanEditAccessFlags ? (newUser.hideMyExpenseConcepts !== false) : true,
+      canEditRegistryDates: editorCanEditAccessFlags ? !!newUser.canEditRegistryDates : false
     };
 
     await setDoc(getDocRef('app_users', newId), userToSave);
     addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`);
-    setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true });
+    setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false });
     showToast("Usuario añadido exitosamente.");
   };
 
@@ -3015,6 +3024,9 @@ const App = () => {
     }, { locations: allKnownLocationNames });
 
     const newHideMyExpenseConcepts = editorCanEditAccessFlags ? (editingUser.hideMyExpenseConcepts !== false) : originalHideMyExpenseConcepts;
+    const newCanEditRegistryDates = isTargetSuperUser
+      ? true
+      : (editorCanEditAccessFlags ? !!editingUser.canEditRegistryDates : !!originalUser.canEditRegistryDates);
     const newRestrictedEventId = newAllowedEventIds[0] || '';
     const newRestrictedLocation = newAllowedLocations[0] || '';
 
@@ -3026,6 +3038,7 @@ const App = () => {
     if (originalUser.canViewHiddenDonations !== newCanViewHiddenDonations) changes.push(`Ver donaciones ocultas (${originalUser.canViewHiddenDonations ? 'Sí' : 'No'} -> ${newCanViewHiddenDonations ? 'Sí' : 'No'})`);
     if ((!!originalUser.canViewExpenses) !== newCanViewExpenses) changes.push(`Ver Gastos (${originalUser.canViewExpenses ? 'Sí' : 'No'} -> ${newCanViewExpenses ? 'Sí' : 'No'})`);
     if (originalHideMyExpenseConcepts !== newHideMyExpenseConcepts) changes.push(`Ocultar mis conceptos de gastos (${originalHideMyExpenseConcepts ? 'Sí' : 'No'} -> ${newHideMyExpenseConcepts ? 'Sí' : 'No'})`);
+    if (!!originalUser.canEditRegistryDates !== newCanEditRegistryDates) changes.push(`Editar fechas registro/abonos (${originalUser.canEditRegistryDates ? 'Sí' : 'No'} -> ${newCanEditRegistryDates ? 'Sí' : 'No'})`);
     const prevAllowedEvents = getUserAllowedEventIds(originalUser);
     const prevAllowedLocations = getUserAllowedLocations(originalUser);
     if (prevAllowedEvents.slice().sort().join('|') !== newAllowedEventIds.slice().sort().join('|')) changes.push(`Eventos permitidos (${prevAllowedEvents.length ? prevAllowedEvents.length : 'Todos'} -> ${newAllowedEventIds.length ? newAllowedEventIds.length : 'Todos'})`);
@@ -3044,7 +3057,8 @@ const App = () => {
       preferredLandingTab: newPreferredLandingTab,
       restrictedEventId: newRestrictedEventId,
       restrictedLocation: newRestrictedLocation,
-      hideMyExpenseConcepts: newHideMyExpenseConcepts
+      hideMyExpenseConcepts: newHideMyExpenseConcepts,
+      canEditRegistryDates: newCanEditRegistryDates
     });
     
     if (currentUser.id === editingUser.id) {
@@ -3061,13 +3075,14 @@ const App = () => {
         preferredLandingTab: newPreferredLandingTab,
         restrictedEventId: newRestrictedEventId,
         restrictedLocation: newRestrictedLocation,
-        hideMyExpenseConcepts: newHideMyExpenseConcepts
+        hideMyExpenseConcepts: newHideMyExpenseConcepts,
+        canEditRegistryDates: newCanEditRegistryDates
       });
     }
     
     if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
     
-    setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true });
+    setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false });
     showToast("Usuario actualizado.");
   };
 
@@ -4798,7 +4813,7 @@ const App = () => {
     });
 
   const openSuperRegistrationDateEdit = (person, personLoc) => {
-    if (!isSuperUser) return;
+    if (!canEditRegistryDates) return;
     const hist = person.paymentHistory || [];
     let base = person.registeredAt;
     if (!base) {
@@ -4819,7 +4834,7 @@ const App = () => {
   };
 
   const openSuperPaymentDateEdit = (person, personLoc, paymentIndex) => {
-    if (!isSuperUser) return;
+    if (!canEditRegistryDates) return;
     const hist = person.paymentHistory || [];
     const pay = hist[paymentIndex];
     if (!pay || pay.kind === 'comment') return;
@@ -4838,7 +4853,7 @@ const App = () => {
   };
 
   const handleSuperSaveDateEdit = async () => {
-    if (!isSuperUser || !superDateEditModal.isOpen) return;
+    if (!canEditRegistryDates || !superDateEditModal.isOpen) return;
     const iso = fromDatetimeLocalToIso(superDateEditModal.datetimeLocal);
     if (!iso) {
       showToast('Indica una fecha y hora válidas.');
@@ -4854,6 +4869,7 @@ const App = () => {
       ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId }
       : {};
     const locLabel = superDateEditModal.loc || person.location || '';
+    const dateEditActor = isSuperUser ? 'SuperUsuario' : (currentUser?.username || 'Usuario');
     try {
       if (superDateEditModal.mode === 'registration') {
         const oldRegIso = person.registeredAt;
@@ -4932,7 +4948,7 @@ const App = () => {
         await updateDoc(getDocRef('app_participants', String(personId)), regPayload);
         addLog(
           'Sistema',
-          `SuperUsuario ajustó la fecha de registro de ${person.name || 'participante'} (sede ${locLabel})${historyChanged ? ' y la marca de tiempo del pago inicial vinculado' : ''}.`,
+          `${dateEditActor} ajustó la fecha de registro de ${person.name || 'participante'} (sede ${locLabel})${historyChanged ? ' y la marca de tiempo del pago inicial vinculado' : ''}.`,
           null,
           null,
           { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
@@ -5013,7 +5029,7 @@ const App = () => {
         await updateDoc(getDocRef('app_participants', String(personId)), payload);
         addLog(
           'Sistema',
-          `SuperUsuario ajustó la fecha de un movimiento en el historial de pagos de ${person.name || 'participante'} (sede ${locLabel}).`,
+          `${dateEditActor} ajustó la fecha de un movimiento en el historial de pagos de ${person.name || 'participante'} (sede ${locLabel}).`,
           null,
           null,
           { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
@@ -5034,56 +5050,83 @@ const App = () => {
   // REUSABLE COMPONENTS
   // ─────────────────────────────────────────────
   const renderUsers = () => (
-    <div className="p-6 space-y-8 animate-in fade-in duration-500">
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-          <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><UserCog className="text-indigo-500" /> Gestión de Usuarios</h2>
-          {isSuperUser && (
-            <button
-              type="button"
-              onClick={() => {
-                setPanelNavForm({ ...DEFAULT_PANEL_NAV, ...panelNavMerged });
-                setPanelNavModalOpen(true);
-              }}
-              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-sm bg-violet-50 hover:bg-violet-100 text-violet-700 border border-violet-200 w-full sm:w-auto"
-              title="Secciones del menú lateral visibles para Editor y Lector"
-            >
-              <PanelLeft size={16} /> Menú lateral
-            </button>
-          )}
+    <div className="max-w-6xl mx-auto p-6 space-y-6 animate-in fade-in duration-500">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
+            <UserCog className="text-indigo-500 shrink-0" /> Gestión de usuarios
+          </h2>
+          <p className="text-sm text-slate-500 mt-1 max-w-xl">
+            Alta de cuentas, roles (Administrador, Editor, Lector) y restricciones. Solo el SuperUsuario puede definir accesos por evento/sede y permisos avanzados.
+          </p>
         </div>
-        {hasAdminRights ? (
-          <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-8 bg-slate-50 p-4 rounded-xl border border-slate-100 items-end">
-            <div className="space-y-1"><label className={labelClasses}>Usuario</label><input type="text" required placeholder="Nuevo usuario" className={inputClasses} value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} /></div>
-            <div className="space-y-1"><label className={labelClasses}>Contraseña</label><input type="password" required placeholder="••••••••" className={inputClasses} value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} /></div>
-            <div className="space-y-1">
-              <label className={labelClasses}>Rol</label>
-              <select className={inputClasses} value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}>
-                <option value="Administrador">Administrador</option>
-                <option value="Editor">Editor</option>
-                <option value="Lector">Lector</option>
-              </select>
+        {isSuperUser && (
+          <button
+            type="button"
+            onClick={() => {
+              setPanelNavForm({ ...DEFAULT_PANEL_NAV, ...panelNavMerged });
+              setPanelNavModalOpen(true);
+            }}
+            className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-sm bg-violet-50 hover:bg-violet-100 text-violet-700 border border-violet-200 shrink-0"
+            title="Secciones del menú lateral visibles para Editor y Lector"
+          >
+            <PanelLeft size={16} /> Menú lateral (Editor/Lector)
+          </button>
+        )}
+      </div>
+
+      {hasAdminRights ? (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/80">
+            <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider flex items-center gap-2">
+              <Plus size={16} className="text-indigo-500" /> Nuevo usuario
+            </h3>
+            <p className="text-[11px] text-slate-500 mt-0.5">Credenciales, rol y —si aplica— permisos y alcance.</p>
+          </div>
+          <form onSubmit={handleAddUser} className="p-5 space-y-5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="space-y-1">
+                <label className={labelClasses}>Usuario</label>
+                <input type="text" required placeholder="Nombre de usuario" className={inputClasses} value={newUser.username} onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} />
+              </div>
+              <div className="space-y-1">
+                <label className={labelClasses}>Contraseña</label>
+                <input type="password" required placeholder="••••••••" className={inputClasses} value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} />
+              </div>
+              <div className="space-y-1">
+                <label className={labelClasses}>Rol</label>
+                <select className={inputClasses} value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}>
+                  <option value="Administrador">Administrador</option>
+                  <option value="Editor">Editor</option>
+                  <option value="Lector">Lector</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className={labelClasses}>Ventana inicial al entrar al evento</label>
+                <select className={inputClasses} value={newUser.preferredLandingTab || 'Summary'} onChange={(e) => setNewUser({ ...newUser, preferredLandingTab: e.target.value })}>
+                  <option value="Summary">Resumen general</option>
+                  {(() => {
+                    let locs = ['Administrador', 'SuperUsuario'].includes(newUser.role)
+                      ? allKnownLocationNames
+                      : ((newUser.allowedLocations || []).length ? newUser.allowedLocations : allKnownLocationNames);
+                    const p = String(newUser.preferredLandingTab || '').trim();
+                    if (p && p !== 'Summary' && !locs.includes(p)) locs = [...locs, p];
+                    return locs.map((loc) => (
+                      <option key={`pref-new-${loc}`} value={loc}>
+                        {loc}
+                      </option>
+                    ));
+                  })()}
+                </select>
+              </div>
             </div>
-            <div className="space-y-1">
-              <label className={labelClasses}>Ventana inicial al entrar al evento</label>
-              <select className={inputClasses} value={newUser.preferredLandingTab || 'Summary'} onChange={e => setNewUser({ ...newUser, preferredLandingTab: e.target.value })}>
-                <option value="Summary">Resumen General</option>
-                {(() => {
-                  let locs = ['Administrador', 'SuperUsuario'].includes(newUser.role)
-                    ? allKnownLocationNames
-                    : ((newUser.allowedLocations || []).length ? newUser.allowedLocations : allKnownLocationNames);
-                  const p = String(newUser.preferredLandingTab || '').trim();
-                  if (p && p !== 'Summary' && !locs.includes(p)) locs = [...locs, p];
-                  return locs.map((loc) => <option key={`pref-new-${loc}`} value={loc}>{loc}</option>);
-                })()}
-              </select>
-            </div>
+
             {newUser.role !== 'SuperUsuario' && (
-              <div className="md:col-span-2 lg:col-span-2 space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 space-y-3">
                 <p className={labelClasses}>Accesos permitidos</p>
-                {!isSuperUser && <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede ajustar accesos por evento/sede.</p>}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className="space-y-1">
+                {!isSuperUser && <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede ajustar eventos y sedes.</p>}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2 rounded-lg border border-white bg-white p-3 shadow-sm">
                     <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Eventos</label>
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
                       <input
@@ -5091,11 +5134,11 @@ const App = () => {
                         className="accent-indigo-600"
                         disabled={!isSuperUser}
                         checked={(newUser.allowedEventIds || []).length === 0}
-                        onChange={(e) => setNewUser({ ...newUser, allowedEventIds: e.target.checked ? [] : (sortedEvents[0] ? [sortedEvents[0].id] : []) })}
+                        onChange={(e) => setNewUser({ ...newUser, allowedEventIds: e.target.checked ? [] : sortedEvents[0] ? [sortedEvents[0].id] : [] })}
                       />
                       Todos los eventos
                     </label>
-                    <div className="max-h-28 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1">
+                    <div className="max-h-32 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1">
                       {sortedEvents.map((ev) => {
                         const checked = (newUser.allowedEventIds || []).includes(ev.id);
                         return (
@@ -5117,7 +5160,7 @@ const App = () => {
                       })}
                     </div>
                   </div>
-                  <div className="space-y-1">
+                  <div className="space-y-2 rounded-lg border border-white bg-white p-3 shadow-sm">
                     <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Sedes</label>
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
                       <input
@@ -5125,11 +5168,11 @@ const App = () => {
                         className="accent-indigo-600"
                         disabled={!isSuperUser}
                         checked={(newUser.allowedLocations || []).length === 0}
-                        onChange={(e) => setNewUser({ ...newUser, allowedLocations: e.target.checked ? [] : (allKnownLocationNames[0] ? [allKnownLocationNames[0]] : []) })}
+                        onChange={(e) => setNewUser({ ...newUser, allowedLocations: e.target.checked ? [] : allKnownLocationNames[0] ? [allKnownLocationNames[0]] : [] })}
                       />
                       Todas las sedes
                     </label>
-                    <div className="max-h-28 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1">
+                    <div className="max-h-32 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1">
                       {allKnownLocationNames.map((loc) => {
                         const checked = (newUser.allowedLocations || []).includes(loc);
                         return (
@@ -5154,93 +5197,178 @@ const App = () => {
                 </div>
               </div>
             )}
-            <div className="md:col-span-2 lg:col-span-2 space-y-2 rounded-xl border border-slate-200 bg-white p-3">
-              <p className={labelClasses}>Permisos</p>
-              {!isSuperUser && (
-                <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede modificar permisos avanzados.</p>
-              )}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                  <input type="checkbox" className="accent-indigo-600" checked={!!newUser.canViewFinances} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={e => setNewUser({ ...newUser, canViewFinances: e.target.checked })} />
-                  Ver finanzas
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 space-y-3">
+              <p className={labelClasses}>Permisos avanzados</p>
+              {!isSuperUser && <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede activar o desactivar estas opciones.</p>}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                  <input type="checkbox" className="accent-indigo-600 mt-0.5" checked={!!newUser.canViewFinances} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={(e) => setNewUser({ ...newUser, canViewFinances: e.target.checked })} />
+                  <span>Ver finanzas (resumen y montos donde aplique)</span>
                 </label>
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                  <input type="checkbox" className="accent-indigo-600" checked={!!newUser.canViewHiddenDonations} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={e => setNewUser({ ...newUser, canViewHiddenDonations: e.target.checked })} />
-                  Ver donaciones ocultas
+                <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                  <input type="checkbox" className="accent-indigo-600 mt-0.5" checked={!!newUser.canViewHiddenDonations} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={(e) => setNewUser({ ...newUser, canViewHiddenDonations: e.target.checked })} />
+                  <span>Ver donaciones ocultas</span>
                 </label>
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                  <input type="checkbox" className="accent-emerald-600" checked={!!newUser.canViewExpenses} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={e => setNewUser({ ...newUser, canViewExpenses: e.target.checked })} />
-                  Lista de gastos
+                <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                  <input type="checkbox" className="accent-emerald-600 mt-0.5" checked={!!newUser.canViewExpenses} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={(e) => setNewUser({ ...newUser, canViewExpenses: e.target.checked })} />
+                  <span>Lista de gastos del evento</span>
                 </label>
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
                   <input
                     type="checkbox"
-                    className="accent-slate-600"
+                    className="accent-slate-600 mt-0.5"
                     checked={newUser.hideMyExpenseConcepts !== false}
                     disabled={!isSuperUser}
-                    onChange={e => setNewUser({ ...newUser, hideMyExpenseConcepts: e.target.checked })}
+                    onChange={(e) => setNewUser({ ...newUser, hideMyExpenseConcepts: e.target.checked })}
                   />
-                  Ocultar mis conceptos de gastos para otros
+                  <span>Ocultar mis conceptos de gastos para otros usuarios</span>
+                </label>
+                <label className="flex items-start gap-2 text-xs font-semibold text-slate-700 sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    className="accent-violet-600 mt-0.5"
+                    checked={!!newUser.canEditRegistryDates}
+                    disabled={!isSuperUser}
+                    onChange={(e) => setNewUser({ ...newUser, canEditRegistryDates: e.target.checked })}
+                  />
+                  <span>Puede editar fechas de registro y de abonos en el historial (misma lógica que SuperUsuario)</span>
                 </label>
               </div>
             </div>
-            <div className="flex items-end h-full md:col-span-4 lg:col-span-1"><button type="submit" className={btnPrimary}><Plus size={18} /> Añadir Usuario</button></div>
+
+            <div className="flex justify-end pt-1">
+              <button type="submit" className={btnPrimary}>
+                <Plus size={18} /> Añadir usuario
+              </button>
+            </div>
           </form>
-        ) : (
-          <div className="mb-8 p-4 bg-amber-50 border border-amber-100 rounded-xl text-amber-700 text-sm flex items-center gap-2"><ShieldAlert size={18} /><p><strong>Acceso Restringido:</strong> Solo los administradores pueden añadir nuevos usuarios.</p></div>
-        )}
-        <div className="overflow-x-auto border border-slate-100 rounded-xl">
-          <table className="w-full text-left">
-            <thead><tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100"><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Rol</th><th className="px-6 py-4 text-center">Acciones</th></tr></thead>
+        </div>
+      ) : (
+        <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl text-amber-800 text-sm flex items-start gap-3">
+          <ShieldAlert size={20} className="shrink-0 mt-0.5" />
+          <p>
+            <strong>Acceso restringido.</strong> Solo Administrador o SuperUsuario pueden crear o editar usuarios.
+          </p>
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider">Cuentas registradas</h3>
+          <span className="text-[11px] font-bold text-slate-400">{users.length} usuario(s)</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left min-w-[640px]">
+            <thead>
+              <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                <th className="px-5 py-3">Usuario</th>
+                <th className="px-5 py-3">Rol</th>
+                <th className="px-5 py-3">Permisos / etiquetas</th>
+                <th className="px-5 py-3 text-center w-28">Acciones</th>
+              </tr>
+            </thead>
             <tbody className="divide-y divide-slate-50">
-              {users.map(u => (
+              {users.map((u) => (
                 <tr key={u.id} className="hover:bg-slate-50/50">
-                  <td className="px-6 py-4 font-bold text-slate-700">
+                  <td className="px-5 py-3.5 align-top">
                     <div className="flex items-center gap-2">
-                      <div className={`w-2.5 h-2.5 rounded-full ${u.isOnline ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse' : 'bg-slate-300'}`} title={u.isOnline ? 'En línea' : 'Desconectado'} />
-                      {u.username}
-                      {currentUser.id === u.id && <span className="text-[10px] text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full ml-2">Tú</span>}
+                      <div
+                        className={`w-2.5 h-2.5 rounded-full shrink-0 ${u.isOnline ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse' : 'bg-slate-300'}`}
+                        title={u.isOnline ? 'En línea' : 'Desconectado'}
+                      />
+                      <span className="font-bold text-slate-800">{u.username}</span>
+                      {currentUser.id === u.id && (
+                        <span className="text-[10px] text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full font-black">Tú</span>
+                      )}
                     </div>
                   </td>
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${u.role === 'SuperUsuario' ? 'bg-amber-100 text-amber-700 border border-amber-200' : u.role === 'Administrador' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>{u.role}</span>
+                  <td className="px-5 py-3.5 align-top">
+                    <span
+                      className={`inline-block text-[10px] px-2 py-1 rounded-md font-black uppercase ${
+                        u.role === 'SuperUsuario' ? 'bg-amber-100 text-amber-800 border border-amber-200' : u.role === 'Administrador' ? 'bg-purple-100 text-purple-800' : 'bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      {u.role}
+                    </span>
+                  </td>
+                  <td className="px-5 py-3.5 align-top">
+                    <div className="flex flex-wrap gap-1.5">
                       {u.role === 'Lector' && u.canViewFinances && (
-                        <span className="text-[9px] bg-green-100 text-green-700 border border-green-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-black tracking-wider" title="Puede ver finanzas">
+                        <span className="text-[9px] bg-green-100 text-green-800 border border-green-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-black tracking-wider" title="Puede ver finanzas">
                           <DollarSign size={10} /> Finanzas
+                        </span>
+                      )}
+                      {u.canViewHiddenDonations && u.role !== 'SuperUsuario' && (
+                        <span className="text-[9px] bg-indigo-50 text-indigo-700 border border-indigo-100 px-1.5 py-0.5 rounded-md font-black" title="Donaciones ocultas">
+                          Donac. ocultas
+                        </span>
+                      )}
+                      {u.canViewExpenses && u.role !== 'SuperUsuario' && (
+                        <span className="text-[9px] bg-emerald-50 text-emerald-800 border border-emerald-100 px-1.5 py-0.5 rounded-md font-black" title="Lista de gastos">
+                          Gastos
+                        </span>
+                      )}
+                      {(u.role === 'SuperUsuario' || u.canEditRegistryDates) && (
+                        <span
+                          className="text-[9px] bg-violet-50 text-violet-800 border border-violet-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-black tracking-wider"
+                          title="Puede cambiar fechas de registro y de movimientos en el historial"
+                        >
+                          <Calendar size={11} /> Fechas
                         </span>
                       )}
                       {u.hideMyExpenseConcepts !== false && (
                         <span
-                          className="text-[9px] bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-black tracking-wider"
-                          title="Los conceptos de tus gastos se ocultan a otros usuarios (según tu configuración)."
+                          className="text-[9px] bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-black tracking-wider"
+                          title="Los conceptos de gastos propios se ocultan a otros"
                         >
                           <EyeOff size={12} /> Gastos ocultos
                         </span>
                       )}
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2">
-                    <button onClick={() => setEditingUser({
-                      isOpen: true,
-                      id: u.id,
-                      username: u.username,
-                      role: u.role,
-                      currentPasswordInput: '',
-                      newPassword: '',
-                      confirmPassword: '',
-                      canViewFinances: u.canViewFinances || false,
-                      restrictedEventId: u.restrictedEventId || '',
-                      restrictedLocation: u.restrictedLocation || '',
-                      allowedEventIds: getUserAllowedEventIds(u),
-                      allowedLocations: getUserAllowedLocations(u),
-                      preferredLandingTab: u.preferredLandingTab || 'Summary',
-                      hideMyExpenseConcepts: u.hideMyExpenseConcepts !== false,
-                      canViewHiddenDonations: u.canViewHiddenDonations || false,
-                      canViewExpenses: u.canViewExpenses || false
-                    })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}><Edit3 size={18} /></button>
-                    <button onClick={() => handleDeleteUser(u.id, u.username)} disabled={currentUser.id === u.id || !hasAdminRights} className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || !hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}><Trash2 size={18} /></button>
-                  </div></td>
+                  <td className="px-5 py-3.5 text-center align-top">
+                    <div className="flex items-center justify-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEditingUser({
+                            isOpen: true,
+                            id: u.id,
+                            username: u.username,
+                            role: u.role,
+                            currentPasswordInput: '',
+                            newPassword: '',
+                            confirmPassword: '',
+                            canViewFinances: u.canViewFinances || false,
+                            restrictedEventId: u.restrictedEventId || '',
+                            restrictedLocation: u.restrictedLocation || '',
+                            allowedEventIds: getUserAllowedEventIds(u),
+                            allowedLocations: getUserAllowedLocations(u),
+                            preferredLandingTab: u.preferredLandingTab || 'Summary',
+                            hideMyExpenseConcepts: u.hideMyExpenseConcepts !== false,
+                            canViewHiddenDonations: u.canViewHiddenDonations || false,
+                            canViewExpenses: u.canViewExpenses || false,
+                            canEditRegistryDates: u.role === 'SuperUsuario' ? true : !!u.canEditRegistryDates
+                          })
+                        }
+                        disabled={!hasAdminRights}
+                        className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}
+                        title="Editar"
+                      >
+                        <Edit3 size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteUser(u.id, u.username)}
+                        disabled={currentUser.id === u.id || !hasAdminRights}
+                        className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || !hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}
+                        title="Eliminar"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -5891,9 +6019,9 @@ const App = () => {
 
         {editingUser.isOpen && (
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
-              <h3 className="text-lg font-bold text-slate-800 mb-1">Editar Usuario</h3>
-              <p className="text-sm text-slate-500 mb-4">Modifica los datos del usuario.</p>
+            <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-in zoom-in-95 duration-200">
+              <h3 className="text-lg font-bold text-slate-800 mb-1">Editar usuario</h3>
+              <p className="text-sm text-slate-500 mb-4">Modifica rol, accesos y permisos (los permisos avanzados solo los guarda el SuperUsuario).</p>
               <form onSubmit={handleUpdateUser} className="space-y-4">
                 {(() => {
                   const isSelfEdit = String(currentUser?.id) === String(editingUser.id);
@@ -5916,34 +6044,45 @@ const App = () => {
                   {isTargetSuperUser && <p className="text-[10px] text-slate-500 font-semibold mt-1">El SuperUsuario no puede cambiar rol ni niveles de acceso.</p>}
                 </div>
                 <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <p className={labelClasses}>Permisos</p>
+                  <p className={labelClasses}>Permisos avanzados</p>
                   {!isSuperUser && (
-                    <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede modificar permisos avanzados.</p>
+                    <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede modificar estas opciones.</p>
                   )}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                      <input type="checkbox" className="accent-indigo-600" checked={!!editingUser.canViewFinances} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewFinances: e.target.checked })} />
-                      Ver finanzas
+                    <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                      <input type="checkbox" className="accent-indigo-600 mt-0.5" checked={!!editingUser.canViewFinances} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewFinances: e.target.checked })} />
+                      <span>Ver finanzas</span>
                     </label>
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                      <input type="checkbox" className="accent-indigo-600" checked={!!editingUser.canViewHiddenDonations} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewHiddenDonations: e.target.checked })} />
-                      Ver donaciones ocultas
+                    <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                      <input type="checkbox" className="accent-indigo-600 mt-0.5" checked={!!editingUser.canViewHiddenDonations} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewHiddenDonations: e.target.checked })} />
+                      <span>Ver donaciones ocultas</span>
                     </label>
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                      <input type="checkbox" className="accent-emerald-600" checked={!!editingUser.canViewExpenses} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewExpenses: e.target.checked })} />
-                      Lista de gastos
+                    <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                      <input type="checkbox" className="accent-emerald-600 mt-0.5" checked={!!editingUser.canViewExpenses} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewExpenses: e.target.checked })} />
+                      <span>Lista de gastos</span>
                     </label>
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                    <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
                       <input
                         type="checkbox"
-                        className="accent-slate-600"
+                        className="accent-slate-600 mt-0.5"
                         checked={editingUser.hideMyExpenseConcepts !== false}
                         disabled={!isSuperUser}
                         onChange={e => setEditingUser({ ...editingUser, hideMyExpenseConcepts: e.target.checked })}
                       />
-                      Ocultar mis conceptos de gastos para otros
+                      <span>Ocultar mis conceptos de gastos para otros</span>
+                    </label>
+                    <label className="flex items-start gap-2 text-xs font-semibold text-slate-700 md:col-span-2">
+                      <input
+                        type="checkbox"
+                        className="accent-violet-600 mt-0.5"
+                        checked={!!editingUser.canEditRegistryDates}
+                        disabled={!isSuperUser || isTargetSuperUser}
+                        onChange={e => setEditingUser({ ...editingUser, canEditRegistryDates: e.target.checked })}
+                      />
+                      <span>Editar fechas de registro y de abonos (historial)</span>
                     </label>
                   </div>
+                  {isTargetSuperUser && <p className="text-[10px] text-slate-500 font-semibold">El SuperUsuario siempre puede editar fechas; no requiere casilla.</p>}
                 </div>
                 <div>
                   <label className={labelClasses}>Ventana inicial al entrar al evento</label>
@@ -6044,7 +6183,7 @@ const App = () => {
                   </div>
                 )}
                 <div className="flex gap-3 pt-4">
-                  <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true })} className={btnSecondary}>Cancelar</button>
+                  <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false })} className={btnSecondary}>Cancelar</button>
                   <button type="submit" className={btnPrimary}>Guardar</button>
                 </div>
                     </>
@@ -9537,7 +9676,7 @@ const App = () => {
                                       <span className="text-slate-400 font-normal">Sin fecha guardada (registros antiguos)</span>
                                     )}
                                   </span>
-                                  {isSuperUser && (
+                                  {canEditRegistryDates && (
                                     <button
                                       type="button"
                                       onClick={() => openSuperRegistrationDateEdit(person, loc)}
@@ -9662,7 +9801,7 @@ const App = () => {
                                         ) : (
                                           <>
                                             <p className={`text-sm font-black ${pay.amount < 0 ? 'text-red-500' : 'text-green-600'}`}>{pay.amount < 0 ? '-' : '+'}{formatMoney(Math.abs(pay.amount))}</p>
-                                            {isSuperUser && (
+                                            {canEditRegistryDates && (
                                               <button
                                                 type="button"
                                                 onClick={() => openSuperPaymentDateEdit(person, loc, idx)}
@@ -11641,7 +11780,7 @@ const App = () => {
         </div>
       )}
 
-      {superDateEditModal.isOpen && isSuperUser && (
+      {superDateEditModal.isOpen && canEditRegistryDates && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-md animate-in zoom-in-95 duration-200">
             <div className="flex justify-between items-start mb-6">
@@ -11652,7 +11791,9 @@ const App = () => {
               <button type="button" onClick={closeSuperDateEditModal} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
             </div>
             <p className="text-xs text-slate-500 mb-4">
-              Solo SuperUsuario. La hora se interpreta según la zona horaria de este equipo.
+              {isSuperUser
+                ? 'SuperUsuario: la hora se interpreta según la zona horaria de este equipo.'
+                : 'Tu cuenta tiene permiso para corregir fechas. La hora se interpreta según la zona horaria de este equipo.'}
             </p>
             <label className="text-xs font-bold text-slate-500 mb-1 block">Fecha y hora</label>
             <input
