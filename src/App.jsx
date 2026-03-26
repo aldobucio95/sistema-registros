@@ -2537,7 +2537,15 @@ const App = () => {
       setLoginBusy(false);
       const c = err?.code;
       if (c === 'auth/invalid-credential' || c === 'auth/wrong-password' || c === 'auth/user-not-found') {
-        setLoginError('Usuario o contraseña incorrectos.');
+        setLoginError(
+          `Correo o contraseña no coinciden con Firebase Authentication.\n\n` +
+            `Se intentó iniciar sesión con:\n${email}\n\n` +
+            `En Firebase Console → Authentication debe existir un usuario con ese correo exacto y la contraseña correcta. ` +
+            `Si solo escribes el nombre (sin @), el correo se forma como nombre@${AUTH_EMAIL_DOMAIN}. ` +
+            `Si tu usuario en consola es otro correo (p. ej. Gmail), escríbelo completo en el primer campo.`
+        );
+      } else if (c === 'auth/invalid-email') {
+        setLoginError('El correo no es válido. Usa el formato usuario@dominio o el correo completo de Authentication.');
       } else if (c === 'auth/too-many-requests') {
         setLoginError('Demasiados intentos. Espera unos minutos e intenta de nuevo.');
       } else {
@@ -5974,7 +5982,11 @@ const App = () => {
                 <span className="font-mono text-slate-600 break-all">{loginForm.username.trim() ? loginIdentifierToAuthEmail(loginForm.username) : `usuario@${AUTH_EMAIL_DOMAIN}`}</span>
                 . Si en consola el usuario tiene otro correo, escríbelo tal cual en el primer campo.
               </p>
-              {loginError && <p className="text-xs text-red-500 font-bold animate-in slide-in-from-top-1 text-center">{loginError}</p>}
+              {loginError && (
+                <p className="text-xs text-red-500 font-bold animate-in slide-in-from-top-1 text-left whitespace-pre-line leading-relaxed max-h-48 overflow-y-auto">
+                  {loginError}
+                </p>
+              )}
               <button type="submit" disabled={loginBusy} className="w-full bg-blue-800 hover:bg-blue-900 disabled:bg-slate-400 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-blue-900/20 active:scale-95 flex justify-center items-center gap-2">
                 {loginBusy ? <span className="animate-pulse">Iniciando sesión…</span> : 'Iniciar Sesión'}
               </button>
