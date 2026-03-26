@@ -798,7 +798,8 @@ const App = () => {
     restrictedLocation: '',
     allowedEventIds: [],
     allowedLocations: [],
-    preferredLandingTab: 'Summary'
+    preferredLandingTab: 'Summary',
+    hideMyExpenseConcepts: true
   });
   const [globalConfig, setGlobalConfig] = useState(null);
 
@@ -1112,6 +1113,18 @@ const App = () => {
     paymentService: '',
     cardReference: ''
   });
+  const [paymentMethodEditModal, setPaymentMethodEditModal] = useState({
+    isOpen: false,
+    loc: '',
+    personId: null,
+    personName: '',
+    paymentIndex: null,
+    paymentId: null,
+    amount: 0,
+    oldMethod: 'Efectivo',
+    paymentMethod: 'Efectivo',
+    cardReference: '',
+  });
   const [sendToWaitlist, setSendToWaitlist] = useState(false);
   const [openPreferredServeLoc, setOpenPreferredServeLoc] = useState(null);
   const [editPreferredServeDropdownOpen, setEditPreferredServeDropdownOpen] = useState(false);
@@ -1146,7 +1159,8 @@ const App = () => {
     restrictedLocation: '',
     allowedEventIds: [],
     allowedLocations: [],
-    preferredLandingTab: 'Summary'
+    preferredLandingTab: 'Summary',
+    hideMyExpenseConcepts: true
   });
   const [restoreModal, setRestoreModal] = useState({ isOpen: false, log: null, type: 'single' });
   /** Confirmación in-app: archivar / baja / eliminar donación (sustituye window.confirm). */
@@ -1651,8 +1665,8 @@ const App = () => {
 
   useEffect(() => {
     if (systemView !== 'users') {
-      setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' });
-      setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' });
+      setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true });
+      setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true });
     }
   }, [systemView]);
 
@@ -2903,31 +2917,38 @@ const App = () => {
     }
 
     const newId = String(Date.now());
-    const allowedEventIds = newUser.role === 'SuperUsuario' ? [] : (newUser.allowedEventIds || []);
-    const allowedLocations = newUser.role === 'SuperUsuario' ? [] : (newUser.allowedLocations || []);
+    const editorCanEditAccessFlags = isSuperUser;
+    const allowedEventIds = newUser.role === 'SuperUsuario'
+      ? []
+      : (editorCanEditAccessFlags ? (newUser.allowedEventIds || []) : []);
+    const allowedLocations = newUser.role === 'SuperUsuario'
+      ? []
+      : (editorCanEditAccessFlags ? (newUser.allowedLocations || []) : []);
     const preferredLandingTab = resolvePreferredLandingTab({
       role: newUser.role,
-      preferredLandingTab: newUser.preferredLandingTab || (newUser.role === 'Administrador' ? 'Norte' : 'Summary'),
+      preferredLandingTab: editorCanEditAccessFlags
+        ? (newUser.preferredLandingTab || (newUser.role === 'Administrador' ? 'Norte' : 'Summary'))
+        : (newUser.role === 'Administrador' ? 'Norte' : 'Summary'),
       allowedLocations,
       restrictedLocation: allowedLocations[0] || ''
     }, { locations: allKnownLocationNames });
     const userToSave = {
       ...newUser,
       id: newId,
-      canViewFinances: newUser.role === 'SuperUsuario' ? true : !!newUser.canViewFinances,
-      canViewHiddenDonations: newUser.role === 'SuperUsuario' ? true : !!newUser.canViewHiddenDonations,
-      canViewExpenses: !!newUser.canViewExpenses,
+      canViewFinances: newUser.role === 'SuperUsuario' ? true : (editorCanEditAccessFlags ? !!newUser.canViewFinances : false),
+      canViewHiddenDonations: newUser.role === 'SuperUsuario' ? true : (editorCanEditAccessFlags ? !!newUser.canViewHiddenDonations : false),
+      canViewExpenses: editorCanEditAccessFlags ? !!newUser.canViewExpenses : false,
       allowedEventIds,
       allowedLocations,
       preferredLandingTab,
       restrictedEventId: allowedEventIds[0] || '',
       restrictedLocation: allowedLocations[0] || '',
-      hideMyExpenseConcepts: true
+      hideMyExpenseConcepts: editorCanEditAccessFlags ? (newUser.hideMyExpenseConcepts !== false) : true
     };
 
     await setDoc(getDocRef('app_users', newId), userToSave);
     addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`);
-    setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' });
+    setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true });
     showToast("Usuario añadido exitosamente.");
   };
 
@@ -2968,18 +2989,32 @@ const App = () => {
       passwordChanged = true;
     }
 
+    const editorCanEditAccessFlags = isSuperUser;
+    const originalHideMyExpenseConcepts = originalUser?.hideMyExpenseConcepts !== false;
+
     const nextRole = isTargetSuperUser ? 'SuperUsuario' : editingUser.role;
-    const newCanViewFinances = isTargetSuperUser ? true : !!editingUser.canViewFinances;
-    const newCanViewHiddenDonations = isTargetSuperUser ? true : !!editingUser.canViewHiddenDonations;
-    const newCanViewExpenses = !!editingUser.canViewExpenses;
-    const newAllowedEventIds = isTargetSuperUser ? [] : (editingUser.allowedEventIds || []);
-    const newAllowedLocations = isTargetSuperUser ? [] : (editingUser.allowedLocations || []);
+    const newCanViewFinances = isTargetSuperUser
+      ? true
+      : (editorCanEditAccessFlags ? !!editingUser.canViewFinances : !!originalUser.canViewFinances);
+    const newCanViewHiddenDonations = isTargetSuperUser
+      ? true
+      : (editorCanEditAccessFlags ? !!editingUser.canViewHiddenDonations : !!originalUser.canViewHiddenDonations);
+    const newCanViewExpenses = editorCanEditAccessFlags ? !!editingUser.canViewExpenses : !!originalUser.canViewExpenses;
+    const newAllowedEventIds = isTargetSuperUser
+      ? []
+      : (editorCanEditAccessFlags ? (editingUser.allowedEventIds || []) : getUserAllowedEventIds(originalUser));
+    const newAllowedLocations = isTargetSuperUser
+      ? []
+      : (editorCanEditAccessFlags ? (editingUser.allowedLocations || []) : getUserAllowedLocations(originalUser));
+
     const newPreferredLandingTab = resolvePreferredLandingTab({
       role: nextRole,
-      preferredLandingTab: editingUser.preferredLandingTab || 'Summary',
+      preferredLandingTab: (editorCanEditAccessFlags ? editingUser.preferredLandingTab : originalUser.preferredLandingTab) || 'Summary',
       allowedLocations: newAllowedLocations,
       restrictedLocation: newAllowedLocations[0] || ''
     }, { locations: allKnownLocationNames });
+
+    const newHideMyExpenseConcepts = editorCanEditAccessFlags ? (editingUser.hideMyExpenseConcepts !== false) : originalHideMyExpenseConcepts;
     const newRestrictedEventId = newAllowedEventIds[0] || '';
     const newRestrictedLocation = newAllowedLocations[0] || '';
 
@@ -2990,6 +3025,7 @@ const App = () => {
     if (originalUser.canViewFinances !== newCanViewFinances) changes.push(`Ver Finanzas (${originalUser.canViewFinances ? 'Sí' : 'No'} -> ${newCanViewFinances ? 'Sí' : 'No'})`);
     if (originalUser.canViewHiddenDonations !== newCanViewHiddenDonations) changes.push(`Ver donaciones ocultas (${originalUser.canViewHiddenDonations ? 'Sí' : 'No'} -> ${newCanViewHiddenDonations ? 'Sí' : 'No'})`);
     if ((!!originalUser.canViewExpenses) !== newCanViewExpenses) changes.push(`Ver Gastos (${originalUser.canViewExpenses ? 'Sí' : 'No'} -> ${newCanViewExpenses ? 'Sí' : 'No'})`);
+    if (originalHideMyExpenseConcepts !== newHideMyExpenseConcepts) changes.push(`Ocultar mis conceptos de gastos (${originalHideMyExpenseConcepts ? 'Sí' : 'No'} -> ${newHideMyExpenseConcepts ? 'Sí' : 'No'})`);
     const prevAllowedEvents = getUserAllowedEventIds(originalUser);
     const prevAllowedLocations = getUserAllowedLocations(originalUser);
     if (prevAllowedEvents.slice().sort().join('|') !== newAllowedEventIds.slice().sort().join('|')) changes.push(`Eventos permitidos (${prevAllowedEvents.length ? prevAllowedEvents.length : 'Todos'} -> ${newAllowedEventIds.length ? newAllowedEventIds.length : 'Todos'})`);
@@ -3007,7 +3043,8 @@ const App = () => {
       allowedLocations: newAllowedLocations,
       preferredLandingTab: newPreferredLandingTab,
       restrictedEventId: newRestrictedEventId,
-      restrictedLocation: newRestrictedLocation
+      restrictedLocation: newRestrictedLocation,
+      hideMyExpenseConcepts: newHideMyExpenseConcepts
     });
     
     if (currentUser.id === editingUser.id) {
@@ -3023,13 +3060,14 @@ const App = () => {
         allowedLocations: newAllowedLocations,
         preferredLandingTab: newPreferredLandingTab,
         restrictedEventId: newRestrictedEventId,
-        restrictedLocation: newRestrictedLocation
+        restrictedLocation: newRestrictedLocation,
+        hideMyExpenseConcepts: newHideMyExpenseConcepts
       });
     }
     
     if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
     
-    setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' });
+    setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true });
     showToast("Usuario actualizado.");
   };
 
@@ -4637,6 +4675,117 @@ const App = () => {
     showToast("Comentario guardado.");
   };
 
+  const closePaymentMethodEditModal = () =>
+    setPaymentMethodEditModal({
+      isOpen: false,
+      loc: '',
+      personId: null,
+      personName: '',
+      paymentIndex: null,
+      paymentId: null,
+      amount: 0,
+      oldMethod: 'Efectivo',
+      paymentMethod: 'Efectivo',
+      cardReference: '',
+    });
+
+  const openPaymentMethodEditModal = (person, personLoc, paymentIndex) => {
+    if (!hasAdminRights) return;
+    const hist = Array.isArray(person?.paymentHistory) ? person.paymentHistory : [];
+    const row = hist[paymentIndex];
+    if (!row || row.kind === 'comment') return;
+    const inferredMethod = row.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
+    setPaymentMethodEditModal({
+      isOpen: true,
+      loc: personLoc || person.location || '',
+      personId: person.id,
+      personName: person.name || 'participante',
+      paymentIndex,
+      paymentId: row.id ?? null,
+      amount: Number(row.amount) || 0,
+      oldMethod: inferredMethod,
+      paymentMethod: inferredMethod,
+      cardReference: String(row.reference || ''),
+    });
+  };
+
+  const handleSavePaymentMethodEdit = async () => {
+    if (!hasAdminRights || !paymentMethodEditModal.isOpen) return;
+    const person = allParticipants.find((p) => String(p.id) === String(paymentMethodEditModal.personId));
+    if (!person) {
+      showToast('Participante no encontrado.');
+      closePaymentMethodEditModal();
+      return;
+    }
+    const idx = paymentMethodEditModal.paymentIndex;
+    const hist = [...(person.paymentHistory || [])];
+    if (idx == null || idx < 0 || idx >= hist.length) {
+      showToast('Movimiento no encontrado.');
+      closePaymentMethodEditModal();
+      return;
+    }
+    const row = hist[idx];
+    if (!row || row.kind === 'comment') {
+      showToast('Ese movimiento no admite cambio de método.');
+      closePaymentMethodEditModal();
+      return;
+    }
+    if (paymentMethodEditModal.paymentId != null && String(row.id) !== String(paymentMethodEditModal.paymentId)) {
+      showToast('El historial cambió; vuelve a abrir el editor.');
+      closePaymentMethodEditModal();
+      return;
+    }
+
+    const newMethod = paymentMethodEditModal.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+    const amount = Number(row.amount) || 0;
+    const commissionRate = getCardCommissionRate();
+    const oldMethod = row.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
+    const oldNet =
+      Number.isFinite(parseFloat(row.netAmount))
+        ? parseFloat(row.netAmount)
+        : (oldMethod === 'Tarjeta' ? (amount - (amount * commissionRate)) : amount);
+    const newCommission = newMethod === 'Tarjeta' ? (amount * commissionRate) : 0;
+    const newNet = newMethod === 'Tarjeta' ? (amount - newCommission) : amount;
+    const nextReference = newMethod === 'Tarjeta' ? String(paymentMethodEditModal.cardReference || '').trim() : '';
+
+    if (
+      newMethod === oldMethod &&
+      String(nextReference || '') === String(row.reference || '')
+    ) {
+      showToast('No hubo cambios en el tipo de abono.');
+      closePaymentMethodEditModal();
+      return;
+    }
+
+    hist[idx] = {
+      ...row,
+      method: newMethod,
+      netAmount: newNet,
+      commission: newCommission,
+      reference: nextReference,
+    };
+
+    const originalPaidGross = parseFloat(person.paid || 0) || 0;
+    const originalPaidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : originalPaidGross;
+    const nextPaidNet = originalPaidNet + (newNet - oldNet);
+    const payload = {
+      paymentHistory: hist,
+      paidNet: nextPaidNet,
+      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+    };
+
+    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
+    addLog(
+      'Finanzas',
+      `Actualizó tipo de abono en historial para ${person.name} (${paymentMethodEditModal.loc || person.location || '—'}): ${oldMethod} -> ${newMethod}${nextReference ? ` (Ref: ${nextReference})` : ''}.`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
+    );
+    closePaymentMethodEditModal();
+    showToast('Tipo de abono actualizado.');
+  };
+
   const closeSuperDateEditModal = () =>
     setSuperDateEditModal({
       isOpen: false,
@@ -5023,6 +5172,16 @@ const App = () => {
                   <input type="checkbox" className="accent-emerald-600" checked={!!newUser.canViewExpenses} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={e => setNewUser({ ...newUser, canViewExpenses: e.target.checked })} />
                   Lista de gastos
                 </label>
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                  <input
+                    type="checkbox"
+                    className="accent-slate-600"
+                    checked={newUser.hideMyExpenseConcepts !== false}
+                    disabled={!isSuperUser}
+                    onChange={e => setNewUser({ ...newUser, hideMyExpenseConcepts: e.target.checked })}
+                  />
+                  Ocultar mis conceptos de gastos para otros
+                </label>
               </div>
             </div>
             <div className="flex items-end h-full md:col-span-4 lg:col-span-1"><button type="submit" className={btnPrimary}><Plus size={18} /> Añadir Usuario</button></div>
@@ -5051,6 +5210,14 @@ const App = () => {
                           <DollarSign size={10} /> Finanzas
                         </span>
                       )}
+                      {u.hideMyExpenseConcepts !== false && (
+                        <span
+                          className="text-[9px] bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-black tracking-wider"
+                          title="Los conceptos de tus gastos se ocultan a otros usuarios (según tu configuración)."
+                        >
+                          <EyeOff size={12} /> Gastos ocultos
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2">
@@ -5068,6 +5235,7 @@ const App = () => {
                       allowedEventIds: getUserAllowedEventIds(u),
                       allowedLocations: getUserAllowedLocations(u),
                       preferredLandingTab: u.preferredLandingTab || 'Summary',
+                      hideMyExpenseConcepts: u.hideMyExpenseConcepts !== false,
                       canViewHiddenDonations: u.canViewHiddenDonations || false,
                       canViewExpenses: u.canViewExpenses || false
                     })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}><Edit3 size={18} /></button>
@@ -5765,6 +5933,16 @@ const App = () => {
                       <input type="checkbox" className="accent-emerald-600" checked={!!editingUser.canViewExpenses} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewExpenses: e.target.checked })} />
                       Lista de gastos
                     </label>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        className="accent-slate-600"
+                        checked={editingUser.hideMyExpenseConcepts !== false}
+                        disabled={!isSuperUser}
+                        onChange={e => setEditingUser({ ...editingUser, hideMyExpenseConcepts: e.target.checked })}
+                      />
+                      Ocultar mis conceptos de gastos para otros
+                    </label>
                   </div>
                 </div>
                 <div>
@@ -5866,7 +6044,7 @@ const App = () => {
                   </div>
                 )}
                 <div className="flex gap-3 pt-4">
-                  <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' })} className={btnSecondary}>Cancelar</button>
+                  <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true })} className={btnSecondary}>Cancelar</button>
                   <button type="submit" className={btnPrimary}>Guardar</button>
                 </div>
                     </>
@@ -9493,6 +9671,15 @@ const App = () => {
                                                 Cambiar fecha
                                               </button>
                                             )}
+                                            {hasAdminRights && (
+                                              <button
+                                                type="button"
+                                                onClick={() => openPaymentMethodEditModal(person, loc, idx)}
+                                                className="text-[9px] font-black uppercase text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-lg hover:bg-indigo-100 transition-colors"
+                                              >
+                                                Cambiar tipo
+                                              </button>
+                                            )}
                                           </>
                                         )}
                                       </div>
@@ -11186,6 +11373,53 @@ const App = () => {
                 <button onClick={() => setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' })} className={btnSecondary}>Cancelar</button>
                 <button onClick={submitAbono} className="flex-1 py-3 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl transition-colors shadow-lg shadow-green-200 text-sm flex justify-center items-center gap-2"><CreditCard size={18} /> Guardar</button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {paymentMethodEditModal.isOpen && hasAdminRights && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
+            <h3 className="text-lg font-bold text-slate-800 mb-1">Cambiar tipo de abono</h3>
+            <p className="text-sm text-slate-500 mb-5">
+              Movimiento de <strong className="text-slate-700">{paymentMethodEditModal.personName}</strong> · Monto {formatMoney(paymentMethodEditModal.amount || 0)}
+            </p>
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className={labelClasses}>Método</label>
+                <select
+                  className={inputClasses}
+                  value={paymentMethodEditModal.paymentMethod}
+                  onChange={(e) => {
+                    const method = e.target.value === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+                    setPaymentMethodEditModal((prev) => ({
+                      ...prev,
+                      paymentMethod: method,
+                      cardReference: method === 'Tarjeta' ? prev.cardReference : '',
+                    }));
+                  }}
+                >
+                  {PAYMENT_METHODS.map((m) => <option key={`edit-method-${m}`} value={m}>{m}</option>)}
+                </select>
+              </div>
+              {paymentMethodEditModal.paymentMethod === 'Tarjeta' && (
+                <div className="space-y-1">
+                  <label className={labelClasses}>Referencia de pago (opcional)</label>
+                  <input
+                    className={inputClasses}
+                    value={paymentMethodEditModal.cardReference}
+                    placeholder="Ej. folio / transacción"
+                    onChange={(e) => setPaymentMethodEditModal((prev) => ({ ...prev, cardReference: e.target.value }))}
+                  />
+                </div>
+              )}
+            </div>
+            <div className="flex gap-3 pt-6">
+              <button type="button" onClick={closePaymentMethodEditModal} className={btnSecondary}>Cancelar</button>
+              <button type="button" onClick={handleSavePaymentMethodEdit} className="flex-1 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-colors text-sm">
+                Guardar
+              </button>
             </div>
           </div>
         </div>
