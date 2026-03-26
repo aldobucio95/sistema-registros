@@ -8033,6 +8033,115 @@ const App = () => {
     );
   };
 
+  /** Columna «Participante» compartida: mismas etiquetas que en registro por sede (incl. lista de espera en vista global). */
+  const renderRegistrationParticipantColumn = (person) => {
+    const isBecado = isCampa && person.isScholarship === 'Sí';
+    const isWaitlist = (person?.status || 'active') === 'waitlist';
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center flex-wrap gap-2">
+          <p className="font-bold text-slate-800 text-sm flex items-center gap-1.5 flex-wrap">
+            <span>{person.name}</span>
+            {isWaitlist ? (
+              <span className="text-[8px] font-black uppercase bg-amber-50 text-amber-700 border border-amber-100 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center justify-center">
+                Lista de espera
+              </span>
+            ) : null}
+            {person.alias ? (
+              <span className="text-[8px] font-black uppercase bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
+                Alias: {person.alias}
+              </span>
+            ) : null}
+            {person.isFirstVnpId ? (
+              <span className="text-[8px] font-black uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center justify-center">
+                1
+              </span>
+            ) : null}
+            {participantIsCancelled(person) ? (
+              <span className="text-[8px] font-black uppercase bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
+                Cancelado
+              </span>
+            ) : null}
+            {(Number(person?.refundPendingAmount || 0) || 0) > 0 ? (
+              <span className="text-[8px] font-black uppercase bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
+                Devolución pendiente
+              </span>
+            ) : null}
+            {resolveResponsivaStatus(person) === 'Pendiente' ? (
+              <span className="text-[8px] font-black uppercase bg-rose-50 text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
+                Responsiva pendiente
+              </span>
+            ) : null}
+            {person._isDebug && person._debugSessionId === globalConfig?.debugSessionId && (
+              <Bug size={14} className="text-orange-500 inline-block ml-auto flex-shrink-0" title="Cambio no permanente" />
+            )}
+          </p>
+          {isBecado && (
+            <span className="bg-purple-100 text-purple-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1">
+              <GraduationCap size={10} />{' '}
+              {person.scholarshipType === 'partial' ? 'Beca parcial' : 'Becado'}
+            </span>
+          )}
+          {person.isServer === 'Sí' ? (
+            <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>
+          ) : (
+            isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes')}</span>
+          )}
+          {isCampa && person.willBeBaptized === 'Sí' && (() => {
+            const seg = getBaptismAccountingSegment(person);
+            return (
+              <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border ${seg ? 'bg-sky-100 text-sky-800 border-sky-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`} title={seg ? `Conteo en ${seg}` : 'Servidor Ambos: elige Teens o Jóvenes en editar'}>
+                <Church size={10} /> Bautizo{seg ? ` · ${seg}` : ' · incompleto'}
+              </span>
+            );
+          })()}
+        </div>
+        {isWaitlist && isCampa && person.isScholarship === 'Sí' && person.scholarshipPendingApproval ? (
+          <p className="text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-100 rounded-lg px-2 py-1 inline-block">
+            Solicitud beca {person.scholarshipType === 'partial' ? 'parcial' : 'total'}
+            {person.scholarshipType === 'partial'
+              ? ` · monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}`
+              : ''}{' '}
+            (pendiente al promover)
+          </p>
+        ) : null}
+        <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1">
+          <span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone}</span>
+          {person.vnpPersonId && (
+            <span className="text-[10px] font-mono text-indigo-600 font-bold tracking-tight">VNPM {person.vnpPersonId}</span>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderRegistrationFinancesColumn = (person) => {
+    const isBecado = isCampa && person.isScholarship === 'Sí';
+    const liquidationTarget = getLiquidationTarget(person);
+    const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
+    return (
+      <div className="flex flex-col gap-2 w-full max-w-[140px]">
+        <div className="text-left space-y-0.5">
+          <p className="text-xs font-black text-green-600 flex justify-between"><span>Pagado:</span> <span>{formatMoney(person.paid || 0)}</span></p>
+          <p className={`text-[10px] font-bold flex justify-between ${isBecado && liquidationTarget <= 0 ? 'text-purple-600' : balance > 0 ? 'text-orange-500' : 'text-green-600'}`}>
+            <span>Restante:</span>{' '}
+            <span>
+              {liquidationTarget <= 0 ? 'No requerido' : balance > 0 ? formatMoney(balance) : 'Liquidado'}
+            </span>
+          </p>
+        </div>
+        <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1">
+          <div
+            className="h-full bg-green-50 transition-all"
+            style={{
+              width: `${liquidationTarget > 0 ? Math.min(((parseFloat(person.paid || 0) / liquidationTarget) * 100), 100) : 100}%`,
+            }}
+          />
+        </div>
+      </div>
+    );
+  };
+
   const renderLocationSheet = (loc) => {
     const visibleParticipants = getProcessedParticipantsForLocation(loc);
     const newRegCampaignsActive = getActiveDiscountCampaigns(currentEvent).filter((c) => campaignMatchesPersonProfile(c, newEntry));
@@ -9168,87 +9277,10 @@ const App = () => {
                     <React.Fragment key={person.id}>
                       <tr className={`hover:bg-slate-50/50 transition-colors group ${isExpanded ? 'bg-slate-50/50' : ''}`}>
                         <td className="px-4 py-4 align-top">
-                          <div className="space-y-1">
-                            <div className="flex items-center flex-wrap gap-2">
-                              <p className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
-                                <span>{person.name}</span>
-                                {person.alias ? (
-                                  <span className="text-[8px] font-black uppercase bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
-                                    Alias: {person.alias}
-                                  </span>
-                                ) : null}
-                                {person.isFirstVnpId ? (
-                                  <span className="text-[8px] font-black uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center justify-center">
-                                    1
-                                  </span>
-                                ) : null}
-                                {participantIsCancelled(person) ? (
-                                  <span className="text-[8px] font-black uppercase bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
-                                    Cancelado
-                                  </span>
-                                ) : null}
-                                {(Number(person?.refundPendingAmount || 0) || 0) > 0 ? (
-                                  <span className="text-[8px] font-black uppercase bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
-                                    Devolución pendiente
-                                  </span>
-                                ) : null}
-                                {resolveResponsivaStatus(person) === 'Pendiente' ? (
-                                  <span className="text-[8px] font-black uppercase bg-rose-50 text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
-                                    Responsiva pendiente
-                                  </span>
-                                ) : null}
-                                {person._isDebug && person._debugSessionId === globalConfig?.debugSessionId && (
-                                  <Bug size={14} className="text-orange-500 inline-block ml-auto flex-shrink-0" title="Cambio no permanente" />
-                                )}
-                              </p>
-                              {isBecado && (
-                                <span className="bg-purple-100 text-purple-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1">
-                                  <GraduationCap size={10} />{' '}
-                                  {person.scholarshipType === 'partial' ? 'Beca parcial' : 'Becado'}
-                                </span>
-                              )}
-                              {person.isServer === 'Sí' ? (
-                                <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>
-                              ) : (
-                                isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes')}</span>
-                              )}
-                              {isCampa && person.willBeBaptized === 'Sí' && (() => {
-                                const seg = getBaptismAccountingSegment(person);
-                                return (
-                                  <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border ${seg ? 'bg-sky-100 text-sky-800 border-sky-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`} title={seg ? `Conteo en ${seg}` : 'Servidor Ambos: elige Teens o Jóvenes en editar'}>
-                                    <Church size={10} /> Bautizo{seg ? ` · ${seg}` : ' · incompleto'}
-                                  </span>
-                                );
-                              })()}
-                            </div>
-                            <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1">
-                              <span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone}</span>
-                              {person.vnpPersonId && (
-                                <span className="text-[10px] font-mono text-indigo-600 font-bold tracking-tight">VNPM {person.vnpPersonId}</span>
-                              )}
-                            </div>
-                          </div>
+                          {renderRegistrationParticipantColumn(person)}
                         </td>
                         <td className="px-4 py-4 align-top">
-                          <div className="flex flex-col gap-2 w-full max-w-[140px]">
-                            <div className="text-left space-y-0.5">
-                              <p className="text-xs font-black text-green-600 flex justify-between"><span>Pagado:</span> <span>{formatMoney(person.paid || 0)}</span></p>
-                              <p className={`text-[10px] font-bold flex justify-between ${isBecado && liquidationTarget <= 0 ? 'text-purple-600' : balance > 0 ? 'text-orange-500' : 'text-green-600'}`}>
-                                <span>Restante:</span>{' '}
-                                <span>
-                                  {liquidationTarget <= 0 ? 'No requerido' : balance > 0 ? formatMoney(balance) : 'Liquidado'}
-                                </span>
-                              </p>
-                            </div>
-                            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1">
-                              <div
-                                className="h-full bg-green-50 transition-all"
-                                style={{
-                                  width: `${liquidationTarget > 0 ? Math.min(((parseFloat(person.paid || 0) / liquidationTarget) * 100), 100) : 100}%`,
-                                }}
-                              />
-                            </div>
-                          </div>
+                          {renderRegistrationFinancesColumn(person)}
                         </td>
                         <td className="px-4 py-4 align-top text-center">
                           <div className="flex flex-wrap items-center justify-center gap-1.5 opacity-100 lg:opacity-60 group-hover:opacity-100 transition-opacity">
@@ -9623,7 +9655,8 @@ const App = () => {
       if (p.eventId !== currentEvent?.id) return false;
       if (!visibleLocations.includes(p.location)) return false;
       const status = p?.status || 'active';
-      return status === 'active' || status === 'waitlist';
+      if (status === PARTICIPANT_STATUS_ARCHIVED) return false;
+      return status === 'active' || status === 'waitlist' || status === PARTICIPANT_STATUS_CANCELLED;
     });
     const rowsByFilters = applyRosterLikeFilters(sourceRows);
     const rows =
@@ -9639,7 +9672,7 @@ const App = () => {
               <TableProperties size={20} className="text-indigo-600" />
               Registro Global
             </h2>
-            <p className="text-xs text-slate-500 mt-1">Vista consolidada de todas las sedes (activos + lista de espera). Solo lectura.</p>
+            <p className="text-xs text-slate-500 mt-1">Vista consolidada de todas las sedes (mismas etiquetas y filtros que en cada sede: inscritos, lista de espera y dados de baja). Solo lectura.</p>
           </div>
           <div className="text-right">
             <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Coincidencias</p>
@@ -9852,56 +9885,33 @@ const App = () => {
               <thead>
                 <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
                   <th className="px-4 py-4">Participante</th>
-                  <th className="px-4 py-4">Estado</th>
                   <th className="px-4 py-4">Sede</th>
-                  <th className="px-4 py-4">Contacto</th>
                   <th className="px-4 py-4">Finanzas</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {rows.length === 0 ? (
                   <tr>
-                    <td colSpan="5" className="px-6 py-14 text-center text-slate-400 italic font-medium">
+                    <td colSpan="3" className="px-6 py-14 text-center text-slate-400 italic font-medium">
                       No hay registros para mostrar con los filtros actuales.
                     </td>
                   </tr>
-                ) : rows.map((person) => {
-                  const isWaitlist = (person?.status || 'active') === 'waitlist';
-                  const debt = Math.max(0, getLiquidationTarget(person) - (parseFloat(person.paid || 0) || 0));
-                  return (
+                ) : rows.map((person) => (
                     <tr key={`global-${person.id}`} className="hover:bg-slate-50/60 transition-colors">
-                      <td className="px-4 py-3">
-                        <p className="font-bold text-slate-800 text-sm">{person.name}</p>
-                        {person.vnpPersonId && <p className="text-[10px] font-mono text-indigo-600">{person.vnpPersonId}</p>}
+                      <td className="px-4 py-3 align-top">
+                        {renderRegistrationParticipantColumn(person)}
                       </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className={`text-[10px] font-black px-2 py-1 rounded-lg border ${isWaitlist ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>
-                            {isWaitlist ? 'Lista de espera' : 'Activo'}
-                          </span>
-                          {(Number(person?.refundPendingAmount || 0) || 0) > 0 ? (
-                            <span className="text-[10px] font-black px-2 py-1 rounded-lg border bg-amber-50 text-amber-700 border-amber-200">
-                              Devolución pendiente
-                            </span>
-                          ) : null}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 align-top">
                         <span className="inline-flex items-center gap-1 text-xs font-black text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-lg px-2 py-1">
                           <MapPin size={12} />
                           {person.location || 'Sin sede'}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs text-slate-600">
-                        <span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone || '—'}</span>
-                      </td>
-                      <td className="px-4 py-3 text-xs">
-                        <p className="font-black text-green-700">{formatMoney(person.paid || 0)}</p>
-                        <p className="text-slate-500">Pendiente: {formatMoney(debt)}</p>
+                      <td className="px-4 py-3 align-top">
+                        {renderRegistrationFinancesColumn(person)}
                       </td>
                     </tr>
-                  );
-                })}
+                  ))}
               </tbody>
             </table>
           </div>
