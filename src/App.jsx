@@ -13,7 +13,7 @@ import {
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBIRKdNeMmaVVofVx4jshciPB-N9J0HqIg",
@@ -32,6 +32,40 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 const getColRef = (colName) => collection(db, 'artifacts', appId, 'public', 'data', colName);
 const getDocRef = (colName, docId) => doc(db, 'artifacts', appId, 'public', 'data', colName, docId);
+
+/** Ventana para considerar una sesión “activa” (debe ser > intervalo de heartbeat). */
+const SESSION_TTL_MS = 45000;
+/** Heartbeat para mantener viva la sesión en Firestore y liberar al cerrar pestaña tras ~TTL. */
+const SESSION_HEARTBEAT_MS = 15000;
+
+/** ID único por pestaña (sessionStorage); al cerrar la pestaña desaparece, pero el doc en Firestore se borra en pagehide. */
+const getTabSessionId = () => {
+  try {
+    let id = sessionStorage.getItem('vnpm_tab_session_id');
+    if (!id) {
+      id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `s_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+      sessionStorage.setItem('vnpm_tab_session_id', id);
+    }
+    return id;
+  } catch {
+    return `fallback_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  }
+};
+
+const sessionDocId = (userId, tabSessionId) => `${String(userId)}_${tabSessionId}`;
+
+const countOtherActiveSessions = async (userId, myTabSessionId) => {
+  const q = query(getColRef('app_sessions'), where('userId', '==', String(userId)));
+  const snap = await getDocs(q);
+  const now = Date.now();
+  let n = 0;
+  snap.forEach((d) => {
+    const data = d.data();
+    if (data.sessionId === myTabSessionId) return;
+    if ((data.lastHeartbeat || 0) > now - SESSION_TTL_MS) n += 1;
+  });
+  return n;
+};
 
 const BLOOD_TYPES = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
 const GENDERS = ["Hombre", "Mujer"];
@@ -751,6 +785,8 @@ const App = () => {
   const [users, setUsers] = useState([]);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState('');
+  /** Solo SuperUsuario: sesiones activas (heartbeat reciente), actualizado en tiempo real. */
+  const [superSessionCount, setSuperSessionCount] = useState(0);
   const [newUser, setNewUser] = useState({
     username: '',
     password: '',
@@ -1601,19 +1637,23 @@ const App = () => {
       return;
     }
     const eventNavTabsWithoutLocation = ['Summary', 'ServersPage', 'ExpenseList', 'CashCut', 'Becados', 'RegistroGlobal'];
-    if (!selectedEventId) return;
+    if (!selectedEventId || !currentEvent) return;
     if (eventNavTabsWithoutLocation.includes(activeTab)) {
       const pk = PANEL_NAV_TAB_KEYS[activeTab];
       if (pk && !isPanelNavSectionAllowed(pk)) {
         setActiveTab('Summary');
-        return;
       }
-    } else if (!hasLocationAccess(activeTab)) {
-      setActiveTab('Summary');
-    } else if (!isPanelNavSectionAllowed('locations')) {
-      setActiveTab('Summary');
+      return;
     }
-  }, [currentUser, selectedEventId, activeTab, hasEventAccess, hasLocationAccess, isPanelNavSectionAllowed]);
+    if (!isPanelNavSectionAllowed('locations')) {
+      setActiveTab('Summary');
+      return;
+    }
+    // Sede = nombre en activeTab: debe existir en el evento actual y ser visible para el usuario (onSnapshot actualiza currentEvent).
+    if (!visibleLocations.includes(activeTab)) {
+      setActiveTab(resolvePreferredLandingTab(currentUser, currentEvent));
+    }
+  }, [currentUser, selectedEventId, activeTab, currentEvent, visibleLocations, hasEventAccess, isPanelNavSectionAllowed, resolvePreferredLandingTab]);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -2305,25 +2345,62 @@ const App = () => {
     await updateDoc(getDocRef('app_events', currentEvent.id), payload);
   }, [currentEvent, globalConfig]);
 
+  const removeCurrentUserSession = useCallback(async (user) => {
+    if (!user?.id || !user.tabSessionId) return;
+    const uid = String(user.id);
+    await deleteDoc(getDocRef('app_sessions', sessionDocId(uid, user.tabSessionId))).catch(() => {});
+    const q = query(getColRef('app_sessions'), where('userId', '==', uid));
+    const snap = await getDocs(q);
+    const now = Date.now();
+    let anyActive = false;
+    snap.forEach((d) => {
+      if ((d.data().lastHeartbeat || 0) > now - SESSION_TTL_MS) anyActive = true;
+    });
+    if (!anyActive) {
+      await updateDoc(getDocRef('app_users', uid), { isOnline: false }).catch(() => {});
+    }
+  }, []);
+
   const handleLogin = async (e) => {
     e.preventDefault();
+    setLoginError('');
     const user = users.find(u => u.username === loginForm.username && u.password === loginForm.password);
-    if (user) {
+    if (!user) {
+      setLoginError('Usuario o contraseña incorrectos.');
+      return;
+    }
+    const tabSessionId = getTabSessionId();
+    try {
+      if (user.role !== 'SuperUsuario') {
+        const others = await countOtherActiveSessions(user.id, tabSessionId);
+        if (others > 0) {
+          setLoginError('Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» allí, o espera unos segundos e intenta de nuevo.');
+          return;
+        }
+      }
+      await setDoc(getDocRef('app_sessions', sessionDocId(user.id, tabSessionId)), {
+        userId: String(user.id),
+        sessionId: tabSessionId,
+        username: user.username,
+        lastHeartbeat: Date.now(),
+        createdAt: Date.now(),
+      });
       const loginTime = Date.now();
       const adminDefaultPref = (user.username || '').toLowerCase() === 'admin' && user.role === 'Administrador' ? 'Norte' : (user.preferredLandingTab || 'Summary');
       setCurrentUser({
         ...user,
+        tabSessionId,
         loginTime,
         allowedEventIds: getUserAllowedEventIds(user),
         allowedLocations: getUserAllowedLocations(user),
         preferredLandingTab: adminDefaultPref
       });
-      setLoginError('');
       setLoginForm({ username: '', password: '' });
       addLog('Inicio de Sesión', `El usuario ${user.username} inició sesión.`, user.username, { id: 'Global', name: 'Sistema' });
       await updateDoc(getDocRef('app_users', String(user.id)), { isOnline: true });
-    } else {
-      setLoginError('Usuario o contraseña incorrectos.');
+    } catch (err) {
+      console.error(err);
+      setLoginError('No se pudo iniciar sesión. Revisa la conexión e intenta de nuevo.');
     }
   };
 
@@ -2332,7 +2409,7 @@ const App = () => {
       const activeTime = Date.now() - (currentUser.loginTime || Date.now());
       const formattedTime = formatDuration(activeTime);
       addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión manualmente. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
-      await updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
+      await removeCurrentUserSession(currentUser);
     }
     setNavHistory([]);
     setCurrentUser(null);
@@ -2383,20 +2460,14 @@ const App = () => {
         isClosing = true;
         const activeTime = Date.now() - (currentUser.loginTime || Date.now());
         const formattedTime = formatDuration(activeTime);
-        
+        const u = currentUser;
         addLog(
           'Cierre de Sesión Automático',
-          `Sesión finalizada por cierre de navegador o pestaña. (Tiempo activo: ${formattedTime})`,
-          currentUser.username,
+          `Sesión finalizada por cierre de pestaña o navegador. (Tiempo activo: ${formattedTime})`,
+          u.username,
           { id: 'Global', name: 'Sistema' }
         );
-        updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
-      }
-    };
-
-    const setOffline = () => {
-      if (currentUser?.id) {
-        updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
+        removeCurrentUserSession(u).catch(() => {});
       }
     };
 
@@ -2404,7 +2475,7 @@ const App = () => {
       const activeTime = Date.now() - (currentUser.loginTime || Date.now());
       const formattedTime = formatDuration(activeTime);
       addLog('Cierre de Sesión Automático', `Sesión finalizada por inactividad. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
-      await setOffline();
+      await removeCurrentUserSession(currentUser);
       setNavHistory([]);
       setCurrentUser(null);
       setSelectedEventId(null);
@@ -2429,18 +2500,52 @@ const App = () => {
     const activityEvents = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
     resetTimer();
     activityEvents.forEach(e => window.addEventListener(e, handleActivity));
-    
-    window.addEventListener('beforeunload', handleBrowserClose);
-    window.addEventListener('pagehide', handleBrowserClose);
+
+    /** Cierre de pestaña o salida real de la página; `persisted` evita borrar al volver desde caché atrás. */
+    const handlePageHide = (ev) => {
+      if (ev && ev.persisted) return;
+      handleBrowserClose();
+    };
+    window.addEventListener('pagehide', handlePageHide);
 
     return () => {
       clearTimeout(timeoutId);
       clearTimeout(throttleTimeoutId);
       activityEvents.forEach(e => window.removeEventListener(e, handleActivity));
-      window.removeEventListener('beforeunload', handleBrowserClose);
-      window.removeEventListener('pagehide', handleBrowserClose);
+      window.removeEventListener('pagehide', handlePageHide);
     };
-  }, [currentUser, addLog, showToast]);
+  }, [currentUser, addLog, showToast, removeCurrentUserSession]);
+
+  /** Mantiene viva la sesión en Firestore (necesario para liberar el bloqueo de una sola sesión al cerrar la pestaña). */
+  useEffect(() => {
+    if (!currentUser?.id || !currentUser.tabSessionId) return;
+    const docId = sessionDocId(currentUser.id, currentUser.tabSessionId);
+    const tick = () => {
+      updateDoc(getDocRef('app_sessions', docId), { lastHeartbeat: Date.now() }).catch(() => {});
+    };
+    tick();
+    const iv = setInterval(tick, SESSION_HEARTBEAT_MS);
+    return () => clearInterval(iv);
+  }, [currentUser?.id, currentUser?.tabSessionId]);
+
+  /** SuperUsuario: número de sesiones con heartbeat reciente (tiempo real). */
+  useEffect(() => {
+    if (!isSuperUser || !currentUser?.id) {
+      setSuperSessionCount(0);
+      return;
+    }
+    const uid = String(currentUser.id);
+    const q = query(getColRef('app_sessions'), where('userId', '==', uid));
+    const unsub = onSnapshot(q, (snap) => {
+      const now = Date.now();
+      let n = 0;
+      snap.forEach((d) => {
+        if ((d.data().lastHeartbeat || 0) > now - SESSION_TTL_MS) n += 1;
+      });
+      setSuperSessionCount(n);
+    }, console.error);
+    return () => unsub();
+  }, [isSuperUser, currentUser?.id]);
 
   // Real-time Session Permission Sync
   useEffect(() => {
@@ -5341,7 +5446,17 @@ const App = () => {
                   <History size={14} /> Logs
                 </button>
               )}
-              <span className="text-sm font-bold text-slate-600 flex items-center gap-2"><UserCircle size={18} />{currentUser.username}</span>
+              <span className="text-sm font-bold text-slate-600 flex items-center gap-2 flex-wrap justify-end">
+                <span className="flex items-center gap-2"><UserCircle size={18} />{currentUser.username}</span>
+                {isSuperUser && (
+                  <span
+                    className="text-[10px] font-black uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-lg"
+                    title="Sesiones activas (esta pestaña y otras con el mismo usuario)"
+                  >
+                    Activo · {superSessionCount} sesión{superSessionCount === 1 ? '' : 'es'}
+                  </span>
+                )}
+              </span>
               <button onClick={handleLogout} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-red-50 hover:text-red-600 transition-colors text-xs flex items-center gap-2"><LogOut size={14} /> Salir</button>
             </div>
           </header>
@@ -9984,9 +10099,19 @@ const App = () => {
             </div>
 
             <div className="flex flex-col items-end gap-2">
-              <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200">
-                <UserCircle size={16} className="text-slate-400" />
-                <span className="text-xs font-bold text-slate-600 max-w-[180px] truncate">{currentUser.username}</span>
+              <div className="flex flex-col items-end gap-1 sm:flex-row sm:items-center sm:gap-2">
+                <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200">
+                  <UserCircle size={16} className="text-slate-400" />
+                  <span className="text-xs font-bold text-slate-600 max-w-[180px] truncate">{currentUser.username}</span>
+                </div>
+                {isSuperUser && (
+                  <span
+                    className="text-[9px] font-black uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full"
+                    title="Sesiones activas en tiempo real"
+                  >
+                    Activo · {superSessionCount} sesión{superSessionCount === 1 ? '' : 'es'}
+                  </span>
+                )}
               </div>
             </div>
           </div>
