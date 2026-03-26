@@ -11,22 +11,22 @@ import {
 
 /* global __app_id, __initial_auth_token */
 
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { app, secondaryApp, usernameToAuthEmail, AUTH_EMAIL_DOMAIN, buildUsernameCandidates } from './firebaseConfig';
+import {
+  getAuth,
+  signInWithCustomToken,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  createUserWithEmailAndPassword,
+  EmailAuthProvider,
+  reauthenticateWithCredential,
+  updatePassword,
+} from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs } from 'firebase/firestore';
 
-const firebaseConfig = {
-  apiKey: "AIzaSyBIRKdNeMmaVVofVx4jshciPB-N9J0HqIg",
-  authDomain: "registros-vina-nueva.firebaseapp.com",
-  projectId: "registros-vina-nueva",
-  storageBucket: "registros-vina-nueva.firebasestorage.app",
-  messagingSenderId: "966310430422",
-  appId: "1:966310430422:web:203653951141917d6eab77",
-  measurementId: "G-EH1KXMVDY8"
-};
-
-const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
+const secondaryAuth = getAuth(secondaryApp);
 const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
@@ -784,6 +784,9 @@ const App = () => {
   const [currentUser, setCurrentUser] = useState(null);
   const [users, setUsers] = useState([]);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [usersAuthReady, setUsersAuthReady] = useState(false);
+  const [loginBusy, setLoginBusy] = useState(false);
+  const loginInProgressRef = useRef(false);
   const [loginError, setLoginError] = useState('');
   /** Solo SuperUsuario: sesiones activas (heartbeat reciente), actualizado en tiempo real. */
   const [superSessionCount, setSuperSessionCount] = useState(0);
@@ -1705,14 +1708,7 @@ const App = () => {
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          try {
-            await signInWithCustomToken(auth, __initial_auth_token);
-          } catch (e) {
-            console.warn("Custom token fallback:", e);
-            await signInAnonymously(auth);
-          }
-        } else {
-          await signInAnonymously(auth);
+          await signInWithCustomToken(auth, __initial_auth_token);
         }
       } catch (error) {
         console.error("Error authenticating to Firebase:", error);
@@ -1766,11 +1762,11 @@ const App = () => {
     }, console.error);
 
     const unsubUsers = onSnapshot(getColRef('app_users'), (snap) => {
+      setUsersAuthReady(true);
       if (!snap.empty) {
         setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       } else {
-        const initialUser = { username: 'admin', password: '123', role: 'SuperUsuario', canViewFinances: true, canViewHiddenDonations: true, hideMyExpenseConcepts: true };
-        setDoc(getDocRef('app_users', '1'), initialUser);
+        setUsers([]);
       }
     }, console.error);
 
@@ -1863,6 +1859,90 @@ const App = () => {
     };
     await setDoc(getDocRef('app_logs', String(newLogId)), newLog);
   }, [currentUser, currentEvent, globalConfig]);
+
+  useEffect(() => {
+    if (!fbUser?.uid || !fbUser.email) return;
+    const pending = users.find(
+      (u) =>
+        !u.authUid &&
+        (u.authEmail === fbUser.email || usernameToAuthEmail(u.username) === fbUser.email)
+    );
+    if (!pending) return;
+    updateDoc(getDocRef('app_users', String(pending.id)), {
+      authUid: fbUser.uid,
+      authEmail: fbUser.email,
+    }).catch(console.error);
+  }, [fbUser, users]);
+
+  useEffect(() => {
+    if (!fbUser || currentUser || loginInProgressRef.current) return;
+    if (!usersAuthReady) return;
+    const profile =
+      users.find((u) => String(u.authUid) === String(fbUser.uid)) ||
+      users.find(
+        (u) => String(u.authEmail || '').toLowerCase() === String(fbUser.email || '').toLowerCase()
+      ) ||
+      users.find((u) => usernameToAuthEmail(u.username) === fbUser.email);
+    if (!profile) return;
+    let cancelled = false;
+    (async () => {
+      const tabSessionId = getTabSessionId();
+      if (profile.role !== 'SuperUsuario') {
+        const others = await countOtherActiveSessions(profile.id, tabSessionId);
+        if (cancelled) return;
+        if (others > 0) {
+          await signOut(auth);
+          setLoginError(
+            'Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» allí, o espera unos segundos e intenta de nuevo.'
+          );
+          return;
+        }
+      }
+      await setDoc(getDocRef('app_sessions', sessionDocId(profile.id, tabSessionId)), {
+        userId: String(profile.id),
+        sessionId: tabSessionId,
+        username: profile.username,
+        lastHeartbeat: Date.now(),
+        createdAt: Date.now(),
+      });
+      const loginTime = Date.now();
+      const adminDefaultPref =
+        (profile.username || '').toLowerCase() === 'admin' && profile.role === 'Administrador'
+          ? 'Norte'
+          : profile.preferredLandingTab || 'Summary';
+      setCurrentUser({
+        ...profile,
+        tabSessionId,
+        loginTime,
+        allowedEventIds: getUserAllowedEventIds(profile),
+        allowedLocations: getUserAllowedLocations(profile),
+        preferredLandingTab: adminDefaultPref,
+      });
+      addLog(
+        'Inicio de Sesión',
+        `El usuario ${profile.username} recuperó sesión.`,
+        profile.username,
+        { id: 'Global', name: 'Sistema' }
+      );
+      await updateDoc(getDocRef('app_users', String(profile.id)), { isOnline: true });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fbUser, currentUser, users, usersAuthReady, addLog, getUserAllowedEventIds, getUserAllowedLocations]);
+
+  useEffect(() => {
+    if (!fbUser || !usersAuthReady || loginInProgressRef.current || currentUser) return;
+    const profile =
+      users.find((u) => String(u.authUid) === String(fbUser.uid)) ||
+      users.find(
+        (u) => String(u.authEmail || '').toLowerCase() === String(fbUser.email || '').toLowerCase()
+      ) ||
+      users.find((u) => usernameToAuthEmail(u.username) === fbUser.email);
+    if (profile) return;
+    signOut(auth).catch(() => {});
+    setLoginError('Tu cuenta no tiene perfil en la aplicación. Contacta al administrador.');
+  }, [fbUser, usersAuthReady, users, currentUser]);
 
   const handleSavePanelNavConfig = useCallback(async () => {
     if (!isSuperUser) return;
@@ -2410,17 +2490,74 @@ const App = () => {
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoginError('');
-    const user = users.find(u => u.username === loginForm.username && u.password === loginForm.password);
-    if (!user) {
-      setLoginError('Usuario o contraseña incorrectos.');
+    loginInProgressRef.current = true;
+    setLoginBusy(true);
+    const trimUser = loginForm.username.trim();
+    const email = usernameToAuthEmail(trimUser);
+    try {
+      await signInWithEmailAndPassword(auth, email, loginForm.password);
+    } catch (err) {
+      console.error(err);
+      loginInProgressRef.current = false;
+      setLoginBusy(false);
+      const c = err?.code;
+      if (c === 'auth/invalid-credential' || c === 'auth/wrong-password' || c === 'auth/user-not-found') {
+        setLoginError('Usuario o contraseña incorrectos.');
+      } else if (c === 'auth/too-many-requests') {
+        setLoginError('Demasiados intentos. Espera unos minutos e intenta de nuevo.');
+      } else {
+        setLoginError('No se pudo iniciar sesión. Revisa la conexión e intenta de nuevo.');
+      }
       return;
     }
     const tabSessionId = getTabSessionId();
     try {
+      let docSnap = null;
+      let qSnap = await getDocs(query(getColRef('app_users'), where('authUid', '==', auth.currentUser.uid)));
+      if (!qSnap.empty) docSnap = qSnap.docs[0];
+      if (!docSnap) {
+        qSnap = await getDocs(query(getColRef('app_users'), where('authEmail', '==', email)));
+        if (!qSnap.empty) docSnap = qSnap.docs[0];
+      }
+      if (!docSnap) {
+        const variants = buildUsernameCandidates(trimUser);
+        if (variants.length) {
+          qSnap = await getDocs(query(getColRef('app_users'), where('username', 'in', variants)));
+          if (!qSnap.empty) docSnap = qSnap.docs[0];
+        }
+      }
+      if (!docSnap) {
+        const all = await getDocs(getColRef('app_users'));
+        const lower = trimUser.toLowerCase();
+        docSnap = all.docs.find((d) => {
+          const u = d.data()?.username;
+          return u != null && String(u).trim().toLowerCase() === lower;
+        }) || null;
+      }
+      if (!docSnap) {
+        await signOut(auth);
+        setLoginError('Tu cuenta no tiene perfil en la aplicación. Contacta al administrador.');
+        loginInProgressRef.current = false;
+        setLoginBusy(false);
+        return;
+      }
+      let user = { id: docSnap.id, ...docSnap.data() };
+      if (!user.authUid) {
+        await updateDoc(getDocRef('app_users', docSnap.id), {
+          authUid: auth.currentUser.uid,
+          authEmail: email,
+          password: deleteField(),
+        });
+        user = { ...user, authUid: auth.currentUser.uid, authEmail: email };
+        delete user.password;
+      }
       if (user.role !== 'SuperUsuario') {
         const others = await countOtherActiveSessions(user.id, tabSessionId);
         if (others > 0) {
+          await signOut(auth);
           setLoginError('Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» allí, o espera unos segundos e intenta de nuevo.');
+          loginInProgressRef.current = false;
+          setLoginBusy(false);
           return;
         }
       }
@@ -2446,7 +2583,11 @@ const App = () => {
       await updateDoc(getDocRef('app_users', String(user.id)), { isOnline: true });
     } catch (err) {
       console.error(err);
+      await signOut(auth).catch(() => {});
       setLoginError('No se pudo iniciar sesión. Revisa la conexión e intenta de nuevo.');
+    } finally {
+      loginInProgressRef.current = false;
+      setLoginBusy(false);
     }
   };
 
@@ -2457,6 +2598,7 @@ const App = () => {
       addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión manualmente. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
       await removeCurrentUserSession(currentUser);
     }
+    await signOut(auth).catch(() => {});
     setNavHistory([]);
     setCurrentUser(null);
     setSelectedEventId(null);
@@ -2522,6 +2664,7 @@ const App = () => {
       const formattedTime = formatDuration(activeTime);
       addLog('Cierre de Sesión Automático', `Sesión finalizada por inactividad. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
       await removeCurrentUserSession(currentUser);
+      await signOut(auth).catch(() => {});
       setNavHistory([]);
       setCurrentUser(null);
       setSelectedEventId(null);
@@ -2940,9 +3083,27 @@ const App = () => {
       allowedLocations,
       restrictedLocation: allowedLocations[0] || ''
     }, { locations: allKnownLocationNames });
+    const authEmail = usernameToAuthEmail(newUser.username.trim());
+    let cred;
+    try {
+      cred = await createUserWithEmailAndPassword(secondaryAuth, authEmail, newUser.password.trim());
+    } catch (err) {
+      console.error(err);
+      showToast(
+        err?.code === 'auth/email-already-in-use'
+          ? 'Ese nombre de usuario ya tiene cuenta de acceso.'
+          : 'No se pudo crear la cuenta de acceso en Firebase.'
+      );
+      return;
+    }
+    await signOut(secondaryAuth).catch(() => {});
+
+    const { password: _omitPwd, ...newUserFields } = newUser;
     const userToSave = {
-      ...newUser,
+      ...newUserFields,
       id: newId,
+      authEmail,
+      authUid: cred.user.uid,
       canViewFinances: newUser.role === 'SuperUsuario' ? true : (editorCanEditAccessFlags ? !!newUser.canViewFinances : false),
       canViewHiddenDonations: newUser.role === 'SuperUsuario' ? true : (editorCanEditAccessFlags ? !!newUser.canViewHiddenDonations : false),
       canViewExpenses: editorCanEditAccessFlags ? !!newUser.canViewExpenses : false,
@@ -2978,12 +3139,18 @@ const App = () => {
     const existingUser = users.find(u => u.username === targetUsername && String(u.id) !== String(editingUser.id));
     if (existingUser) { showToast("El usuario ya existe."); return; }
     
-    let finalPassword = originalUser.password;
     let passwordChanged = false;
 
     if (isSelfEdit && (editingUser.currentPasswordInput || editingUser.newPassword)) {
-      if (editingUser.currentPasswordInput !== originalUser.password) {
-        showToast("La contraseña actual es incorrecta.");
+      if (!auth.currentUser?.email) {
+        showToast('Sesión de Firebase inválida.');
+        return;
+      }
+      try {
+        const cred = EmailAuthProvider.credential(auth.currentUser.email, editingUser.currentPasswordInput);
+        await reauthenticateWithCredential(auth.currentUser, cred);
+      } catch {
+        showToast('La contraseña actual es incorrecta.');
         return;
       }
       if (editingUser.newPassword !== editingUser.confirmPassword) {
@@ -2994,7 +3161,7 @@ const App = () => {
         showToast("La nueva contraseña no puede estar vacía.");
         return;
       }
-      finalPassword = editingUser.newPassword;
+      await updatePassword(auth.currentUser, editingUser.newPassword.trim());
       passwordChanged = true;
     }
 
@@ -3047,7 +3214,7 @@ const App = () => {
     
     await updateDoc(getDocRef('app_users', String(editingUser.id)), {
       username: targetUsername,
-      password: finalPassword,
+      password: deleteField(),
       role: nextRole,
       canViewFinances: newCanViewFinances,
       canViewHiddenDonations: newCanViewHiddenDonations,
@@ -3065,7 +3232,6 @@ const App = () => {
       setCurrentUser({
         ...currentUser,
         username: targetUsername,
-        password: finalPassword,
         role: nextRole,
         canViewFinances: newCanViewFinances,
         canViewHiddenDonations: newCanViewHiddenDonations,
@@ -5706,6 +5872,13 @@ const App = () => {
   //  SCREEN 1: LOGIN
   // ─────────────────────────────────────────────
   if (!currentUser) {
+    if (fbUser && !usersAuthReady) {
+      return (
+        <div className="min-h-screen bg-blue-950 flex items-center justify-center p-4">
+          <p className="text-white font-semibold">Cargando…</p>
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen bg-blue-950 flex items-center justify-center p-4 relative">
         {debugToast && (
@@ -5742,9 +5915,14 @@ const App = () => {
                   <input type="password" className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all" placeholder="••••••••" value={loginForm.password} onChange={e => setLoginForm({ ...loginForm, password: e.target.value })} />
                 </div>
               </div>
+              <p className="text-[11px] text-slate-500 leading-snug text-center">
+                Usa el mismo nombre de usuario y la contraseña que definiste en Firebase Authentication (no basta con un campo antiguo solo en base de datos). Correo técnico del usuario en consola:{' '}
+                <span className="font-mono text-slate-600 break-all">{loginForm.username.trim() ? usernameToAuthEmail(loginForm.username) : `usuario@${AUTH_EMAIL_DOMAIN}`}</span>
+                .
+              </p>
               {loginError && <p className="text-xs text-red-500 font-bold animate-in slide-in-from-top-1 text-center">{loginError}</p>}
-              <button type="submit" disabled={!fbUser} className="w-full bg-blue-800 hover:bg-blue-900 disabled:bg-slate-400 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-blue-900/20 active:scale-95 flex justify-center items-center gap-2">
-                {!fbUser ? <span className="animate-pulse">Conectando a la nube...</span> : 'Iniciar Sesión'}
+              <button type="submit" disabled={loginBusy} className="w-full bg-blue-800 hover:bg-blue-900 disabled:bg-slate-400 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-blue-900/20 active:scale-95 flex justify-center items-center gap-2">
+                {loginBusy ? <span className="animate-pulse">Iniciando sesión…</span> : 'Iniciar Sesión'}
               </button>
             </form>
           </div>
