@@ -845,6 +845,18 @@ const App = () => {
   const isCampa = currentEvent?.eventType === 'Campa';
   const isGeneral = currentEvent?.eventType === 'General';
   const sortedEvents = useMemo(() => [...events].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)), [events]);
+
+  /** Sedes en configuración global + todas las creadas en cualquier evento (p. ej. alta de sede solo en un evento). */
+  const allKnownLocationNames = useMemo(() => {
+    const set = new Set((globalLocations || []).map((x) => String(x).trim()).filter(Boolean));
+    (events || []).forEach((ev) => {
+      (ev.locations || []).forEach((loc) => {
+        const s = String(loc || '').trim();
+        if (s) set.add(s);
+      });
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'es'));
+  }, [globalLocations, events]);
   const getUserAllowedEventIds = useCallback((user) => {
     const explicit = Array.isArray(user?.allowedEventIds) ? user.allowedEventIds.filter(Boolean) : [];
     if (explicit.length > 0) return explicit;
@@ -856,7 +868,11 @@ const App = () => {
     return user?.restrictedLocation ? [user.restrictedLocation] : [];
   }, []);
   const resolvePreferredLandingTab = useCallback((user, eventObj = null) => {
-    const available = eventObj?.locations || globalLocations || [];
+    const fromEvent = eventObj?.locations;
+    const available =
+      Array.isArray(fromEvent) && fromEvent.length > 0
+        ? fromEvent
+        : (allKnownLocationNames.length > 0 ? allKnownLocationNames : globalLocations) || [];
     const preferred = user?.preferredLandingTab || '';
     if (preferred === 'Summary') return 'Summary';
     if (['Administrador', 'SuperUsuario'].includes(user?.role)) {
@@ -869,7 +885,7 @@ const App = () => {
     if (!available.includes(preferred)) return 'Summary';
     if (allowedLocs.length === 0 || allowedLocs.includes(preferred)) return preferred;
     return 'Summary';
-  }, [globalLocations, getUserAllowedLocations]);
+  }, [globalLocations, allKnownLocationNames, getUserAllowedLocations]);
   const visibleEvents = useMemo(() => {
     if (!currentUser) return [];
     if (['Administrador', 'SuperUsuario'].includes(currentUser.role)) return sortedEvents;
@@ -2882,7 +2898,7 @@ const App = () => {
       preferredLandingTab: newUser.preferredLandingTab || (newUser.role === 'Administrador' ? 'Norte' : 'Summary'),
       allowedLocations,
       restrictedLocation: allowedLocations[0] || ''
-    }, { locations: globalLocations });
+    }, { locations: allKnownLocationNames });
     const userToSave = {
       ...newUser,
       id: newId,
@@ -2951,7 +2967,7 @@ const App = () => {
       preferredLandingTab: editingUser.preferredLandingTab || 'Summary',
       allowedLocations: newAllowedLocations,
       restrictedLocation: newAllowedLocations[0] || ''
-    }, { locations: globalLocations });
+    }, { locations: allKnownLocationNames });
     const newRestrictedEventId = newAllowedEventIds[0] || '';
     const newRestrictedLocation = newAllowedLocations[0] || '';
 
@@ -4837,11 +4853,14 @@ const App = () => {
               <label className={labelClasses}>Ventana inicial al entrar al evento</label>
               <select className={inputClasses} value={newUser.preferredLandingTab || 'Summary'} onChange={e => setNewUser({ ...newUser, preferredLandingTab: e.target.value })}>
                 <option value="Summary">Resumen General</option>
-                {(
-                  ['Administrador', 'SuperUsuario'].includes(newUser.role)
-                    ? globalLocations
-                    : ((newUser.allowedLocations || []).length ? newUser.allowedLocations : globalLocations)
-                ).map((loc) => <option key={`pref-new-${loc}`} value={loc}>{loc}</option>)}
+                {(() => {
+                  let locs = ['Administrador', 'SuperUsuario'].includes(newUser.role)
+                    ? allKnownLocationNames
+                    : ((newUser.allowedLocations || []).length ? newUser.allowedLocations : allKnownLocationNames);
+                  const p = String(newUser.preferredLandingTab || '').trim();
+                  if (p && p !== 'Summary' && !locs.includes(p)) locs = [...locs, p];
+                  return locs.map((loc) => <option key={`pref-new-${loc}`} value={loc}>{loc}</option>);
+                })()}
               </select>
             </div>
             {newUser.role !== 'SuperUsuario' && (
@@ -4891,12 +4910,12 @@ const App = () => {
                         className="accent-indigo-600"
                         disabled={!isSuperUser}
                         checked={(newUser.allowedLocations || []).length === 0}
-                        onChange={(e) => setNewUser({ ...newUser, allowedLocations: e.target.checked ? [] : (globalLocations[0] ? [globalLocations[0]] : []) })}
+                        onChange={(e) => setNewUser({ ...newUser, allowedLocations: e.target.checked ? [] : (allKnownLocationNames[0] ? [allKnownLocationNames[0]] : []) })}
                       />
                       Todas las sedes
                     </label>
                     <div className="max-h-28 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1">
-                      {globalLocations.map((loc) => {
+                      {allKnownLocationNames.map((loc) => {
                         const checked = (newUser.allowedLocations || []).includes(loc);
                         return (
                           <label key={loc} className="flex items-center gap-2 text-xs text-slate-700">
@@ -5686,11 +5705,14 @@ const App = () => {
                   <label className={labelClasses}>Ventana inicial al entrar al evento</label>
                   <select className={inputClasses} value={editingUser.preferredLandingTab || 'Summary'} onChange={e => setEditingUser({ ...editingUser, preferredLandingTab: e.target.value })}>
                     <option value="Summary">Resumen General</option>
-                    {(
-                      ['Administrador', 'SuperUsuario'].includes(editingUser.role)
-                        ? globalLocations
-                        : ((editingUser.allowedLocations || []).length ? editingUser.allowedLocations : globalLocations)
-                    ).map((loc) => <option key={`pref-edit-${loc}`} value={loc}>{loc}</option>)}
+                    {(() => {
+                      let locs = ['Administrador', 'SuperUsuario'].includes(editingUser.role)
+                        ? allKnownLocationNames
+                        : ((editingUser.allowedLocations || []).length ? editingUser.allowedLocations : allKnownLocationNames);
+                      const p = String(editingUser.preferredLandingTab || '').trim();
+                      if (p && p !== 'Summary' && !locs.includes(p)) locs = [...locs, p];
+                      return locs.map((loc) => <option key={`pref-edit-${loc}`} value={loc}>{loc}</option>);
+                    })()}
                   </select>
                 </div>
                 {editingUser.role !== 'SuperUsuario' && (
@@ -5740,12 +5762,12 @@ const App = () => {
                             className="accent-indigo-600"
                             disabled={!isSuperUser}
                             checked={(editingUser.allowedLocations || []).length === 0}
-                            onChange={(e) => setEditingUser({ ...editingUser, allowedLocations: e.target.checked ? [] : (globalLocations[0] ? [globalLocations[0]] : []) })}
+                            onChange={(e) => setEditingUser({ ...editingUser, allowedLocations: e.target.checked ? [] : (allKnownLocationNames[0] ? [allKnownLocationNames[0]] : []) })}
                           />
                           Todas las sedes
                         </label>
                         <div className="max-h-24 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1 bg-white">
-                          {globalLocations.map((loc) => {
+                          {allKnownLocationNames.map((loc) => {
                             const checked = (editingUser.allowedLocations || []).includes(loc);
                             return (
                               <label key={loc} className="flex items-center gap-2 text-xs text-slate-700">
