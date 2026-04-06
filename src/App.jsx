@@ -1,37 +1,72 @@
-import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import {
   Users, MapPin, PieChart, Plus, Trash2, DollarSign, CheckCircle2, XCircle,
-  LayoutDashboard, Phone, ShieldAlert, Power, BarChart3, Edit3, TableProperties,
+  LayoutDashboard, PanelLeft, Phone, ShieldAlert, Power, BarChart3, Edit3, TableProperties, Briefcase, Gift,
   Eye, EyeOff, Search, Filter, ArrowUpDown, CreditCard, ChevronDown, ChevronUp,
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock,
-  UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft,
+  UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft, RotateCcw,
   SlidersHorizontal, Bug, Download, Database, Menu, FileSpreadsheet, MessageCircle,
-  Scissors, Calendar
+  Scissors, Calendar, Church, Archive, Ban
 } from 'lucide-react';
 
 /* global __app_id, __initial_auth_token */
 
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc } from 'firebase/firestore';
+import { app, secondaryApp, usernameToAuthEmail, loginIdentifierToAuthEmail, AUTH_EMAIL_DOMAIN, buildUsernameCandidates } from './firebaseConfig.js';
+import {
+  getAuth,
+  signInWithCustomToken,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  createUserWithEmailAndPassword,
+  deleteUser,
+  EmailAuthProvider,
+  reauthenticateWithCredential,
+  updatePassword,
+} from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs } from 'firebase/firestore';
 
-const firebaseConfig = {
-  apiKey: "AIzaSyBIRKdNeMmaVVofVx4jshciPB-N9J0HqIg",
-  authDomain: "registros-vina-nueva.firebaseapp.com",
-  projectId: "registros-vina-nueva",
-  storageBucket: "registros-vina-nueva.firebasestorage.app",
-  messagingSenderId: "966310430422",
-  appId: "1:966310430422:web:203653951141917d6eab77",
-  measurementId: "G-EH1KXMVDY8"
-};
-
-const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
+const secondaryAuth = getAuth(secondaryApp);
 const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 const getColRef = (colName) => collection(db, 'artifacts', appId, 'public', 'data', colName);
 const getDocRef = (colName, docId) => doc(db, 'artifacts', appId, 'public', 'data', colName, docId);
+
+/** Ventana para considerar una sesión “activa” (debe ser > intervalo de heartbeat). */
+const SESSION_TTL_MS = 45000;
+/** Heartbeat para mantener viva la sesión en Firestore y liberar al cerrar pestaña tras ~TTL. */
+const SESSION_HEARTBEAT_MS = 15000;
+
+/** ID único por pestaña (sessionStorage); al cerrar la pestaña desaparece, pero el doc en Firestore se borra en pagehide. */
+const getTabSessionId = () => {
+  try {
+    let id = sessionStorage.getItem('vnpm_tab_session_id');
+    if (!id) {
+      id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `s_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+      sessionStorage.setItem('vnpm_tab_session_id', id);
+    }
+    return id;
+  } catch {
+    return `fallback_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  }
+};
+
+const sessionDocId = (userId, tabSessionId) => `${String(userId)}_${tabSessionId}`;
+
+const countOtherActiveSessions = async (userId, myTabSessionId) => {
+  const q = query(getColRef('app_sessions'), where('userId', '==', String(userId)));
+  const snap = await getDocs(q);
+  const now = Date.now();
+  let n = 0;
+  snap.forEach((d) => {
+    const data = d.data();
+    if (data.sessionId === myTabSessionId) return;
+    if ((data.lastHeartbeat || 0) > now - SESSION_TTL_MS) n += 1;
+  });
+  return n;
+};
 
 const BLOOD_TYPES = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
 const GENDERS = ["Hombre", "Mujer"];
@@ -39,9 +74,72 @@ const EVENT_TYPES = ["Campa", "Desayuno Conferencia", "General"];
 const RESPONSIVA_STATUSES = ["Pendiente", "Entregada"];
 const CHART_COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#0ea5e9'];
 
+/** Campaña de descuento aplica al perfil servidor/campista del registro. */
+const campaignMatchesPersonProfile = (c, personLike) => {
+  const isServerAmbos = personLike?.isServer === 'Sí' && personLike?.serverAssignment === 'Ambos';
+  const appliesTo = c?.appliesTo || 'all';
+  if (appliesTo === 'server_ambos') return isServerAmbos;
+  if (appliesTo === 'general') return !isServerAmbos;
+  return true;
+};
+
+const isDiscountCampaignVigenteOnDate = (c, dayIso) => {
+  if (!c?.startDate || !c?.endDate || !dayIso) return false;
+  return c.startDate <= dayIso && dayIso <= c.endDate;
+};
+
+/** Inicio y fin definidos → puede activarse sola por calendario (vigencia). Si falta alguna, solo manual (alta/edición). */
+const discountCampaignHasDateRange = (c) =>
+  !!(c?.startDate && String(c.startDate).trim() && c?.endDate && String(c.endDate).trim());
+
+const isValidDiscountCampaignRow = (c) =>
+  !!(
+    c &&
+    c.enabled !== false &&
+    String(c.concept || '').trim() &&
+    (Number(c.finalAmount) || 0) > 0
+  );
+
+const getValidDiscountCampaignsForPerson = (eventLike, personLike) => {
+  const all = Array.isArray(eventLike?.discountCampaigns) ? eventLike.discountCampaigns : [];
+  return all.filter((c) => isValidDiscountCampaignRow(c) && campaignMatchesPersonProfile(c, personLike));
+};
+
+const discountCampaignAppliesToLabel = (c) => {
+  const a = c?.appliesTo || 'all';
+  if (a === 'server_ambos') return 'Solo servidor (asignación Ambos)';
+  if (a === 'general') return 'Campistas y servidores no-Ambos';
+  return 'Todos los perfiles';
+};
+
+const findDiscountCampaignById = (eventLike, id) => {
+  if (id == null || id === '') return null;
+  const all = Array.isArray(eventLike?.discountCampaigns) ? eventLike.discountCampaigns : [];
+  return all.find((x) => String(x.id) === String(id)) || null;
+};
+
+/** Segmento Teens / Jóvenes donde contabilizar el bautizo (evento). Null si no aplica o falta dato (ej. Ambos sin elegir). */
+const getBaptismAccountingSegment = (personLike) => {
+  if (String(personLike?.willBeBaptized || '') !== 'Sí') return null;
+  const isServer = personLike?.isServer === 'Sí';
+  if (isServer) {
+    const sa = String(personLike?.serverAssignment || '').trim();
+    if (sa === 'Ambos') {
+      const bs = String(personLike?.baptismSegment || '').trim();
+      return bs === 'Teens' || bs === 'Jóvenes' ? bs : null;
+    }
+    if (sa === 'Teens' || sa === 'Jóvenes') return sa;
+    return null;
+  }
+  const camp = String(personLike?.campAssignment || '').trim();
+  if (camp === 'Teens' || camp === 'Jóvenes') return camp;
+  const ageNum = parseInt(personLike?.age, 10) || 0;
+  return ageNum < 18 ? 'Teens' : 'Jóvenes';
+};
+
 const PAYMENT_METHODS = ['Efectivo', 'Tarjeta'];
 const SERVICE_OPTIONS = ['Primero', 'Segundo', 'Tercero'];
-const NO_SERVICE_LABEL = 'Fuera de servicios';
+const NO_SERVICE_LABEL = 'Fuera de servicios dominicales';
 const DEFAULT_SERVE_AREA_OPTIONS = ['Jueces', 'Capitanes', 'Staff', 'Seguridad', 'Otro'];
 const DEFAULT_ALLERGY_OPTIONS = ['Alimentos', 'Medicamentos', 'Ambientales', 'Insectos', 'Otra'];
 
@@ -74,23 +172,32 @@ const DEFAULT_SERVICE_SLOTS = {
 const defaultLocations = ["Norte", "Sur", "Izcalli", "Coapa", "Acapulco", "Toluca"];
 const defaultRegStatus = defaultLocations.reduce((acc, loc) => ({ ...acc, [loc]: true }), {});
 
+/** Campa: asistencia sin cobro (sí cuentan en registro). Mutuamente excluyente con beca. */
+const ATTENDANCE_SPECIAL = { ninguno: 'ninguno', empleado: 'empleado', cortesia: 'cortesia' };
+const isFreeAttendanceType = (t) => t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia;
+const normalizeAttendanceSpecial = (personLike) => {
+  const t = personLike?.attendanceSpecialType;
+  if (t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia) return t;
+  return ATTENDANCE_SPECIAL.ninguno;
+};
+
 const EMPTY_ENTRY = {
   name: '', phone: '', age: '', birthDate: '', bloodType: 'O+', gender: '',
   responsivaStatus: '',
   alias: '',
-  emergencyContact: '', emergencyPhone: '', canSwim: 'No', paid: '',
-  // Para “donación especial oculta” (hijos de pastores / va sin pagar)
-  isPastorChild: 'No',
-  pastorChildWithoutPay: 'No',
-  pastorChildSpecialDonationFinanceId: '',
+  emergencyContact: '', emergencyPhone: '', emergencyRelationship: '', canSwim: 'No', paid: '',
+  attendanceSpecialType: ATTENDANCE_SPECIAL.ninguno,
   hasAllergy: 'No', allergyCategory: '', allergyDetails: '', hasDisease: 'No', diseaseDetails: '', diseaseMedication: '',
   hasDisability: 'No', disabilityDetails: '', isScholarship: 'No',
   /** 'total' | 'partial' — solo aplica si isScholarship es Sí (formulario nuevo registro). */
   scholarshipType: 'total',
-  /** Beca parcial: monto que el participante aporta al recaudado; a liquidar = este monto; la beca cubre (costo lista − este monto). */
+  /** Beca parcial: monto cubierto por la beca (cantidad becada); a liquidar = costo de lista actual − este monto. */
   scholarshipPartialAmount: '',
   isServer: 'No',
   serverAssignment: '', campAssignment: '', customData: {}, paymentHistory: [],
+  /** Campamentos: se bautiza en el evento; conteo por Teens / Jóvenes (servidor Ambos elige baptismSegment). */
+  willBeBaptized: 'No',
+  baptismSegment: '',
   llegaEnCarro: false,
   regresaEnCarro: false,
   transportType: 'Camión',
@@ -103,6 +210,8 @@ const EMPTY_ENTRY = {
   paymentMethod: 'Efectivo',
   paymentService: '',
   cardReference: '',
+  /** '' = automático (primera campaña vigente hoy que aplique); si no, id de campaña elegida en el alta. */
+  selectedDiscountCampaignId: '',
 };
 
 // Preferencias de vista por defecto
@@ -119,9 +228,50 @@ const defaultViewPrefs = {
   chartMedical: true,
   chartServers: true,
   chartAges: true,
+  chartBaptism: true,
+  chartAttendanceSpecial: true,
   chartCustom: true,
   tableDetails: true
 };
+
+/** Menú lateral del evento: SuperUsuario define qué ven Editor y Lector. Administrador y SuperUsuario no se limitan. */
+const DEFAULT_PANEL_NAV = {
+  serversPage: true,
+  becados: true,
+  cashCut: true,
+  expenseList: true,
+  registroGlobal: true,
+  locations: true
+};
+
+const PANEL_NAV_TAB_KEYS = {
+  ServersPage: 'serversPage',
+  ExpenseList: 'expenseList',
+  CashCut: 'cashCut',
+  Becados: 'becados',
+  RegistroGlobal: 'registroGlobal'
+};
+
+const PANEL_NAV_CONFIG_ITEMS = [
+  { key: 'serversPage', label: 'Página Servidores', hint: 'Visible en campamentos cuando está activa.' },
+  { key: 'becados', label: 'Becados', hint: 'Quienes ya tenían permiso de administración siguen viéndola.' },
+  { key: 'cashCut', label: 'Corte de caja', hint: 'Igual: respeta rol de administrador.' },
+  { key: 'expenseList', label: 'Lista de gastos', hint: 'Además debe tener permiso de gastos en su usuario.' },
+  { key: 'registroGlobal', label: 'Registro global', hint: 'Tabla consolidada del evento.' },
+  { key: 'locations', label: 'Sedes en el menú', hint: 'Accesos directos a cada sede en el lateral.' }
+];
+
+const lsKeyShowGrossCommission = (userId) => `vina_show_gross_commission_${userId}`;
+/** Filtros de listas (registro, resumen, logs, gastos, etc.) por usuario; sobreviven cierre de sesión y cambio de evento/sede/pestaña. */
+const lsKeyUserFilters = (userId) => `vina_user_filters_${userId}`;
+/** Colapsar/expandir listas Activos · Becados (espera) · Cancelados en registro por sede (por usuario). */
+const lsKeyRosterSections = (userId) => `vina_roster_sections_${userId}`;
+
+/** Texto mostrado en lugar del nombre del gasto cuando el creador oculta el concepto a otros. */
+const MASKED_EXPENSE_CONCEPT_LABEL = 'Oculto';
+
+/** Por defecto los conceptos propios están ocultos a otros; solo `hideMyExpenseConcepts === false` desactiva explícitamente. */
+const isHideMyExpenseConceptsOn = (userLike) => userLike?.hideMyExpenseConcepts !== false;
 
 // Helper: Formatear fecha a DD-MMM-YYYY
 const formatDisplayDate = (dateString) => {
@@ -132,6 +282,78 @@ const formatDisplayDate = (dateString) => {
   } catch {
     return dateString;
   }
+};
+
+/** Valor para input datetime-local (zona local del navegador). */
+const toDatetimeLocalValue = (isoOrMs) => {
+  let d;
+  if (typeof isoOrMs === 'number') d = new Date(isoOrMs);
+  else if (typeof isoOrMs === 'string' && isoOrMs) d = new Date(isoOrMs);
+  else return '';
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+const fromDatetimeLocalToIso = (localStr) => {
+  if (!localStr || typeof localStr !== 'string') return null;
+  const d = new Date(localStr);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
+
+/** ISO string, Date, Firestore Timestamp (toDate / { seconds, nanoseconds }). */
+const parseFlexibleInstantMs = (raw) => {
+  if (raw == null || raw === '') return null;
+  if (typeof raw?.toDate === 'function') {
+    const d = raw.toDate();
+    const t = d.getTime();
+    return Number.isNaN(t) ? null : t;
+  }
+  if (typeof raw === 'object' && typeof raw.seconds === 'number') {
+    return raw.seconds * 1000 + Math.floor((raw.nanoseconds || 0) / 1e6);
+  }
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    // Solo fecha: usar mediodía local para que el día civil coincida con la sede (evita UTC medianoche → día anterior).
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      const [yy, mm, dd] = s.split('-').map((n) => parseInt(n, 10));
+      const d = new Date(yy, mm - 1, dd, 12, 0, 0, 0);
+      const t = d.getTime();
+      return Number.isNaN(t) ? null : t;
+    }
+  }
+  const d = raw instanceof Date ? raw : new Date(raw);
+  const t = d.getTime();
+  return Number.isNaN(t) ? null : t;
+};
+
+const formatPayHistoryRowDate = (pay) => {
+  const ms = parseFlexibleInstantMs(pay?.recordedAt);
+  if (ms != null) return new Date(ms).toLocaleString('es-MX');
+  return pay?.date || '—';
+};
+
+/** fallbackMs: p. ej. registeredAt del participante si recordedAt no parsea (evita usar Date.now() en cortes). */
+const getPaymentHistoryTimestamp = (h, fallbackMs = null) => {
+  if (h?.recordedAt != null) {
+    const t = parseFlexibleInstantMs(h.recordedAt);
+    if (t != null) return t;
+  }
+  if (typeof h?.id === 'number' && Number.isFinite(h.id)) return h.id;
+  const idStr = h?.id != null ? String(h.id).trim() : '';
+  if (/^\d{10,}$/.test(idStr)) return Number(idStr);
+  if (fallbackMs != null && Number.isFinite(fallbackMs)) return fallbackMs;
+  return null;
+};
+
+const getPaymentRowInstantMsPreferRecorded = (row) => {
+  if (!row || row.kind === 'comment') return null;
+  const fromRec = parseFlexibleInstantMs(row.recordedAt);
+  if (fromRec != null) return fromRec;
+  if (typeof row.id === 'number' && Number.isFinite(row.id)) return row.id;
+  const idStr = row.id != null ? String(row.id).trim() : '';
+  if (/^\d{10,}$/.test(idStr)) return Number(idStr);
+  return null;
 };
 
 // UI Reusable Classes
@@ -178,6 +400,13 @@ const resolveTransportSummary = (personLike) => {
 };
 const btnPrimary = "py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2 text-sm";
 const btnSecondary = "py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-all text-sm flex justify-center items-center gap-2";
+const getCommissionToggleBtnClasses = (isGrossView) =>
+  `flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold border transition-colors ${
+    isGrossView
+      ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200'
+      : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
+  }`;
+const getCommissionToggleLabel = (isGrossView) => (isGrossView ? 'Ver Neto (con comisión)' : 'Ver Bruto (sin comisión)');
 
 // Mini Components for UI optimization
 const StatCard = ({ icon: IconComponent, iconColor, bgIcon, title, value }) => (
@@ -237,6 +466,7 @@ const buildArchivedProfileSnapshot = (person) => {
     alias: person?.alias || '',
     emergencyContact: person?.emergencyContact || '',
     emergencyPhone: person?.emergencyPhone || '',
+    emergencyRelationship: person?.emergencyRelationship || '',
     bloodType: person?.bloodType || '',
     canSwim: person?.canSwim || 'No',
     hasAllergy: person?.hasAllergy || 'No',
@@ -261,15 +491,133 @@ const buildArchivedProfileSnapshot = (person) => {
     preferredServeArea: person?.preferredServeArea || '',
     // Campo de compatibilidad semántica para consultas externas.
     hasChildren: person?.goesWithChildren || 'No',
+    willBeBaptized: person?.willBeBaptized || 'No',
+    baptismSegment: person?.baptismSegment || '',
   };
 };
+
+/** Índice global en Firebase: un documento por persona (vnp id o teléfono), sin duplicados lógicos. */
+const ARCHIVE_PROFILES_COLLECTION = 'app_archived_profiles';
+
+const getArchiveProfileDocId = (person) => {
+  const vid = String(person?.vnpPersonId || '').trim();
+  if (vid.length >= 4) {
+    const safe = vid.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
+    return `id_${safe}`;
+  }
+  const d = digitsOnlyPhone(person?.phone);
+  if (d.length >= 10) return `ph_${d.slice(-10)}`;
+  const pid = String(person?.id || '').replace(/[^\w-]/g, '');
+  return `pid_${pid || `t_${Date.now()}`}`;
+};
+
+function mergeArchivedFirestoreDocs(existing, incoming, existingTs, incomingTs) {
+  const incomingNewer = incomingTs >= existingTs;
+  const out = { ...existing };
+  for (const k of Object.keys(incoming)) {
+    if (k === '_mergeMeta') continue;
+    const iv = incoming[k];
+    if (iv === undefined) continue;
+    const hasKey = Object.prototype.hasOwnProperty.call(out, k);
+    const ev = out[k];
+    if (!hasKey || ev === undefined) {
+      out[k] = iv;
+      continue;
+    }
+    if (iv !== null && typeof iv === 'object' && !Array.isArray(iv) && ev !== null && typeof ev === 'object' && !Array.isArray(ev)) {
+      out[k] = mergeArchivedFirestoreDocs(ev, iv, existingTs, incomingTs);
+      continue;
+    }
+    if (incomingNewer) out[k] = iv;
+  }
+  const ex = Number(existingTs) || 0;
+  const inn = Number(incomingTs) || 0;
+  out.archivedAt = Math.max(ex, inn, Number(out.archivedAt) || 0);
+  const prevKinds = Array.isArray(existing._mergeMeta?.sourceKinds) ? [...existing._mergeMeta.sourceKinds] : [];
+  const ik = incoming.sourceKind;
+  if (ik && !prevKinds.includes(ik)) prevKinds.push(ik);
+  out._mergeMeta = {
+    lastMergedAt: Date.now(),
+    sourceKinds: prevKinds,
+  };
+  return out;
+}
+
+function buildArchiveIndexIncomingPayload(person, archivedAt, loc, sourceKind, eventName) {
+  return {
+    vnpPersonId: person?.vnpPersonId || '',
+    participantFirebaseId: String(person?.id || ''),
+    eventId: person?.eventId || '',
+    eventName: eventName || '',
+    archivedAt,
+    archivedFromLocation: loc || '',
+    sourceKind,
+    archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
+    customData: person?.customData && typeof person.customData === 'object' ? { ...person.customData } : {},
+    travelFrom: person?.travelFrom || '',
+    travelTo: person?.travelTo || '',
+    llegaEnCarro: person?.llegaEnCarro,
+    regresaEnCarro: person?.regresaEnCarro,
+    transportType: person?.transportType || '',
+    isScholarship: person?.isScholarship || '',
+    scholarshipType: person?.scholarshipType || '',
+    attendanceSpecialType: person?.attendanceSpecialType || '',
+    responsivaStatus: person?.responsivaStatus || '',
+    statusBeforeArchive: person?.status || 'active',
+    willBeBaptized: person?.willBeBaptized,
+    baptismSegment: person?.baptismSegment,
+    waitlistCreatedAt: person?.waitlistCreatedAt,
+    email: person?.email || '',
+    notes: person?.notes || '',
+  };
+}
+
+const ARCHIVE_INDEX_STRIP_FINANCIAL_KEYS = [
+  'paid',
+  'paidNet',
+  'registeredCost',
+  'discountCampaignId',
+  'discountCampaignConcept',
+  'discountCampaignAppliedAt',
+  'refundPendingAmount',
+  'refundPendingReason',
+  'refundAsDonation',
+  'scholarshipPartialAmount',
+  'whatsAppFinanceNotifications',
+  'paymentHistory',
+  'paymentMethod',
+  'paymentService',
+  'cardReference',
+];
+
+function stripFinancialFromArchiveIndexDoc(doc) {
+  if (!doc || typeof doc !== 'object') return doc;
+  const o = { ...doc };
+  for (const k of ARCHIVE_INDEX_STRIP_FINANCIAL_KEYS) delete o[k];
+  return o;
+}
 
 /** ID estable para la misma persona entre eventos (se reutiliza al importar perfil). */
 const normalizeIdText = (txt) =>
   String(txt || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    // ñ/Ñ no se separan en NFD; unificar a N para el algoritmo (solo A–Z en el ID).
+    .replace(/\u00f1/gi, 'n')
+    // ß → SS al pasar a mayúsculas
+    .replace(/ß/g, 'ss')
     .toUpperCase();
+
+/** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A–Z0–9). */
+const canonicalizeVnpPersonId = (raw) => {
+  const t = String(raw || '').trim();
+  if (!t) return '';
+  const m = t.match(/^VNPM-(.*)$/i);
+  if (!m) return t;
+  const rest = normalizeIdText(m[1]).replace(/[^A-Z0-9]/g, '');
+  if (!rest) return '';
+  return `VNPM-${rest}`;
+};
 
 const generateVnpPersonId = (personLike = {}) => {
   const omit = new Set(['DE', 'DEL', 'LA', 'LAS', 'LOS', 'Y', 'MC', 'MAC']);
@@ -290,8 +638,11 @@ const generateVnpPersonId = (personLike = {}) => {
   const birthDateRaw = String(personLike?.birthDate || '');
   const digits = birthDateRaw.replace(/\D/g, '');
   const yymmdd = digits.length === 8 ? `${digits.slice(2, 4)}${digits.slice(4, 6)}${digits.slice(6, 8)}` : '000000';
+  const genderRaw = normalizeIdText(personLike?.gender || '');
+  const genderSuffix = genderRaw.startsWith('H') ? 'H' : (genderRaw.startsWith('M') ? 'M' : 'X');
 
-  return `VNPM-${firstSurname2}${secondSurname1}${firstName1}${yymmdd}`;
+  const suffix = `${firstSurname2}${secondSurname1}${firstName1}${yymmdd}${genderSuffix}`.replace(/[^A-Z0-9]/g, '');
+  return `VNPM-${suffix}`;
 };
 
 const hasValidFullName = (fullName) => {
@@ -301,6 +652,45 @@ const hasValidFullName = (fullName) => {
     .split(' ')
     .filter(Boolean);
   return parts.length >= 3;
+};
+
+const NAME_PARTICLES_FOR_FAMILY = new Set(['DE', 'DEL', 'LA', 'LAS', 'LOS', 'Y', 'MC', 'MAC']);
+
+const getNamePartsForFamilyCompare = (fullName) =>
+  normalizeIdText(fullName || '')
+    .replace(/[^A-Z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((w) => !NAME_PARTICLES_FOR_FAMILY.has(w));
+
+/**
+ * Dos apellidos (últimas dos palabras útiles) para excepción de teléfono duplicado en familia.
+ * Con solo 2 palabras (nombre + un apellido) se usa *|apellido para hermanos con mismo apellido.
+ */
+const getFamilySurnamePairKey = (fullName) => {
+  const parts = getNamePartsForFamilyCompare(fullName);
+  if (parts.length < 2) return null;
+  if (parts.length >= 3) return `${parts[parts.length - 2]}|${parts[parts.length - 1]}`;
+  return `*|${parts[parts.length - 1]}`;
+};
+
+const isSameFamilyBySurnames = (nameA, nameB) => {
+  const ka = getFamilySurnamePairKey(nameA);
+  const kb = getFamilySurnamePairKey(nameB);
+  if (ka == null || kb == null) return false;
+  return ka === kb;
+};
+
+/** Mismo teléfono en el evento = duplicado salvo si comparten los dos apellidos (familia). */
+const phoneDuplicateInEvent = (fullName, phoneDigits, participants, eventId, excludeParticipantId) => {
+  if (!phoneDigits || String(phoneDigits).length < 10) return false;
+  return participants.some((p) => {
+    if (p.eventId !== eventId || !participantIsActiveInEvent(p)) return false;
+    if (excludeParticipantId != null && String(p.id) === String(excludeParticipantId)) return false;
+    if (digitsOnlyPhone(p.phone) !== phoneDigits) return false;
+    if (isSameFamilyBySurnames(fullName, p.name)) return false;
+    return true;
+  });
 };
 
 /** Convierte teléfono local/internacional al formato que requiere wa.me */
@@ -349,11 +739,25 @@ const toLocalISODate = (dateObj) => {
   return `${y}-${m}-${d}`;
 };
 
-const getLogDateISO = (log) => {
-  const idNum = Number(log?.id);
-  if (Number.isFinite(idNum) && idNum > 0) {
-    return toLocalISODate(new Date(idNum));
+/** Para ordenar, limpiar logs y filtros por fecha (soporta id numérico legacy o id string con prefijo temporal). */
+const extractLogMillis = (log) => {
+  if (!log) return 0;
+  if (Number.isFinite(log.createdAt)) return log.createdAt;
+  const id = log.id;
+  if (typeof id === 'number' && Number.isFinite(id) && id > 0) return id;
+  if (typeof id === 'string') {
+    const m = id.match(/^(\d{10,})/);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n)) return n;
+    }
   }
+  return 0;
+};
+
+const getLogDateISO = (log) => {
+  const ms = extractLogMillis(log);
+  if (ms > 0) return toLocalISODate(new Date(ms));
   const ts = String(log?.timestamp || '');
   const m = ts.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if (!m) return '';
@@ -390,7 +794,15 @@ const App = () => {
   const [currentUser, setCurrentUser] = useState(null);
   const [users, setUsers] = useState([]);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [usersAuthReady, setUsersAuthReady] = useState(false);
+  const [firestoreUsersError, setFirestoreUsersError] = useState(null);
+  const [loginBusy, setLoginBusy] = useState(false);
+  const loginInProgressRef = useRef(false);
+  const rosterSectionsPrefsLoadedRef = useRef('');
   const [loginError, setLoginError] = useState('');
+  /** Solo SuperUsuario: sesiones activas (heartbeat reciente), actualizado en tiempo real. */
+  const [superSessionCount, setSuperSessionCount] = useState(0);
   const [newUser, setNewUser] = useState({
     username: '',
     password: '',
@@ -402,7 +814,9 @@ const App = () => {
     restrictedLocation: '',
     allowedEventIds: [],
     allowedLocations: [],
-    preferredLandingTab: 'Summary'
+    preferredLandingTab: 'Summary',
+    hideMyExpenseConcepts: true,
+    canEditRegistryDates: false
   });
   const [globalConfig, setGlobalConfig] = useState(null);
 
@@ -414,6 +828,8 @@ const App = () => {
 
   const hasAdminRights = ['Administrador', 'SuperUsuario'].includes(currentUser?.role);
   const isSuperUser = currentUser?.role === 'SuperUsuario';
+  /** Editar fechas de registro y abonos: SuperUsuario siempre; otros solo si el SuperUsuario lo autoriza en su cuenta. */
+  const canEditRegistryDates = isSuperUser || !!currentUser?.canEditRegistryDates;
   const canAccessExpenses = currentUser ? (isSuperUser || (hasAdminRights && !!currentUser.canViewExpenses)) : false;
 
   const [events, setEvents] = useState([]);
@@ -436,6 +852,8 @@ const App = () => {
   // Preferences State
   const [viewPrefs, setViewPrefs] = useState(defaultViewPrefs);
   const [showViewSettings, setShowViewSettings] = useState(false);
+  const [panelNavModalOpen, setPanelNavModalOpen] = useState(false);
+  const [panelNavForm, setPanelNavForm] = useState(() => ({ ...DEFAULT_PANEL_NAV }));
 
   // Debug Toast & Watcher
   const [debugToast, setDebugToast] = useState(null);
@@ -447,6 +865,18 @@ const App = () => {
   const isCampa = currentEvent?.eventType === 'Campa';
   const isGeneral = currentEvent?.eventType === 'General';
   const sortedEvents = useMemo(() => [...events].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)), [events]);
+
+  /** Sedes en configuración global + todas las creadas en cualquier evento (p. ej. alta de sede solo en un evento). */
+  const allKnownLocationNames = useMemo(() => {
+    const set = new Set((globalLocations || []).map((x) => String(x).trim()).filter(Boolean));
+    (events || []).forEach((ev) => {
+      (ev.locations || []).forEach((loc) => {
+        const s = String(loc || '').trim();
+        if (s) set.add(s);
+      });
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'es'));
+  }, [globalLocations, events]);
   const getUserAllowedEventIds = useCallback((user) => {
     const explicit = Array.isArray(user?.allowedEventIds) ? user.allowedEventIds.filter(Boolean) : [];
     if (explicit.length > 0) return explicit;
@@ -458,7 +888,11 @@ const App = () => {
     return user?.restrictedLocation ? [user.restrictedLocation] : [];
   }, []);
   const resolvePreferredLandingTab = useCallback((user, eventObj = null) => {
-    const available = eventObj?.locations || globalLocations || [];
+    const fromEvent = eventObj?.locations;
+    const available =
+      Array.isArray(fromEvent) && fromEvent.length > 0
+        ? fromEvent
+        : (allKnownLocationNames.length > 0 ? allKnownLocationNames : globalLocations) || [];
     const preferred = user?.preferredLandingTab || '';
     if (preferred === 'Summary') return 'Summary';
     if (['Administrador', 'SuperUsuario'].includes(user?.role)) {
@@ -471,7 +905,7 @@ const App = () => {
     if (!available.includes(preferred)) return 'Summary';
     if (allowedLocs.length === 0 || allowedLocs.includes(preferred)) return preferred;
     return 'Summary';
-  }, [globalLocations, getUserAllowedLocations]);
+  }, [globalLocations, allKnownLocationNames, getUserAllowedLocations]);
   const visibleEvents = useMemo(() => {
     if (!currentUser) return [];
     if (['Administrador', 'SuperUsuario'].includes(currentUser.role)) return sortedEvents;
@@ -487,6 +921,38 @@ const App = () => {
     return (currentEvent.locations || []).filter(loc => allowedLocs.includes(loc));
   }, [currentEvent, currentUser, getUserAllowedLocations]);
 
+  const panelNavMerged = useMemo(() => {
+    const o = globalConfig?.panelNav && typeof globalConfig.panelNav === 'object' ? globalConfig.panelNav : {};
+    return { ...DEFAULT_PANEL_NAV, ...o };
+  }, [globalConfig?.panelNav]);
+
+  const bypassPanelNavRestrictions = isSuperUser || hasAdminRights;
+
+  const isPanelNavSectionAllowed = useCallback(
+    (key) => {
+      if (bypassPanelNavRestrictions) return true;
+      return panelNavMerged[key] !== false;
+    },
+    [bypassPanelNavRestrictions, panelNavMerged]
+  );
+
+  /** Concepto visible si el creador no oculta sus gastos, o el visor es el creador, o SuperUsuario. */
+  const canSeeExpenseConceptForRow = useCallback(
+    (exp) => {
+      if (!exp || exp._autoScholarshipExpense) return true;
+      const creatorUsername = exp.createdBy || '';
+      const creatorById = exp.createdByUserId != null && exp.createdByUserId !== '' ? String(exp.createdByUserId) : '';
+      const creatorUser = users.find(
+        (u) => (creatorById && String(u.id) === creatorById) || (creatorUsername && u.username === creatorUsername)
+      );
+      if (!creatorUser || !isHideMyExpenseConceptsOn(creatorUser)) return true;
+      if (isSuperUser) return true;
+      if (String(currentUser?.id) === String(creatorUser.id)) return true;
+      return false;
+    },
+    [users, currentUser?.id, isSuperUser]
+  );
+
   const getPricing = useCallback((event) => {
     if (!event) return { global: 0, server: 0 };
     if (event.pricingType === 'dynamic' && event.dynamicPrices?.length > 0) {
@@ -501,7 +967,53 @@ const App = () => {
     return { global: Number(event.globalCost || 0), server: Number(event.serverCost || 0) };
   }, []);
 
+  const getPricingForDate = useCallback((event, dateMs) => {
+    if (!event) return { global: 0, server: 0 };
+    if (event.pricingType !== 'dynamic' || !Array.isArray(event.dynamicPrices) || event.dynamicPrices.length === 0) {
+      return { global: Number(event.globalCost || 0), server: Number(event.serverCost || 0) };
+    }
+    const tMs = Number(dateMs) || Date.now();
+    const isoDate = new Date(tMs).toISOString().split('T')[0];
+    const sorted = [...event.dynamicPrices].sort((a, b) => a.dateUntil.localeCompare(b.dateUntil));
+    for (const tier of sorted) {
+      if (isoDate <= tier.dateUntil) {
+        return { global: Number(tier.globalCost || 0), server: Number(tier.serverCost || 0) };
+      }
+    }
+    const last = sorted[sorted.length - 1];
+    return { global: Number(last?.globalCost || 0), server: Number(last?.serverCost || 0) };
+  }, []);
+
   const currentPricing = useMemo(() => getPricing(currentEvent), [currentEvent, getPricing]);
+  const getActiveDiscountCampaigns = useCallback((eventLike) => {
+    const today = new Date().toISOString().split('T')[0];
+    const all = Array.isArray(eventLike?.discountCampaigns) ? eventLike.discountCampaigns : [];
+    return all.filter((c) => {
+      if (!c || c.enabled === false) return false;
+      if (!c.startDate || !c.endDate) return false;
+      return isDiscountCampaignVigenteOnDate(c, today);
+    });
+  }, []);
+  const resolveCampaignForPerson = useCallback((personLike, eventLike) => {
+    const active = getActiveDiscountCampaigns(eventLike);
+    return active.find((c) => campaignMatchesPersonProfile(c, personLike)) || null;
+  }, [getActiveDiscountCampaigns]);
+
+  /** Campañas aplicables al perfil (válidas: concepto + monto); en edición se elige manual incluso sin vigencia por fecha. */
+  const getManualApplyCampaignOptions = useCallback((eventLike, personLike) => {
+    return getValidDiscountCampaignsForPerson(eventLike, personLike);
+  }, []);
+
+  const resolveMatchedCampaignForNewEntry = useCallback(
+    (entry) => {
+      const selectable = getValidDiscountCampaignsForPerson(currentEvent, entry);
+      if (entry.selectedDiscountCampaignId) {
+        return selectable.find((c) => String(c.id) === String(entry.selectedDiscountCampaignId)) || null;
+      }
+      return resolveCampaignForPerson(entry, currentEvent);
+    },
+    [currentEvent, resolveCampaignForPerson]
+  );
 
   const getPersonCost = useCallback((person, pricing) => {
     if (person.isServer === 'Sí' && person.serverAssignment === 'Ambos') {
@@ -516,20 +1028,34 @@ const App = () => {
     return getPersonCost(person, pricing);
   }, [getPersonCost]);
 
-  /** Monto que debe liquidar la persona (0 = beca total cubierta). */
+  /** Monto que debe liquidar la persona (0 = beca total cubierta). Beca parcial: lista − monto becado (scholarshipPartialAmount). */
   const getLiquidationTarget = useCallback((person) => {
+    if (isFreeAttendanceType(person?.attendanceSpecialType)) return 0;
     const listPrice = resolveRegisteredCost(person, currentPricing);
     if (person?.isScholarship !== 'Sí') return listPrice;
     if (person?.scholarshipType === 'partial') {
-      /** Monto que el participante debe aportar al recaudado; la beca cubre (costo lista − este monto). */
-      const obligation = parseFloat(person.scholarshipPartialAmount || 0);
-      if (!Number.isFinite(obligation) || obligation <= 0) return listPrice;
-      return Math.min(obligation, listPrice);
+      const montoBecado = parseFloat(person.scholarshipPartialAmount || 0);
+      if (!Number.isFinite(montoBecado) || montoBecado <= 0) return listPrice;
+      const toLiquidate = listPrice - montoBecado;
+      return Math.max(0, Math.min(toLiquidate, listPrice));
     }
     return 0;
   }, [resolveRegisteredCost, currentPricing]);
 
-  /** Monto condonado por beca (costo de lista menos lo que debe aportar el participante). */
+  /** Beca parcial (Campa): abono inicial válido si es 0, ≥ apartado mínimo del evento, o (servidor Ambos) el costo servidor configurado. */
+  const isValidPartialScholarshipInitialPaid = useCallback((entry, minDep) => {
+    const paid = parseFloat(entry.paid) || 0;
+    if (paid < 0) return false;
+    const min = Number(minDep) || 0;
+    const server = Number(currentPricing.server) || 0;
+    const ambos = entry.isServer === 'Sí' && entry.serverAssignment === 'Ambos';
+    if (paid === 0) return true;
+    if (ambos && Math.abs(paid - server) < 1e-6) return true;
+    if (paid >= min) return true;
+    return false;
+  }, [currentPricing.server]);
+
+  /** Monto cubierto por beca respecto al costo de lista (para beca parcial = scholarshipPartialAmount si es coherente). */
   const getScholarshipCondonedAmount = useCallback(
     (person) => {
       if (person?.isScholarship !== 'Sí') return 0;
@@ -550,13 +1076,18 @@ const App = () => {
   const [logSpecificDay, setLogSpecificDay] = useState('');
   const [logSpecificMonth, setLogSpecificMonth] = useState('');
   const [allParticipants, setAllParticipants] = useState([]);
+  const archivedParticipantsForView = useMemo(
+    () =>
+      allParticipants
+        .filter(participantIsArchived)
+        .sort((a, b) => (Number(b.archivedAt) || 0) - (Number(a.archivedAt) || 0)),
+    [allParticipants]
+  );
   const [activeTab, setActiveTab] = useState("Summary");
   const [showMoney, setShowMoney] = useState(true);
   const [showLocChartValues, setShowLocChartValues] = useState(false);
   const [showIncChartValues, setShowIncChartValues] = useState(false);
   const [showGrossWithoutCommission, setShowGrossWithoutCommission] = useState(false);
-  const [summaryView, setSummaryView] = useState("all");
-  const [summaryServerView, setSummaryServerView] = useState("all");
   const [isAddLocModalOpen, setIsAddLocModalOpen] = useState(false);
   const [newLocationName, setNewLocationName] = useState('');
   const [locError, setLocError] = useState('');
@@ -569,7 +1100,7 @@ const App = () => {
   const [newEntry, setNewEntry] = useState(EMPTY_ENTRY);
   const [editRegistryModal, setEditRegistryModal] = useState({ isOpen: false, loc: '', data: null });
   const [pricingModal, setPricingModal] = useState({ isOpen: false });
-  const [pricingForm, setPricingForm] = useState({ type: 'fixed', globalCost: 0, serverCost: 0, phases: [] });
+  const [pricingForm, setPricingForm] = useState({ type: 'fixed', globalCost: 0, serverCost: 0, phases: [], campaigns: [] });
   const [customFieldsModal, setCustomFieldsModal] = useState({ isOpen: false });
   const [searchTerm, setSearchTerm] = useState("");
   /** Búsqueda para importar datos desde otro evento del mismo tipo */
@@ -584,19 +1115,28 @@ const App = () => {
   const [filterPaymentType, setFilterPaymentType] = useState("all");
   const [filterTravelFrom, setFilterTravelFrom] = useState("all");
   const [filterTravelTo, setFilterTravelTo] = useState("all");
-  const [filterPastorChild, setFilterPastorChild] = useState("all");
-  const [filterWithoutPay, setFilterWithoutPay] = useState("all");
+  /** all | ninguno | empleado | cortesia */
+  const [filterAttendanceSpecial, setFilterAttendanceSpecial] = useState('all');
   const [filterFirstTimeId, setFilterFirstTimeId] = useState("all");
-  const [filterCancelled, setFilterCancelled] = useState("all");
+  const [filterPendingRefund, setFilterPendingRefund] = useState("all");
   /** all | pending — solo filas con avisos WhatsApp financieros sin enviar */
   const [filterWhatsAppPending, setFilterWhatsAppPending] = useState("all");
   const [filterServer, setFilterServer] = useState("all");
   const [filterAssignment, setFilterAssignment] = useState("all");
+  const [filterBaptism, setFilterBaptism] = useState('all'); // all | teens | jovenes | no
   const [filtersDropdownOpen, setFiltersDropdownOpen] = useState(false);
+  const [globalLocationsDropdownOpen, setGlobalLocationsDropdownOpen] = useState(false);
+  const [globalLocationFilters, setGlobalLocationFilters] = useState([]);
   const [serverPageFromFilter, setServerPageFromFilter] = useState('all');
   const [serverPageToFilter, setServerPageToFilter] = useState('all');
   const [serverPageAssignmentFilter, setServerPageAssignmentFilter] = useState('all');
-  const [filterPaymentMethod, _setFilterPaymentMethod] = useState({ efectivo: true, tarjeta: true });
+  const [filterPaymentMethod, setFilterPaymentMethod] = useState({ efectivo: true, tarjeta: true });
+  /** Listas colapsables en registro por sede: activos, lista de espera (becados), cancelados */
+  const [rosterSectionExpanded, setRosterSectionExpanded] = useState({
+    activos: true,
+    waitlist: true,
+    cancelled: true,
+  });
   const [paymentModal, setPaymentModal] = useState({
     isOpen: false,
     loc: '',
@@ -610,6 +1150,18 @@ const App = () => {
     paymentMethod: 'Efectivo',
     paymentService: '',
     cardReference: ''
+  });
+  const [paymentMethodEditModal, setPaymentMethodEditModal] = useState({
+    isOpen: false,
+    loc: '',
+    personId: null,
+    personName: '',
+    paymentIndex: null,
+    paymentId: null,
+    amount: 0,
+    oldMethod: 'Efectivo',
+    paymentMethod: 'Efectivo',
+    cardReference: '',
   });
   const [sendToWaitlist, setSendToWaitlist] = useState(false);
   const [openPreferredServeLoc, setOpenPreferredServeLoc] = useState(null);
@@ -645,9 +1197,23 @@ const App = () => {
     restrictedLocation: '',
     allowedEventIds: [],
     allowedLocations: [],
-    preferredLandingTab: 'Summary'
+    preferredLandingTab: 'Summary',
+    hideMyExpenseConcepts: true,
+    canEditRegistryDates: false
   });
   const [restoreModal, setRestoreModal] = useState({ isOpen: false, log: null, type: 'single' });
+  /** Confirmación in-app: archivar / baja / eliminar donación (sustituye window.confirm). */
+  const [registryConfirmModal, setRegistryConfirmModal] = useState({
+    isOpen: false,
+    type: null,
+    loc: '',
+    personId: '',
+    personName: '',
+    donationId: '',
+    donationAmount: 0,
+    refundAmount: 0,
+  });
+  const [registryConfirmBusy, setRegistryConfirmBusy] = useState(false);
   const [serviceSlotsModal, setServiceSlotsModal] = useState({ isOpen: false });
   const [serviceSlotsForm, setServiceSlotsForm] = useState(DEFAULT_SERVICE_SLOTS);
   const [serveAreaOptionsModal, setServeAreaOptionsModal] = useState({ isOpen: false });
@@ -668,6 +1234,15 @@ const App = () => {
   const [expenseSearch, setExpenseSearch] = useState('');
   const [expensePartialModal, setExpensePartialModal] = useState({ isOpen: false, expenseId: null, amount: '' });
   const [expenseEditModal, setExpenseEditModal] = useState({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' });
+  const [superDateEditModal, setSuperDateEditModal] = useState({
+    isOpen: false,
+    mode: '',
+    personId: null,
+    loc: '',
+    paymentIndex: null,
+    paymentId: null,
+    datetimeLocal: '',
+  });
   const [expenseFiltersDropdownOpen, setExpenseFiltersDropdownOpen] = useState(false);
   const [expenseFilters, setExpenseFilters] = useState({
     paid: false,
@@ -743,18 +1318,22 @@ const App = () => {
     const qDigits = digitsOnlyPhone(newRegProfileSearch);
     if (q.length < 2 && qDigits.length < 4) return [];
 
-    const phonesInCurrentEvent = new Set(
-      allParticipants
-        .filter((p) => p.eventId === currentEvent.id && participantIsActiveInEvent(p))
-        .map((p) => digitsOnlyPhone(p.phone))
-        .filter((d) => d.length >= 10)
+    const activeInCurrentEvent = allParticipants.filter(
+      (p) => p.eventId === currentEvent.id && participantIsActiveInEvent(p)
     );
 
     const seen = new Set();
     const candidates = [];
     for (const p of pastProfilesForImport) {
       const d = digitsOnlyPhone(p.phone);
-      if (d.length >= 10 && phonesInCurrentEvent.has(d)) continue;
+      if (
+        d.length >= 10 &&
+        activeInCurrentEvent.some(
+          (evp) => digitsOnlyPhone(evp.phone) === d && !isSameFamilyBySurnames(p.name, evp.name)
+        )
+      ) {
+        continue;
+      }
 
       const nameMatch = q.length >= 2 && (p.name || '').toLowerCase().includes(q);
       const phoneMatch = qDigits.length >= 4 && d.includes(qDigits);
@@ -782,7 +1361,7 @@ const App = () => {
         age: src.birthDate ? calculateAgeFromBirthDate(src.birthDate) : (src.age != null && src.age !== '' ? String(src.age) : ''),
         gender: src.gender || '',
         responsivaStatus: src.responsivaStatus || '',
-        vnpPersonId: src.vnpPersonId || '',
+        vnpPersonId: canonicalizeVnpPersonId(src.vnpPersonId || '') || src.vnpPersonId || '',
         paymentMethod: 'Efectivo',
         paymentService: getAutoPaymentService(new Date()),
         cardReference: '',
@@ -800,15 +1379,14 @@ const App = () => {
         customData: {},
         travelFrom: loc,
         travelTo: loc,
-        pastorChildSpecialDonationFinanceId: '',
         ...(isCampaEv ? {
           bloodType: src.bloodType || 'O+',
           emergencyContact: src.emergencyContact || '',
           emergencyPhone: src.emergencyPhone || '',
+          emergencyRelationship: src.emergencyRelationship || '',
           canSwim: src.canSwim || 'No',
           alias: src.alias || '',
-          isPastorChild: src.isPastorChild || 'No',
-          pastorChildWithoutPay: src.pastorChildWithoutPay || 'No',
+          attendanceSpecialType: normalizeAttendanceSpecial(src),
           hasAllergy: src.hasAllergy || 'No',
           allergyCategory: src.allergyCategory || '',
           allergyDetails: src.allergyDetails || '',
@@ -827,6 +1405,8 @@ const App = () => {
           preferredServeArea: src.preferredServeArea || '',
           servesInCongress: src.servesInCongress || 'No',
           congressServeArea: src.congressServeArea || '',
+          willBeBaptized: src.willBeBaptized === 'Sí' ? 'Sí' : 'No',
+          baptismSegment: src.baptismSegment || '',
         } : {}),
       };
       setNewEntry(base);
@@ -835,6 +1415,17 @@ const App = () => {
     },
     [currentEvent, getAutoPaymentService, showToast]
   );
+
+  const handleClearRegistrationForm = useCallback(() => {
+    setNewEntry({
+      ...EMPTY_ENTRY,
+      paymentMethod: 'Efectivo',
+      paymentService: getAutoPaymentService(new Date()),
+      cardReference: ''
+    });
+    setNewRegProfileSearch('');
+    showToast('Formulario limpiado.');
+  }, [getAutoPaymentService, showToast]);
 
   const hasEventAccess = useCallback((eventId) => {
     if (!currentUser) return false;
@@ -854,16 +1445,44 @@ const App = () => {
 
   // Navigation Logic
   const goTo = useCallback((view, eventId, tab) => {
+    if (view === 'archive' || view === 'users' || view === 'logs') {
+      if (view === systemView && !eventId && tab === activeTab) {
+        setIsMobileMenuOpen(false);
+        return;
+      }
+      setNavHistory((prev) => [...prev, { systemView, selectedEventId, activeTab }]);
+      setSystemView(view);
+      setSelectedEventId(null);
+      setActiveTab(tab || 'Summary');
+      setShowViewSettings(false);
+      setIsMobileMenuOpen(false);
+      return;
+    }
     if (view === 'events' && eventId && !hasEventAccess(eventId)) {
       showToast("No tienes acceso a este evento.");
       setIsMobileMenuOpen(false);
       return;
     }
-    const eventNavTabsWithoutLocation = ['Summary', 'ServersPage', 'ExpenseList', 'CashCut', 'Becados'];
-    if (view === 'events' && eventId && tab && !eventNavTabsWithoutLocation.includes(tab) && !hasLocationAccess(tab)) {
-      showToast("No tienes acceso a esta sede.");
-      setIsMobileMenuOpen(false);
-      return;
+    const eventNavTabsWithoutLocation = ['Summary', 'ServersPage', 'ExpenseList', 'CashCut', 'Becados', 'RegistroGlobal'];
+    if (view === 'events' && eventId && tab) {
+      const panelKey = PANEL_NAV_TAB_KEYS[tab];
+      if (panelKey && !isPanelNavSectionAllowed(panelKey)) {
+        showToast('Esta sección no está habilitada en el menú para tu usuario.');
+        setIsMobileMenuOpen(false);
+        return;
+      }
+      if (!eventNavTabsWithoutLocation.includes(tab)) {
+        if (!hasLocationAccess(tab)) {
+          showToast("No tienes acceso a esta sede.");
+          setIsMobileMenuOpen(false);
+          return;
+        }
+        if (!isPanelNavSectionAllowed('locations')) {
+          showToast('El acceso a sedes desde el menú no está habilitado para tu usuario.');
+          setIsMobileMenuOpen(false);
+          return;
+        }
+      }
     }
     if (view === systemView && eventId === selectedEventId && tab === activeTab) {
       setIsMobileMenuOpen(false);
@@ -875,7 +1494,7 @@ const App = () => {
     setActiveTab(tab);
     setShowViewSettings(false);
     setIsMobileMenuOpen(false);
-  }, [systemView, selectedEventId, activeTab, hasEventAccess, hasLocationAccess, showToast]);
+  }, [systemView, selectedEventId, activeTab, hasEventAccess, hasLocationAccess, isPanelNavSectionAllowed, showToast]);
 
   const goBack = useCallback(() => {
     setNavHistory(prev => {
@@ -901,6 +1520,205 @@ const App = () => {
         setViewPrefs(defaultViewPrefs);
       }
     }
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    try {
+      const raw = localStorage.getItem(lsKeyShowGrossCommission(currentUser.id));
+      if (raw == null) return;
+      const v = JSON.parse(raw);
+      if (typeof v === 'boolean') setShowGrossWithoutCommission(v);
+    } catch {
+      /* ignore */
+    }
+  }, [currentUser?.id]);
+
+  useLayoutEffect(() => {
+    if (!currentUser?.id) return;
+    const uid = String(currentUser.id);
+    try {
+      const raw = localStorage.getItem(lsKeyUserFilters(uid));
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p && typeof p === 'object') {
+          if (typeof p.searchTerm === 'string') setSearchTerm(p.searchTerm);
+          if (typeof p.sortBy === 'string') setSortBy(p.sortBy);
+          if (typeof p.filterSwim === 'string') setFilterSwim(p.filterSwim);
+          if (typeof p.filterMedical === 'string') setFilterMedical(p.filterMedical);
+          if (typeof p.filterScholarship === 'string') setFilterScholarship(p.filterScholarship);
+          if (typeof p.filterResponsiva === 'string') setFilterResponsiva(p.filterResponsiva);
+          if (typeof p.filterGender === 'string') setFilterGender(p.filterGender);
+          if (typeof p.filterTransport === 'string') setFilterTransport(p.filterTransport);
+          if (typeof p.filterPaymentType === 'string') setFilterPaymentType(p.filterPaymentType);
+          if (typeof p.filterTravelFrom === 'string') setFilterTravelFrom(p.filterTravelFrom);
+          if (typeof p.filterTravelTo === 'string') setFilterTravelTo(p.filterTravelTo);
+          if (typeof p.filterAttendanceSpecial === 'string') setFilterAttendanceSpecial(p.filterAttendanceSpecial);
+          if (typeof p.filterFirstTimeId === 'string') setFilterFirstTimeId(p.filterFirstTimeId);
+          if (typeof p.filterPendingRefund === 'string') setFilterPendingRefund(p.filterPendingRefund);
+          if (typeof p.filterWhatsAppPending === 'string') setFilterWhatsAppPending(p.filterWhatsAppPending);
+          if (typeof p.filterServer === 'string') setFilterServer(p.filterServer);
+          if (typeof p.filterAssignment === 'string') setFilterAssignment(p.filterAssignment);
+          if (typeof p.filterBaptism === 'string') setFilterBaptism(p.filterBaptism);
+          if (Array.isArray(p.globalLocationFilters) && p.globalLocationFilters.every((x) => typeof x === 'string')) {
+            setGlobalLocationFilters(p.globalLocationFilters);
+          }
+          if (typeof p.serverPageFromFilter === 'string') setServerPageFromFilter(p.serverPageFromFilter);
+          if (typeof p.serverPageToFilter === 'string') setServerPageToFilter(p.serverPageToFilter);
+          if (typeof p.serverPageAssignmentFilter === 'string') setServerPageAssignmentFilter(p.serverPageAssignmentFilter);
+          const pm = p.filterPaymentMethod;
+          if (pm && typeof pm === 'object' && typeof pm.efectivo === 'boolean' && typeof pm.tarjeta === 'boolean') {
+            setFilterPaymentMethod({ efectivo: pm.efectivo, tarjeta: pm.tarjeta });
+          }
+          if (typeof p.logFilterContext === 'string') setLogFilterContext(p.logFilterContext);
+          if (typeof p.logSearchTerm === 'string') setLogSearchTerm(p.logSearchTerm);
+          if (typeof p.logDateMode === 'string') setLogDateMode(p.logDateMode);
+          if (typeof p.logDateFrom === 'string') setLogDateFrom(p.logDateFrom);
+          if (typeof p.logDateTo === 'string') setLogDateTo(p.logDateTo);
+          if (typeof p.logSpecificWeek === 'string') setLogSpecificWeek(p.logSpecificWeek);
+          if (typeof p.logSpecificDay === 'string') setLogSpecificDay(p.logSpecificDay);
+          if (typeof p.logSpecificMonth === 'string') setLogSpecificMonth(p.logSpecificMonth);
+          const ef = p.expenseFilters;
+          if (ef && typeof ef === 'object' && typeof ef.paid === 'boolean' && typeof ef.pending === 'boolean' && typeof ef.counted === 'boolean' && typeof ef.uncounted === 'boolean') {
+            setExpenseFilters({ paid: ef.paid, pending: ef.pending, counted: ef.counted, uncounted: ef.uncounted });
+          }
+          if (Array.isArray(p.scholarshipLocationFilters) && p.scholarshipLocationFilters.every((x) => typeof x === 'string')) {
+            setScholarshipLocationFilters(p.scholarshipLocationFilters);
+          }
+          if (typeof p.cashCutMode === 'string') setCashCutMode(p.cashCutMode);
+          if (typeof p.cashCutSelected === 'string') setCashCutSelected(p.cashCutSelected);
+          if (typeof p.cashCutGross === 'boolean') setCashCutGross(p.cashCutGross);
+          if (typeof p.expenseSearch === 'string') setExpenseSearch(p.expenseSearch);
+          if (typeof p.expenseGross === 'boolean') setExpenseGross(p.expenseGross);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [currentUser?.id]);
+
+  useLayoutEffect(() => {
+    rosterSectionsPrefsLoadedRef.current = '';
+    if (!currentUser?.id) return;
+    const uid = String(currentUser.id);
+    try {
+      const raw = localStorage.getItem(lsKeyRosterSections(uid));
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p && typeof p.activos === 'boolean' && typeof p.waitlist === 'boolean' && typeof p.cancelled === 'boolean') {
+          setRosterSectionExpanded({ activos: p.activos, waitlist: p.waitlist, cancelled: p.cancelled });
+          rosterSectionsPrefsLoadedRef.current = uid;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    try {
+      localStorage.setItem(
+        lsKeyUserFilters(String(currentUser.id)),
+        JSON.stringify({
+          v: 1,
+          searchTerm,
+          sortBy,
+          filterSwim,
+          filterMedical,
+          filterScholarship,
+          filterResponsiva,
+          filterGender,
+          filterTransport,
+          filterPaymentType,
+          filterTravelFrom,
+          filterTravelTo,
+          filterAttendanceSpecial,
+          filterFirstTimeId,
+          filterPendingRefund,
+          filterWhatsAppPending,
+          filterServer,
+          filterAssignment,
+          filterBaptism,
+          globalLocationFilters,
+          serverPageFromFilter,
+          serverPageToFilter,
+          serverPageAssignmentFilter,
+          filterPaymentMethod,
+          logFilterContext,
+          logSearchTerm,
+          logDateMode,
+          logDateFrom,
+          logDateTo,
+          logSpecificWeek,
+          logSpecificDay,
+          logSpecificMonth,
+          expenseFilters,
+          scholarshipLocationFilters,
+          cashCutMode,
+          cashCutSelected,
+          cashCutGross,
+          expenseSearch,
+          expenseGross,
+        })
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [
+    currentUser?.id,
+    searchTerm,
+    sortBy,
+    filterSwim,
+    filterMedical,
+    filterScholarship,
+    filterResponsiva,
+    filterGender,
+    filterTransport,
+    filterPaymentType,
+    filterTravelFrom,
+    filterTravelTo,
+    filterAttendanceSpecial,
+    filterFirstTimeId,
+    filterPendingRefund,
+    filterWhatsAppPending,
+    filterServer,
+    filterAssignment,
+    filterBaptism,
+    globalLocationFilters,
+    serverPageFromFilter,
+    serverPageToFilter,
+    serverPageAssignmentFilter,
+    filterPaymentMethod,
+    logFilterContext,
+    logSearchTerm,
+    logDateMode,
+    logDateFrom,
+    logDateTo,
+    logSpecificWeek,
+    logSpecificDay,
+    logSpecificMonth,
+    expenseFilters,
+    scholarshipLocationFilters,
+    cashCutMode,
+    cashCutSelected,
+    cashCutGross,
+    expenseSearch,
+    expenseGross,
+  ]);
+
+  const toggleShowGrossWithoutCommission = useCallback(() => {
+    setShowGrossWithoutCommission((prev) => {
+      const next = !prev;
+      if (currentUser?.id) {
+        try {
+          localStorage.setItem(lsKeyShowGrossCommission(currentUser.id), JSON.stringify(next));
+        } catch {
+          /* ignore */
+        }
+      }
+      return next;
+    });
   }, [currentUser?.id]);
 
   const togglePref = (key) => {
@@ -961,9 +1779,11 @@ const App = () => {
       const newSessionId = Date.now();
       await updateDoc(getDocRef('app_data', 'config'), { isDebugMode: true, debugSessionId: newSessionId });
       
-      const newLogId = Date.now() + 1;
+      const createdAt = Date.now();
+      const newLogId = `${createdAt}${Math.random().toString(36).slice(2, 10)}`;
       await setDoc(getDocRef('app_logs', String(newLogId)), {
         id: newLogId,
+        createdAt,
         eventId: 'Global',
         eventName: 'Sistema',
         timestamp: new Date().toLocaleString('es-MX'),
@@ -976,7 +1796,7 @@ const App = () => {
       });
     } else {
       const currentSession = globalConfig.debugSessionId;
-      const logsToRevert = logs.filter(l => l.debugSessionId === currentSession && l.revertInfo).sort((a,b) => b.id - a.id);
+      const logsToRevert = logs.filter(l => l.debugSessionId === currentSession && l.revertInfo).sort((a, b) => extractLogMillis(b) - extractLogMillis(a));
       
       for (const l of logsToRevert) {
         await applyRevert(l.revertInfo);
@@ -984,11 +1804,18 @@ const App = () => {
       
       await updateDoc(getDocRef('app_data', 'config'), { isDebugMode: false, debugSessionId: null });
       
-      const newLogId = Date.now() + 1;
-      await setDoc(getDocRef('app_logs', String(newLogId)), {
-        id: newLogId, eventId: 'Global', eventName: 'Sistema',
+      const createdAtExit = Date.now();
+      const newLogIdExit = `${createdAtExit}${Math.random().toString(36).slice(2, 10)}`;
+      await setDoc(getDocRef('app_logs', String(newLogIdExit)), {
+        id: newLogIdExit,
+        createdAt: createdAtExit,
+        eventId: 'Global',
+        eventName: 'Sistema',
         timestamp: new Date().toLocaleString('es-MX'),
-        username: currentUser.username, action: 'Sistema', details: `Salió de depuración. Se revirtieron ${logsToRevert.length} acciones temporales.`, revertInfo: null
+        username: currentUser.username,
+        action: 'Sistema',
+        details: `Salió de depuración. Se revirtieron ${logsToRevert.length} acciones temporales.`,
+        revertInfo: null,
       });
     }
   };
@@ -1025,6 +1852,8 @@ const App = () => {
       if (!target.closest('[data-dropdown-root="edit-preferred-areas"]')) setEditPreferredServeDropdownOpen(false);
       if (!target.closest('[data-dropdown-root="expense-filters"]')) setExpenseFiltersDropdownOpen(false);
       if (!target.closest('[data-dropdown-root="scholarship-locations-filters"]')) setScholarshipLocationsDropdownOpen(false);
+      if (!target.closest('[data-dropdown-root="global-locations-filters"]')) setGlobalLocationsDropdownOpen(false);
+      if (!target.closest('[data-dropdown-root="view-settings"]')) setShowViewSettings(false);
     };
 
     document.addEventListener('pointerdown', handleGlobalPointerDown);
@@ -1046,8 +1875,8 @@ const App = () => {
 
   useEffect(() => {
     if (systemView !== 'users') {
-      setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' });
-      setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' });
+      setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false });
+      setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false });
     }
   }, [systemView]);
 
@@ -1059,24 +1888,30 @@ const App = () => {
       setSystemView('events');
       return;
     }
-    const eventNavTabsWithoutLocation = ['Summary', 'ServersPage', 'ExpenseList', 'CashCut', 'Becados'];
-    if (selectedEventId && !eventNavTabsWithoutLocation.includes(activeTab) && !hasLocationAccess(activeTab)) {
-      setActiveTab('Summary');
+    const eventNavTabsWithoutLocation = ['Summary', 'ServersPage', 'ExpenseList', 'CashCut', 'Becados', 'RegistroGlobal'];
+    if (!selectedEventId || !currentEvent) return;
+    if (eventNavTabsWithoutLocation.includes(activeTab)) {
+      const pk = PANEL_NAV_TAB_KEYS[activeTab];
+      if (pk && !isPanelNavSectionAllowed(pk)) {
+        setActiveTab('Summary');
+      }
+      return;
     }
-  }, [currentUser, selectedEventId, activeTab, hasEventAccess, hasLocationAccess]);
+    if (!isPanelNavSectionAllowed('locations')) {
+      setActiveTab('Summary');
+      return;
+    }
+    // Sede = nombre en activeTab: debe existir en el evento actual y ser visible para el usuario (onSnapshot actualiza currentEvent).
+    if (!visibleLocations.includes(activeTab)) {
+      setActiveTab(resolvePreferredLandingTab(currentUser, currentEvent));
+    }
+  }, [currentUser, selectedEventId, activeTab, currentEvent, visibleLocations, hasEventAccess, isPanelNavSectionAllowed, resolvePreferredLandingTab]);
 
   useEffect(() => {
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          try {
-            await signInWithCustomToken(auth, __initial_auth_token);
-          } catch (e) {
-            console.warn("Custom token fallback:", e);
-            await signInAnonymously(auth);
-          }
-        } else {
-          await signInAnonymously(auth);
+          await signInWithCustomToken(auth, __initial_auth_token);
         }
       } catch (error) {
         console.error("Error authenticating to Firebase:", error);
@@ -1086,6 +1921,13 @@ const App = () => {
     const unsubscribe = onAuthStateChanged(auth, setFbUser);
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!fbUser) {
+      setFirestoreUsersError(null);
+      setUsersAuthReady(false);
+    }
+  }, [fbUser]);
 
   useEffect(() => {
     if (!fbUser) return;
@@ -1101,7 +1943,8 @@ const App = () => {
           cardCommissionRate: 0.04,
           serviceSlots: DEFAULT_SERVICE_SLOTS,
           serveAreaOptions: DEFAULT_SERVE_AREA_OPTIONS,
-          allergyOptions: DEFAULT_ALLERGY_OPTIONS
+          allergyOptions: DEFAULT_ALLERGY_OPTIONS,
+          panelNav: { ...DEFAULT_PANEL_NAV }
         });
         setGlobalLocations(defaultLocations);
       }
@@ -1128,18 +1971,33 @@ const App = () => {
       }
     }, console.error);
 
-    const unsubUsers = onSnapshot(getColRef('app_users'), (snap) => {
-      if (!snap.empty) {
-        setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } else {
-        const initialUser = { username: 'admin', password: '123', role: 'SuperUsuario', canViewFinances: true, canViewHiddenDonations: true };
-        setDoc(getDocRef('app_users', '1'), initialUser);
+    const unsubUsers = onSnapshot(
+      getColRef('app_users'),
+      (snap) => {
+        setFirestoreUsersError(null);
+        setUsersAuthReady(true);
+        if (!snap.empty) {
+          setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        } else {
+          setUsers([]);
+        }
+      },
+      (err) => {
+        console.error(err);
+        const code = err?.code || '';
+        setFirestoreUsersError(
+          code === 'permission-denied'
+            ? 'Firestore rechazó la lectura (permiso denegado). Despliega las reglas: firebase deploy (o al menos firestore:rules) y espera un minuto.'
+            : 'No se pudo cargar la lista de usuarios. Revisa conexión, que Firestore esté activo y que el proyecto sea registros-vnpm.'
+        );
+        setUsers([]);
+        setUsersAuthReady(true);
       }
-    }, console.error);
+    );
 
     const unsubLogs = onSnapshot(getColRef('app_logs'), (snap) => {
       const logsList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      logsList.sort((a, b) => b.id - a.id);
+      logsList.sort((a, b) => extractLogMillis(b) - extractLogMillis(a));
       setLogs(logsList);
     }, console.error);
 
@@ -1162,7 +2020,7 @@ const App = () => {
     if (!currentEvent) return {};
     const groupedData = globalLocations.reduce((acc, loc) => ({ ...acc, [loc]: [] }), {});
     allParticipants.forEach(p => {
-      if (p.eventId === currentEvent.id && participantIsRosterRow(p)) {
+      if (p.eventId === currentEvent.id && participantIsRosterRow(p) && !participantIsCancelled(p)) {
         if (!groupedData[p.location]) groupedData[p.location] = [];
         groupedData[p.location].push(p);
       }
@@ -1182,11 +2040,60 @@ const App = () => {
     return groupedData;
   }, [allParticipants, currentEvent, globalLocations]);
 
+  const cancelledData = useMemo(() => {
+    if (!currentEvent) return {};
+    const groupedData = globalLocations.reduce((acc, loc) => ({ ...acc, [loc]: [] }), {});
+    allParticipants.forEach((p) => {
+      if (p.eventId === currentEvent.id && participantIsCancelled(p) && !participantIsArchived(p)) {
+        if (!groupedData[p.location]) groupedData[p.location] = [];
+        groupedData[p.location].push(p);
+      }
+    });
+    return groupedData;
+  }, [allParticipants, currentEvent, globalLocations]);
+
   const getSortedWaitlistForLocation = useCallback((loc) => {
     return [...(waitlistData[loc] || [])].sort((a, b) => {
       return Number(a.waitlistCreatedAt || a.id || 0) - Number(b.waitlistCreatedAt || b.id || 0);
     });
   }, [waitlistData]);
+
+  const getSortedCancelledForLocation = useCallback((loc) => {
+    return [...(cancelledData[loc] || [])].sort((a, b) => Number(b.cancelledAt || 0) - Number(a.cancelledAt || 0));
+  }, [cancelledData]);
+
+  const toggleRosterSection = useCallback((key) => {
+    setRosterSectionExpanded((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      if (currentUser?.id) {
+        try {
+          localStorage.setItem(lsKeyRosterSections(String(currentUser.id)), JSON.stringify(next));
+        } catch {
+          /* ignore */
+        }
+      }
+      return next;
+    });
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const uid = String(currentUser.id);
+    if (rosterSectionsPrefsLoadedRef.current === uid) return;
+    if (!visibleLocations.includes(activeTab)) return;
+    const tabLoc = activeTab;
+    const na = (data[tabLoc] || []).length;
+    const nw = (waitlistData[tabLoc] || []).length;
+    const nc = (cancelledData[tabLoc] || []).length;
+    const next = { activos: na <= 10, waitlist: nw <= 10, cancelled: nc <= 10 };
+    setRosterSectionExpanded(next);
+    try {
+      localStorage.setItem(lsKeyRosterSections(uid), JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+    rosterSectionsPrefsLoadedRef.current = uid;
+  }, [currentUser?.id, activeTab, visibleLocations, data, waitlistData, cancelledData]);
 
   const isLocOpen = useCallback((loc) => {
     return currentEvent ? currentEvent.regStatus?.[loc] !== false : false;
@@ -1207,29 +2114,157 @@ const App = () => {
     return getActiveCountByLocation(loc) >= cap;
   }, [getLocationCap, getActiveCountByLocation]);
 
-  const addLog = useCallback(async (action, details, overrideUsername = null, targetEvent = null, revertInfo = null) => {
+  const addLog = useCallback(async (action, details, overrideUsername = null, targetEvent = null, revertInfo = null, logOptions = null) => {
     const username = overrideUsername || currentUser?.username;
     if (!username) return;
 
     const ev = targetEvent || currentEvent;
-    const newLogId = Date.now();
+    const createdAt = Date.now();
+    const newLogId = `${createdAt}${Math.random().toString(36).slice(2, 10)}`;
     const newLog = {
       id: newLogId,
+      createdAt,
       eventId: ev?.id || 'Global',
       eventName: ev?.name || 'Sistema',
       timestamp: new Date().toLocaleString('es-MX'),
       username, action, details, revertInfo,
-      ...(globalConfig?.isDebugMode ? { isDebug: true, debugSessionId: globalConfig.debugSessionId } : {})
+      ...(globalConfig?.isDebugMode ? { isDebug: true, debugSessionId: globalConfig.debugSessionId } : {}),
+      ...(logOptions?.isHidden ? { isHidden: true } : {}),
     };
     await setDoc(getDocRef('app_logs', String(newLogId)), newLog);
   }, [currentUser, currentEvent, globalConfig]);
+
+  useEffect(() => {
+    if (!fbUser?.uid || !fbUser.email) return;
+    const pending = users.find(
+      (u) =>
+        !u.authUid &&
+        (u.authEmail === fbUser.email || usernameToAuthEmail(u.username) === fbUser.email)
+    );
+    if (!pending) return;
+    updateDoc(getDocRef('app_users', String(pending.id)), {
+      authUid: fbUser.uid,
+      authEmail: fbUser.email,
+    }).catch(console.error);
+  }, [fbUser, users]);
+
+  useEffect(() => {
+    if (!fbUser || currentUser || loginInProgressRef.current) return;
+    if (!usersAuthReady) return;
+    const profile =
+      users.find((u) => String(u.authUid) === String(fbUser.uid)) ||
+      users.find(
+        (u) => String(u.authEmail || '').toLowerCase() === String(fbUser.email || '').toLowerCase()
+      ) ||
+      users.find((u) => usernameToAuthEmail(u.username) === fbUser.email);
+    if (!profile) return;
+    let cancelled = false;
+    (async () => {
+      const tabSessionId = getTabSessionId();
+      if (profile.role !== 'SuperUsuario') {
+        const others = await countOtherActiveSessions(profile.id, tabSessionId);
+        if (cancelled) return;
+        if (others > 0) {
+          await signOut(auth);
+          setLoginError(
+            'Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» allí, o espera unos segundos e intenta de nuevo.'
+          );
+          return;
+        }
+      }
+      await setDoc(getDocRef('app_sessions', sessionDocId(profile.id, tabSessionId)), {
+        userId: String(profile.id),
+        sessionId: tabSessionId,
+        username: profile.username,
+        lastHeartbeat: Date.now(),
+        createdAt: Date.now(),
+      });
+      const loginTime = Date.now();
+      const adminDefaultPref =
+        (profile.username || '').toLowerCase() === 'admin' && profile.role === 'Administrador'
+          ? 'Norte'
+          : profile.preferredLandingTab || 'Summary';
+      setCurrentUser({
+        ...profile,
+        tabSessionId,
+        loginTime,
+        allowedEventIds: getUserAllowedEventIds(profile),
+        allowedLocations: getUserAllowedLocations(profile),
+        preferredLandingTab: adminDefaultPref,
+      });
+      addLog(
+        'Inicio de Sesión',
+        `El usuario ${profile.username} recuperó sesión.`,
+        profile.username,
+        { id: 'Global', name: 'Sistema' }
+      );
+      await updateDoc(getDocRef('app_users', String(profile.id)), { isOnline: true });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fbUser, currentUser, users, usersAuthReady, addLog, getUserAllowedEventIds, getUserAllowedLocations]);
+
+  useEffect(() => {
+    if (!fbUser || !usersAuthReady || loginInProgressRef.current || currentUser) return;
+    if (firestoreUsersError) {
+      signOut(auth).catch(() => {});
+      setLoginError(firestoreUsersError);
+      return;
+    }
+    const profile =
+      users.find((u) => String(u.authUid) === String(fbUser.uid)) ||
+      users.find(
+        (u) => String(u.authEmail || '').toLowerCase() === String(fbUser.email || '').toLowerCase()
+      ) ||
+      users.find((u) => usernameToAuthEmail(u.username) === fbUser.email);
+    if (profile) return;
+    signOut(auth).catch(() => {});
+    setLoginError('Tu cuenta no tiene perfil en la aplicación. Contacta al administrador.');
+  }, [fbUser, usersAuthReady, users, currentUser, firestoreUsersError]);
+
+  const handleSavePanelNavConfig = useCallback(async () => {
+    if (!isSuperUser) return;
+    try {
+      await updateDoc(getDocRef('app_data', 'config'), {
+        panelNav: { ...DEFAULT_PANEL_NAV, ...panelNavForm }
+      });
+      addLog('Configuración', 'Actualizó qué secciones del menú lateral ven los usuarios con rol Editor o Lector.');
+      setPanelNavModalOpen(false);
+      showToast('Menú lateral (Editor/Lector) actualizado.');
+    } catch (e) {
+      console.error(e);
+      showToast('No se pudo guardar la configuración del menú.');
+    }
+  }, [isSuperUser, panelNavForm, addLog, showToast]);
+
+  const handleToggleHideMyExpenseConcepts = useCallback(async () => {
+    if (!canAccessExpenses || !currentUser?.id) return;
+    const live = users.find((u) => String(u.id) === String(currentUser.id));
+    const next = !isHideMyExpenseConceptsOn(live);
+    try {
+      await updateDoc(getDocRef('app_users', String(currentUser.id)), { hideMyExpenseConcepts: next });
+      addLog('Gastos', 'Movimiento en lista de gastos: cambio de preferencia de privacidad de conceptos (auditoría sin detalle).');
+      showToast(
+        next
+          ? 'Los gastos que registres se mostrarán como «Oculto» a otros (tú y SuperUsuario verán el concepto).'
+          : 'Tus conceptos de gasto vuelven a ser visibles para quien tenga acceso a la lista.'
+      );
+    } catch (e) {
+      console.error(e);
+      showToast('No se pudo guardar la preferencia.');
+    }
+  }, [canAccessExpenses, currentUser?.id, users, addLog, showToast]);
 
 
   const summary = useMemo(() => {
     let totalMen = 0, totalWomen = 0, totalSwimmers = 0, totalNonSwimmers = 0;
     let totalAllergies = 0, totalDiseases = 0, totalDisabilities = 0, totalServers = 0;
     let totalMinors = 0, totalAdults = 0, totalServersBoth = 0;
+    let baptismsTeens = 0, baptismsJovenes = 0;
     let totalPaidOff = 0, totalWithDebt = 0;
+    let totalAttendanceEmpleado = 0;
+    let totalAttendanceCortesia = 0;
 
     // Sección 1: ingresos netos por Método y por Servicio (para gráficas)
     let paymentMethodTotals = {
@@ -1271,7 +2306,7 @@ const App = () => {
           regular: { count: 0, paid: 0, paidGross: 0, pending: 0, expected: 0 },
           scholarship: { count: 0, paid: 0, paidGross: 0, pending: 0, expected: 0 }
         };
-        (data[loc] || []).forEach(person => {
+        [...(data[loc] || []), ...(cancelledData[loc] || [])].forEach((person) => {
           if (person.gender === 'Hombre') totalMen++;
           else if (person.gender === 'Mujer') totalWomen++;
           if (person.canSwim === 'Sí') totalSwimmers++; else totalNonSwimmers++;
@@ -1302,6 +2337,11 @@ const App = () => {
               const assignment = person.campAssignment || (ageNum < 18 ? 'Teens' : 'Jóvenes');
               if (assignment === 'Teens') totalMinors++; else totalAdults++;
             }
+            const bSeg = getBaptismAccountingSegment(person);
+            if (bSeg === 'Teens') baptismsTeens++;
+            else if (bSeg === 'Jóvenes') baptismsJovenes++;
+            if (person.attendanceSpecialType === 'empleado') totalAttendanceEmpleado++;
+            else if (person.attendanceSpecialType === 'cortesia') totalAttendanceCortesia++;
           }
 
           if (currentEvent.eventType === 'General' && currentEvent.customFields) {
@@ -1330,8 +2370,8 @@ const App = () => {
               stats.scholarship.expected += liqTarget;
             } else {
               stats.regular.count++;
-              stats.regular.pending += (baseCost - paidGross);
-              stats.regular.expected += baseCost;
+              stats.regular.pending += Math.max(0, liqTarget - paidGross);
+              stats.regular.expected += liqTarget;
             }
           }
 
@@ -1411,10 +2451,12 @@ const App = () => {
       totalMen, totalWomen, totalSwimmers, totalNonSwimmers,
       totalAllergies, totalDiseases, totalDisabilities, totalServers,
       totalMinors, totalAdults, totalServersBoth, totalPaidOff, totalWithDebt,
+      baptismsTeens, baptismsJovenes,
+      totalAttendanceEmpleado, totalAttendanceCortesia,
       ageBrackets, bloodTypeStats, customFieldsStats, locationStats, globalStats,
       paymentMethodTotals, paymentServiceTotals, travelStats
     };
-  }, [data, currentEvent, currentPricing, resolveRegisteredCost, getLiquidationTarget]);
+  }, [data, cancelledData, currentEvent, currentPricing, resolveRegisteredCost, getLiquidationTarget]);
 
   // EXPORT TO EXCEL FEATURE
   const handleExportExcel = async () => {
@@ -1439,6 +2481,8 @@ const App = () => {
       if (isCampa) {
         wsGeneralData.push(["Total Becados", summary.globalStats.all.scholarship]);
         wsGeneralData.push(["Total Servidores", summary.globalStats.all.servers]);
+        wsGeneralData.push(["Asistencia empleado (sin cobro)", summary.totalAttendanceEmpleado]);
+        wsGeneralData.push(["Asistencia cortesía (sin cobro)", summary.totalAttendanceCortesia]);
       }
       wsGeneralData.push([]);
 
@@ -1493,6 +2537,11 @@ const App = () => {
         wsGeneralData.push(["Campistas / Servidores Asignados a Jóvenes", summary.totalAdults]);
         wsGeneralData.push(["Servidores que apoyan en Ambos", summary.totalServersBoth]);
         wsGeneralData.push([]);
+        wsGeneralData.push(["MÉTRICAS: BAUTIZOS (conteo por segmento del evento)"]);
+        wsGeneralData.push(["Total bautizos (Teens + Jóvenes)", summary.baptismsTeens + summary.baptismsJovenes]);
+        wsGeneralData.push(["Bautizos contados en Teens", summary.baptismsTeens]);
+        wsGeneralData.push(["Bautizos contados en Jóvenes", summary.baptismsJovenes]);
+        wsGeneralData.push([]);
 
         wsGeneralData.push(["MÉTRICAS: SALUD"]);
         wsGeneralData.push(["Con Alergias", summary.totalAllergies]);
@@ -1530,9 +2579,9 @@ const App = () => {
         const locHeaders = ['Nombre', 'Teléfono'];
         
         if (isCampa) {
-          locHeaders.push('Edad', 'Género', 'Tipo Sangre', 'Nado', 'Alergias', 'Detalle Alergias', 'Enfermedades', 'Detalle Enfermedades', 'Medicamento Requerido', 'Discapacidades', 'Detalle Discapacidades', 'Contacto Emergencia', 'Tel Emergencia', 'Becado', 'Servidor', 'Asignación');
+          locHeaders.push('Edad', 'Género', 'Tipo Sangre', 'Nado', 'Alergias', 'Detalle Alergias', 'Enfermedades', 'Detalle Enfermedades', 'Medicamento Requerido', 'Discapacidades', 'Detalle Discapacidades', 'Contacto Emergencia', 'Tel Emergencia', 'Parentesco emergencia', 'Becado', 'Servidor', 'Asignación', 'Bautizo', 'Bautizo conteo en');
         } else if (isGeneral) {
-          locHeaders.push('Edad', 'Género', 'Contacto Emergencia', 'Tel Emergencia');
+          locHeaders.push('Edad', 'Género', 'Contacto Emergencia', 'Tel Emergencia', 'Parentesco emergencia');
           if (currentEvent.customFields) locHeaders.push(...currentEvent.customFields);
         } else {
           locHeaders.push('Edad', 'Género');
@@ -1553,12 +2602,19 @@ const App = () => {
               p.hasAllergy || 'No', p.hasAllergy === 'Sí' ? p.allergyDetails : '',
               p.hasDisease || 'No', p.hasDisease === 'Sí' ? p.diseaseDetails : '', p.hasDisease === 'Sí' ? (p.diseaseMedication || '') : '',
               p.hasDisability || 'No', p.hasDisability === 'Sí' ? p.disabilityDetails : '',
-              p.emergencyContact || '', p.emergencyPhone || '',
+              p.emergencyContact || '', p.emergencyPhone || '', p.emergencyRelationship || '',
               p.isScholarship || 'No', p.isServer || 'No',
-              p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment
+              p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment,
+              p.willBeBaptized || 'No',
+              (() => {
+                const seg = getBaptismAccountingSegment(p);
+                if (seg) return seg;
+                if (p.willBeBaptized === 'Sí') return '— (falta segmento: servidor Ambos sin elegir)';
+                return '';
+              })()
             );
           } else if (isGeneral) {
-            row.push(p.age || '', p.gender || '', p.emergencyContact || '', p.emergencyPhone || '');
+            row.push(p.age || '', p.gender || '', p.emergencyContact || '', p.emergencyPhone || '', p.emergencyRelationship || '');
             if (currentEvent.customFields) {
               currentEvent.customFields.forEach(f => row.push(p.customData?.[f] || ''));
             }
@@ -1614,27 +2670,53 @@ const App = () => {
     if (!hasAdminRights) return;
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
     const now = Date.now();
-    const logsToDelete = logs.filter(log => (now - log.id) > thirtyDaysMs);
+    const logsToDelete = logs.filter(
+      (log) => now - extractLogMillis(log) > thirtyDaysMs && !log.revertInfo?.isBackup
+    );
+    const skippedBackup = logs.filter(
+      (log) => now - extractLogMillis(log) > thirtyDaysMs && log.revertInfo?.isBackup
+    ).length;
     if (logsToDelete.length > 0) {
       logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
       addLog('Limpieza de Logs', `Se eliminaron ${logsToDelete.length} registros antiguos (> 30 días).`, null, { id: 'Global', name: 'Sistema' });
-      showToast(`Se eliminaron ${logsToDelete.length} registros antiguos.`);
+      showToast(
+        skippedBackup > 0
+          ? `Se eliminaron ${logsToDelete.length} registros antiguos. ${skippedBackup} log(s) de copia automática no se eliminan (restauración disponible).`
+          : `Se eliminaron ${logsToDelete.length} registros antiguos.`
+      );
     } else {
-      showToast("No hay registros con más de 30 días de antigüedad.");
+      showToast(
+        skippedBackup > 0
+          ? 'No hay otros registros antiguos; los de copia automática se conservan para poder restaurar.'
+          : 'No hay registros con más de 30 días de antigüedad.'
+      );
     }
   };
 
   const handleCleanRecentLogs = () => {
     if (!isSuperUser) return;
+    if (globalConfig?.isDebugMode) {
+      showToast('En modo depuración no se pueden borrar logs con menos de 30 días.');
+      return;
+    }
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
     const now = Date.now();
-    const logsToDelete = logs.filter(log => (now - log.id) <= thirtyDaysMs);
+    const logsToDelete = logs.filter((log) => now - extractLogMillis(log) <= thirtyDaysMs && !log.revertInfo?.isBackup);
+    const skippedBackup = logs.filter((log) => now - extractLogMillis(log) <= thirtyDaysMs && log.revertInfo?.isBackup).length;
     if (logsToDelete.length > 0) {
       logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
       addLog('Limpieza de Logs', `El SuperUsuario eliminó ${logsToDelete.length} registros recientes (< 30 días).`, null, { id: 'Global', name: 'Sistema' });
-      showToast(`Se eliminaron ${logsToDelete.length} registros recientes.`);
+      showToast(
+        skippedBackup > 0
+          ? `Se eliminaron ${logsToDelete.length} registros recientes. ${skippedBackup} log(s) de copia automática no se eliminan.`
+          : `Se eliminaron ${logsToDelete.length} registros recientes.`
+      );
     } else {
-      showToast("No hay registros recientes para eliminar.");
+      showToast(
+        skippedBackup > 0
+          ? 'No hay otros registros recientes; los de copia automática se conservan para poder restaurar.'
+          : 'No hay registros recientes para eliminar.'
+      );
     }
   };
 
@@ -1646,7 +2728,10 @@ const App = () => {
       addLog('Restauración', `Se deshizo el cambio específico: "${log.action}" del usuario ${log.username}.`, null, { id: 'Global', name: 'Sistema' });
       showToast("Cambio revertido exitosamente.");
     } else if (type === 'rollback') {
-      const logsToRevert = logs.filter(l => l.id >= log.id && l.revertInfo && !l.isDebug).sort((a,b) => b.id - a.id);
+      const anchorMs = extractLogMillis(log);
+      const logsToRevert = logs
+        .filter((l) => extractLogMillis(l) >= anchorMs && l.revertInfo && !l.isDebug)
+        .sort((a, b) => extractLogMillis(b) - extractLogMillis(a));
       for (const l of logsToRevert) {
         await applyRevert(l.revertInfo);
       }
@@ -1694,25 +2779,141 @@ const App = () => {
     await updateDoc(getDocRef('app_events', currentEvent.id), payload);
   }, [currentEvent, globalConfig]);
 
+  const removeCurrentUserSession = useCallback(async (user) => {
+    if (!user?.id || !user.tabSessionId) return;
+    const uid = String(user.id);
+    await deleteDoc(getDocRef('app_sessions', sessionDocId(uid, user.tabSessionId))).catch(() => {});
+    const q = query(getColRef('app_sessions'), where('userId', '==', uid));
+    const snap = await getDocs(q);
+    const now = Date.now();
+    let anyActive = false;
+    snap.forEach((d) => {
+      if ((d.data().lastHeartbeat || 0) > now - SESSION_TTL_MS) anyActive = true;
+    });
+    if (!anyActive) {
+      await updateDoc(getDocRef('app_users', uid), { isOnline: false }).catch(() => {});
+    }
+  }, []);
+
   const handleLogin = async (e) => {
     e.preventDefault();
-    const user = users.find(u => u.username === loginForm.username && u.password === loginForm.password);
-    if (user) {
+    setLoginError('');
+    setShowLoginPassword(false);
+    loginInProgressRef.current = true;
+    setLoginBusy(true);
+    const trimUser = loginForm.username.trim();
+    const email = loginIdentifierToAuthEmail(trimUser);
+    if (!email) {
+      loginInProgressRef.current = false;
+      setLoginBusy(false);
+      setLoginError('Ingresa tu usuario o correo.');
+      return;
+    }
+    try {
+      await signInWithEmailAndPassword(auth, email, loginForm.password);
+    } catch (err) {
+      console.error(err);
+      loginInProgressRef.current = false;
+      setLoginBusy(false);
+      const c = err?.code;
+      if (c === 'auth/invalid-credential' || c === 'auth/wrong-password' || c === 'auth/user-not-found') {
+        setLoginError(
+          `Usuario o contraseña incorrectos.\n\n` +
+            `Intentaste con:\n${email}\n\n` +
+            `Si escribes solo el nombre (sin @), el correo se forma como nombre@${AUTH_EMAIL_DOMAIN}. ` +
+            `Si tu cuenta usa otro correo, escríbelo completo en el primer campo.`
+        );
+      } else if (c === 'auth/invalid-email') {
+        setLoginError('El correo no es válido. Usa el formato usuario@dominio o tu correo completo.');
+      } else if (c === 'auth/too-many-requests') {
+        setLoginError('Demasiados intentos. Espera unos minutos e intenta de nuevo.');
+      } else {
+        setLoginError('No se pudo iniciar sesión. Revisa la conexión e intenta de nuevo.');
+      }
+      return;
+    }
+    const resolvedEmail = auth.currentUser?.email || email;
+    const tabSessionId = getTabSessionId();
+    try {
+      let docSnap = null;
+      let qSnap = await getDocs(query(getColRef('app_users'), where('authUid', '==', auth.currentUser.uid)));
+      if (!qSnap.empty) docSnap = qSnap.docs[0];
+      if (!docSnap) {
+        qSnap = await getDocs(query(getColRef('app_users'), where('authEmail', '==', resolvedEmail)));
+        if (!qSnap.empty) docSnap = qSnap.docs[0];
+      }
+      if (!docSnap) {
+        const nameHint = trimUser.includes('@') ? trimUser.split('@')[0] : trimUser;
+        const variants = buildUsernameCandidates(nameHint);
+        if (variants.length) {
+          qSnap = await getDocs(query(getColRef('app_users'), where('username', 'in', variants)));
+          if (!qSnap.empty) docSnap = qSnap.docs[0];
+        }
+      }
+      if (!docSnap) {
+        const all = await getDocs(getColRef('app_users'));
+        const nameHint = trimUser.includes('@') ? trimUser.split('@')[0] : trimUser;
+        const lower = nameHint.toLowerCase();
+        docSnap = all.docs.find((d) => {
+          const u = d.data()?.username;
+          return u != null && String(u).trim().toLowerCase() === lower;
+        }) || null;
+      }
+      if (!docSnap) {
+        await signOut(auth);
+        setLoginError('Tu cuenta no tiene perfil en la aplicación. Contacta al administrador.');
+        loginInProgressRef.current = false;
+        setLoginBusy(false);
+        return;
+      }
+      let user = { id: docSnap.id, ...docSnap.data() };
+      if (!user.authUid) {
+        await updateDoc(getDocRef('app_users', docSnap.id), {
+          authUid: auth.currentUser.uid,
+          authEmail: resolvedEmail,
+          password: deleteField(),
+        });
+        user = { ...user, authUid: auth.currentUser.uid, authEmail: resolvedEmail };
+        delete user.password;
+      }
+      if (user.role !== 'SuperUsuario') {
+        const others = await countOtherActiveSessions(user.id, tabSessionId);
+        if (others > 0) {
+          await signOut(auth);
+          setLoginError('Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» allí, o espera unos segundos e intenta de nuevo.');
+          loginInProgressRef.current = false;
+          setLoginBusy(false);
+          return;
+        }
+      }
+      await setDoc(getDocRef('app_sessions', sessionDocId(user.id, tabSessionId)), {
+        userId: String(user.id),
+        sessionId: tabSessionId,
+        username: user.username,
+        lastHeartbeat: Date.now(),
+        createdAt: Date.now(),
+      });
       const loginTime = Date.now();
       const adminDefaultPref = (user.username || '').toLowerCase() === 'admin' && user.role === 'Administrador' ? 'Norte' : (user.preferredLandingTab || 'Summary');
       setCurrentUser({
         ...user,
+        tabSessionId,
         loginTime,
         allowedEventIds: getUserAllowedEventIds(user),
         allowedLocations: getUserAllowedLocations(user),
         preferredLandingTab: adminDefaultPref
       });
-      setLoginError('');
       setLoginForm({ username: '', password: '' });
+      setShowLoginPassword(false);
       addLog('Inicio de Sesión', `El usuario ${user.username} inició sesión.`, user.username, { id: 'Global', name: 'Sistema' });
       await updateDoc(getDocRef('app_users', String(user.id)), { isOnline: true });
-    } else {
-      setLoginError('Usuario o contraseña incorrectos.');
+    } catch (err) {
+      console.error(err);
+      await signOut(auth).catch(() => {});
+      setLoginError('No se pudo iniciar sesión. Revisa la conexión e intenta de nuevo.');
+    } finally {
+      loginInProgressRef.current = false;
+      setLoginBusy(false);
     }
   };
 
@@ -1721,8 +2922,9 @@ const App = () => {
       const activeTime = Date.now() - (currentUser.loginTime || Date.now());
       const formattedTime = formatDuration(activeTime);
       addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión manualmente. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
-      await updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
+      await removeCurrentUserSession(currentUser);
     }
+    await signOut(auth).catch(() => {});
     setNavHistory([]);
     setCurrentUser(null);
     setSelectedEventId(null);
@@ -1741,7 +2943,6 @@ const App = () => {
 
       if (globalConfig.lastBackupDate !== today) {
         try {
-          await updateDoc(getDocRef('app_data', 'config'), { lastBackupDate: today });
           const backupData = {
             date: today,
             timestamp: Date.now(),
@@ -1750,6 +2951,7 @@ const App = () => {
             users: users.map(u => ({...u, password: '***'})) 
           };
           await setDoc(getDocRef('app_backups', today), backupData);
+          await updateDoc(getDocRef('app_data', 'config'), { lastBackupDate: today });
           addLog('Sistema', `Copia de seguridad automática diaria (${today}) generada exitosamente.`, 'Sistema', { id: 'Global', name: 'Sistema' }, { isBackup: true, backupId: today });
         } catch (e) {
           console.error("Backup automatico falló", e);
@@ -1772,20 +2974,14 @@ const App = () => {
         isClosing = true;
         const activeTime = Date.now() - (currentUser.loginTime || Date.now());
         const formattedTime = formatDuration(activeTime);
-        
+        const u = currentUser;
         addLog(
           'Cierre de Sesión Automático',
-          `Sesión finalizada por cierre de navegador o pestaña. (Tiempo activo: ${formattedTime})`,
-          currentUser.username,
+          `Sesión finalizada por cierre de pestaña o navegador. (Tiempo activo: ${formattedTime})`,
+          u.username,
           { id: 'Global', name: 'Sistema' }
         );
-        updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
-      }
-    };
-
-    const setOffline = () => {
-      if (currentUser?.id) {
-        updateDoc(getDocRef('app_users', String(currentUser.id)), { isOnline: false }).catch(() => {});
+        removeCurrentUserSession(u).catch(() => {});
       }
     };
 
@@ -1793,7 +2989,8 @@ const App = () => {
       const activeTime = Date.now() - (currentUser.loginTime || Date.now());
       const formattedTime = formatDuration(activeTime);
       addLog('Cierre de Sesión Automático', `Sesión finalizada por inactividad. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
-      await setOffline();
+      await removeCurrentUserSession(currentUser);
+      await signOut(auth).catch(() => {});
       setNavHistory([]);
       setCurrentUser(null);
       setSelectedEventId(null);
@@ -1818,18 +3015,52 @@ const App = () => {
     const activityEvents = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
     resetTimer();
     activityEvents.forEach(e => window.addEventListener(e, handleActivity));
-    
-    window.addEventListener('beforeunload', handleBrowserClose);
-    window.addEventListener('pagehide', handleBrowserClose);
+
+    /** Cierre de pestaña o salida real de la página; `persisted` evita borrar al volver desde caché atrás. */
+    const handlePageHide = (ev) => {
+      if (ev && ev.persisted) return;
+      handleBrowserClose();
+    };
+    window.addEventListener('pagehide', handlePageHide);
 
     return () => {
       clearTimeout(timeoutId);
       clearTimeout(throttleTimeoutId);
       activityEvents.forEach(e => window.removeEventListener(e, handleActivity));
-      window.removeEventListener('beforeunload', handleBrowserClose);
-      window.removeEventListener('pagehide', handleBrowserClose);
+      window.removeEventListener('pagehide', handlePageHide);
     };
-  }, [currentUser, addLog, showToast]);
+  }, [currentUser, addLog, showToast, removeCurrentUserSession]);
+
+  /** Mantiene viva la sesión en Firestore (necesario para liberar el bloqueo de una sola sesión al cerrar la pestaña). */
+  useEffect(() => {
+    if (!currentUser?.id || !currentUser.tabSessionId) return;
+    const docId = sessionDocId(currentUser.id, currentUser.tabSessionId);
+    const tick = () => {
+      updateDoc(getDocRef('app_sessions', docId), { lastHeartbeat: Date.now() }).catch(() => {});
+    };
+    tick();
+    const iv = setInterval(tick, SESSION_HEARTBEAT_MS);
+    return () => clearInterval(iv);
+  }, [currentUser?.id, currentUser?.tabSessionId]);
+
+  /** SuperUsuario: número de sesiones con heartbeat reciente (tiempo real). */
+  useEffect(() => {
+    if (!isSuperUser || !currentUser?.id) {
+      setSuperSessionCount(0);
+      return;
+    }
+    const uid = String(currentUser.id);
+    const q = query(getColRef('app_sessions'), where('userId', '==', uid));
+    const unsub = onSnapshot(q, (snap) => {
+      const now = Date.now();
+      let n = 0;
+      snap.forEach((d) => {
+        if ((d.data().lastHeartbeat || 0) > now - SESSION_TTL_MS) n += 1;
+      });
+      setSuperSessionCount(n);
+    }, console.error);
+    return () => unsub();
+  }, [isSuperUser, currentUser?.id]);
 
   // Real-time Session Permission Sync
   useEffect(() => {
@@ -1844,10 +3075,12 @@ const App = () => {
         const prevLocAccess = getUserAllowedLocations(currentUser).slice().sort().join('|');
         const nextLocAccess = getUserAllowedLocations(liveUser).slice().sort().join('|');
         const preferenceChanged = (liveUser.preferredLandingTab || 'Summary') !== (currentUser.preferredLandingTab || 'Summary');
+        const hideExpenseConceptsChanged = isHideMyExpenseConceptsOn(liveUser) !== isHideMyExpenseConceptsOn(currentUser);
+        const registryDatesChanged = !!liveUser.canEditRegistryDates !== !!currentUser.canEditRegistryDates;
         const eventRestrictionChanged = prevEventAccess !== nextEventAccess;
         const locationRestrictionChanged = prevLocAccess !== nextLocAccess;
 
-        if (roleChanged || financesChanged || expensesChanged || eventRestrictionChanged || locationRestrictionChanged || preferenceChanged) {
+        if (roleChanged || financesChanged || expensesChanged || eventRestrictionChanged || locationRestrictionChanged || preferenceChanged || hideExpenseConceptsChanged || registryDatesChanged) {
           setCurrentUser(prev => ({
             ...prev,
             role: liveUser.role,
@@ -1857,7 +3090,9 @@ const App = () => {
             restrictedLocation: liveUser.restrictedLocation || '',
             allowedEventIds: getUserAllowedEventIds(liveUser),
             allowedLocations: getUserAllowedLocations(liveUser),
-            preferredLandingTab: liveUser.preferredLandingTab || 'Summary'
+            preferredLandingTab: liveUser.preferredLandingTab || 'Summary',
+            hideMyExpenseConcepts: isHideMyExpenseConceptsOn(liveUser),
+            canEditRegistryDates: !!liveUser.canEditRegistryDates
           }));
           if (financesChanged && liveUser.role === 'Lector') {
             showToast(`Atención: Tus permisos han cambiado. Ahora ${liveUser.canViewFinances ? 'PUEDES' : 'NO PUEDES'} ver información financiera.`);
@@ -1867,11 +3102,13 @@ const App = () => {
             showToast('Tus restricciones de evento/sede se actualizaron.');
           } else if (preferenceChanged) {
             showToast('Tu preferencia de ventana inicial fue actualizada.');
+          } else if (registryDatesChanged) {
+            showToast(`Permiso de editar fechas de registros/abonos: ${liveUser.canEditRegistryDates ? 'activado' : 'desactivado'}.`);
           }
         }
       }
     }
-  }, [users, currentUser, currentUser?.id, currentUser?.role, currentUser?.canViewFinances, currentUser?.canViewExpenses, currentUser?.restrictedEventId, currentUser?.restrictedLocation, currentUser?.allowedEventIds, currentUser?.allowedLocations, currentUser?.preferredLandingTab, showToast, getUserAllowedEventIds, getUserAllowedLocations]);
+  }, [users, currentUser, currentUser?.id, currentUser?.role, currentUser?.canViewFinances, currentUser?.canViewExpenses, currentUser?.restrictedEventId, currentUser?.restrictedLocation, currentUser?.allowedEventIds, currentUser?.allowedLocations, currentUser?.preferredLandingTab, currentUser?.hideMyExpenseConcepts, currentUser?.canEditRegistryDates, showToast, getUserAllowedEventIds, getUserAllowedLocations]);
 
   const handleCreateEvent = async () => {
     if (!newEventData.name.trim()) return;
@@ -1885,6 +3122,7 @@ const App = () => {
       serverCost: 0, 
       realCost: 0,
       dynamicPrices: [],
+      discountCampaigns: [],
       minDeposit: 0, locations: defaultLocations, regStatus: defaultRegStatus,
       locationCaps: defaultLocations.reduce((acc, loc) => ({ ...acc, [loc]: 0 }), {}),
       customFields: [], order: events.length,
@@ -1908,15 +3146,6 @@ const App = () => {
       showToast("Nombre del evento actualizado.");
     }
     setRenameModal({ isOpen: false, id: null, name: '' });
-  };
-
-  const confirmDeleteEvent = async () => {
-    if (!deleteEventModal.id) return;
-    const evToDelete = events.find(e => e.id === deleteEventModal.id);
-    await deleteDoc(getDocRef('app_events', deleteEventModal.id));
-    addLog('Gestión de Eventos', `Eliminó el evento: ${deleteEventModal.name}`, null, evToDelete || { name: deleteEventModal.name }, { collectionName: 'app_events', docId: deleteEventModal.id, action: 'delete', previousData: evToDelete });
-    setDeleteEventModal({ isOpen: false, id: null, name: '' });
-    showToast("Evento eliminado con éxito.");
   };
 
   const handleDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; };
@@ -1948,7 +3177,8 @@ const App = () => {
       type: currentEvent.pricingType || 'fixed',
       globalCost: currentEvent.globalCost || 0,
       serverCost: currentEvent.serverCost || 0,
-      phases: currentEvent.dynamicPrices || []
+      phases: currentEvent.dynamicPrices || [],
+      campaigns: currentEvent.discountCampaigns || []
     });
     setPricingModal({ isOpen: true });
   };
@@ -1969,7 +3199,16 @@ const App = () => {
       pricingType: pricingForm.type,
       globalCost: Number(pricingForm.globalCost) || 0,
       serverCost: Number(pricingForm.serverCost) || 0,
-      dynamicPrices: sortedPhases.map(p => ({ id: p.id, dateUntil: p.dateUntil, globalCost: Number(p.globalCost) || 0, serverCost: Number(p.serverCost) || 0 }))
+      dynamicPrices: sortedPhases.map(p => ({ id: p.id, dateUntil: p.dateUntil, globalCost: Number(p.globalCost) || 0, serverCost: Number(p.serverCost) || 0 })),
+      discountCampaigns: (pricingForm.campaigns || []).map((c) => ({
+        id: c.id,
+        concept: String(c.concept || '').trim(),
+        appliesTo: c.appliesTo || 'all',
+        finalAmount: Number(c.finalAmount) || 0,
+        startDate: c.startDate || '',
+        endDate: c.endDate || '',
+        enabled: c.enabled !== false
+      })).filter((c) => c.concept && c.finalAmount > 0)
     });
     setPricingModal({ isOpen: false });
     addLog('Configuración', `Actualizó la estructura de precios del evento a modalidad ${pricingForm.type}.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
@@ -2056,9 +3295,10 @@ const App = () => {
       paidAmount: 0,
       countInTotals: true,
       createdAt: new Date().toISOString(),
-      createdBy: currentUser?.username || 'Desconocido'
+      createdBy: currentUser?.username || 'Desconocido',
+      createdByUserId: currentUser?.id != null ? String(currentUser.id) : ''
     });
-    addLog('Gastos', `Agregó gasto: ${name}`);
+    addLog('Gastos', 'Movimiento en lista de gastos: registro de nuevo ítem (auditoría sin concepto ni montos).');
     setExpenseForm({ name: '', quantity: 1, unitPrice: '' });
     showToast('Gasto agregado.');
   };
@@ -2068,7 +3308,7 @@ const App = () => {
     const exp = expenses.find(e => e.id === expenseId);
     if (!exp) return;
     await deleteDoc(getDocRef('app_expenses', expenseId));
-    addLog('Gastos', `Eliminó un gasto`);
+    addLog('Gastos', 'Movimiento en lista de gastos: eliminación de ítem (auditoría sin detalle).');
     showToast('Gasto eliminado.');
   };
 
@@ -2083,7 +3323,7 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', `Marcó gasto como ${newPaid ? 'pagado' : 'no pagado'}`);
+    addLog('Gastos', 'Movimiento en lista de gastos: cambio de estado de pago (auditoría sin detalle).');
   };
 
   const handleToggleExpenseCountInTotals = async (expenseId) => {
@@ -2096,7 +3336,7 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', `Marcó gasto como ${newCountInTotals ? 'contabilizado' : 'no contabilizado'} en totales`);
+    addLog('Gastos', 'Movimiento en lista de gastos: cambio de contabilización en totales (auditoría sin detalle).');
   };
 
   const handleExpensePartialPayment = async () => {
@@ -2112,7 +3352,7 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', `Abono parcial a gasto`);
+    addLog('Gastos', 'Movimiento en lista de gastos: abono parcial (auditoría sin montos).');
     setExpensePartialModal({ isOpen: false, expenseId: null, amount: '' });
     showToast('Abono registrado.');
   };
@@ -2137,7 +3377,7 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', `Editó un gasto`);
+    addLog('Gastos', 'Movimiento en lista de gastos: edición de ítem (auditoría sin concepto ni cantidades).');
     setExpenseEditModal({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' });
     showToast('Gasto actualizado.');
   };
@@ -2154,30 +3394,71 @@ const App = () => {
     }
 
     const newId = String(Date.now());
-    const allowedEventIds = newUser.role === 'SuperUsuario' ? [] : (newUser.allowedEventIds || []);
-    const allowedLocations = newUser.role === 'SuperUsuario' ? [] : (newUser.allowedLocations || []);
+    const editorCanEditAccessFlags = isSuperUser;
+    const allowedEventIds = newUser.role === 'SuperUsuario'
+      ? []
+      : (editorCanEditAccessFlags ? (newUser.allowedEventIds || []) : []);
+    const allowedLocations = newUser.role === 'SuperUsuario'
+      ? []
+      : (editorCanEditAccessFlags ? (newUser.allowedLocations || []) : []);
     const preferredLandingTab = resolvePreferredLandingTab({
       role: newUser.role,
-      preferredLandingTab: newUser.preferredLandingTab || (newUser.role === 'Administrador' ? 'Norte' : 'Summary'),
+      preferredLandingTab: editorCanEditAccessFlags
+        ? (newUser.preferredLandingTab || (newUser.role === 'Administrador' ? 'Norte' : 'Summary'))
+        : (newUser.role === 'Administrador' ? 'Norte' : 'Summary'),
       allowedLocations,
       restrictedLocation: allowedLocations[0] || ''
-    }, { locations: globalLocations });
+    }, { locations: allKnownLocationNames });
+    /** Login usa Firebase Authentication (correo/contraseña), no credenciales solo en Firestore. */
+    const authEmail = usernameToAuthEmail(newUser.username.trim());
+    let cred;
+    try {
+      cred = await createUserWithEmailAndPassword(secondaryAuth, authEmail, newUser.password.trim());
+    } catch (err) {
+      console.error(err);
+      showToast(
+        err?.code === 'auth/email-already-in-use'
+          ? 'Ese nombre de usuario ya tiene cuenta de acceso.'
+          : 'No se pudo crear la cuenta de acceso.'
+      );
+      return;
+    }
+
+    const { password: _omitPwd, ...newUserFields } = newUser;
     const userToSave = {
-      ...newUser,
+      ...newUserFields,
       id: newId,
-      canViewFinances: newUser.role === 'SuperUsuario' ? true : !!newUser.canViewFinances,
-      canViewHiddenDonations: newUser.role === 'SuperUsuario' ? true : !!newUser.canViewHiddenDonations,
-      canViewExpenses: !!newUser.canViewExpenses,
+      authEmail,
+      authUid: cred.user.uid,
+      canViewFinances: newUser.role === 'SuperUsuario' ? true : (editorCanEditAccessFlags ? !!newUser.canViewFinances : false),
+      canViewHiddenDonations: newUser.role === 'SuperUsuario' ? true : (editorCanEditAccessFlags ? !!newUser.canViewHiddenDonations : false),
+      canViewExpenses: editorCanEditAccessFlags ? !!newUser.canViewExpenses : false,
       allowedEventIds,
       allowedLocations,
       preferredLandingTab,
       restrictedEventId: allowedEventIds[0] || '',
-      restrictedLocation: allowedLocations[0] || ''
+      restrictedLocation: allowedLocations[0] || '',
+      hideMyExpenseConcepts: editorCanEditAccessFlags ? (newUser.hideMyExpenseConcepts !== false) : true,
+      canEditRegistryDates: editorCanEditAccessFlags ? !!newUser.canEditRegistryDates : false
     };
 
-    await setDoc(getDocRef('app_users', newId), userToSave);
+    try {
+      await setDoc(getDocRef('app_users', newId), userToSave);
+    } catch (err) {
+      console.error(err);
+      try {
+        await deleteUser(cred.user);
+      } catch (delErr) {
+        console.error(delErr);
+      }
+      await signOut(secondaryAuth).catch(() => {});
+      showToast('No se pudo guardar el perfil en la base de datos. La cuenta de acceso se ha revertido.');
+      return;
+    }
+    await signOut(secondaryAuth).catch(() => {});
+
     addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`);
-    setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' });
+    setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false });
     showToast("Usuario añadido exitosamente.");
   };
 
@@ -2198,12 +3479,18 @@ const App = () => {
     const existingUser = users.find(u => u.username === targetUsername && String(u.id) !== String(editingUser.id));
     if (existingUser) { showToast("El usuario ya existe."); return; }
     
-    let finalPassword = originalUser.password;
     let passwordChanged = false;
 
     if (isSelfEdit && (editingUser.currentPasswordInput || editingUser.newPassword)) {
-      if (editingUser.currentPasswordInput !== originalUser.password) {
-        showToast("La contraseña actual es incorrecta.");
+      if (!auth.currentUser?.email) {
+        showToast('Sesión de acceso inválida.');
+        return;
+      }
+      try {
+        const cred = EmailAuthProvider.credential(auth.currentUser.email, editingUser.currentPasswordInput);
+        await reauthenticateWithCredential(auth.currentUser, cred);
+      } catch {
+        showToast('La contraseña actual es incorrecta.');
         return;
       }
       if (editingUser.newPassword !== editingUser.confirmPassword) {
@@ -2214,22 +3501,39 @@ const App = () => {
         showToast("La nueva contraseña no puede estar vacía.");
         return;
       }
-      finalPassword = editingUser.newPassword;
+      await updatePassword(auth.currentUser, editingUser.newPassword.trim());
       passwordChanged = true;
     }
 
+    const editorCanEditAccessFlags = isSuperUser;
+    const originalHideMyExpenseConcepts = originalUser?.hideMyExpenseConcepts !== false;
+
     const nextRole = isTargetSuperUser ? 'SuperUsuario' : editingUser.role;
-    const newCanViewFinances = isTargetSuperUser ? true : !!editingUser.canViewFinances;
-    const newCanViewHiddenDonations = isTargetSuperUser ? true : !!editingUser.canViewHiddenDonations;
-    const newCanViewExpenses = !!editingUser.canViewExpenses;
-    const newAllowedEventIds = isTargetSuperUser ? [] : (editingUser.allowedEventIds || []);
-    const newAllowedLocations = isTargetSuperUser ? [] : (editingUser.allowedLocations || []);
+    const newCanViewFinances = isTargetSuperUser
+      ? true
+      : (editorCanEditAccessFlags ? !!editingUser.canViewFinances : !!originalUser.canViewFinances);
+    const newCanViewHiddenDonations = isTargetSuperUser
+      ? true
+      : (editorCanEditAccessFlags ? !!editingUser.canViewHiddenDonations : !!originalUser.canViewHiddenDonations);
+    const newCanViewExpenses = editorCanEditAccessFlags ? !!editingUser.canViewExpenses : !!originalUser.canViewExpenses;
+    const newAllowedEventIds = isTargetSuperUser
+      ? []
+      : (editorCanEditAccessFlags ? (editingUser.allowedEventIds || []) : getUserAllowedEventIds(originalUser));
+    const newAllowedLocations = isTargetSuperUser
+      ? []
+      : (editorCanEditAccessFlags ? (editingUser.allowedLocations || []) : getUserAllowedLocations(originalUser));
+
     const newPreferredLandingTab = resolvePreferredLandingTab({
       role: nextRole,
-      preferredLandingTab: editingUser.preferredLandingTab || 'Summary',
+      preferredLandingTab: (editorCanEditAccessFlags ? editingUser.preferredLandingTab : originalUser.preferredLandingTab) || 'Summary',
       allowedLocations: newAllowedLocations,
       restrictedLocation: newAllowedLocations[0] || ''
-    }, { locations: globalLocations });
+    }, { locations: allKnownLocationNames });
+
+    const newHideMyExpenseConcepts = editorCanEditAccessFlags ? (editingUser.hideMyExpenseConcepts !== false) : originalHideMyExpenseConcepts;
+    const newCanEditRegistryDates = isTargetSuperUser
+      ? true
+      : (editorCanEditAccessFlags ? !!editingUser.canEditRegistryDates : !!originalUser.canEditRegistryDates);
     const newRestrictedEventId = newAllowedEventIds[0] || '';
     const newRestrictedLocation = newAllowedLocations[0] || '';
 
@@ -2240,6 +3544,8 @@ const App = () => {
     if (originalUser.canViewFinances !== newCanViewFinances) changes.push(`Ver Finanzas (${originalUser.canViewFinances ? 'Sí' : 'No'} -> ${newCanViewFinances ? 'Sí' : 'No'})`);
     if (originalUser.canViewHiddenDonations !== newCanViewHiddenDonations) changes.push(`Ver donaciones ocultas (${originalUser.canViewHiddenDonations ? 'Sí' : 'No'} -> ${newCanViewHiddenDonations ? 'Sí' : 'No'})`);
     if ((!!originalUser.canViewExpenses) !== newCanViewExpenses) changes.push(`Ver Gastos (${originalUser.canViewExpenses ? 'Sí' : 'No'} -> ${newCanViewExpenses ? 'Sí' : 'No'})`);
+    if (originalHideMyExpenseConcepts !== newHideMyExpenseConcepts) changes.push(`Ocultar mis conceptos de gastos (${originalHideMyExpenseConcepts ? 'Sí' : 'No'} -> ${newHideMyExpenseConcepts ? 'Sí' : 'No'})`);
+    if (!!originalUser.canEditRegistryDates !== newCanEditRegistryDates) changes.push(`Editar fechas registro/abonos (${originalUser.canEditRegistryDates ? 'Sí' : 'No'} -> ${newCanEditRegistryDates ? 'Sí' : 'No'})`);
     const prevAllowedEvents = getUserAllowedEventIds(originalUser);
     const prevAllowedLocations = getUserAllowedLocations(originalUser);
     if (prevAllowedEvents.slice().sort().join('|') !== newAllowedEventIds.slice().sort().join('|')) changes.push(`Eventos permitidos (${prevAllowedEvents.length ? prevAllowedEvents.length : 'Todos'} -> ${newAllowedEventIds.length ? newAllowedEventIds.length : 'Todos'})`);
@@ -2248,7 +3554,7 @@ const App = () => {
     
     await updateDoc(getDocRef('app_users', String(editingUser.id)), {
       username: targetUsername,
-      password: finalPassword,
+      password: deleteField(),
       role: nextRole,
       canViewFinances: newCanViewFinances,
       canViewHiddenDonations: newCanViewHiddenDonations,
@@ -2257,14 +3563,15 @@ const App = () => {
       allowedLocations: newAllowedLocations,
       preferredLandingTab: newPreferredLandingTab,
       restrictedEventId: newRestrictedEventId,
-      restrictedLocation: newRestrictedLocation
+      restrictedLocation: newRestrictedLocation,
+      hideMyExpenseConcepts: newHideMyExpenseConcepts,
+      canEditRegistryDates: newCanEditRegistryDates
     });
     
     if (currentUser.id === editingUser.id) {
       setCurrentUser({
         ...currentUser,
         username: targetUsername,
-        password: finalPassword,
         role: nextRole,
         canViewFinances: newCanViewFinances,
         canViewHiddenDonations: newCanViewHiddenDonations,
@@ -2273,13 +3580,15 @@ const App = () => {
         allowedLocations: newAllowedLocations,
         preferredLandingTab: newPreferredLandingTab,
         restrictedEventId: newRestrictedEventId,
-        restrictedLocation: newRestrictedLocation
+        restrictedLocation: newRestrictedLocation,
+        hideMyExpenseConcepts: newHideMyExpenseConcepts,
+        canEditRegistryDates: newCanEditRegistryDates
       });
     }
     
     if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
     
-    setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' });
+    setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false });
     showToast("Usuario actualizado.");
   };
 
@@ -2302,31 +3611,47 @@ const App = () => {
   const validateForm = (entry, minDep, evType) => {
     if (!hasValidFullName(entry.name) || !isValidPhone(entry.phone)) return false;
     if (evType === 'Campa') {
-      if (!(entry.birthDate || '').trim() || entry.gender === '' || entry.emergencyContact.trim() === '' || !isValidPhone(entry.emergencyPhone)) return false;
+      if (!(entry.birthDate || '').trim() || entry.gender === '' || entry.emergencyContact.trim() === '' || !isValidPhone(entry.emergencyPhone) || !(entry.emergencyRelationship || '').trim()) return false;
       if (entry.hasAllergy !== 'No' && (entry.allergyDetails.trim() === '' && String(entry.allergyCategory || '').trim() === '')) return false;
       if (entry.hasDisease !== 'No' && entry.diseaseDetails.trim() === '') return false;
       if (entry.hasDisability !== 'No' && entry.disabilityDetails.trim() === '') return false;
       if (entry.isServer === 'Sí' && !entry.serverAssignment) return false;
+      if (
+        entry.willBeBaptized === 'Sí' &&
+        entry.isServer === 'Sí' &&
+        entry.serverAssignment === 'Ambos'
+      ) {
+        const bs = String(entry.baptismSegment || '').trim();
+        if (bs !== 'Teens' && bs !== 'Jóvenes') return false;
+      }
       if (entry.isScholarship === 'Sí') {
         if (entry.scholarshipType === 'partial') {
-          const listPrice = entry.isServer === 'Sí' && entry.serverAssignment === 'Ambos'
-            ? currentPricing.server
-            : currentPricing.global;
-          const partial = parseFloat(entry.scholarshipPartialAmount);
-          if (!Number.isFinite(partial) || partial <= 0) return false;
-          if (partial >= listPrice) return false;
+          const listPrice = getPersonCost(entry, currentPricing);
+          const montoBecado = parseFloat(entry.scholarshipPartialAmount);
+          // Requerimiento: el monto becado puede ser 0.
+          if (!Number.isFinite(montoBecado) || montoBecado < 0) return false;
+          if (montoBecado >= listPrice) return false;
+          if (!isValidPartialScholarshipInitialPaid(entry, minDep)) return false;
         }
         return true;
       }
+      if (isFreeAttendanceType(entry.attendanceSpecialType)) return true;
     }
     if ((parseFloat(entry.paid) || 0) < minDep) return false;
     return true;
   };
 
   const isFormValid = currentEvent ? validateForm(newEntry, currentEvent.minDeposit || 0, currentEvent.eventType) : false;
-  const missingInitialPaid = !!currentEvent
-    && !(currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí')
-    && (parseFloat(newEntry.paid) || 0) < (currentEvent.minDeposit || 0);
+  const missingInitialPaid = !!currentEvent && (() => {
+    const paid = parseFloat(newEntry.paid) || 0;
+    const minDep = currentEvent.minDeposit || 0;
+    if (currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí') {
+      if (newEntry.scholarshipType === 'partial') return !isValidPartialScholarshipInitialPaid(newEntry, minDep);
+      return false;
+    }
+    if (currentEvent.eventType === 'Campa' && isFreeAttendanceType(newEntry.attendanceSpecialType)) return false;
+    return paid < minDep;
+  })();
   const handleNameInput = (val) => /^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]*$/.test(val);
 
   const formatPhoneNumber = (value) => {
@@ -2348,17 +3673,20 @@ const App = () => {
       target <= 0
         ? 'Tu registro está marcado como becado (cobertura total).'
         : `Saldo pendiente: ${formatMoney(debt)}.`;
+    const reportedAt = new Date().toLocaleString('es-MX');
     return [
       `Hola ${person?.name || ''}, te contactamos de ${tribuName}.`,
       `Evento: ${currentEvent?.name || 'Sin evento'} (${loc}).`,
+      `Fecha y hora del reporte: ${reportedAt}.`,
       debtLine,
       'Cualquier duda, responde a este mensaje.'
     ].join('\n');
   }, [currentEvent?.name, formatMoney]);
 
-  const buildFinanceWhatsAppMessage = useCallback((person, loc, amount, pendingAmount, isLiquidado, kind) => {
+  const buildFinanceWhatsAppMessage = useCallback((person, loc, amount, pendingAmount, isLiquidado, kind, reportedAtMs = Date.now()) => {
     const amountText = Number(amount || 0).toLocaleString('es-MX');
     const pendingText = Number(pendingAmount || 0).toLocaleString('es-MX');
+    const reportedAtText = new Date(Number(reportedAtMs) || Date.now()).toLocaleString('es-MX');
     const eventDateText = currentEvent?.date
       ? new Date(`${currentEvent.date}T00:00:00`).toLocaleDateString('es-MX', { year: 'numeric', month: 'long', day: 'numeric' })
       : '';
@@ -2367,6 +3695,7 @@ const App = () => {
       : `Abono aplicado: $${amountText}.`;
     return [
       `Hola ${person?.name || ''}, Se registró tu abono en ${currentEvent?.name || 'el evento'}.`,
+      `Fecha y hora del reporte: ${reportedAtText}.`,
       `Tu ID único es: ${person?.vnpPersonId || 'N/A'}`,
       abonoLine,
       isLiquidado ? 'Estado: LIQUIDADO.' : `Saldo pendiente: $${pendingText}.`,
@@ -2376,9 +3705,11 @@ const App = () => {
   }, [currentEvent?.name, currentEvent?.date]);
 
   const buildArchiveWhatsAppMessage = useCallback(
-    (person, loc, fromWaitlist) => {
+    (person, loc, fromWaitlist, reportedAtMs = Date.now(), eventDisplayName = null) => {
       const personLoc = person?.location || loc || '';
       const tribuName = `Tribu Vida Nueva${personLoc ? ` ${personLoc}` : ''}`;
+      const reportedAtText = new Date(Number(reportedAtMs) || Date.now()).toLocaleString('es-MX');
+      const eventLabel = eventDisplayName != null && String(eventDisplayName).trim() !== '' ? eventDisplayName : (currentEvent?.name || 'el evento');
       const idLine = person?.vnpPersonId
         ? `Tu ID VNPM (${person.vnpPersonId}) se conserva para precargar en otros eventos.`
         : 'Tus datos permanecen disponibles para futuras inscripciones.';
@@ -2387,7 +3718,8 @@ const App = () => {
         : 'Tu registro en el evento fue archivado (dado de baja) y ya no apareces en la nómina activa.';
       return [
         `Hola ${person?.name || ''}, te contactamos de ${tribuName}.`,
-        `Evento: ${currentEvent?.name || 'el evento'} (${loc}).`,
+        `Evento: ${eventLabel} (${loc}).`,
+        `Fecha y hora del reporte: ${reportedAtText}.`,
         ctx,
         idLine,
         'Si fue un error o tienes dudas, responde a este mensaje.',
@@ -2396,10 +3728,97 @@ const App = () => {
     [currentEvent?.name]
   );
 
+  const upsertMergedArchiveProfile = useCallback(async (person, archivedAt, loc, sourceKind, eventNameOverride) => {
+    const eventName = eventNameOverride != null && String(eventNameOverride).trim() !== '' ? eventNameOverride : (currentEvent?.name || '');
+    const docId = getArchiveProfileDocId(person);
+    const ref = getDocRef(ARCHIVE_PROFILES_COLLECTION, docId);
+    const incoming = buildArchiveIndexIncomingPayload(person, archivedAt, loc, sourceKind, eventName);
+    const incomingTs = Number(archivedAt) || Date.now();
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, stripFinancialFromArchiveIndexDoc(incoming));
+      return;
+    }
+    const existing = snap.data();
+    const existingTs = Number(existing.archivedAt) || 0;
+    const merged = mergeArchivedFirestoreDocs(existing, incoming, existingTs, incomingTs);
+    await setDoc(ref, stripFinancialFromArchiveIndexDoc(merged));
+  }, [currentEvent?.name]);
+
+  const archiveParticipantToFirestore = useCallback(
+    async (person, loc, { sourceKind, eventDisplayName }) => {
+      if (participantIsArchived(person)) return;
+      const bajaAt = Date.now();
+      const archivePayload = {
+        status: PARTICIPANT_STATUS_ARCHIVED,
+        archivedAt: bajaAt,
+        archivedFromLocation: loc,
+        archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
+        paymentHistory: [],
+        whatsAppFinanceNotifications: [],
+        scholarshipPendingApproval: false,
+        paid: deleteField(),
+        paidNet: deleteField(),
+        registeredCost: deleteField(),
+        discountCampaignId: deleteField(),
+        discountCampaignConcept: deleteField(),
+        discountCampaignAppliedAt: deleteField(),
+        refundPendingAmount: deleteField(),
+        refundPendingReason: deleteField(),
+        refundAsDonation: deleteField(),
+        scholarshipPartialAmount: deleteField(),
+        paymentMethod: deleteField(),
+        paymentService: deleteField(),
+        cardReference: deleteField(),
+        isPastorChild: deleteField(),
+        pastorChildWithoutPay: deleteField(),
+        pastorChildSpecialDonationFinanceId: deleteField(),
+        ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+      };
+      await updateDoc(getDocRef('app_participants', String(person.id)), archivePayload);
+      await upsertMergedArchiveProfile(person, bajaAt, loc, sourceKind, eventDisplayName);
+    },
+    [globalConfig?.debugSessionId, globalConfig?.isDebugMode, upsertMergedArchiveProfile]
+  );
+
+  const confirmDeleteEvent = async () => {
+    if (!deleteEventModal.id) return;
+    const evToDelete = events.find((e) => e.id === deleteEventModal.id);
+    const id = deleteEventModal.id;
+    const eventName = evToDelete?.name || deleteEventModal.name || '';
+    const toArchive = allParticipants.filter((p) => p.eventId === id && !participantIsArchived(p));
+    try {
+      for (let i = 0; i < toArchive.length; i += 1) {
+        const person = toArchive[i];
+        const loc = person.location || person.cancelledFromLocation || person.archivedFromLocation || '—';
+        const fromWaitlist = (person.status || 'active') === 'waitlist';
+        await archiveParticipantToFirestore(person, loc, {
+          fromWaitlist,
+          sourceKind: fromWaitlist ? 'waitlist' : 'event_deleted',
+          eventDisplayName: eventName,
+        });
+      }
+      await deleteDoc(getDocRef('app_events', id));
+      addLog(
+        'Gestión de Eventos',
+        `Eliminó el evento: ${deleteEventModal.name}. Se archivaron ${toArchive.length} registro(s) antes de borrarlo.`,
+        null,
+        evToDelete || { name: deleteEventModal.name },
+        { collectionName: 'app_events', docId: id, action: 'delete', previousData: evToDelete }
+      );
+      setDeleteEventModal({ isOpen: false, id: null, name: '' });
+      showToast(`Evento eliminado. ${toArchive.length} registro(s) archivados.`);
+    } catch (err) {
+      console.error(err);
+      showToast('No se pudo eliminar el evento (error al archivar o borrar). Revisa la consola.');
+    }
+  };
+
   const buildPromoteFromWaitlistWhatsAppMessage = useCallback(
-    (person, loc) => {
+    (person, loc, reportedAtMs = Date.now()) => {
       const personLoc = person?.location || loc || '';
       const tribuName = `Tribu Vida Nueva${personLoc ? ` ${personLoc}` : ''}`;
+      const reportedAtText = new Date(Number(reportedAtMs) || Date.now()).toLocaleString('es-MX');
       const eventDateText = currentEvent?.date
         ? new Date(`${currentEvent.date}T00:00:00`).toLocaleDateString('es-MX', { year: 'numeric', month: 'long', day: 'numeric' })
         : '';
@@ -2410,8 +3829,8 @@ const App = () => {
 
       let promoLine;
       if (isBecado && person.scholarshipType === 'partial') {
-        const part = Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX');
-        promoLine = `Se aprobó tu beca parcial. Tu aporte acordado al recaudado: $${part} (puedes pagarlo en cualquier momento); el resto del costo de lista queda cubierto por la beca. Abono ya registrado: ${formatMoney(paid)}. Saliste de la lista de espera y ya quedaste inscrito en el evento.`;
+        const becado = Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX');
+        promoLine = `Se aprobó tu beca parcial. La beca cubre $${becado} de tu costo de lista; debes liquidar ${formatMoney(target)} (puedes pagarlo en cualquier momento). Abono ya registrado: ${formatMoney(paid)}. Saliste de la lista de espera y ya quedaste inscrito en el evento.`;
       } else if (isBecado) {
         promoLine = 'Se aprobó tu beca total. Saliste de la lista de espera y ya quedaste inscrito en el evento.';
       } else {
@@ -2428,6 +3847,7 @@ const App = () => {
       const lines = [
         `Hola ${person?.name || ''}, te contactamos de ${tribuName}.`,
         `Evento: ${currentEvent?.name || 'el evento'} (${loc}).`,
+        `Fecha y hora del reporte: ${reportedAtText}.`,
         promoLine,
         `Tu ID único es: ${person?.vnpPersonId || 'N/A'}`,
         debtLine,
@@ -2440,15 +3860,17 @@ const App = () => {
   );
 
   const buildScholarshipPendingApprovalWhatsAppMessage = useCallback(
-    (person, loc) => {
+    (person, loc, reportedAtMs = Date.now()) => {
       const personLoc = person?.location || loc || '';
       const tribuName = `Tribu Vida Nueva${personLoc ? ` ${personLoc}` : ''}`;
+      const reportedAtText = new Date(Number(reportedAtMs) || Date.now()).toLocaleString('es-MX');
       const isPartial = person?.scholarshipType === 'partial';
       const partialAmount = Number(person?.scholarshipPartialAmount || 0);
-      const partialText = isPartial ? ` · aporte acordado: ${formatMoney(partialAmount)}` : '';
+      const partialText = isPartial ? ` · monto becado: ${formatMoney(partialAmount)}` : '';
       return [
         `Hola ${person?.name || ''}, te contactamos de ${tribuName}.`,
         `Evento: ${currentEvent?.name || 'el evento'} (${loc}).`,
+        `Fecha y hora del reporte: ${reportedAtText}.`,
         `Tu solicitud de beca ${isPartial ? 'parcial' : 'total'} fue registrada en lista de espera y está pendiente de aprobación administrativa${partialText}.`,
         'Te avisaremos por este medio cuando sea aprobada y promovida a inscritos.',
         `Tu ID único es: ${person?.vnpPersonId || 'N/A'}`,
@@ -2489,11 +3911,11 @@ const App = () => {
         return true;
       });
     }
-    if (filterCancelled !== 'all') {
+    if (filterPendingRefund !== 'all') {
       processedData = processedData.filter((p) => {
-        const isCancelled = participantIsCancelled(p);
-        if (filterCancelled === 'cancelled') return isCancelled;
-        if (filterCancelled === 'active') return !isCancelled;
+        const hasPendingRefund = (Number(p?.refundPendingAmount || 0) || 0) > 0;
+        if (filterPendingRefund === 'pending') return hasPendingRefund;
+        if (filterPendingRefund === 'none') return !hasPendingRefund;
         return true;
       });
     }
@@ -2521,10 +3943,13 @@ const App = () => {
     if (filterPaymentType !== 'all') processedData = processedData.filter((p) => getLastPaymentMethodForFilter(p) === filterPaymentType);
     if (filterTravelFrom !== 'all') processedData = processedData.filter((p) => (p.travelFrom || p.location || '') === filterTravelFrom);
     if (filterTravelTo !== 'all') processedData = processedData.filter((p) => (p.travelTo || p.location || '') === filterTravelTo);
-    if (filterPastorChild === 'Sí') processedData = processedData.filter((p) => (p.isPastorChild || 'No') === 'Sí');
-    else if (filterPastorChild === 'No') processedData = processedData.filter((p) => (p.isPastorChild || 'No') !== 'Sí');
-    if (filterWithoutPay === 'Sí') processedData = processedData.filter((p) => (p.pastorChildWithoutPay || 'No') === 'Sí');
-    else if (filterWithoutPay === 'No') processedData = processedData.filter((p) => (p.pastorChildWithoutPay || 'No') !== 'Sí');
+    if (filterAttendanceSpecial === ATTENDANCE_SPECIAL.empleado) {
+      processedData = processedData.filter((p) => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.empleado);
+    } else if (filterAttendanceSpecial === ATTENDANCE_SPECIAL.cortesia) {
+      processedData = processedData.filter((p) => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.cortesia);
+    } else if (filterAttendanceSpecial === ATTENDANCE_SPECIAL.ninguno) {
+      processedData = processedData.filter((p) => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.ninguno);
+    }
     if (isCampa) {
       if (filterAssignment !== 'all') {
         processedData = processedData.filter((p) => {
@@ -2533,6 +3958,15 @@ const App = () => {
         });
       }
       if (filterSwim !== 'all') processedData = processedData.filter((p) => p.canSwim === filterSwim);
+      if (filterBaptism !== 'all') {
+        processedData = processedData.filter((p) => {
+          const seg = getBaptismAccountingSegment(p);
+          if (filterBaptism === 'teens') return seg === 'Teens';
+          if (filterBaptism === 'jovenes') return seg === 'Jóvenes';
+          if (filterBaptism === 'no') return (p.willBeBaptized || 'No') !== 'Sí';
+          return true;
+        });
+      }
       if (filterScholarship === 'partial') processedData = processedData.filter((p) => p.isScholarship === 'Sí' && p.scholarshipType === 'partial');
       else if (filterScholarship === 'total') processedData = processedData.filter((p) => p.isScholarship === 'Sí' && p.scholarshipType !== 'partial');
       else if (filterScholarship === 'No') processedData = processedData.filter((p) => p.isScholarship !== 'Sí');
@@ -2555,12 +3989,12 @@ const App = () => {
       if (sortBy === 'debt-desc') processedData.sort((a, b) => getDebt(b) - getDebt(a));
     }
     return processedData;
-  }, [searchTerm, filterWhatsAppPending, filterFirstTimeId, filterCancelled, filterResponsiva, filterGender, filterTransport, filterPaymentType, filterTravelFrom, filterTravelTo, filterPastorChild, filterWithoutPay, isCampa, filterAssignment, filterSwim, filterScholarship, filterServer, filterMedical, sortBy, getLiquidationTarget, getLastPaymentMethodForFilter]);
+  }, [searchTerm, filterWhatsAppPending, filterFirstTimeId, filterPendingRefund, filterResponsiva, filterGender, filterTransport, filterPaymentType, filterTravelFrom, filterTravelTo, filterAttendanceSpecial, isCampa, filterAssignment, filterSwim, filterBaptism, filterScholarship, filterServer, filterMedical, sortBy, getLiquidationTarget, getLastPaymentMethodForFilter]);
 
   /** Cada fila = un movimiento pendiente de avisar por WhatsApp (registro, abono, promoción, baja, etc.). */
   const getPendingWhatsAppRowsForLocation = useCallback((loc) => {
     const rows = [];
-    const sourceRows = [...(data[loc] || []), ...(waitlistData[loc] || [])];
+    const sourceRows = [...(data[loc] || []), ...(waitlistData[loc] || []), ...(cancelledData[loc] || [])];
     const filteredPeople = applyRosterLikeFilters(sourceRows, true);
     for (const person of filteredPeople) {
       const waPhone = normalizeWhatsAppPhone(person.phone);
@@ -2573,7 +4007,7 @@ const App = () => {
     }
     rows.sort((a, b) => Number(a.notification.createdAt || 0) - Number(b.notification.createdAt || 0));
     return rows;
-  }, [data, waitlistData, applyRosterLikeFilters]);
+  }, [data, waitlistData, cancelledData, applyRosterLikeFilters]);
 
   const exportPendingWhatsAppToExcel = useCallback(async (loc) => {
     if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
@@ -2631,16 +4065,12 @@ const App = () => {
       }
     }
 
-    addLog(
-      'WhatsApp',
-      `Exportó ${targets.length} movimiento(s) WhatsApp de sede ${loc} y los marcó como enviados.${failed ? ` Fallos al guardar: ${failed}.` : ''}`
-    );
     if (failed > 0) {
       showToast(`Archivo generado; no se pudo marcar como enviado en ${failed} registro(s). Revisa conexión o permisos.`);
     } else {
       showToast(`Exportados ${targets.length} movimiento(s). Quedaron marcados como enviados hasta el próximo abono o registro.`);
     }
-  }, [currentEvent?.id, hasEventAccess, hasLocationAccess, getPendingWhatsAppRowsForLocation, addLog, showToast]);
+  }, [currentEvent?.id, hasEventAccess, hasLocationAccess, getPendingWhatsAppRowsForLocation, showToast]);
 
   const openWhatsAppModal = useCallback((person, loc) => {
     const liq = getLiquidationTarget(person);
@@ -2673,7 +4103,6 @@ const App = () => {
     }
     const url = `https://wa.me/${waPhone}?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank', 'noopener,noreferrer');
-    addLog('WhatsApp', `Abrió WhatsApp para ${whatsAppModal.personName} (${waPhone}) en evento ${whatsAppModal.eventName}.`);
 
     const { personId, pendingNotificationMarkKey, whatsAppQueuedMessageSnapshot, message: sentBody } = whatsAppModal;
     const messageUnchangedFromQueue =
@@ -2691,7 +4120,6 @@ const App = () => {
             getWhatsAppNotificationMarkKey(n) === pendingNotificationMarkKey ? { ...n, sent: true, sentAt: now } : n
           );
           await updateDoc(ref, { whatsAppFinanceNotifications: next });
-          addLog('WhatsApp', `Marcó como enviado el aviso financiero pendiente de ${whatsAppModal.personName}.`);
         }
       } catch {
         showToast('WhatsApp abierto; no se pudo marcar el aviso como enviado en el servidor.');
@@ -2710,7 +4138,7 @@ const App = () => {
       whatsAppQueuedMessageSnapshot: null
     });
     showToast('WhatsApp abierto en nueva pestaña.');
-  }, [whatsAppModal, addLog, showToast]);
+  }, [whatsAppModal, showToast]);
 
   const getProcessedParticipantsForLocation = useCallback((loc) => {
     return applyRosterLikeFilters(data[loc] || []);
@@ -2779,19 +4207,11 @@ const App = () => {
     }
 
     const phoneDigits = digitsOnlyPhone(newEntry.phone);
-    if (phoneDigits.length >= 10) {
-      const dupPhone = allParticipants.some(
-        (p) =>
-          p.eventId === currentEvent.id &&
-          participantIsActiveInEvent(p) &&
-          digitsOnlyPhone(p.phone) === phoneDigits
-      );
-      if (dupPhone) {
-        showToast('Ya hay un registro con este teléfono en este evento.');
-        return;
-      }
+    if (phoneDuplicateInEvent(newEntry.name, phoneDigits, allParticipants, currentEvent.id, null)) {
+      showToast('Ya hay un registro con este teléfono en este evento.');
+      return;
     }
-    const vnpId = (newEntry.vnpPersonId || '').trim();
+    const vnpId = canonicalizeVnpPersonId(newEntry.vnpPersonId || '');
     const candidateVnpId = vnpId || generateVnpPersonId(newEntry);
     const idExistsAnywhere = allParticipants.some((p) => String(p.vnpPersonId || '') === String(candidateVnpId));
     const dupVnp = allParticipants.some(
@@ -2801,7 +4221,7 @@ const App = () => {
         String(p.vnpPersonId || '') === String(candidateVnpId)
     );
     if (dupVnp) {
-      showToast('El ID VNPM calculado ya existe en registros o lista de espera de este evento.');
+      showToast('El ID VNPM ya existe en registros o lista de espera de este evento.');
       return;
     }
 
@@ -2813,9 +4233,12 @@ const App = () => {
     const commission = paymentMethod === 'Tarjeta' ? (initialPaidGross * commissionRate) : 0;
     const initialPaidNet = paymentMethod === 'Tarjeta' ? (initialPaidGross - commission) : initialPaidGross;
 
+    const regInstant = new Date();
+    const regIso = regInstant.toISOString();
     const initialHistory = initialPaidGross > 0 ? [{
       id: Date.now() + 1,
-      date: new Date().toLocaleString('es-MX'),
+      date: regInstant.toLocaleString('es-MX'),
+      recordedAt: regIso,
       amount: initialPaidGross,      // bruto
       netAmount: initialPaidNet,    // neto
       method: paymentMethod,
@@ -2825,9 +4248,19 @@ const App = () => {
       registeredBy: currentUser?.username
     }] : [];
 
-    const registeredCost = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos')
+    const baseRegisteredCost = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos')
       ? currentPricing.server
       : currentPricing.global;
+    const skipCampaignForAttendance = currentEvent.eventType === 'Campa' && isFreeAttendanceType(newEntry.attendanceSpecialType);
+    const matchedCampaign = skipCampaignForAttendance ? null : resolveMatchedCampaignForNewEntry(newEntry);
+    if (newEntry.selectedDiscountCampaignId && !skipCampaignForAttendance && !matchedCampaign) {
+      showToast('La campaña elegida no aplica a este perfil o no está bien configurada (concepto y monto).');
+      return;
+    }
+    const registeredCost = skipCampaignForAttendance
+      ? baseRegisteredCost
+      : (matchedCampaign ? Math.max(0, Number(matchedCampaign.finalAmount) || 0) : baseRegisteredCost);
+    const { selectedDiscountCampaignId: _newSelCamp, ...newEntryCore } = newEntry;
 
     const initialCampAssignment = currentEvent.eventType === 'Campa' && newEntry.isServer !== 'Sí' 
       ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'Jóvenes') 
@@ -2836,9 +4269,10 @@ const App = () => {
     const finalVnpPersonId = candidateVnpId;
 
     const personData = { 
-      ...newEntry, 
+      ...newEntryCore, 
       id: newPersonId, 
       status: 'active',
+      registeredAt: regIso,
       vnpPersonId: finalVnpPersonId,
       isFirstVnpId: !idExistsAnywhere,
       location: loc, 
@@ -2858,19 +4292,40 @@ const App = () => {
       scholarshipPendingApproval: false,
       scholarshipType: 'none',
       scholarshipPartialAmount: 0,
+      discountCampaignId: matchedCampaign?.id || '',
+      discountCampaignConcept: matchedCampaign?.concept || '',
+      discountCampaignAppliedAt: matchedCampaign ? Date.now() : null,
+      refundPendingAmount: 0,
+      refundPendingReason: '',
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {})
     };
+
+    if (currentEvent.eventType === 'Campa') {
+      personData.willBeBaptized = newEntry.willBeBaptized === 'Sí' ? 'Sí' : 'No';
+      if (personData.willBeBaptized !== 'Sí' || newEntry.isServer !== 'Sí' || newEntry.serverAssignment !== 'Ambos') {
+        personData.baptismSegment = '';
+      } else {
+        personData.baptismSegment = String(newEntry.baptismSegment || '').trim();
+      }
+      if (skipCampaignForAttendance) {
+        personData.isScholarship = 'No';
+        personData.scholarshipType = 'none';
+        personData.scholarshipPartialAmount = 0;
+        personData.attendanceSpecialType = newEntry.attendanceSpecialType;
+      }
+    } else {
+      personData.willBeBaptized = 'No';
+      personData.baptismSegment = '';
+    }
 
     if (currentEvent.eventType !== 'Campa') {
       personData.isScholarship = 'No'; personData.isServer = 'No'; personData.serverAssignment = '';
       personData.canSwim = 'No'; personData.hasAllergy = 'No'; personData.hasDisease = 'No'; personData.hasDisability = 'No';
-      personData.isPastorChild = 'No';
-      personData.pastorChildWithoutPay = 'No';
-      personData.pastorChildSpecialDonationFinanceId = '';
+      personData.attendanceSpecialType = ATTENDANCE_SPECIAL.ninguno;
     }
 
     await setDoc(getDocRef('app_participants', newPersonId), personData);
-    const isLiquidado = personData.isScholarship === 'No' && initialPaidGross >= registeredCost;
+    const isLiquidado = personData.isScholarship === 'No' && initialPaidGross >= getLiquidationTarget(personData);
     addLog(
       'Nuevo Registro',
       `Inscribió a ${newEntry.name} en la sede ${loc}.${paymentService ? ` (Servicio: ${paymentService})` : ''} (Pago inicial: $${initialPaidGross} ${paymentMethod === 'Tarjeta' ? `(Tarjeta, Neto: $${initialPaidNet})` : '(Efectivo)'} )${isLiquidado ? ' [LIQUIDADO]' : ''}`,
@@ -2879,24 +4334,20 @@ const App = () => {
       { collectionName: 'app_participants', docId: newPersonId, action: 'create', previousData: null }
     );
 
-    const pendingAfterRegister = Math.max((Number(registeredCost) || 0) - initialPaidGross, 0);
+    const pendingAfterRegister = Math.max((Number(getLiquidationTarget(personData)) || 0) - initialPaidGross, 0);
+    const registerCreatedAt = Date.now();
     const registerNotification = {
-      id: `wa-reg-${Date.now()}`,
+      id: `wa-reg-${registerCreatedAt}`,
       kind: 'registro',
       amount: initialPaidGross,
       pendingAmount: pendingAfterRegister,
       isLiquidado,
-      createdAt: Date.now(),
+      createdAt: registerCreatedAt,
       sent: false,
       sentAt: null,
-      message: buildFinanceWhatsAppMessage(personData, loc, initialPaidGross, pendingAfterRegister, isLiquidado, 'registro')
+      message: buildFinanceWhatsAppMessage(personData, loc, initialPaidGross, pendingAfterRegister, isLiquidado, 'registro', registerCreatedAt)
     };
     await updateDoc(getDocRef('app_participants', newPersonId), { whatsAppFinanceNotifications: [registerNotification] });
-    addLog(
-      'WhatsApp',
-      `Encoló notificación financiera de registro para ${personData.name || 'persona'} (sede ${loc}). Pendiente: ${pendingAfterRegister}. Liquida: ${isLiquidado ? 'Sí' : 'No'}.`,
-      null
-    );
     setNewEntry({
       ...EMPTY_ENTRY,
       paymentMethod: 'Efectivo',
@@ -2918,21 +4369,13 @@ const App = () => {
     }
 
     const phoneDigits = digitsOnlyPhone(newEntry.phone);
-    if (phoneDigits.length >= 10) {
-      const dupPhone = allParticipants.some(
-        (p) =>
-          p.eventId === currentEvent.id &&
-          participantIsActiveInEvent(p) &&
-          digitsOnlyPhone(p.phone) === phoneDigits
-      );
-      if (dupPhone) {
-        showToast('Ya existe un registro o espera con este teléfono en este evento.');
-        return;
-      }
+    if (phoneDuplicateInEvent(newEntry.name, phoneDigits, allParticipants, currentEvent.id, null)) {
+      showToast('Ya existe un registro o espera con este teléfono en este evento.');
+      return;
     }
 
     const newPersonId = String(Date.now());
-    const finalVnpPersonId = (newEntry.vnpPersonId || '').trim() || generateVnpPersonId(newEntry);
+    const finalVnpPersonId = canonicalizeVnpPersonId(newEntry.vnpPersonId || '') || generateVnpPersonId(newEntry);
     const idExistsAnywhere = allParticipants.some((p) => String(p.vnpPersonId || '') === String(finalVnpPersonId));
     const dupVnp = allParticipants.some(
       (p) =>
@@ -2941,15 +4384,23 @@ const App = () => {
         String(p.vnpPersonId || '') === String(finalVnpPersonId)
     );
     if (dupVnp) {
-      showToast('El ID VNPM calculado ya existe en registros o lista de espera de este evento.');
+      showToast('El ID VNPM ya existe en registros o lista de espera de este evento.');
       return;
     }
     const initialCampAssignment = currentEvent.eventType === 'Campa' && newEntry.isServer !== 'Sí'
       ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'Jóvenes')
       : '';
 
+    const baseRegisteredCost = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
+    const skipCampaignWl = currentEvent.eventType === 'Campa' && isFreeAttendanceType(newEntry.attendanceSpecialType);
+    const matchedCampaign = skipCampaignWl ? null : resolveMatchedCampaignForNewEntry(newEntry);
+    if (newEntry.selectedDiscountCampaignId && !skipCampaignWl && !matchedCampaign) {
+      showToast('La campaña elegida no aplica a este perfil o no está bien configurada (concepto y monto).');
+      return;
+    }
+    const { selectedDiscountCampaignId: _wlSelCamp, ...newEntryCoreWl } = newEntry;
     const personData = {
-      ...newEntry,
+      ...newEntryCoreWl,
       id: newPersonId,
       status: 'waitlist',
       waitlistCreatedAt: Date.now(),
@@ -2967,16 +4418,33 @@ const App = () => {
       cardReference: '',
       responsivaStatus: resolveResponsivaStatus(newEntry),
       campAssignment: initialCampAssignment,
-      registeredCost: (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global,
+      registeredCost: skipCampaignWl
+        ? baseRegisteredCost
+        : (matchedCampaign ? Math.max(0, Number(matchedCampaign.finalAmount) || 0) : baseRegisteredCost),
+      discountCampaignId: matchedCampaign?.id || '',
+      discountCampaignConcept: matchedCampaign?.concept || '',
+      discountCampaignAppliedAt: matchedCampaign ? Date.now() : null,
+      refundPendingAmount: 0,
+      refundPendingReason: '',
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {})
     };
+
+    if (currentEvent.eventType === 'Campa') {
+      personData.willBeBaptized = newEntry.willBeBaptized === 'Sí' ? 'Sí' : 'No';
+      if (personData.willBeBaptized !== 'Sí' || newEntry.isServer !== 'Sí' || newEntry.serverAssignment !== 'Ambos') {
+        personData.baptismSegment = '';
+      } else {
+        personData.baptismSegment = String(newEntry.baptismSegment || '').trim();
+      }
+    } else {
+      personData.willBeBaptized = 'No';
+      personData.baptismSegment = '';
+    }
 
     if (currentEvent.eventType !== 'Campa') {
       personData.isScholarship = 'No'; personData.isServer = 'No'; personData.serverAssignment = '';
       personData.canSwim = 'No'; personData.hasAllergy = 'No'; personData.hasDisease = 'No'; personData.hasDisability = 'No';
-      personData.isPastorChild = 'No';
-      personData.pastorChildWithoutPay = 'No';
-      personData.pastorChildSpecialDonationFinanceId = '';
+      personData.attendanceSpecialType = ATTENDANCE_SPECIAL.ninguno;
     }
 
     if (currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí') {
@@ -3003,20 +4471,15 @@ const App = () => {
         createdAt: now,
         sent: false,
         sentAt: null,
-        message: buildScholarshipPendingApprovalWhatsAppMessage(personData, loc),
+        message: buildScholarshipPendingApprovalWhatsAppMessage(personData, loc, now),
       };
       await updateDoc(getDocRef('app_participants', newPersonId), {
         whatsAppFinanceNotifications: [pendingApprovalNotification],
       });
-      addLog(
-        'WhatsApp',
-        `Encoló notificación de beca pendiente de aprobación para ${personData.name || 'persona'} (sede ${loc}).`,
-        null
-      );
     }
     const becaNote =
       currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí'
-        ? ` Solicitud de beca ${newEntry.scholarshipType === 'partial' ? 'parcial' : 'total'}${newEntry.scholarshipType === 'partial' ? ` (aporte recaudado $${parseFloat(newEntry.scholarshipPartialAmount || 0).toLocaleString('es-MX')})` : ''}, pendiente de aprobación al promover.`
+        ? ` Solicitud de beca ${newEntry.scholarshipType === 'partial' ? 'parcial' : 'total'}${newEntry.scholarshipType === 'partial' ? ` (monto becado $${parseFloat(newEntry.scholarshipPartialAmount || 0).toLocaleString('es-MX')})` : ''}, pendiente de aprobación al promover.`
         : '';
     addLog(
       'Lista de Espera',
@@ -3048,23 +4511,17 @@ const App = () => {
     if (!validateForm(editedPerson, 0, currentEvent.eventType)) return;
 
     const editDigits = digitsOnlyPhone(editedPerson.phone);
-    if (editDigits.length >= 10) {
-      const dupPhone = allParticipants.some(
-        (p) =>
-          p.eventId === currentEvent.id &&
-          participantIsActiveInEvent(p) &&
-          String(p.id) !== String(editedPerson.id) &&
-          digitsOnlyPhone(p.phone) === editDigits
-      );
-      if (dupPhone) {
-        showToast('Otro registro en este evento ya usa este teléfono.');
-        return;
-      }
+    if (
+      phoneDuplicateInEvent(editedPerson.name, editDigits, allParticipants, currentEvent.id, editedPerson.id)
+    ) {
+      showToast('Otro registro en este evento ya usa este teléfono.');
+      return;
     }
 
     const originalPerson =
       (data[loc] || []).find((p) => String(p.id) === String(editedPerson.id)) ||
-      (waitlistData[loc] || []).find((p) => String(p.id) === String(editedPerson.id));
+      (waitlistData[loc] || []).find((p) => String(p.id) === String(editedPerson.id)) ||
+      (cancelledData[loc] || []).find((p) => String(p.id) === String(editedPerson.id));
     if (!originalPerson) {
       showToast('No se encontró el registro a actualizar.');
       return;
@@ -3072,14 +4529,17 @@ const App = () => {
     const changes = [];
     const fieldsToTrack = [
       { key: 'name', label: 'Nombre' }, { key: 'phone', label: 'Teléfono' }, { key: 'paid', label: 'Monto Pagado' },
+      { key: 'emergencyContact', label: 'Contacto emergencia' }, { key: 'emergencyPhone', label: 'Tel. emergencia' }, { key: 'emergencyRelationship', label: 'Parentesco emergencia' },
       { key: 'alias', label: 'Alias' }, { key: 'birthDate', label: 'Fecha nacimiento' }, { key: 'llegaEnCarro', label: 'Llega en carro' }, { key: 'regresaEnCarro', label: 'Regresa en carro' },
-      { key: 'isPastorChild', label: 'Hijo de pastor' }, { key: 'pastorChildWithoutPay', label: 'Va sin pagar' },
+      { key: 'attendanceSpecialType', label: 'Asistencia especial' },
       { key: 'isScholarship', label: 'Becado' },
       { key: 'scholarshipType', label: 'Tipo beca' },
-      { key: 'scholarshipPartialAmount', label: 'Beca parcial — aporte recaudado ($)' },
+      { key: 'scholarshipPartialAmount', label: 'Beca parcial — monto becado ($)' },
       { key: 'responsivaStatus', label: 'Responsiva' },
       { key: 'isServer', label: 'Servidor' },
-      { key: 'serverAssignment', label: 'Asignación' }, { key: 'campAssignment', label: 'Asig. Campista' }, { key: 'canSwim', label: 'Nado' }, { key: 'age', label: 'Edad' },
+      { key: 'serverAssignment', label: 'Asignación' }, { key: 'campAssignment', label: 'Asig. Campista' },
+      { key: 'willBeBaptized', label: 'Bautizo' }, { key: 'baptismSegment', label: 'Bautizo (Teens/Jóvenes)' },
+      { key: 'canSwim', label: 'Nado' }, { key: 'age', label: 'Edad' },
       { key: 'travelFrom', label: 'Sale de' }, { key: 'travelTo', label: 'Regresa a' },
       { key: 'isMarried', label: 'Es casado' }, { key: 'spouseName', label: 'Nombre de pareja' },
       { key: 'goesWithChildren', label: 'Va con hijos' }, { key: 'childrenCount', label: 'Cant. hijos' }, { key: 'servedOtherCampa', label: 'Sirvió en otro campa' },
@@ -3110,8 +4570,11 @@ const App = () => {
       const commission = adjustmentMethod === 'Tarjeta' ? grossDelta * commissionRate : 0;
       const netDelta = adjustmentMethod === 'Tarjeta' ? (grossDelta - commission) : grossDelta;
 
+      const adjInstant = new Date();
       updatedHistory = [...updatedHistory, {
-        id: Date.now(), date: new Date().toLocaleString('es-MX'),
+        id: Date.now(),
+        date: adjInstant.toLocaleString('es-MX'),
+        recordedAt: adjInstant.toISOString(),
         amount: grossDelta,           // bruto
         netAmount: netDelta,         // neto
         method: adjustmentMethod,
@@ -3157,12 +4620,17 @@ const App = () => {
 
     if (!payload.vnpPersonId) {
       payload.vnpPersonId = generateVnpPersonId({ ...editedPerson, ...payload });
+    } else {
+      const c = canonicalizeVnpPersonId(payload.vnpPersonId);
+      if (c) payload.vnpPersonId = c;
     }
 
     if (currentEvent.eventType === 'Campa' && editedPerson.isScholarship === 'Sí' && editedPerson.scholarshipType === 'partial') {
-      const partial = parseFloat(editedPerson.scholarshipPartialAmount || 0);
-      if (!Number.isFinite(partial) || partial <= 0 || partial >= finalRegisteredCost) {
-        showToast('Beca parcial: el aporte al recaudado debe ser mayor que 0 y menor que el costo de lista.');
+      const montoBecado = parseFloat(editedPerson.scholarshipPartialAmount || 0);
+      const partialScholarshipListCap = getPersonCost(editedPerson, currentPricing);
+      // Requerimiento: el monto becado puede ser 0. Tope = costo lista por perfil (servidor Ambos = costo servidor).
+      if (!Number.isFinite(montoBecado) || montoBecado < 0 || montoBecado >= partialScholarshipListCap) {
+        showToast('Beca parcial: el monto becado debe ser mayor o igual que 0 y menor que el costo de lista según asignación (Ambos = costo servidor).');
         return;
       }
     }
@@ -3178,11 +4646,90 @@ const App = () => {
       payload.scholarshipPendingApproval = false;
     }
     payload.responsivaStatus = resolveResponsivaStatus(editedPerson);
+    const campaignEditChoice = editedPerson.editApplyCampaignId;
+    if (hasAdminRights) {
+      if (campaignEditChoice === '__clear__') {
+        payload.registeredCost = getPersonCost(editedPerson, currentPricing);
+        payload.discountCampaignId = '';
+        payload.discountCampaignConcept = '';
+        payload.discountCampaignAppliedAt = null;
+        changes.push(`Campaña quitada; costo de lista del evento: $${payload.registeredCost}`);
+      } else if (campaignEditChoice && campaignEditChoice !== '') {
+        const c = findDiscountCampaignById(currentEvent, campaignEditChoice);
+        if (!c || c.enabled === false) {
+          showToast('Campaña no válida o desactivada.');
+          return;
+        }
+        if (!campaignMatchesPersonProfile(c, editedPerson)) {
+          showToast('Esa campaña no aplica al perfil servidor/campista de este registro.');
+          return;
+        }
+        payload.registeredCost = Math.max(0, Number(c.finalAmount) || 0);
+        payload.discountCampaignId = c.id || '';
+        payload.discountCampaignConcept = c.concept || '';
+        payload.discountCampaignAppliedAt = Date.now();
+        const todayIso = new Date().toISOString().split('T')[0];
+        const vigenteHoy = discountCampaignHasDateRange(c) && isDiscountCampaignVigenteOnDate(c, todayIso);
+        const campNote = !discountCampaignHasDateRange(c)
+          ? ' [sin fechas en campaña; solo manual]'
+          : vigenteHoy
+            ? ''
+            : ' [fuera de vigencia por fechas; aplicación manual]';
+        changes.push(`Campaña aplicada (${c.concept}) → liquidar $${payload.registeredCost}${campNote}`);
+      }
+    }
+    delete payload.editApplyCampaignId;
+    delete payload.applyActiveCampaignNow;
+    delete payload.selectedDiscountCampaignId;
+
+    if (currentEvent.eventType === 'Campa') {
+      const att = normalizeAttendanceSpecial(editedPerson);
+      payload.attendanceSpecialType = att;
+      if (isFreeAttendanceType(att)) {
+        payload.registeredCost = getPersonCost(editedPerson, currentPricing);
+        payload.discountCampaignId = '';
+        payload.discountCampaignConcept = '';
+        payload.discountCampaignAppliedAt = null;
+        payload.isScholarship = 'No';
+        payload.scholarshipType = 'none';
+        payload.scholarshipPartialAmount = 0;
+        payload.scholarshipPendingApproval = false;
+      }
+      payload.isPastorChild = deleteField();
+      payload.pastorChildWithoutPay = deleteField();
+      payload.pastorChildSpecialDonationFinanceId = deleteField();
+      payload.willBeBaptized = editedPerson.willBeBaptized === 'Sí' ? 'Sí' : 'No';
+      if (payload.willBeBaptized !== 'Sí' || editedPerson.isServer !== 'Sí' || editedPerson.serverAssignment !== 'Ambos') {
+        payload.baptismSegment = '';
+      } else {
+        const bs = String(editedPerson.baptismSegment || '').trim();
+        if (bs !== 'Teens' && bs !== 'Jóvenes') {
+          showToast('Si marca bautizo y el servidor es Ambos, elija si el conteo va en Teens o Jóvenes.');
+          return;
+        }
+        payload.baptismSegment = bs;
+      }
+    } else {
+      payload.attendanceSpecialType = ATTENDANCE_SPECIAL.ninguno;
+      payload.willBeBaptized = 'No';
+      payload.baptismSegment = '';
+    }
+
+    const mergedForRefund = { ...editedPerson, ...payload };
+    const refundDiff = Math.max(0, (parseFloat(mergedForRefund.paid || 0) || 0) - (Number(getLiquidationTarget(mergedForRefund)) || 0));
+    payload.refundPendingAmount = refundDiff;
+    payload.refundPendingReason = refundDiff > 0 ? 'campaign_discount' : '';
 
     if ((originalPerson.status || 'active') === 'waitlist') {
       payload.status = 'waitlist';
       if (originalPerson.waitlistCreatedAt != null) payload.waitlistCreatedAt = originalPerson.waitlistCreatedAt;
       if (editedPerson.isScholarship === 'Sí') payload.scholarshipPendingApproval = true;
+    } else if (participantIsCancelled(originalPerson)) {
+      payload.status = PARTICIPANT_STATUS_CANCELLED;
+      if (originalPerson.cancelledAt != null) payload.cancelledAt = originalPerson.cancelledAt;
+      payload.cancelledFromLocation = originalPerson.cancelledFromLocation || loc;
+      payload.refundPendingAmount = originalPerson.refundPendingAmount ?? 0;
+      payload.refundAsDonation = originalPerson.refundAsDonation ?? false;
     }
 
     await setDoc(getDocRef('app_participants', String(editedPerson.id)), payload);
@@ -3196,117 +4743,77 @@ const App = () => {
     showToast("Registro actualizado.");
   };
 
-  const removeEntry = async (loc, id) => {
-    if (!hasAdminRights) {
-      showToast("Solo administradores pueden eliminar registros.");
-      return;
-    }
-    const person = (data[loc] || []).find(p => String(p.id) === String(id));
-    if (person) {
-      const bajaAt = Date.now();
-      const bajaNotification = {
-        id: `wa-bja-${bajaAt}`,
-        kind: 'baja',
-        amount: 0,
-        pendingAmount: 0,
-        isLiquidado: false,
-        createdAt: bajaAt,
-        sent: false,
-        sentAt: null,
-        message: buildArchiveWhatsAppMessage(person, loc, false),
-      };
-      const archivePayload = {
-        status: PARTICIPANT_STATUS_ARCHIVED,
-        archivedAt: bajaAt,
-        archivedFromLocation: loc,
-        archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
-        paymentHistory: [],
-        paid: 0,
-        paidNet: 0,
-        whatsAppFinanceNotifications: [...(person.whatsAppFinanceNotifications || []), bajaNotification],
-        scholarshipPendingApproval: false,
-        ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
-      };
-      await updateDoc(getDocRef('app_participants', String(id)), archivePayload);
-      addLog(
-        'WhatsApp',
-        `Encoló aviso de baja/archivo para ${person.name} (sede ${loc}).`,
-        null
-      );
-      addLog(
-        'Eliminación de Registro',
-        `Archivó el registro de ${person.name} en la sede ${loc}. El ID VNPM y los datos personales permanecen en Firebase para precargar en otros eventos.`,
-        null,
-        null,
-        { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
-      );
-      showToast('Registro archivado. Puedes precargar estos datos desde la búsqueda de perfiles.');
-    }
-  };
-
-  const removeWaitlistEntry = async (loc, id) => {
-    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
-      showToast("No tienes permisos para modificar lista de espera en esta sede/evento.");
-      return;
-    }
-    const person = (waitlistData[loc] || []).find(p => String(p.id) === String(id));
-    if (person) {
-      const bajaAt = Date.now();
-      const bajaNotification = {
-        id: `wa-bja-${bajaAt}`,
-        kind: 'baja',
-        amount: 0,
-        pendingAmount: 0,
-        isLiquidado: false,
-        createdAt: bajaAt,
-        sent: false,
-        sentAt: null,
-        message: buildArchiveWhatsAppMessage(person, loc, true),
-      };
-      const archivePayload = {
-        status: PARTICIPANT_STATUS_ARCHIVED,
-        archivedAt: bajaAt,
-        archivedFromLocation: loc,
-        archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
-        paymentHistory: [],
-        paid: 0,
-        paidNet: 0,
-        whatsAppFinanceNotifications: [...(person.whatsAppFinanceNotifications || []), bajaNotification],
-        scholarshipPendingApproval: false,
-        ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
-      };
-      await updateDoc(getDocRef('app_participants', String(id)), archivePayload);
-      addLog(
-        'WhatsApp',
-        `Encoló aviso de baja/archivo (lista de espera) para ${person.name} (sede ${loc}).`,
-        null
-      );
-      addLog(
-        'Lista de Espera',
-        `Archivó a ${person.name} (lista de espera, sede ${loc}). Los datos personales siguen disponibles para precargar en otros eventos.`,
-        null,
-        null,
-        { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
-      );
-      showToast('Entrada archivada. Puedes precargar estos datos desde la búsqueda de perfiles.');
-    }
-  };
-
-  const cancelEntry = async (loc, id) => {
-    if (!hasAdminRights) {
-      showToast("Solo administradores pueden dar de baja registros.");
-      return;
-    }
-    const person = (data[loc] || []).find((p) => String(p.id) === String(id));
+  const performArchiveRosterEntry = async (loc, id) => {
+    const person =
+      (data[loc] || []).find((p) => String(p.id) === String(id)) ||
+      (cancelledData[loc] || []).find((p) => String(p.id) === String(id));
     if (!person) return;
+    await archiveParticipantToFirestore(person, loc, {
+      fromWaitlist: false,
+      sourceKind: 'roster',
+      eventDisplayName: currentEvent?.name ?? null,
+    });
+    addLog(
+      'Eliminación de Registro',
+      `Archivó el registro de ${person.name} en la sede ${loc}. El ID VNPM y los datos personales permanecen en Firebase para precargar en otros eventos.`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
+    );
+    showToast('Registro archivado. Puedes precargar estos datos desde la búsqueda de perfiles.');
+  };
+
+  const performArchiveWaitlistEntry = async (loc, id) => {
+    const person = (waitlistData[loc] || []).find((p) => String(p.id) === String(id));
+    if (!person) return;
+    await archiveParticipantToFirestore(person, loc, {
+      fromWaitlist: true,
+      sourceKind: 'waitlist',
+      eventDisplayName: currentEvent?.name ?? null,
+    });
+    addLog(
+      'Lista de Espera',
+      `Archivó a ${person.name} (lista de espera, sede ${loc}). Los datos personales siguen disponibles para precargar en otros eventos.`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
+    );
+    showToast('Entrada archivada. Puedes precargar estos datos desde la búsqueda de perfiles.');
+  };
+
+  const performCancelEntry = async (loc, id) => {
+    const person = (data[loc] || []).find((p) => String(p.id) === String(id));
+    if (!person || participantIsCancelled(person)) return;
     const cancelledAt = Date.now();
     const refundPendingAmount = Math.max(0, parseFloat(person.paid || 0) || 0);
+    const existingNotifications = Array.isArray(person.whatsAppFinanceNotifications) ? [...person.whatsAppFinanceNotifications] : [];
+    const latestUnsentIdx = existingNotifications
+      .map((n, idx) => ({ n, idx }))
+      .filter(({ n }) => n && !n.sent)
+      .sort((a, b) => Number(b.n.createdAt || 0) - Number(a.n.createdAt || 0))[0]?.idx;
+    const bajaNotification = {
+      id: `wa-bja-cancel-${cancelledAt}`,
+      kind: 'baja',
+      amount: 0,
+      pendingAmount: 0,
+      isLiquidado: false,
+      createdAt: cancelledAt,
+      sent: false,
+      sentAt: null,
+      message: buildArchiveWhatsAppMessage(person, loc, false, cancelledAt),
+    };
+    if (Number.isInteger(latestUnsentIdx)) {
+      existingNotifications[latestUnsentIdx] = { ...existingNotifications[latestUnsentIdx], ...bajaNotification, id: existingNotifications[latestUnsentIdx].id || bajaNotification.id };
+    } else {
+      existingNotifications.push(bajaNotification);
+    }
     const payload = {
       status: PARTICIPANT_STATUS_CANCELLED,
       cancelledAt,
       cancelledFromLocation: loc,
       refundPendingAmount,
       refundAsDonation: false,
+      whatsAppFinanceNotifications: existingNotifications,
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
     };
     await updateDoc(getDocRef('app_participants', String(id)), payload);
@@ -3320,12 +4827,123 @@ const App = () => {
     showToast('Registro dado de baja. Ya no cuenta en inscritos/becados/servidores.');
   };
 
+  const closeRegistryConfirmModal = () => {
+    setRegistryConfirmModal({
+      isOpen: false,
+      type: null,
+      loc: '',
+      personId: '',
+      personName: '',
+      donationId: '',
+      donationAmount: 0,
+      refundAmount: 0,
+    });
+  };
+
+  const handleRegistryConfirmSubmit = async () => {
+    const m = registryConfirmModal;
+    if (!m.isOpen || !m.type) return;
+    if (registryConfirmBusy) return;
+    setRegistryConfirmBusy(true);
+    // Cerrar de inmediato para evitar dobles confirmaciones por clicks rápidos.
+    closeRegistryConfirmModal();
+    try {
+      if (m.type === 'archive_roster') await performArchiveRosterEntry(m.loc, m.personId);
+      else if (m.type === 'archive_waitlist') await performArchiveWaitlistEntry(m.loc, m.personId);
+      else if (m.type === 'cancel_entry') await performCancelEntry(m.loc, m.personId);
+      else if (m.type === 'delete_donation' && m.donationId) await handleDeleteDonation(m.donationId);
+      else if (m.type === 'remove_pending_refund' && m.personId) await removePendingRefundBySuperUser(m.personId);
+    } catch (e) {
+      console.error(e);
+      showToast('No se pudo completar la acción. Revisa conexión o permisos.');
+    } finally {
+      setRegistryConfirmBusy(false);
+    }
+  };
+
+  const removeEntry = (loc, id) => {
+    if (!hasAdminRights) {
+      showToast("Solo administradores pueden eliminar registros.");
+      return;
+    }
+    if (registryConfirmBusy) return;
+    const person =
+      (data[loc] || []).find((p) => String(p.id) === String(id)) ||
+      (cancelledData[loc] || []).find((p) => String(p.id) === String(id));
+    if (!person) return;
+    setRegistryConfirmModal({
+      isOpen: true,
+      type: 'archive_roster',
+      loc,
+      personId: String(id),
+      personName: person.name || 'este registro',
+      donationId: '',
+      donationAmount: 0,
+      refundAmount: 0,
+    });
+  };
+
+  const removeWaitlistEntry = (loc, id) => {
+    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
+      showToast("No tienes permisos para modificar lista de espera en esta sede/evento.");
+      return;
+    }
+    if (registryConfirmBusy) return;
+    const person = (waitlistData[loc] || []).find((p) => String(p.id) === String(id));
+    if (!person) return;
+    setRegistryConfirmModal({
+      isOpen: true,
+      type: 'archive_waitlist',
+      loc,
+      personId: String(id),
+      personName: person.name || 'este registro',
+      donationId: '',
+      donationAmount: 0,
+      refundAmount: 0,
+    });
+  };
+
+  const cancelEntry = (loc, id) => {
+    if (!hasAdminRights) {
+      showToast("Solo administradores pueden dar de baja registros.");
+      return;
+    }
+    if (registryConfirmBusy) return;
+    const person = (data[loc] || []).find((p) => String(p.id) === String(id));
+    if (!person || participantIsCancelled(person)) return;
+    setRegistryConfirmModal({
+      isOpen: true,
+      type: 'cancel_entry',
+      loc,
+      personId: String(id),
+      personName: person.name || 'este registro',
+      donationId: '',
+      donationAmount: 0,
+      refundAmount: 0,
+    });
+  };
+
+  const openDeleteDonationConfirm = (don) => {
+    setRegistryConfirmModal({
+      isOpen: true,
+      type: 'delete_donation',
+      loc: '',
+      personId: '',
+      personName: '',
+      donationId: String(don.id),
+      donationAmount: parseFloat(don.amount) || 0,
+      refundAmount: 0,
+    });
+  };
+
   const reactivateEntry = async (loc, id) => {
     if (!hasAdminRights) {
       showToast("Solo administradores pueden reactivar registros.");
       return;
     }
-    const person = (data[loc] || []).find((p) => String(p.id) === String(id));
+    const person =
+      (cancelledData[loc] || []).find((p) => String(p.id) === String(id)) ||
+      (data[loc] || []).find((p) => String(p.id) === String(id));
     if (!person || !participantIsCancelled(person)) return;
     const payload = {
       status: 'active',
@@ -3355,8 +4973,56 @@ const App = () => {
       refundPendingAmount: 0,
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
     });
-    addLog('Gastos', `Marcó como donación el saldo pendiente de devolución de ${person.name}.`);
+    addLog('Gastos', 'Movimiento en lista de gastos: saldo pendiente de devolución marcado como donación (auditoría sin detalle de participante).');
     showToast('Saldo marcado como donación. Vuelve a sumarse al balance neto.');
+  };
+
+  const removePendingRefundBySuperUser = async (personId) => {
+    if (!isSuperUser || !canAccessExpenses) return;
+    const person = allParticipants.find((p) => String(p.id) === String(personId));
+    if (!person || !participantIsCancelled(person)) return;
+    const pendingAmount = person.refundAsDonation
+      ? 0
+      : Math.max(0, Number(person.refundPendingAmount ?? person.paid ?? 0) || 0);
+    if (pendingAmount <= 0) {
+      showToast('Ese saldo ya no está pendiente o fue actualizado.');
+      return;
+    }
+    const payload = {
+      refundPendingAmount: 0,
+      refundAsDonation: false,
+      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+    };
+    await updateDoc(getDocRef('app_participants', String(personId)), payload);
+    addLog(
+      'Gastos',
+      `SuperUsuario eliminó saldo pendiente de devolución (lista de gastos). Monto quitado: $${pendingAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}. Participante doc: ${personId}. Evento: ${currentEvent?.name || currentEvent?.id || '—'}.`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
+      { isHidden: true }
+    );
+    showToast('Saldo eliminado de la lista. El balance neto se actualizó.');
+  };
+
+  const openRemovePendingRefundConfirm = (p) => {
+    if (!isSuperUser || !canAccessExpenses || registryConfirmBusy) return;
+    const person = allParticipants.find((x) => String(x.id) === String(p.id));
+    if (!person || !participantIsCancelled(person)) return;
+    const pendingAmount = person.refundAsDonation
+      ? 0
+      : Math.max(0, Number(person.refundPendingAmount ?? person.paid ?? 0) || 0);
+    if (pendingAmount <= 0) return;
+    setRegistryConfirmModal({
+      isOpen: true,
+      type: 'remove_pending_refund',
+      loc: '',
+      personId: String(p.id),
+      personName: person.name || 'este registro',
+      donationId: '',
+      donationAmount: 0,
+      refundAmount: pendingAmount,
+    });
   };
 
   const promoteWaitlistEntry = async (loc, id) => {
@@ -3388,11 +5054,12 @@ const App = () => {
       createdAt: promoteAt,
       sent: false,
       sentAt: null,
-      message: buildPromoteFromWaitlistWhatsAppMessage(person, loc),
+      message: buildPromoteFromWaitlistWhatsAppMessage(person, loc, promoteAt),
     };
     const payload = {
       status: 'active',
       scholarshipPendingApproval: false,
+      registeredAt: person.registeredAt || new Date(promoteAt).toISOString(),
       whatsAppFinanceNotifications: [...(person.whatsAppFinanceNotifications || []), promoteNotification],
     };
     if (globalConfig?.isDebugMode) {
@@ -3403,7 +5070,7 @@ const App = () => {
 
     const promBeca =
       person.isScholarship === 'Sí'
-        ? ` Becado ${person.scholarshipType === 'partial' ? 'parcial' : 'total'}${person.scholarshipType === 'partial' ? ` (aporte recaudado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}, abono registrado $${paidPromote.toLocaleString('es-MX')})` : ''}.`
+        ? ` Becado ${person.scholarshipType === 'partial' ? 'parcial' : 'total'}${person.scholarshipType === 'partial' ? ` (monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}, a liquidar $${Number(liqPromote || 0).toLocaleString('es-MX')}, abono $${paidPromote.toLocaleString('es-MX')})` : ''}.`
         : '';
     addLog(
       'Lista de Espera',
@@ -3414,13 +5081,8 @@ const App = () => {
     );
     showToast(
       person.isScholarship === 'Sí' && person.scholarshipType === 'partial'
-        ? `Inscrito (beca parcial). Abono registrado: $${paidPromote.toLocaleString('es-MX')}.`
+        ? `Inscrito (beca parcial). A liquidar: $${Number(liqPromote || 0).toLocaleString('es-MX')}. Abono: $${paidPromote.toLocaleString('es-MX')}.`
         : 'Registro promovido a inscritos.'
-    );
-    addLog(
-      'WhatsApp',
-      `Encoló aviso de promoción desde lista de espera para ${person.name} (sede ${loc}). Tipo: ${person.isScholarship === 'Sí' ? 'beca aprobada' : 'promoción a inscritos'}.`,
-      null
     );
   };
 
@@ -3461,9 +5123,11 @@ const App = () => {
     const commission = paymentMethod === 'Tarjeta' ? (addedAmount * commissionRate) : 0;
     const netAmount = paymentMethod === 'Tarjeta' ? (addedAmount - commission) : addedAmount;
 
+    const abonoInstant = new Date();
     const newPaymentRecord = {
       id: Date.now(),
-      date: new Date().toLocaleString('es-MX'),
+      date: abonoInstant.toLocaleString('es-MX'),
+      recordedAt: abonoInstant.toISOString(),
       amount: addedAmount, // bruto
       netAmount,
       method: paymentMethod,
@@ -3472,7 +5136,16 @@ const App = () => {
       commission,
       registeredBy: currentUser?.username
     };
-    const person = (data[paymentModal.loc] || []).find(p => String(p.id) === String(paymentModal.id));
+    const person = allParticipants.find((p) => String(p.id) === String(paymentModal.id));
+    if (!person) {
+      setPaymentModal(prev => ({ ...prev, error: 'Registro no encontrado.' }));
+      return;
+    }
+    if (participantIsCancelled(person)) {
+      setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' });
+      showToast('No puedes abonar a un registro dado de baja.');
+      return;
+    }
     const paidGrossNow = parseFloat(person.paid || 0);
     const paidNetNow = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGrossNow;
     const newPaidGross = paidGrossNow + addedAmount;
@@ -3485,16 +5158,17 @@ const App = () => {
       paymentHistory: [...(person.paymentHistory || []), newPaymentRecord]
     };
     const pendingAfterAbono = Math.max((Number(baseCost) || 0) - newPaidGross, 0);
+    const abonoCreatedAt = Date.now();
     const abonoNotification = {
-      id: `wa-abn-${Date.now()}`,
+      id: `wa-abn-${abonoCreatedAt}`,
       kind: 'abono',
       amount: addedAmount,
       pendingAmount: pendingAfterAbono,
       isLiquidado,
-      createdAt: Date.now(),
+      createdAt: abonoCreatedAt,
       sent: false,
       sentAt: null,
-      message: buildFinanceWhatsAppMessage(person, paymentModal.loc, addedAmount, pendingAfterAbono, isLiquidado, 'abono')
+      message: buildFinanceWhatsAppMessage(person, paymentModal.loc, addedAmount, pendingAfterAbono, isLiquidado, 'abono', abonoCreatedAt)
     };
     payload.whatsAppFinanceNotifications = [...(person.whatsAppFinanceNotifications || []), abonoNotification];
     if (globalConfig?.isDebugMode) {
@@ -3509,11 +5183,6 @@ const App = () => {
       null,
       null,
       { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
-    );
-    addLog(
-      'WhatsApp',
-      `Encoló notificación financiera de abono para ${person.name || 'persona'} (sede ${paymentModal.loc}). Pendiente: ${pendingAfterAbono}. Liquida: ${isLiquidado ? 'Sí' : 'No'}.`,
-      null
     );
     setPaymentModal({
       isOpen: false,
@@ -3545,9 +5214,11 @@ const App = () => {
     }
 
     const prevHistory = person.paymentHistory || [];
+    const commentInstant = new Date();
     const newHistoryItem = {
       id: Date.now(),
-      date: new Date().toLocaleString('es-MX'),
+      date: commentInstant.toLocaleString('es-MX'),
+      recordedAt: commentInstant.toISOString(),
       kind: 'comment',
       commentText: draft,
       registeredBy: currentUser?.username
@@ -3568,42 +5239,442 @@ const App = () => {
     showToast("Comentario guardado.");
   };
 
+  const closePaymentMethodEditModal = () =>
+    setPaymentMethodEditModal({
+      isOpen: false,
+      loc: '',
+      personId: null,
+      personName: '',
+      paymentIndex: null,
+      paymentId: null,
+      amount: 0,
+      oldMethod: 'Efectivo',
+      paymentMethod: 'Efectivo',
+      cardReference: '',
+    });
+
+  const openPaymentMethodEditModal = (person, personLoc, paymentIndex) => {
+    if (!hasAdminRights) return;
+    const hist = Array.isArray(person?.paymentHistory) ? person.paymentHistory : [];
+    const row = hist[paymentIndex];
+    if (!row || row.kind === 'comment') return;
+    const inferredMethod = row.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
+    setPaymentMethodEditModal({
+      isOpen: true,
+      loc: personLoc || person.location || '',
+      personId: person.id,
+      personName: person.name || 'participante',
+      paymentIndex,
+      paymentId: row.id ?? null,
+      amount: Number(row.amount) || 0,
+      oldMethod: inferredMethod,
+      paymentMethod: inferredMethod,
+      cardReference: String(row.reference || ''),
+    });
+  };
+
+  const handleSavePaymentMethodEdit = async () => {
+    if (!hasAdminRights || !paymentMethodEditModal.isOpen) return;
+    const person = allParticipants.find((p) => String(p.id) === String(paymentMethodEditModal.personId));
+    if (!person) {
+      showToast('Participante no encontrado.');
+      closePaymentMethodEditModal();
+      return;
+    }
+    const idx = paymentMethodEditModal.paymentIndex;
+    const hist = [...(person.paymentHistory || [])];
+    if (idx == null || idx < 0 || idx >= hist.length) {
+      showToast('Movimiento no encontrado.');
+      closePaymentMethodEditModal();
+      return;
+    }
+    const row = hist[idx];
+    if (!row || row.kind === 'comment') {
+      showToast('Ese movimiento no admite cambio de método.');
+      closePaymentMethodEditModal();
+      return;
+    }
+    if (paymentMethodEditModal.paymentId != null && String(row.id) !== String(paymentMethodEditModal.paymentId)) {
+      showToast('El historial cambió; vuelve a abrir el editor.');
+      closePaymentMethodEditModal();
+      return;
+    }
+
+    const newMethod = paymentMethodEditModal.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+    const amount = Number(row.amount) || 0;
+    const commissionRate = getCardCommissionRate();
+    const oldMethod = row.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
+    const oldNet =
+      Number.isFinite(parseFloat(row.netAmount))
+        ? parseFloat(row.netAmount)
+        : (oldMethod === 'Tarjeta' ? (amount - (amount * commissionRate)) : amount);
+    const newCommission = newMethod === 'Tarjeta' ? (amount * commissionRate) : 0;
+    const newNet = newMethod === 'Tarjeta' ? (amount - newCommission) : amount;
+    const nextReference = newMethod === 'Tarjeta' ? String(paymentMethodEditModal.cardReference || '').trim() : '';
+
+    if (
+      newMethod === oldMethod &&
+      String(nextReference || '') === String(row.reference || '')
+    ) {
+      showToast('No hubo cambios en el tipo de abono.');
+      closePaymentMethodEditModal();
+      return;
+    }
+
+    hist[idx] = {
+      ...row,
+      method: newMethod,
+      netAmount: newNet,
+      commission: newCommission,
+      reference: nextReference,
+    };
+
+    const originalPaidGross = parseFloat(person.paid || 0) || 0;
+    const originalPaidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : originalPaidGross;
+    const nextPaidNet = originalPaidNet + (newNet - oldNet);
+    const payload = {
+      paymentHistory: hist,
+      paidNet: nextPaidNet,
+      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+    };
+
+    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
+    addLog(
+      'Finanzas',
+      `Actualizó tipo de abono en historial para ${person.name} (${paymentMethodEditModal.loc || person.location || '—'}): ${oldMethod} -> ${newMethod}${nextReference ? ` (Ref: ${nextReference})` : ''}.`,
+      null,
+      null,
+      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
+    );
+    closePaymentMethodEditModal();
+    showToast('Tipo de abono actualizado.');
+  };
+
+  const closeSuperDateEditModal = () =>
+    setSuperDateEditModal({
+      isOpen: false,
+      mode: '',
+      personId: null,
+      loc: '',
+      paymentIndex: null,
+      paymentId: null,
+      datetimeLocal: '',
+    });
+
+  const openSuperRegistrationDateEdit = (person, personLoc) => {
+    if (!canEditRegistryDates) return;
+    const hist = person.paymentHistory || [];
+    let base = person.registeredAt;
+    if (!base) {
+      const firstPay = hist.find((h) => h && h.kind !== 'comment');
+      if (firstPay?.recordedAt) base = firstPay.recordedAt;
+      else if (firstPay && typeof firstPay.id === 'number') base = firstPay.id;
+    }
+    if (base == null || base === '') base = Date.now();
+    setSuperDateEditModal({
+      isOpen: true,
+      mode: 'registration',
+      personId: person.id,
+      loc: personLoc,
+      paymentIndex: null,
+      paymentId: null,
+      datetimeLocal: toDatetimeLocalValue(base),
+    });
+  };
+
+  const openSuperPaymentDateEdit = (person, personLoc, paymentIndex) => {
+    if (!canEditRegistryDates) return;
+    const hist = person.paymentHistory || [];
+    const pay = hist[paymentIndex];
+    if (!pay || pay.kind === 'comment') return;
+    let base = pay.recordedAt;
+    if (!base && typeof pay.id === 'number') base = pay.id;
+    if (base == null || base === '') base = Date.now();
+    setSuperDateEditModal({
+      isOpen: true,
+      mode: 'payment',
+      personId: person.id,
+      loc: personLoc,
+      paymentIndex,
+      paymentId: pay.id ?? null,
+      datetimeLocal: toDatetimeLocalValue(base),
+    });
+  };
+
+  const handleSuperSaveDateEdit = async () => {
+    if (!canEditRegistryDates || !superDateEditModal.isOpen) return;
+    const iso = fromDatetimeLocalToIso(superDateEditModal.datetimeLocal);
+    if (!iso) {
+      showToast('Indica una fecha y hora válidas.');
+      return;
+    }
+    const personId = superDateEditModal.personId;
+    const person = allParticipants.find((p) => String(p.id) === String(personId));
+    if (!person) {
+      showToast('Participante no encontrado.');
+      return;
+    }
+    const debugExtras = globalConfig?.isDebugMode
+      ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId }
+      : {};
+    const locLabel = superDateEditModal.loc || person.location || '';
+    const dateEditActor = isSuperUser ? 'SuperUsuario' : (currentUser?.username || 'Usuario');
+    try {
+      if (superDateEditModal.mode === 'registration') {
+        const oldRegIso = person.registeredAt;
+        const oldRegMs = parseFlexibleInstantMs(oldRegIso);
+        const hist = [...(person.paymentHistory || [])];
+        const dNew = new Date(iso);
+        const dateStrNew = dNew.toLocaleString('es-MX');
+        const serviceForNewInstant = getAutoPaymentService(dNew);
+        const firstPayIdx = hist.findIndex((r) => r && r.kind !== 'comment');
+        let historyChanged = false;
+        for (let i = 0; i < hist.length; i += 1) {
+          const row = hist[i];
+          if (!row || row.kind === 'comment') continue;
+          let tiedToRegistration = false;
+          if (oldRegIso && row.recordedAt) {
+            if (String(row.recordedAt).trim() === String(oldRegIso).trim()) {
+              tiedToRegistration = true;
+            } else {
+              const rowMsFromRec = parseFlexibleInstantMs(row.recordedAt);
+              if (oldRegMs != null && rowMsFromRec != null && rowMsFromRec === oldRegMs) {
+                tiedToRegistration = true;
+              }
+            }
+          }
+          if (!tiedToRegistration && firstPayIdx === i && oldRegMs != null) {
+            const rowMs = getPaymentRowInstantMsPreferRecorded(row);
+            if (rowMs != null && Math.abs(rowMs - oldRegMs) <= 5000) {
+              tiedToRegistration = true;
+            }
+          }
+          if (tiedToRegistration) {
+            hist[i] = { ...row, recordedAt: iso, date: dateStrNew, service: serviceForNewInstant };
+            historyChanged = true;
+          }
+        }
+
+        // Requerimiento: al editar manualmente la fecha, el costo a pagar debe reflejar la fecha nueva,
+        // considerando tanto el precio dinámico como la vigencia de campañas de descuento.
+        const newAnchorMs = dNew.getTime();
+        const isoDate = new Date(newAnchorMs).toISOString().split('T')[0];
+        const pricingForNewDate = getPricingForDate(currentEvent, newAnchorMs);
+        const baseNew = getPersonCost(person, pricingForNewDate);
+
+        const selectedCampaignId = String(person.discountCampaignId || '').trim();
+        const selectedCampaignConcept = String(person.discountCampaignConcept || '').trim();
+        const campaignById = selectedCampaignId ? findDiscountCampaignById(currentEvent, selectedCampaignId) : null;
+        const campaignByConcept = !campaignById && selectedCampaignConcept && Array.isArray(currentEvent?.discountCampaigns)
+          ? currentEvent.discountCampaigns.find(c =>
+            String(c?.concept || '').trim() === selectedCampaignConcept &&
+            campaignMatchesPersonProfile(c, person)
+          ) || null
+          : null;
+        const selectedCampaign = campaignById || campaignByConcept;
+
+        const hasDiscountSelection = selectedCampaignId !== '' || selectedCampaignConcept !== '';
+        const campaignAppliesOnNewDate =
+          selectedCampaign &&
+          campaignMatchesPersonProfile(selectedCampaign, person) &&
+          (!discountCampaignHasDateRange(selectedCampaign) || isDiscountCampaignVigenteOnDate(selectedCampaign, isoDate));
+
+        let nextRegisteredCost = baseNew;
+        if (hasDiscountSelection) {
+          // Si la campaña no aplica por vigencia/fechas, se revierte al costo base del evento para esa fecha.
+          nextRegisteredCost = campaignAppliesOnNewDate
+            ? Math.max(0, Number(selectedCampaign?.finalAmount) || 0)
+            : baseNew;
+        }
+
+        const regPayload = {
+          registeredAt: iso,
+          paymentService: serviceForNewInstant,
+          registeredCost: nextRegisteredCost,
+          ...debugExtras
+        };
+        if (historyChanged) regPayload.paymentHistory = hist;
+        await updateDoc(getDocRef('app_participants', String(personId)), regPayload);
+        addLog(
+          'Sistema',
+          `${dateEditActor} ajustó la fecha de registro de ${person.name || 'participante'} (sede ${locLabel})${historyChanged ? ' y la marca de tiempo del pago inicial vinculado' : ''}.`,
+          null,
+          null,
+          { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
+          { isHidden: true }
+        );
+      } else if (superDateEditModal.mode === 'payment') {
+        const idx = superDateEditModal.paymentIndex;
+        const hist = [...(person.paymentHistory || [])];
+        if (idx == null || idx < 0 || idx >= hist.length) {
+          showToast('Movimiento no encontrado.');
+          return;
+        }
+        const row = hist[idx];
+        if (superDateEditModal.paymentId != null && String(row.id) !== String(superDateEditModal.paymentId)) {
+          showToast('El historial cambió; vuelve a abrir el editor.');
+          return;
+        }
+        if (row.kind === 'comment') {
+          showToast('Este movimiento no admite cambio de fecha aquí.');
+          return;
+        }
+        const d = new Date(iso);
+        const serviceForPayment = getAutoPaymentService(d);
+        hist[idx] = { ...row, recordedAt: iso, date: d.toLocaleString('es-MX'), service: serviceForPayment };
+
+        // Si el pago editado estaba "anclado" al registro (o no existía registeredAt y es el primer pago),
+        // entonces el costo final (precio dinámico) debe recalcularse usando esta nueva fecha.
+        const firstPayIdx = hist.findIndex((r) => r && r.kind !== 'comment');
+        const oldRegIso = person.registeredAt;
+        const oldRegMs = parseFlexibleInstantMs(oldRegIso);
+        const rowOldMs = parseFlexibleInstantMs(row.recordedAt) ?? (typeof row.id === 'number' && Number.isFinite(row.id) ? row.id : null);
+
+        const isTiedToRegistration =
+          (oldRegIso && row.recordedAt && String(row.recordedAt).trim() === String(oldRegIso).trim()) ||
+          (oldRegMs != null && rowOldMs != null && Math.abs(oldRegMs - rowOldMs) <= 5000) ||
+          (!oldRegIso && idx === firstPayIdx);
+
+        let nextRegisteredCost = null;
+        if (isTiedToRegistration) {
+          // Requerimiento: al editar manualmente la fecha del pago anclado al registro,
+          // el costo a pagar debe reflejar la fecha nueva, incluyendo vigencia de campañas.
+          const anchorNewMs = d.getTime();
+          const isoDate = new Date(anchorNewMs).toISOString().split('T')[0];
+          const pricingForNewDate = getPricingForDate(currentEvent, anchorNewMs);
+          const baseNew = getPersonCost(person, pricingForNewDate);
+
+          const selectedCampaignId = String(person.discountCampaignId || '').trim();
+          const selectedCampaignConcept = String(person.discountCampaignConcept || '').trim();
+          const campaignById = selectedCampaignId ? findDiscountCampaignById(currentEvent, selectedCampaignId) : null;
+          const campaignByConcept = !campaignById && selectedCampaignConcept && Array.isArray(currentEvent?.discountCampaigns)
+            ? currentEvent.discountCampaigns.find(c =>
+              String(c?.concept || '').trim() === selectedCampaignConcept &&
+              campaignMatchesPersonProfile(c, person)
+            ) || null
+            : null;
+          const selectedCampaign = campaignById || campaignByConcept;
+
+          const hasDiscountSelection = selectedCampaignId !== '' || selectedCampaignConcept !== '';
+          const campaignAppliesOnNewDate =
+            selectedCampaign &&
+            campaignMatchesPersonProfile(selectedCampaign, person) &&
+            (!discountCampaignHasDateRange(selectedCampaign) || isDiscountCampaignVigenteOnDate(selectedCampaign, isoDate));
+
+          nextRegisteredCost = baseNew;
+          if (hasDiscountSelection) {
+            nextRegisteredCost = campaignAppliesOnNewDate
+              ? Math.max(0, Number(selectedCampaign?.finalAmount) || 0)
+              : baseNew;
+          }
+        }
+
+        const payload = {
+          paymentHistory: hist,
+          ...(isTiedToRegistration ? { registeredAt: iso } : {}),
+          ...(nextRegisteredCost != null ? { registeredCost: nextRegisteredCost } : {}),
+          ...debugExtras,
+        };
+        await updateDoc(getDocRef('app_participants', String(personId)), payload);
+        addLog(
+          'Sistema',
+          `${dateEditActor} ajustó la fecha de un movimiento en el historial de pagos de ${person.name || 'participante'} (sede ${locLabel}).`,
+          null,
+          null,
+          { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
+          { isHidden: true }
+        );
+      } else {
+        return;
+      }
+      closeSuperDateEditModal();
+      showToast('Fecha actualizada.');
+    } catch (err) {
+      console.error(err);
+      showToast('No se pudo guardar la fecha.');
+    }
+  };
+
   // ─────────────────────────────────────────────
   // REUSABLE COMPONENTS
   // ─────────────────────────────────────────────
   const renderUsers = () => (
-    <div className="p-6 space-y-8 animate-in fade-in duration-500">
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-        <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2"><UserCog className="text-indigo-500" /> Gestión de Usuarios</h2>
-        {hasAdminRights ? (
-          <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-8 bg-slate-50 p-4 rounded-xl border border-slate-100 items-end">
-            <div className="space-y-1"><label className={labelClasses}>Usuario</label><input type="text" required placeholder="Nuevo usuario" className={inputClasses} value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} /></div>
-            <div className="space-y-1"><label className={labelClasses}>Contraseña</label><input type="password" required placeholder="••••••••" className={inputClasses} value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} /></div>
-            <div className="space-y-1">
-              <label className={labelClasses}>Rol</label>
-              <select className={inputClasses} value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}>
-                <option value="Administrador">Administrador</option>
-                <option value="Editor">Editor</option>
-                <option value="Lector">Lector</option>
-              </select>
+    <div className="max-w-6xl mx-auto p-6 space-y-6 animate-in fade-in duration-500">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
+            <UserCog className="text-indigo-500 shrink-0" /> Gestión de usuarios
+          </h2>
+          <p className="text-sm text-slate-500 mt-1 max-w-xl">
+            Alta de cuentas, roles (Administrador, Editor, Lector) y restricciones. Solo el SuperUsuario puede definir accesos por evento/sede y permisos avanzados.
+          </p>
+        </div>
+        {isSuperUser && (
+          <button
+            type="button"
+            onClick={() => {
+              setPanelNavForm({ ...DEFAULT_PANEL_NAV, ...panelNavMerged });
+              setPanelNavModalOpen(true);
+            }}
+            className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-sm bg-violet-50 hover:bg-violet-100 text-violet-700 border border-violet-200 shrink-0"
+            title="Secciones del menú lateral visibles para Editor y Lector"
+          >
+            <PanelLeft size={16} /> Menú lateral (Editor/Lector)
+          </button>
+        )}
+      </div>
+
+      {hasAdminRights ? (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/80">
+            <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider flex items-center gap-2">
+              <Plus size={16} className="text-indigo-500" /> Nuevo usuario
+            </h3>
+          </div>
+          <form onSubmit={handleAddUser} className="p-5 space-y-5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="space-y-1">
+                <label className={labelClasses}>Usuario</label>
+                <input type="text" required placeholder="Nombre de usuario" className={inputClasses} value={newUser.username} onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} />
+              </div>
+              <div className="space-y-1">
+                <label className={labelClasses}>Contraseña</label>
+                <input type="password" required placeholder="••••••••" className={inputClasses} value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} />
+              </div>
+              <div className="space-y-1">
+                <label className={labelClasses}>Rol</label>
+                <select className={inputClasses} value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}>
+                  <option value="Administrador">Administrador</option>
+                  <option value="Editor">Editor</option>
+                  <option value="Lector">Lector</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className={labelClasses}>Ventana inicial al entrar al evento</label>
+                <select className={inputClasses} value={newUser.preferredLandingTab || 'Summary'} onChange={(e) => setNewUser({ ...newUser, preferredLandingTab: e.target.value })}>
+                  <option value="Summary">Resumen general</option>
+                  {(() => {
+                    let locs = ['Administrador', 'SuperUsuario'].includes(newUser.role)
+                      ? allKnownLocationNames
+                      : ((newUser.allowedLocations || []).length ? newUser.allowedLocations : allKnownLocationNames);
+                    const p = String(newUser.preferredLandingTab || '').trim();
+                    if (p && p !== 'Summary' && !locs.includes(p)) locs = [...locs, p];
+                    return locs.map((loc) => (
+                      <option key={`pref-new-${loc}`} value={loc}>
+                        {loc}
+                      </option>
+                    ));
+                  })()}
+                </select>
+              </div>
             </div>
-            <div className="space-y-1">
-              <label className={labelClasses}>Ventana inicial al entrar al evento</label>
-              <select className={inputClasses} value={newUser.preferredLandingTab || 'Summary'} onChange={e => setNewUser({ ...newUser, preferredLandingTab: e.target.value })}>
-                <option value="Summary">Resumen General</option>
-                {(
-                  ['Administrador', 'SuperUsuario'].includes(newUser.role)
-                    ? globalLocations
-                    : ((newUser.allowedLocations || []).length ? newUser.allowedLocations : globalLocations)
-                ).map((loc) => <option key={`pref-new-${loc}`} value={loc}>{loc}</option>)}
-              </select>
-            </div>
+
             {newUser.role !== 'SuperUsuario' && (
-              <div className="md:col-span-2 lg:col-span-2 space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 space-y-3">
                 <p className={labelClasses}>Accesos permitidos</p>
-                {!isSuperUser && <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede ajustar accesos por evento/sede.</p>}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className="space-y-1">
+                {!isSuperUser && <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede ajustar eventos y sedes.</p>}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2 rounded-lg border border-white bg-white p-3 shadow-sm">
                     <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Eventos</label>
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
                       <input
@@ -3611,11 +5682,11 @@ const App = () => {
                         className="accent-indigo-600"
                         disabled={!isSuperUser}
                         checked={(newUser.allowedEventIds || []).length === 0}
-                        onChange={(e) => setNewUser({ ...newUser, allowedEventIds: e.target.checked ? [] : (sortedEvents[0] ? [sortedEvents[0].id] : []) })}
+                        onChange={(e) => setNewUser({ ...newUser, allowedEventIds: e.target.checked ? [] : sortedEvents[0] ? [sortedEvents[0].id] : [] })}
                       />
                       Todos los eventos
                     </label>
-                    <div className="max-h-28 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1">
+                    <div className="max-h-32 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1">
                       {sortedEvents.map((ev) => {
                         const checked = (newUser.allowedEventIds || []).includes(ev.id);
                         return (
@@ -3637,7 +5708,7 @@ const App = () => {
                       })}
                     </div>
                   </div>
-                  <div className="space-y-1">
+                  <div className="space-y-2 rounded-lg border border-white bg-white p-3 shadow-sm">
                     <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Sedes</label>
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
                       <input
@@ -3645,12 +5716,12 @@ const App = () => {
                         className="accent-indigo-600"
                         disabled={!isSuperUser}
                         checked={(newUser.allowedLocations || []).length === 0}
-                        onChange={(e) => setNewUser({ ...newUser, allowedLocations: e.target.checked ? [] : (globalLocations[0] ? [globalLocations[0]] : []) })}
+                        onChange={(e) => setNewUser({ ...newUser, allowedLocations: e.target.checked ? [] : allKnownLocationNames[0] ? [allKnownLocationNames[0]] : [] })}
                       />
                       Todas las sedes
                     </label>
-                    <div className="max-h-28 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1">
-                      {globalLocations.map((loc) => {
+                    <div className="max-h-32 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1">
+                      {allKnownLocationNames.map((loc) => {
                         const checked = (newUser.allowedLocations || []).includes(loc);
                         return (
                           <label key={loc} className="flex items-center gap-2 text-xs text-slate-700">
@@ -3674,74 +5745,178 @@ const App = () => {
                 </div>
               </div>
             )}
-            <div className="md:col-span-2 lg:col-span-2 space-y-2 rounded-xl border border-slate-200 bg-white p-3">
-              <p className={labelClasses}>Permisos</p>
-              {!isSuperUser && (
-                <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede modificar permisos avanzados.</p>
-              )}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                  <input type="checkbox" className="accent-indigo-600" checked={!!newUser.canViewFinances} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={e => setNewUser({ ...newUser, canViewFinances: e.target.checked })} />
-                  Ver finanzas
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 space-y-3">
+              <p className={labelClasses}>Permisos avanzados</p>
+              {!isSuperUser && <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede activar o desactivar estas opciones.</p>}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                  <input type="checkbox" className="accent-indigo-600 mt-0.5" checked={!!newUser.canViewFinances} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={(e) => setNewUser({ ...newUser, canViewFinances: e.target.checked })} />
+                  <span>Ver finanzas (resumen y montos donde aplique)</span>
                 </label>
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                  <input type="checkbox" className="accent-indigo-600" checked={!!newUser.canViewHiddenDonations} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={e => setNewUser({ ...newUser, canViewHiddenDonations: e.target.checked })} />
-                  Ver donaciones ocultas
+                <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                  <input type="checkbox" className="accent-indigo-600 mt-0.5" checked={!!newUser.canViewHiddenDonations} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={(e) => setNewUser({ ...newUser, canViewHiddenDonations: e.target.checked })} />
+                  <span>Ver donaciones ocultas</span>
                 </label>
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                  <input type="checkbox" className="accent-emerald-600" checked={!!newUser.canViewExpenses} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={e => setNewUser({ ...newUser, canViewExpenses: e.target.checked })} />
-                  Lista de gastos
+                <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                  <input type="checkbox" className="accent-emerald-600 mt-0.5" checked={!!newUser.canViewExpenses} disabled={!isSuperUser || newUser.role === 'SuperUsuario'} onChange={(e) => setNewUser({ ...newUser, canViewExpenses: e.target.checked })} />
+                  <span>Lista de gastos del evento</span>
+                </label>
+                <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                  <input
+                    type="checkbox"
+                    className="accent-slate-600 mt-0.5"
+                    checked={newUser.hideMyExpenseConcepts !== false}
+                    disabled={!isSuperUser}
+                    onChange={(e) => setNewUser({ ...newUser, hideMyExpenseConcepts: e.target.checked })}
+                  />
+                  <span>Ocultar mis conceptos de gastos para otros usuarios</span>
+                </label>
+                <label className="flex items-start gap-2 text-xs font-semibold text-slate-700 sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    className="accent-violet-600 mt-0.5"
+                    checked={!!newUser.canEditRegistryDates}
+                    disabled={!isSuperUser}
+                    onChange={(e) => setNewUser({ ...newUser, canEditRegistryDates: e.target.checked })}
+                  />
+                  <span>Puede editar fechas de registro y de abonos en el historial (misma lógica que SuperUsuario)</span>
                 </label>
               </div>
             </div>
-            <div className="flex items-end h-full md:col-span-4 lg:col-span-1"><button type="submit" className={btnPrimary}><Plus size={18} /> Añadir Usuario</button></div>
+
+            <div className="flex justify-end pt-1">
+              <button type="submit" className={btnPrimary}>
+                <Plus size={18} /> Añadir usuario
+              </button>
+            </div>
           </form>
-        ) : (
-          <div className="mb-8 p-4 bg-amber-50 border border-amber-100 rounded-xl text-amber-700 text-sm flex items-center gap-2"><ShieldAlert size={18} /><p><strong>Acceso Restringido:</strong> Solo los administradores pueden añadir nuevos usuarios.</p></div>
-        )}
-        <div className="overflow-x-auto border border-slate-100 rounded-xl">
-          <table className="w-full text-left">
-            <thead><tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100"><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Rol</th><th className="px-6 py-4 text-center">Acciones</th></tr></thead>
+        </div>
+      ) : (
+        <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl text-amber-800 text-sm flex items-start gap-3">
+          <ShieldAlert size={20} className="shrink-0 mt-0.5" />
+          <p>
+            <strong>Acceso restringido.</strong> Solo Administrador o SuperUsuario pueden crear o editar usuarios.
+          </p>
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider">Cuentas registradas</h3>
+          <span className="text-[11px] font-bold text-slate-400">{users.length} usuario(s)</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left min-w-[640px]">
+            <thead>
+              <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                <th className="px-5 py-3">Usuario</th>
+                <th className="px-5 py-3">Rol</th>
+                <th className="px-5 py-3">Permisos / etiquetas</th>
+                <th className="px-5 py-3 text-center w-28">Acciones</th>
+              </tr>
+            </thead>
             <tbody className="divide-y divide-slate-50">
-              {users.map(u => (
+              {users.map((u) => (
                 <tr key={u.id} className="hover:bg-slate-50/50">
-                  <td className="px-6 py-4 font-bold text-slate-700">
+                  <td className="px-5 py-3.5 align-top">
                     <div className="flex items-center gap-2">
-                      <div className={`w-2.5 h-2.5 rounded-full ${u.isOnline ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse' : 'bg-slate-300'}`} title={u.isOnline ? 'En línea' : 'Desconectado'} />
-                      {u.username}
-                      {currentUser.id === u.id && <span className="text-[10px] text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full ml-2">Tú</span>}
+                      <div
+                        className={`w-2.5 h-2.5 rounded-full shrink-0 ${u.isOnline ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse' : 'bg-slate-300'}`}
+                        title={u.isOnline ? 'En línea' : 'Desconectado'}
+                      />
+                      <span className="font-bold text-slate-800">{u.username}</span>
+                      {currentUser.id === u.id && (
+                        <span className="text-[10px] text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full font-black">Tú</span>
+                      )}
                     </div>
                   </td>
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${u.role === 'SuperUsuario' ? 'bg-amber-100 text-amber-700 border border-amber-200' : u.role === 'Administrador' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>{u.role}</span>
+                  <td className="px-5 py-3.5 align-top">
+                    <span
+                      className={`inline-block text-[10px] px-2 py-1 rounded-md font-black uppercase ${
+                        u.role === 'SuperUsuario' ? 'bg-amber-100 text-amber-800 border border-amber-200' : u.role === 'Administrador' ? 'bg-purple-100 text-purple-800' : 'bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      {u.role}
+                    </span>
+                  </td>
+                  <td className="px-5 py-3.5 align-top">
+                    <div className="flex flex-wrap gap-1.5">
                       {u.role === 'Lector' && u.canViewFinances && (
-                        <span className="text-[9px] bg-green-100 text-green-700 border border-green-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-black tracking-wider" title="Puede ver finanzas">
+                        <span className="text-[9px] bg-green-100 text-green-800 border border-green-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-black tracking-wider" title="Puede ver finanzas">
                           <DollarSign size={10} /> Finanzas
+                        </span>
+                      )}
+                      {u.canViewHiddenDonations && u.role !== 'SuperUsuario' && (
+                        <span className="text-[9px] bg-indigo-50 text-indigo-700 border border-indigo-100 px-1.5 py-0.5 rounded-md font-black" title="Donaciones ocultas">
+                          Donac. ocultas
+                        </span>
+                      )}
+                      {u.canViewExpenses && u.role !== 'SuperUsuario' && (
+                        <span className="text-[9px] bg-emerald-50 text-emerald-800 border border-emerald-100 px-1.5 py-0.5 rounded-md font-black" title="Lista de gastos">
+                          Gastos
+                        </span>
+                      )}
+                      {(u.role === 'SuperUsuario' || u.canEditRegistryDates) && (
+                        <span
+                          className="text-[9px] bg-violet-50 text-violet-800 border border-violet-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-black tracking-wider"
+                          title="Puede cambiar fechas de registro y de movimientos en el historial"
+                        >
+                          <Calendar size={11} /> Fechas
+                        </span>
+                      )}
+                      {u.hideMyExpenseConcepts !== false && (
+                        <span
+                          className="text-[9px] bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-black tracking-wider"
+                          title="Los conceptos de gastos propios se ocultan a otros"
+                        >
+                          <EyeOff size={12} /> Gastos ocultos
                         </span>
                       )}
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2">
-                    <button onClick={() => setEditingUser({
-                      isOpen: true,
-                      id: u.id,
-                      username: u.username,
-                      role: u.role,
-                      currentPasswordInput: '',
-                      newPassword: '',
-                      confirmPassword: '',
-                      canViewFinances: u.canViewFinances || false,
-                      restrictedEventId: u.restrictedEventId || '',
-                      restrictedLocation: u.restrictedLocation || '',
-                      allowedEventIds: getUserAllowedEventIds(u),
-                      allowedLocations: getUserAllowedLocations(u),
-                      preferredLandingTab: u.preferredLandingTab || 'Summary',
-                      canViewHiddenDonations: u.canViewHiddenDonations || false,
-                      canViewExpenses: u.canViewExpenses || false
-                    })} disabled={!hasAdminRights} className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}><Edit3 size={18} /></button>
-                    <button onClick={() => handleDeleteUser(u.id, u.username)} disabled={currentUser.id === u.id || !hasAdminRights} className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || !hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}><Trash2 size={18} /></button>
-                  </div></td>
+                  <td className="px-5 py-3.5 text-center align-top">
+                    <div className="flex items-center justify-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEditingUser({
+                            isOpen: true,
+                            id: u.id,
+                            username: u.username,
+                            role: u.role,
+                            currentPasswordInput: '',
+                            newPassword: '',
+                            confirmPassword: '',
+                            canViewFinances: u.canViewFinances || false,
+                            restrictedEventId: u.restrictedEventId || '',
+                            restrictedLocation: u.restrictedLocation || '',
+                            allowedEventIds: getUserAllowedEventIds(u),
+                            allowedLocations: getUserAllowedLocations(u),
+                            preferredLandingTab: u.preferredLandingTab || 'Summary',
+                            hideMyExpenseConcepts: u.hideMyExpenseConcepts !== false,
+                            canViewHiddenDonations: u.canViewHiddenDonations || false,
+                            canViewExpenses: u.canViewExpenses || false,
+                            canEditRegistryDates: u.role === 'SuperUsuario' ? true : !!u.canEditRegistryDates
+                          })
+                        }
+                        disabled={!hasAdminRights}
+                        className={`p-2 rounded-lg transition-all ${!hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}
+                        title="Editar"
+                      >
+                        <Edit3 size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteUser(u.id, u.username)}
+                        disabled={currentUser.id === u.id || !hasAdminRights}
+                        className={`p-2 rounded-lg transition-all ${currentUser.id === u.id || !hasAdminRights ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}
+                        title="Eliminar"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -3761,8 +5936,9 @@ const App = () => {
   };
 
   const toggleAllLogs = (displayedLogs, e) => {
+    const selectable = displayedLogs.filter((l) => !l.revertInfo?.isBackup);
     if (e.target.checked) {
-      setSelectedLogs(new Set(displayedLogs.map(l => l.id)));
+      setSelectedLogs(new Set(selectable.map((l) => l.id)));
     } else {
       setSelectedLogs(new Set());
     }
@@ -3770,21 +5946,56 @@ const App = () => {
 
   const deleteSelectedLogs = async () => {
     if (selectedLogs.size === 0) return;
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const isDebug = !!globalConfig?.isDebugMode;
+    const logsById = new Map(logs.map((l) => [String(l.id), l]));
+
+    let deletedCount = 0;
+    let blockedCount = 0;
+    let protectedBackupCount = 0;
+
     for (const id of selectedLogs) {
+      const log = logsById.get(String(id));
+      if (log?.revertInfo?.isBackup) {
+        protectedBackupCount += 1;
+        continue;
+      }
+      const ageMs = log ? now - extractLogMillis(log) : null;
+      const isRecent = ageMs != null ? ageMs <= thirtyDaysMs : false;
+
+      if (isDebug && isRecent) {
+        blockedCount += 1;
+        continue;
+      }
+
       await deleteDoc(getDocRef('app_logs', String(id)));
+      deletedCount += 1;
     }
+    const createdAtDel = Date.now();
     const logEntry = {
-      id: Date.now(),
+      id: `${createdAtDel}${Math.random().toString(36).slice(2, 10)}`,
+      createdAt: createdAtDel,
       eventId: 'Global',
       eventName: 'Sistema',
       timestamp: new Date().toLocaleString('es-MX'),
       username: currentUser?.username || 'Sistema',
       action: 'Borrado Selectivo',
-      details: `El SuperUsuario eliminó ${selectedLogs.size} registro(s) de actividad.`,
-      isHidden: true
+      details: `El SuperUsuario intentó borrar ${selectedLogs.size} registro(s) de actividad. Eliminados: ${deletedCount}. Protegidos (< 30 días en depuración): ${blockedCount}.`,
+      isHidden: true,
     };
     await setDoc(getDocRef('app_logs', String(logEntry.id)), logEntry);
-    showToast(`Se eliminaron ${selectedLogs.size} logs.`);
+    if (blockedCount > 0 && isDebug) {
+      showToast(
+        protectedBackupCount > 0
+          ? `Se eliminaron ${deletedCount} logs. Protegidos: ${blockedCount} reciente(s) en depuración, ${protectedBackupCount} copia automática.`
+          : `Se eliminaron ${deletedCount} logs. En depuración, se protegieron ${blockedCount} log(s) recientes (< 30 días).`
+      );
+    } else if (protectedBackupCount > 0) {
+      showToast(`Se eliminaron ${deletedCount} logs. No se eliminaron ${protectedBackupCount} registro(s) de copia automática (restauración disponible).`);
+    } else {
+      showToast(`Se eliminaron ${deletedCount} logs.`);
+    }
     setSelectedLogs(new Set());
   };
 
@@ -3798,6 +6009,7 @@ const App = () => {
     const uniqueMonths = [...new Set(allLogDates.map((d) => d.slice(0, 7)))].sort((a, b) => b.localeCompare(a));
 
     const displayedLogs = logs.filter(log => {
+      if (log.action === 'WhatsApp') return false;
       if (log.isDebug || log.isHidden) {
         if (!hasAdminRights || !showDebugLogs) return false;
       }
@@ -3823,6 +6035,9 @@ const App = () => {
 
       return matchContext && matchSearch && matchDate;
     });
+
+    const selectableDisplayedLogs = displayedLogs.filter((l) => !l.revertInfo?.isBackup);
+    const lastAutoBackupId = globalConfig?.lastBackupDate;
 
     const uniqueContexts = [...new Set(logs.map(l => l.eventName))];
 
@@ -3944,8 +6159,35 @@ const App = () => {
                   <Trash2 size={14} /> Borrar {selectedLogs.size}
                 </button>
               )}
+              {isSuperUser && selectedLogs.size === 0 && lastAutoBackupId && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setRestoreModal({
+                      isOpen: true,
+                      type: 'backup',
+                      log: {
+                        action: 'Copia de seguridad automática',
+                        timestamp: lastAutoBackupId,
+                        revertInfo: { isBackup: true, backupId: lastAutoBackupId },
+                      },
+                    })
+                  }
+                  className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-all active:scale-95"
+                  title="Restaurar la última copia guardada en Firestore (independiente del listado de logs)"
+                >
+                  <Database size={14} /> Última copia automática
+                </button>
+              )}
               {hasAdminRights && selectedLogs.size === 0 && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanOld', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
-              {isSuperUser && selectedLogs.size === 0 && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanRecent', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-500 text-white hover:bg-red-600 border border-red-600 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200"><Trash2 size={14} /> Limpiar &lt; 30 días</button>}
+              {isSuperUser && selectedLogs.size === 0 && !globalConfig?.isDebugMode && (
+                <button
+                  onClick={() => setRestoreModal({ isOpen: true, type: 'cleanRecent', log: null })}
+                  className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-500 text-white hover:bg-red-600 border border-red-600 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200"
+                >
+                  <Trash2 size={14} /> Limpiar &lt; 30 días
+                </button>
+              )}
               <span className="bg-slate-100 text-slate-500 text-xs font-bold px-3 py-1 rounded-full">{displayedLogs.length} eventos</span>
             </div>
           </div>
@@ -3953,7 +6195,7 @@ const App = () => {
             <table className="w-full text-left relative">
               <thead className="sticky top-0 bg-slate-50 shadow-sm">
                 <tr className="text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-200">
-                  {isSuperUser && <th className="px-6 py-4 w-10"><input type="checkbox" onChange={(e) => toggleAllLogs(displayedLogs, e)} checked={displayedLogs.length > 0 && selectedLogs.size === displayedLogs.length} className="accent-indigo-600 w-4 h-4 rounded cursor-pointer" /></th>}
+                  {isSuperUser && <th className="px-6 py-4 w-10"><input type="checkbox" onChange={(e) => toggleAllLogs(displayedLogs, e)} checked={selectableDisplayedLogs.length > 0 && selectableDisplayedLogs.every((l) => selectedLogs.has(l.id))} className="accent-indigo-600 w-4 h-4 rounded cursor-pointer" /></th>}
                   <th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acción</th><th className="px-6 py-4">Detalles</th>{hasAdminRights && <th className="px-6 py-4 text-center">Acciones</th>}
                 </tr>
               </thead>
@@ -3964,7 +6206,14 @@ const App = () => {
                   <tr key={log.id} className={`hover:bg-slate-50/50 transition-colors ${log.isDebug ? 'bg-orange-50/30' : log.isHidden ? 'bg-purple-50/30' : ''}`}>
                     {isSuperUser && (
                       <td className="px-6 py-4">
-                        <input type="checkbox" checked={selectedLogs.has(log.id)} onChange={() => toggleLogSelection(log.id)} className="accent-indigo-600 w-4 h-4 rounded cursor-pointer" />
+                        <input
+                          type="checkbox"
+                          disabled={!!log.revertInfo?.isBackup}
+                          checked={selectedLogs.has(log.id)}
+                          onChange={() => toggleLogSelection(log.id)}
+                          className="accent-indigo-600 w-4 h-4 rounded cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={log.revertInfo?.isBackup ? 'No se puede borrar: referencia de la última copia automática' : undefined}
+                        />
                       </td>
                     )}
                     <td className="px-6 py-4 text-xs font-mono text-slate-500 whitespace-nowrap">{log.timestamp}</td>
@@ -4004,10 +6253,56 @@ const App = () => {
     );
   };
 
+  const panelNavModalEl = currentUser && isSuperUser && panelNavModalOpen && (
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4" onClick={() => setPanelNavModalOpen(false)}>
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md animate-in zoom-in-95 duration-200 max-h-[85vh] overflow-y-auto border border-slate-100" onClick={(e) => e.stopPropagation()}>
+        <div className="p-6 border-b border-slate-100 flex justify-between items-start gap-3">
+          <div>
+            <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
+              <PanelLeft className="text-violet-600 shrink-0" size={22} /> Menú lateral del evento
+            </h3>
+            <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+              Activa o desactiva entradas del panel para usuarios con rol <span className="font-bold text-slate-700">Editor</span> o <span className="font-bold text-slate-700">Lector</span>.
+              Los <span className="font-bold text-slate-700">Administradores</span> y el <span className="font-bold text-slate-700">SuperUsuario</span> siempre ven el menú completo. <span className="font-bold text-slate-700">Resumen general</span> no se oculta.
+            </p>
+          </div>
+          <button type="button" onClick={() => setPanelNavModalOpen(false)} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full shrink-0"><XCircle size={20} /></button>
+        </div>
+        <div className="p-6 space-y-2">
+          {PANEL_NAV_CONFIG_ITEMS.map((item) => (
+            <label key={item.key} className="flex items-start gap-3 p-3 rounded-xl border border-slate-100 hover:bg-slate-50/80 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 accent-violet-600 rounded shrink-0"
+                checked={panelNavForm[item.key] !== false}
+                onChange={(e) => setPanelNavForm((prev) => ({ ...prev, [item.key]: e.target.checked }))}
+              />
+              <div className="min-w-0">
+                <span className="text-sm font-bold text-slate-800">{item.label}</span>
+                <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">{item.hint}</p>
+              </div>
+            </label>
+          ))}
+        </div>
+        <div className="p-6 border-t border-slate-100 flex gap-3">
+          <button type="button" onClick={() => setPanelNavModalOpen(false)} className={`${btnSecondary} flex-1`}>Cancelar</button>
+          <button type="button" onClick={handleSavePanelNavConfig} className={`${btnPrimary} flex-1`}>Guardar</button>
+        </div>
+      </div>
+    </div>
+  );
+
   // ─────────────────────────────────────────────
   //  SCREEN 1: LOGIN
   // ─────────────────────────────────────────────
   if (!currentUser) {
+    if (fbUser && !usersAuthReady) {
+      return (
+        <div className="min-h-screen bg-blue-950 flex items-center justify-center p-4">
+          <p className="text-white font-semibold">Cargando…</p>
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen bg-blue-950 flex items-center justify-center p-4 relative">
         {debugToast && (
@@ -4020,33 +6315,66 @@ const App = () => {
         )}
         <div className="bg-white rounded-3xl shadow-2xl overflow-hidden max-w-md w-full animate-in fade-in zoom-in duration-500">
           <div className="bg-blue-900 p-8 text-center">
-            <div className="bg-white/20 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
-              <Lock size={32} className="text-white" />
+            <div className="mx-auto mb-5 w-full max-w-[min(100%,280px)] rounded-2xl bg-white p-4 shadow-lg">
+              <img
+                src="/favicon.png"
+                alt="Vida Nueva Para el Mundo"
+                className="w-full h-auto max-h-[5.5rem] sm:max-h-24 object-contain object-center mx-auto"
+                width={400}
+                height={245}
+                decoding="async"
+              />
             </div>
             <h1 className="text-2xl font-black text-white tracking-tight leading-tight">
-              Registros Vida Nueva<br /><span className="text-blue-200 text-lg">Para El Mundo</span>
+              Registros VNPM
             </h1>
             <p className="text-blue-200 text-xs uppercase tracking-widest mt-2 font-bold">Sistema de Gestión</p>
           </div>
           <div className="p-8">
+            <h2 className="text-lg font-black text-slate-800 text-center mb-6">Iniciar sesión</h2>
             <form onSubmit={handleLogin} className="space-y-5">
               <div>
-                <label className={labelClasses}>Usuario</label>
+                <label className={labelClasses}>Usuario o correo</label>
                 <div className="relative mt-1">
                   <UserCircle className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  <input type="text" className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all" placeholder="Ingresa tu usuario" value={loginForm.username} onChange={e => setLoginForm({ ...loginForm, username: e.target.value })} />
+                  <input type="text" className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all" placeholder="Usuario o correo" value={loginForm.username} onChange={e => setLoginForm({ ...loginForm, username: e.target.value })} />
                 </div>
               </div>
               <div>
-                <label className={labelClasses}>Contraseña</label>
+                <label className={labelClasses} htmlFor="login-password">Contraseña</label>
                 <div className="relative mt-1">
                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  <input type="password" className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all" placeholder="••••••••" value={loginForm.password} onChange={e => setLoginForm({ ...loginForm, password: e.target.value })} />
+                  <input
+                    id="login-password"
+                    name="password"
+                    type={showLoginPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    className="w-full pl-10 pr-12 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all"
+                    placeholder="••••••••"
+                    value={loginForm.password}
+                    onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowLoginPassword((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+                    title={showLoginPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                    aria-label={showLoginPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                  >
+                    {showLoginPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
                 </div>
               </div>
-              {loginError && <p className="text-xs text-red-500 font-bold animate-in slide-in-from-top-1 text-center">{loginError}</p>}
-              <button type="submit" disabled={!fbUser} className="w-full bg-blue-800 hover:bg-blue-900 disabled:bg-slate-400 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-blue-900/20 active:scale-95 flex justify-center items-center gap-2">
-                {!fbUser ? <span className="animate-pulse">Conectando a la nube...</span> : 'Iniciar Sesión'}
+              {loginError && (
+                <p className="text-xs text-red-500 font-bold animate-in slide-in-from-top-1 text-left whitespace-pre-line leading-relaxed max-h-48 overflow-y-auto">
+                  {loginError}
+                </p>
+              )}
+              <button type="submit" disabled={loginBusy} className="w-full bg-blue-800 hover:bg-blue-900 disabled:bg-slate-400 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-blue-900/20 active:scale-95 flex justify-center items-center gap-2">
+                {loginBusy ? <span className="animate-pulse">Iniciando sesión…</span> : 'Iniciar sesión'}
               </button>
             </form>
           </div>
@@ -4080,16 +6408,28 @@ const App = () => {
               )}
               <div>
                 <h1 className="text-2xl font-black text-slate-800">
-                  {systemView === 'users' ? 'Gestión de Usuarios' : systemView === 'logs' ? 'Registro de Actividad' : 'Selecciona un Evento'}
+                  {systemView === 'users'
+                    ? 'Gestión de Usuarios'
+                    : systemView === 'logs'
+                      ? 'Registro de Actividad'
+                      : systemView === 'archive'
+                        ? 'Archivo de registros'
+                        : 'Selecciona un Evento'}
                 </h1>
                 <p className="text-sm text-slate-500">
-                  {systemView === 'users' ? 'Administra los accesos al sistema global.' : systemView === 'logs' ? 'Historial global de acciones en el sistema.' : 'Elige el evento que deseas administrar o crea uno nuevo.'}
+                  {systemView === 'users'
+                    ? 'Administra los accesos al sistema global.'
+                    : systemView === 'logs'
+                      ? 'Historial global de acciones en el sistema.'
+                      : systemView === 'archive'
+                        ? 'Solo lectura: registros archivados en Firebase (todos los campos).'
+                        : 'Elige el evento que deseas administrar o crea uno nuevo.'}
                 </p>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-4 border-t md:border-t-0 md:border-l border-slate-100 pt-4 md:pt-0 md:pl-6">
               {isSuperUser && (
-                <button onClick={toggleDebugMode} className={`flex items-center gap-1 md:gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-colors shadow-sm ${globalConfig?.isDebugMode ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-500'}`} title="Modo de prueba aislada">
+                <button type="button" onClick={toggleDebugMode} className={`flex items-center gap-1 md:gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-colors shadow-sm ${globalConfig?.isDebugMode ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-500'}`} title="Modo de prueba aislada">
                   <Bug size={14} /><span className="hidden sm:inline">{globalConfig?.isDebugMode ? 'Salir Depuración' : 'Depurar'}</span>
                 </button>
               )}
@@ -4103,12 +6443,31 @@ const App = () => {
                   <UserCog size={14} /> Usuarios
                 </button>
               )}
+              {systemView === 'events' && currentUser?.role !== 'Lector' && (
+                <button
+                  type="button"
+                  onClick={() => goTo('archive', null, 'Summary')}
+                  className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors text-xs flex items-center gap-2"
+                >
+                  <Archive size={14} /> Ver archivo
+                </button>
+              )}
               {systemView !== 'logs' && currentUser?.role !== 'Lector' && (
                 <button onClick={() => goTo('logs', null, 'Summary')} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors text-xs flex items-center gap-2">
                   <History size={14} /> Logs
                 </button>
               )}
-              <span className="text-sm font-bold text-slate-600 flex items-center gap-2"><UserCircle size={18} />{currentUser.username}</span>
+              <span className="text-sm font-bold text-slate-600 flex items-center gap-2 flex-wrap justify-end">
+                <span className="flex items-center gap-2"><UserCircle size={18} />{currentUser.username}</span>
+                {isSuperUser && (
+                  <span
+                    className="text-[10px] font-black uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-lg"
+                    title="Sesiones activas (esta pestaña y otras con el mismo usuario)"
+                  >
+                    Activo · {superSessionCount} sesión{superSessionCount === 1 ? '' : 'es'}
+                  </span>
+                )}
+              </span>
               <button onClick={handleLogout} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-red-50 hover:text-red-600 transition-colors text-xs flex items-center gap-2"><LogOut size={14} /> Salir</button>
             </div>
           </header>
@@ -4129,6 +6488,30 @@ const App = () => {
             <div className="-mx-6 -mt-6">{renderUsers()}</div>
           ) : systemView === 'logs' ? (
             <div className="-mx-6 -mt-6">{renderLogs()}</div>
+          ) : systemView === 'archive' ? (
+            <div className="space-y-2 max-w-4xl">
+              <p className="text-xs text-slate-500 mb-2">
+                {archivedParticipantsForView.length} registro(s) archivado(s). Vista de solo lectura.
+              </p>
+              {archivedParticipantsForView.length === 0 ? (
+                <p className="text-sm text-slate-400">No hay registros archivados.</p>
+              ) : (
+                archivedParticipantsForView.map((p) => {
+                  const ev = events.find((e) => e.id === p.eventId);
+                  const summary = `${p.name || '(sin nombre)'} · ${ev?.name || p.eventId || '—'} · ${p.archivedAt ? new Date(p.archivedAt).toLocaleString('es-MX') : '—'}`;
+                  return (
+                    <details key={p.id} className="bg-white border border-slate-200 rounded-lg">
+                      <summary className="px-3 py-2 cursor-pointer text-xs font-bold text-slate-700 hover:bg-slate-50">
+                        {summary}
+                      </summary>
+                      <pre className="px-3 pb-2 pt-0 text-[10px] leading-snug text-slate-600 overflow-x-auto max-h-48 overflow-y-auto border-t border-slate-100 whitespace-pre-wrap break-words">
+                        {JSON.stringify(p, null, 1)}
+                      </pre>
+                    </details>
+                  );
+                })
+              )}
+            </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {visibleEvents.map(ev => {
@@ -4220,7 +6603,9 @@ const App = () => {
             <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center">
               <div className="bg-red-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><ShieldAlert size={32} className="text-red-500" /></div>
               <h3 className="text-xl font-black text-slate-800 mb-2">Eliminar Evento</h3>
-              <p className="text-sm text-slate-500 mb-6">¿Estás seguro de que deseas eliminar <strong>"{deleteEventModal.name}"</strong>? Esta acción no se puede deshacer.</p>
+              <p className="text-sm text-slate-500 mb-6">
+                ¿Estás seguro de que deseas eliminar <strong>&ldquo;{deleteEventModal.name}&rdquo;</strong>? Todos los registros del evento se archivarán antes de borrarlo. Esta acción no se puede deshacer.
+              </p>
               <div className="flex gap-3">
                 <button onClick={() => setDeleteEventModal({ isOpen: false, id: null, name: '' })} className={btnSecondary}>Cancelar</button>
                 <button onClick={confirmDeleteEvent} className="flex-1 py-3 px-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-colors text-sm shadow-lg shadow-red-200">Sí, eliminar</button>
@@ -4264,9 +6649,9 @@ const App = () => {
 
         {editingUser.isOpen && (
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
-              <h3 className="text-lg font-bold text-slate-800 mb-1">Editar Usuario</h3>
-              <p className="text-sm text-slate-500 mb-4">Modifica los datos del usuario.</p>
+            <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-in zoom-in-95 duration-200">
+              <h3 className="text-lg font-bold text-slate-800 mb-1">Editar usuario</h3>
+              <p className="text-sm text-slate-500 mb-4">Modifica rol, accesos y permisos (los permisos avanzados solo los guarda el SuperUsuario).</p>
               <form onSubmit={handleUpdateUser} className="space-y-4">
                 {(() => {
                   const isSelfEdit = String(currentUser?.id) === String(editingUser.id);
@@ -4289,34 +6674,58 @@ const App = () => {
                   {isTargetSuperUser && <p className="text-[10px] text-slate-500 font-semibold mt-1">El SuperUsuario no puede cambiar rol ni niveles de acceso.</p>}
                 </div>
                 <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <p className={labelClasses}>Permisos</p>
+                  <p className={labelClasses}>Permisos avanzados</p>
                   {!isSuperUser && (
-                    <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede modificar permisos avanzados.</p>
+                    <p className="text-[10px] text-slate-500 font-semibold">Solo el SuperUsuario puede modificar estas opciones.</p>
                   )}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                      <input type="checkbox" className="accent-indigo-600" checked={!!editingUser.canViewFinances} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewFinances: e.target.checked })} />
-                      Ver finanzas
+                    <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                      <input type="checkbox" className="accent-indigo-600 mt-0.5" checked={!!editingUser.canViewFinances} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewFinances: e.target.checked })} />
+                      <span>Ver finanzas</span>
                     </label>
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                      <input type="checkbox" className="accent-indigo-600" checked={!!editingUser.canViewHiddenDonations} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewHiddenDonations: e.target.checked })} />
-                      Ver donaciones ocultas
+                    <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                      <input type="checkbox" className="accent-indigo-600 mt-0.5" checked={!!editingUser.canViewHiddenDonations} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewHiddenDonations: e.target.checked })} />
+                      <span>Ver donaciones ocultas</span>
                     </label>
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                      <input type="checkbox" className="accent-emerald-600" checked={!!editingUser.canViewExpenses} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewExpenses: e.target.checked })} />
-                      Lista de gastos
+                    <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                      <input type="checkbox" className="accent-emerald-600 mt-0.5" checked={!!editingUser.canViewExpenses} disabled={!isSuperUser || isTargetSuperUser} onChange={e => setEditingUser({ ...editingUser, canViewExpenses: e.target.checked })} />
+                      <span>Lista de gastos</span>
+                    </label>
+                    <label className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        className="accent-slate-600 mt-0.5"
+                        checked={editingUser.hideMyExpenseConcepts !== false}
+                        disabled={!isSuperUser}
+                        onChange={e => setEditingUser({ ...editingUser, hideMyExpenseConcepts: e.target.checked })}
+                      />
+                      <span>Ocultar mis conceptos de gastos para otros</span>
+                    </label>
+                    <label className="flex items-start gap-2 text-xs font-semibold text-slate-700 md:col-span-2">
+                      <input
+                        type="checkbox"
+                        className="accent-violet-600 mt-0.5"
+                        checked={!!editingUser.canEditRegistryDates}
+                        disabled={!isSuperUser || isTargetSuperUser}
+                        onChange={e => setEditingUser({ ...editingUser, canEditRegistryDates: e.target.checked })}
+                      />
+                      <span>Editar fechas de registro y de abonos (historial)</span>
                     </label>
                   </div>
+                  {isTargetSuperUser && <p className="text-[10px] text-slate-500 font-semibold">El SuperUsuario siempre puede editar fechas; no requiere casilla.</p>}
                 </div>
                 <div>
                   <label className={labelClasses}>Ventana inicial al entrar al evento</label>
                   <select className={inputClasses} value={editingUser.preferredLandingTab || 'Summary'} onChange={e => setEditingUser({ ...editingUser, preferredLandingTab: e.target.value })}>
                     <option value="Summary">Resumen General</option>
-                    {(
-                      ['Administrador', 'SuperUsuario'].includes(editingUser.role)
-                        ? globalLocations
-                        : ((editingUser.allowedLocations || []).length ? editingUser.allowedLocations : globalLocations)
-                    ).map((loc) => <option key={`pref-edit-${loc}`} value={loc}>{loc}</option>)}
+                    {(() => {
+                      let locs = ['Administrador', 'SuperUsuario'].includes(editingUser.role)
+                        ? allKnownLocationNames
+                        : ((editingUser.allowedLocations || []).length ? editingUser.allowedLocations : allKnownLocationNames);
+                      const p = String(editingUser.preferredLandingTab || '').trim();
+                      if (p && p !== 'Summary' && !locs.includes(p)) locs = [...locs, p];
+                      return locs.map((loc) => <option key={`pref-edit-${loc}`} value={loc}>{loc}</option>);
+                    })()}
                   </select>
                 </div>
                 {editingUser.role !== 'SuperUsuario' && (
@@ -4366,12 +6775,12 @@ const App = () => {
                             className="accent-indigo-600"
                             disabled={!isSuperUser}
                             checked={(editingUser.allowedLocations || []).length === 0}
-                            onChange={(e) => setEditingUser({ ...editingUser, allowedLocations: e.target.checked ? [] : (globalLocations[0] ? [globalLocations[0]] : []) })}
+                            onChange={(e) => setEditingUser({ ...editingUser, allowedLocations: e.target.checked ? [] : (allKnownLocationNames[0] ? [allKnownLocationNames[0]] : []) })}
                           />
                           Todas las sedes
                         </label>
                         <div className="max-h-24 overflow-y-auto border border-slate-100 rounded-lg p-2 space-y-1 bg-white">
-                          {globalLocations.map((loc) => {
+                          {allKnownLocationNames.map((loc) => {
                             const checked = (editingUser.allowedLocations || []).includes(loc);
                             return (
                               <label key={loc} className="flex items-center gap-2 text-xs text-slate-700">
@@ -4404,7 +6813,7 @@ const App = () => {
                   </div>
                 )}
                 <div className="flex gap-3 pt-4">
-                  <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary' })} className={btnSecondary}>Cancelar</button>
+                  <button type="button" onClick={() => setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false })} className={btnSecondary}>Cancelar</button>
                   <button type="submit" className={btnPrimary}>Guardar</button>
                 </div>
                     </>
@@ -4460,6 +6869,7 @@ const App = () => {
             </div>
           </div>
         )}
+        {panelNavModalEl}
       </div>
     );
   }
@@ -4645,22 +7055,59 @@ const App = () => {
 
   const renderCashCutPage = () => {
     const allPayments = [];
-    const locs = currentEvent?.locations || [];
-    locs.forEach(loc => {
-      (data[loc] || []).forEach(person => {
-        (person.paymentHistory || []).forEach(h => {
-          if (h.kind === 'comment') return;
-          const ts = typeof h.id === 'number' ? h.id : Date.now();
-          allPayments.push({
-            ...h,
-            _ts: ts,
-            _date: new Date(ts),
-            _personName: person.name || '',
-            _personId: person.id,
-            _loc: loc,
-          });
+    const personFallbackMs = (person) =>
+      parseFlexibleInstantMs(person?.registeredAt)
+      ?? (typeof person?.id === 'number' && Number.isFinite(person.id) ? person.id : null)
+      ?? (() => {
+        const s = person?.id != null ? String(person.id).trim() : '';
+        return /^\d{10,}$/.test(s) ? Number(s) : null;
+      })();
+
+    const rosterForCashCut = allParticipants.filter(
+      (p) => p.eventId === currentEvent?.id && participantIsRosterRow(p)
+    );
+
+    rosterForCashCut.forEach((person) => {
+      const loc = person.location || '';
+      const fb = personFallbackMs(person);
+      const historyRows = (person.paymentHistory || []).filter((h) => h && h.kind !== 'comment');
+      const paidGross = parseFloat(person.paid) || 0;
+
+      historyRows.forEach((h) => {
+        const ts = getPaymentHistoryTimestamp(h, fb);
+        if (ts == null || Number.isNaN(ts)) return;
+        allPayments.push({
+          ...h,
+          _ts: ts,
+          _date: new Date(ts),
+          _personName: person.name || '',
+          _personId: person.id,
+          _loc: loc,
         });
       });
+
+      if (paidGross > 0 && historyRows.length === 0 && fb != null && Number.isFinite(fb)) {
+        const paymentMethod = person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+        const paidNet = Number.isFinite(parseFloat(person.paidNet)) ? parseFloat(person.paidNet) : paidGross;
+        const svc = SERVICE_OPTIONS.includes(person.paymentService) ? person.paymentService : NO_SERVICE_LABEL;
+        allPayments.push({
+          id: `legacy-paid-${person.id}`,
+          date: new Date(fb).toLocaleString('es-MX'),
+          recordedAt: new Date(fb).toISOString(),
+          amount: paidGross,
+          netAmount: paidNet,
+          method: paymentMethod,
+          service: svc,
+          reference: (person.cardReference || '').trim(),
+          registeredBy: person.registeredBy || '—',
+          _ts: fb,
+          _date: new Date(fb),
+          _personName: person.name || '',
+          _personId: person.id,
+          _loc: loc,
+          _syntheticLegacyPaid: true,
+        });
+      }
     });
 
     const eventDonationsForCut = donations.filter(d => d.eventId === currentEvent?.id);
@@ -4835,9 +7282,9 @@ const App = () => {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setCashCutGross(prev => !prev)}
-              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs flex items-center gap-2"
+              className={getCommissionToggleBtnClasses(cashCutGross)}
             >
-              <Wallet size={14} /> {cashCutGross ? 'Ver Neto' : 'Ver Bruto'}
+              <Wallet size={14} /> {getCommissionToggleLabel(cashCutGross)}
             </button>
             <button
               onClick={() => {
@@ -5352,6 +7799,7 @@ const App = () => {
   };
 
   const renderExpenseListPage = () => {
+    const hideMyExpenseConceptsChecked = isHideMyExpenseConceptsOn(users.find((u) => String(u.id) === String(currentUser?.id)));
     const eventId = currentEvent?.id;
     const eventExpensesBase = expenses.filter((e) => e.eventId === eventId);
     const scholarshipAutoExpenses = (() => {
@@ -5437,18 +7885,43 @@ const App = () => {
 
     return (
       <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div className="flex flex-col lg:flex-row items-start lg:items-start justify-between gap-4">
           <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3"><Receipt className="text-emerald-500" size={28} /> Lista de Gastos</h2>
-          <button onClick={() => setExpenseGross(p => !p)} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold border transition-colors ${expenseGross ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100' : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'}`}>
-            <Wallet size={15} /> {expenseGross ? 'Ver Neto' : 'Ver Bruto'}
-          </button>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 w-full lg:w-auto lg:max-w-xl">
+            <label className={`flex items-start gap-2 rounded-xl border px-3 py-2.5 text-left ${hideMyExpenseConceptsChecked ? 'border-amber-200 bg-amber-50/60' : 'border-slate-200 bg-slate-50'}`}>
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 rounded accent-slate-700 shrink-0"
+                checked={hideMyExpenseConceptsChecked}
+                disabled={!canAccessExpenses}
+                onChange={() => { void handleToggleHideMyExpenseConcepts(); }}
+              />
+              <span className="min-w-0">
+                <span className="text-xs font-black text-slate-800 block">Ocultar mis conceptos para otros</span>
+                <span className="text-[10px] text-slate-500 font-semibold leading-snug block mt-1">
+                  {hideMyExpenseConceptsChecked
+                    ? 'Por defecto está activada: los gastos que registraste muestran «Oculto» a otros; tú y el SuperUsuario veis el concepto. Desmarca para que todos vean tus nombres de concepto.'
+                    : 'Has desactivado la opción: los conceptos de los gastos que registres serán visibles para quien tenga acceso a esta lista. Vuelve a marcar para ocultarlos a otros.'}
+                </span>
+              </span>
+            </label>
+            <button type="button" onClick={() => setExpenseGross(p => !p)} className={`${getCommissionToggleBtnClasses(expenseGross)} shrink-0 self-start`}>
+              <Wallet size={15} /> {getCommissionToggleLabel(expenseGross)}
+            </button>
+          </div>
         </div>
 
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
           <div className="flex flex-col sm:flex-row gap-3">
             <div className="relative flex-1">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input type="text" placeholder="Buscar gasto por nombre…" value={expenseSearch} onChange={e => setExpenseSearch(e.target.value)} className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
+              <input
+                type="text"
+                placeholder="Buscar gasto por nombre…"
+                value={expenseSearch}
+                onChange={e => setExpenseSearch(e.target.value)}
+                className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
+              />
             </div>
             <div className="relative" data-dropdown-root="expense-filters">
               <button
@@ -5535,6 +8008,7 @@ const App = () => {
                 ) : sorted.map(exp => {
                   const pending = (exp.totalPrice || 0) - (exp.paidAmount || 0);
                   const isAutoScholarship = !!exp._autoScholarshipExpense;
+                  const rowConceptVisible = canSeeExpenseConceptForRow(exp);
                   return (
                     <tr key={exp.id} className={`border-b border-slate-100 hover:bg-slate-50 transition-colors ${exp.paid ? 'bg-emerald-50/50' : ''}`}>
                       <td className="px-4 py-3 text-center">
@@ -5556,7 +8030,7 @@ const App = () => {
                         />
                       </td>
                       <td className={`px-4 py-3 text-sm font-semibold ${exp.paid ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
-                        {exp.name}
+                        {rowConceptVisible ? (exp.name || '—') : MASKED_EXPENSE_CONCEPT_LABEL}
                         {isAutoScholarship ? (
                           <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-purple-50 text-purple-700 border border-purple-100">
                             Automático
@@ -5573,11 +8047,35 @@ const App = () => {
                           <span className="text-[10px] font-bold text-slate-400">Auto</span>
                         ) : (
                           <div className="flex items-center justify-center gap-1">
-                            <button onClick={() => setExpenseEditModal({ isOpen: true, id: exp.id, name: exp.name, quantity: exp.quantity, unitPrice: exp.unitPrice })} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" title="Editar"><Edit3 size={15} /></button>
+                            <button
+                              type="button"
+                              disabled={!rowConceptVisible}
+                              onClick={() => setExpenseEditModal({ isOpen: true, id: exp.id, name: exp.name, quantity: exp.quantity, unitPrice: exp.unitPrice })}
+                              className={`p-1.5 rounded-lg transition-colors ${rowConceptVisible ? 'text-slate-400 hover:bg-slate-100 hover:text-slate-600' : 'text-slate-200 cursor-not-allowed'}`}
+                              title={rowConceptVisible ? 'Editar' : 'No disponible: concepto oculto por el usuario que lo registró'}
+                            >
+                              <Edit3 size={15} />
+                            </button>
                             {!exp.paid && (
-                              <button onClick={() => setExpensePartialModal({ isOpen: true, expenseId: exp.id, amount: '' })} className="p-1.5 rounded-lg text-indigo-500 hover:bg-indigo-50 transition-colors" title="Abono parcial"><DollarSign size={15} /></button>
+                              <button
+                                type="button"
+                                disabled={!rowConceptVisible}
+                                onClick={() => setExpensePartialModal({ isOpen: true, expenseId: exp.id, amount: '' })}
+                                className={`p-1.5 rounded-lg transition-colors ${rowConceptVisible ? 'text-indigo-500 hover:bg-indigo-50' : 'text-slate-200 cursor-not-allowed'}`}
+                                title={rowConceptVisible ? 'Abono parcial' : 'No disponible: concepto oculto por el usuario que lo registró'}
+                              >
+                                <DollarSign size={15} />
+                              </button>
                             )}
-                            <button onClick={() => handleDeleteExpense(exp.id)} className="p-1.5 rounded-lg text-red-400 hover:bg-red-50 hover:text-red-600 transition-colors" title="Eliminar"><Trash2 size={15} /></button>
+                            <button
+                              type="button"
+                              disabled={!rowConceptVisible}
+                              onClick={() => handleDeleteExpense(exp.id)}
+                              className={`p-1.5 rounded-lg transition-colors ${rowConceptVisible ? 'text-red-400 hover:bg-red-50 hover:text-red-600' : 'text-slate-200 cursor-not-allowed'}`}
+                              title={rowConceptVisible ? 'Eliminar' : 'No disponible: concepto oculto por el usuario que lo registró'}
+                            >
+                              <Trash2 size={15} />
+                            </button>
                           </div>
                         )}
                       </td>
@@ -5623,6 +8121,7 @@ const App = () => {
           <p className="text-xs text-slate-600">
             Este saldo ya no figura dentro del balance neto, pero se mantiene dentro de lo recaudado.
             Si se marca como donación, se elimina de esta lista y vuelve a sumarse al balance neto.
+            El SuperUsuario puede eliminar un renglón: el balance neto deja de restar ese monto (solo auditoría oculta).
           </p>
           {pendingRefundRows.length === 0 ? (
             <p className="text-xs text-slate-400 italic">No hay saldos pendientes de devolución.</p>
@@ -5634,7 +8133,7 @@ const App = () => {
                     <p className="text-sm font-bold text-slate-800 truncate">{p.name || 'Sin nombre'}</p>
                     <p className="text-[11px] text-slate-500">Sede: {p.location || '—'} · ID: {p.vnpPersonId || '—'}</p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-end gap-2">
                     <span className="text-sm font-black text-amber-700">${p._refundPendingAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
                     <button
                       type="button"
@@ -5643,6 +8142,16 @@ const App = () => {
                     >
                       Marcar como donación
                     </button>
+                    {isSuperUser && (
+                      <button
+                        type="button"
+                        onClick={() => openRemovePendingRefundConfirm(p)}
+                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-black bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 transition-colors"
+                        title="Solo SuperUsuario: quita el saldo de la lista y el balance neto deja de restarlo (auditoría oculta)"
+                      >
+                        Eliminar
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -5684,9 +8193,9 @@ const App = () => {
     const rosterRegulars = rosterLocations.flatMap((loc) => (data[loc] || []).filter((p) => p.isScholarship !== 'Sí'));
     const rosterScholarship = rosterLocations.flatMap((loc) => (data[loc] || []).filter((p) => p.isScholarship === 'Sí'));
 
-    const pastorChildren = rosterRegulars.filter((p) => p.isPastorChild === 'Sí');
-    const pastorWithoutPay = pastorChildren.filter((p) => p.pastorChildWithoutPay === 'Sí');
-    const pastorNeedsTransport = pastorWithoutPay.filter((p) => !resolveLlegaEnCarro(p));
+    const attendanceEmpleadoList = rosterRegulars.filter((p) => p.attendanceSpecialType === 'empleado');
+    const attendanceCortesiaList = rosterRegulars.filter((p) => p.attendanceSpecialType === 'cortesia');
+    const freeAttendanceNeedsTransport = [...attendanceEmpleadoList, ...attendanceCortesiaList].filter((p) => !resolveLlegaEnCarro(p));
     const rosterListForModal = summaryRosterModal.type === 'scholarship' ? rosterScholarship : rosterRegulars;
 
     // Sección 1: filtros y gráficas por Método/Servicio (Neto o Bruto)
@@ -5721,44 +8230,114 @@ const App = () => {
       return `conic-gradient(${segs.join(', ')})`;
     };
 
-    const getTableStats = (loc) => {
-      let count = 0, scholarship = 0, servers = 0, paid = 0, pending = 0, expected = 0;
-      (data[loc] || []).forEach(p => {
-        if (isCampa) {
-          if (summaryView === 'regular' && p.isScholarship === 'Sí') return;
-          if (summaryView === 'scholarship' && p.isScholarship !== 'Sí') return;
-          if (summaryServerView === 'Sí' && p.isServer !== 'Sí') return;
-          if (summaryServerView === 'No' && p.isServer === 'Sí') return;
-        }
-        const isBecado = p.isScholarship === 'Sí';
-        const baseCost = resolveRegisteredCost(p, currentPricing);
+    const tableByLocation = (currentEvent?.locations || []).map((loc) => {
+      const filtered = applyRosterLikeFilters(data[loc] || [], true);
+      const stats = filtered.reduce((acc, p) => {
         const liq = getLiquidationTarget(p);
-        const pPaid = parseFloat(p.paid || 0);
-        count++;
-        if (isBecado) scholarship++;
-        if (p.isServer === 'Sí') servers++;
-        paid += pPaid;
-        if (isBecado) {
-          expected += liq;
-          pending += Math.max(0, liq - pPaid);
-        } else {
-          expected += baseCost;
-          pending += (baseCost - pPaid);
-        }
-      });
-      return { count, scholarship, servers, paid, pending, expected };
-    };
+        const paid = parseFloat(p.paid || 0) || 0;
+        acc.count += 1;
+        if (p.isScholarship === 'Sí') acc.scholarship += 1;
+        if (p.isServer === 'Sí') acc.servers += 1;
+        if (participantIsCancelled(p)) acc.cancelled += 1;
+        if ((Number(p.refundPendingAmount || 0) || 0) > 0) acc.refund += 1;
+        acc.paid += paid;
+        acc.pending += Math.max(0, liq - paid);
+        acc.expected += liq;
+        return acc;
+      }, { count: 0, scholarship: 0, servers: 0, cancelled: 0, refund: 0, paid: 0, pending: 0, expected: 0 });
+      return { loc, stats };
+    });
 
-    const tableData = (currentEvent?.locations || []).map(loc => ({ loc, stats: getTableStats(loc) }));
-
-    const globalTableStats = tableData.reduce((acc, { stats }) => {
-      acc.count += stats.count; acc.scholarship += stats.scholarship; acc.servers += stats.servers;
-      acc.paid += stats.paid; acc.pending += stats.pending; acc.expected += stats.expected;
+    const globalTableStats = tableByLocation.reduce((acc, { stats }) => {
+      acc.count += stats.count;
+      acc.scholarship += stats.scholarship;
+      acc.servers += stats.servers;
+      acc.cancelled += stats.cancelled;
+      acc.refund += stats.refund;
+      acc.paid += stats.paid;
+      acc.pending += stats.pending;
+      acc.expected += stats.expected;
       return acc;
-    }, { count: 0, scholarship: 0, servers: 0, paid: 0, pending: 0, expected: 0 });
+    }, { count: 0, scholarship: 0, servers: 0, cancelled: 0, refund: 0, paid: 0, pending: 0, expected: 0 });
 
     return (
       <div className="p-6 space-y-8 animate-in fade-in duration-500">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <h1 className="text-2xl font-black text-slate-800">Resumen General</h1>
+
+          <div className="relative" data-dropdown-root="view-settings">
+            <button
+              onClick={() => setShowViewSettings(!showViewSettings)}
+              className={`flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold transition-colors ${showViewSettings ? 'bg-indigo-100 text-indigo-600' : 'text-slate-500 hover:bg-slate-100'}`}
+              title="Configurar Vista"
+            >
+              <SlidersHorizontal size={14} />
+              <span className="hidden sm:inline">Vista</span>
+            </button>
+
+            {showViewSettings && (
+              <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-2xl shadow-xl border border-slate-100 p-4 z-50 animate-in slide-in-from-top-2">
+                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 border-b border-slate-100 pb-2">Configurar Resumen</h4>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = Object.keys(defaultViewPrefs).reduce((acc, k) => ({ ...acc, [k]: true }), {});
+                      setViewPrefs(next);
+                      if (currentUser?.id) localStorage.setItem(`vina_prefs_${currentUser.id}`, JSON.stringify(next));
+                    }}
+                    className="py-1.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-black uppercase tracking-wider"
+                  >
+                    Activar todas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = Object.keys(defaultViewPrefs).reduce((acc, k) => ({ ...acc, [k]: false }), {});
+                      setViewPrefs(next);
+                      if (currentUser?.id) localStorage.setItem(`vina_prefs_${currentUser.id}`, JSON.stringify(next));
+                    }}
+                    className="py-1.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-black uppercase tracking-wider"
+                  >
+                    Desactivar
+                  </button>
+                </div>
+
+                <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+                  {[
+                    { key: 'statsConfig', label: 'Tarjetas Principales' },
+                    { key: 'chartLocations', label: 'Gráfica: Sedes' },
+                    { key: 'chartIncome', label: 'Gráfica: Ingresos' },
+                    { key: 'chartPaymentStatus', label: 'Gráfica: Estado de Pagos' },
+                    { key: 'chartGender', label: 'Gráfica: Género' },
+                    { key: 'chartAgeBrackets', label: 'Gráfica: Rangos de Edad' },
+                    { key: 'chartBloodType', label: 'Gráfica: Tipo de Sangre', show: isCampa },
+                    { key: 'chartScholarship', label: 'Gráfica: Becas', show: isCampa },
+                    { key: 'chartSwimming', label: 'Gráfica: Nado', show: isCampa },
+                    { key: 'chartMedical', label: 'Gráfica: Salud', show: isCampa },
+                    { key: 'chartServers', label: 'Gráfica: Servidores', show: isCampa },
+                    { key: 'chartAges', label: 'Gráfica: Asignación', show: isCampa },
+                    { key: 'chartBaptism', label: 'Gráfica: Bautizos', show: isCampa },
+                    { key: 'chartAttendanceSpecial', label: 'Gráfica: Empleado / Cortesía', show: isCampa },
+                    { key: 'chartCustom', label: 'Gráfica: Campos Extra', show: isGeneral && currentEvent?.customFields?.length > 0 },
+                    { key: 'tableDetails', label: 'Tabla de Desglose General' },
+                  ]
+                    .filter(item => item.show !== false)
+                    .map(item => (
+                      <label key={item.key} className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-50 rounded-xl transition-colors">
+                        <span className="text-xs font-bold text-slate-600">{item.label}</span>
+                        <div className="relative flex items-center">
+                          <input type="checkbox" className="sr-only peer" checked={viewPrefs[item.key] !== false} onChange={() => togglePref(item.key)} />
+                          <div className="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-500"></div>
+                        </div>
+                      </label>
+                    ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
         {summaryRosterModal.isOpen && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-3xl w-full max-w-5xl max-h-[85vh] overflow-hidden shadow-2xl">
@@ -5770,7 +8349,9 @@ const App = () => {
                   </h3>
                   <p className="text-sm text-slate-500 mt-1">
                     Total: <strong>{rosterListForModal.length}</strong>
-                    {summaryRosterModal.type === 'regular' && pastorChildren.length > 0 ? ` · Hijos de pastores: ${pastorChildren.length}` : ''}
+                    {summaryRosterModal.type === 'regular' && (attendanceEmpleadoList.length > 0 || attendanceCortesiaList.length > 0)
+                      ? ` · Empleado: ${attendanceEmpleadoList.length} · Cortesía: ${attendanceCortesiaList.length}`
+                      : ''}
                   </p>
                 </div>
                 <button
@@ -5784,19 +8365,19 @@ const App = () => {
               </div>
 
               {summaryRosterModal.type === 'regular' && (
-                <div className="p-6 border-b border-slate-100 bg-indigo-50/20">
+                <div className="p-6 border-b border-slate-100 bg-teal-50/20">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div className="rounded-xl border border-indigo-100 bg-white p-4">
-                      <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700">Hijos de pastores</p>
-                      <p className="text-2xl font-black text-slate-800">{pastorChildren.length}</p>
+                    <div className="rounded-xl border border-teal-100 bg-white p-4">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-teal-800">Empleado (sin cobro)</p>
+                      <p className="text-2xl font-black text-slate-800">{attendanceEmpleadoList.length}</p>
                     </div>
-                    <div className="rounded-xl border border-amber-100 bg-white p-4">
-                      <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">Van sin pagar</p>
-                      <p className="text-2xl font-black text-slate-800">{pastorWithoutPay.length}</p>
+                    <div className="rounded-xl border border-fuchsia-100 bg-white p-4">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-fuchsia-800">Cortesía (sin cobro)</p>
+                      <p className="text-2xl font-black text-slate-800">{attendanceCortesiaList.length}</p>
                     </div>
                     <div className="rounded-xl border border-slate-100 bg-white p-4">
                       <p className="text-[10px] font-black uppercase tracking-widest text-slate-700">Necesitan transporte (camión)</p>
-                      <p className="text-2xl font-black text-slate-800">{pastorNeedsTransport.length}</p>
+                      <p className="text-2xl font-black text-slate-800">{freeAttendanceNeedsTransport.length}</p>
                     </div>
                   </div>
                 </div>
@@ -5809,8 +8390,7 @@ const App = () => {
                       <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
                         <th className="px-4 py-3">Nombre</th>
                         <th className="px-4 py-3">Sede</th>
-                        {summaryRosterModal.type === 'regular' && <th className="px-4 py-3">Hijo de pastor</th>}
-                        {summaryRosterModal.type === 'regular' && <th className="px-4 py-3">Sin pagar</th>}
+                        {summaryRosterModal.type === 'regular' && <th className="px-4 py-3">Asistencia especial</th>}
                         {summaryRosterModal.type === 'regular' && <th className="px-4 py-3">Transporte</th>}
                       </tr>
                     </thead>
@@ -5834,9 +8414,8 @@ const App = () => {
                               <td className="px-4 py-3 text-slate-600">{p.location}</td>
                               {summaryRosterModal.type === 'regular' && (
                                 <>
-                                  <td className="px-4 py-3 text-slate-600">{p.isPastorChild === 'Sí' ? 'Sí' : 'No'}</td>
                                   <td className="px-4 py-3 text-slate-600">
-                                    {p.isPastorChild === 'Sí' ? (p.pastorChildWithoutPay === 'Sí' ? 'Sí' : 'No') : '—'}
+                                    {p.attendanceSpecialType === 'empleado' ? 'Empleado' : p.attendanceSpecialType === 'cortesia' ? 'Cortesía' : '—'}
                                   </td>
                                   <td className="px-4 py-3 text-slate-600">{resolveTransportSummary(p)}</td>
                                 </>
@@ -5845,7 +8424,7 @@ const App = () => {
                           ))
                       ) : (
                         <tr>
-                          <td colSpan={summaryRosterModal.type === 'regular' ? 5 : 2} className="px-4 py-8 text-center text-slate-400 text-xs italic">
+                          <td colSpan={summaryRosterModal.type === 'regular' ? 4 : 2} className="px-4 py-8 text-center text-slate-400 text-xs italic">
                             No hay registros para mostrar.
                           </td>
                         </tr>
@@ -5860,11 +8439,12 @@ const App = () => {
         {hasAdminRights && (
           <div className="flex justify-end">
             <button
-              onClick={() => setShowGrossWithoutCommission(prev => !prev)}
-              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs flex items-center gap-2"
+              type="button"
+              onClick={toggleShowGrossWithoutCommission}
+              className={getCommissionToggleBtnClasses(showGrossWithoutCommission)}
               title="Alternar vista de datos financieros"
             >
-              <Wallet size={14} /> {showGrossWithoutCommission ? 'Ver con comisión (Neto)' : 'Ver sin comisión (Bruto)'}
+              <Wallet size={14} /> {getCommissionToggleLabel(showGrossWithoutCommission)}
             </button>
           </div>
         )}
@@ -6221,6 +8801,36 @@ const App = () => {
                   </div>
                 </div>
               )}
+
+              {viewPrefs.chartBaptism && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Church className="text-sky-600" size={20} /> Bautizos</h3>
+                  <p className="text-xs text-slate-400 mb-6">Conteo por segmento del evento (Teens / Jóvenes). Servidor Ambos define dónde cuenta.</p>
+                  <div className="space-y-5 w-full mt-2">
+                    <ProgressBar label="Total" value={summary.baptismsTeens + summary.baptismsJovenes} max={Math.max(summary.globalStats.all.count, 1)} colorClass="text-sky-700" bgClass="bg-sky-500" />
+                    <ProgressBar label="En Teens" value={summary.baptismsTeens} max={Math.max(summary.baptismsTeens + summary.baptismsJovenes, 1)} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
+                    <ProgressBar label="En Jóvenes" value={summary.baptismsJovenes} max={Math.max(summary.baptismsTeens + summary.baptismsJovenes, 1)} colorClass="text-blue-600" bgClass="bg-blue-500" />
+                  </div>
+                </div>
+              )}
+
+              {viewPrefs.chartAttendanceSpecial && (
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Briefcase className="text-teal-600" size={20} /> Empleado y cortesía</h3>
+                  <p className="text-xs text-slate-400 mb-6">Inscritos con costo a liquidar $0 (siguen en el conteo del evento)</p>
+                  <div className="space-y-5 w-full mt-2">
+                    <ProgressBar label="Empleado" value={summary.totalAttendanceEmpleado} max={Math.max(totalRegs, 1)} colorClass="text-teal-700" bgClass="bg-teal-500" />
+                    <ProgressBar label="Cortesía" value={summary.totalAttendanceCortesia} max={Math.max(totalRegs, 1)} colorClass="text-fuchsia-700" bgClass="bg-fuchsia-500" />
+                    <ProgressBar
+                      label="Sin asistencia especial"
+                      value={Math.max(0, totalRegs - summary.totalAttendanceEmpleado - summary.totalAttendanceCortesia)}
+                      max={Math.max(totalRegs, 1)}
+                      colorClass="text-slate-600"
+                      bgClass="bg-slate-400"
+                    />
+                  </div>
+                </div>
+              )}
             </>
           )}
 
@@ -6247,29 +8857,18 @@ const App = () => {
             <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="bg-slate-100 p-2 rounded-lg text-slate-600"><TableProperties size={20} /></div>
-                <div><h3 className="text-lg font-bold text-slate-800">Visualización de Datos Generales</h3><p className="text-xs text-slate-400">Desglose detallado por sede</p></div>
+                <div><h3 className="text-lg font-bold text-slate-800">Visualización de Datos Generales</h3><p className="text-xs text-slate-400">Resumen por sede (aplica filtros concatenados activos).</p></div>
               </div>
-              <div className="flex flex-wrap items-center gap-3">
-                {isCampa && (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <Filter size={14} className="text-slate-400" />
-                      <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={summaryView} onChange={(e) => setSummaryView(e.target.value)}>
-                        <option value="all">Becados/Regulares</option>
-                        <option value="regular">Regulares</option>
-                        <option value="scholarship">Becados</option>
-                      </select>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Users size={14} className="text-slate-400" />
-                      <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={summaryServerView} onChange={(e) => setSummaryServerView(e.target.value)}>
-                        <option value="all">Servidores: Todos</option>
-                        <option value="Sí">Servidores</option>
-                        <option value="No">Camperos</option>
-                      </select>
-                    </div>
-                  </>
-                )}
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold text-slate-500">Filtros:</span>
+                <button
+                  type="button"
+                  onClick={() => setFiltersDropdownOpen((v) => !v)}
+                  className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-100 transition-colors text-xs font-black text-slate-700"
+                >
+                  <Filter size={14} className="text-slate-500" />
+                  Ver filtros
+                </button>
               </div>
             </div>
             <div className="overflow-x-auto">
@@ -6278,20 +8877,28 @@ const App = () => {
                   <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
                     <th className="px-6 py-4">Sede</th>
                     <th className="px-6 py-4 text-center">Inscritos</th>
-                    {isCampa && summaryView === 'all' && <th className="px-6 py-4 text-center text-purple-600">Becados</th>}
-                    {isCampa && summaryServerView === 'all' && <th className="px-6 py-4 text-center text-amber-600">Servidores</th>}
+                    <th className="px-6 py-4 text-center">Becados</th>
+                    <th className="px-6 py-4 text-center">Servidores</th>
+                    <th className="px-6 py-4 text-center">Cancelados</th>
+                    <th className="px-6 py-4 text-center">Con devolución</th>
                     <th className="px-6 py-4 text-right">Recaudado</th>
                     <th className="px-6 py-4 text-right">Pendiente</th>
                     <th className="px-6 py-4 text-right">Total Esperado</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
-                  {tableData.map(({ loc, stats }) => (
-                    <tr key={loc} className="hover:bg-slate-50/50 transition-colors">
+                  {tableByLocation.every(({ stats }) => stats.count === 0) ? (
+                    <tr>
+                      <td colSpan="9" className="px-6 py-10 text-center text-slate-400 italic font-medium">No hay registros con los filtros actuales.</td>
+                    </tr>
+                  ) : tableByLocation.map(({ loc, stats }) => (
+                    <tr key={`sum-${loc}`} className="hover:bg-slate-50/50 transition-colors">
                       <td className="px-6 py-3 font-bold text-slate-700">{loc}</td>
-                      <td className="px-6 py-3 text-center font-medium text-slate-600">{stats.count}</td>
-                      {isCampa && summaryView === 'all' && <td className="px-6 py-3 text-center text-purple-600 font-bold">{stats.scholarship}</td>}
-                      {isCampa && summaryServerView === 'all' && <td className="px-6 py-3 text-center text-amber-600 font-bold">{stats.servers}</td>}
+                      <td className="px-6 py-3 text-center font-medium text-slate-700">{stats.count}</td>
+                      <td className="px-6 py-3 text-center text-purple-700 font-bold">{stats.scholarship}</td>
+                      <td className="px-6 py-3 text-center text-amber-700 font-bold">{stats.servers}</td>
+                      <td className="px-6 py-3 text-center text-slate-700 font-bold">{stats.cancelled}</td>
+                      <td className="px-6 py-3 text-center text-amber-700 font-bold">{stats.refund}</td>
                       <td className="px-6 py-3 text-right font-bold text-green-600">{formatMoney(stats.paid)}</td>
                       <td className="px-6 py-3 text-right font-bold text-orange-500">{formatMoney(stats.pending)}</td>
                       <td className="px-6 py-3 text-right font-black text-slate-800">{formatMoney(stats.expected)}</td>
@@ -6302,8 +8909,10 @@ const App = () => {
                   <tr className="bg-indigo-50 border-t-2 border-indigo-100">
                     <td className="px-6 py-4 font-black text-indigo-900 uppercase">Global</td>
                     <td className="px-6 py-4 text-center font-black text-indigo-900">{globalTableStats.count}</td>
-                    {isCampa && summaryView === 'all' && <td className="px-6 py-4 text-center font-black text-purple-700">{globalTableStats.scholarship}</td>}
-                    {isCampa && summaryServerView === 'all' && <td className="px-6 py-4 text-center font-black text-amber-700">{globalTableStats.servers}</td>}
+                    <td className="px-6 py-4 text-center font-black text-purple-700">{globalTableStats.scholarship}</td>
+                    <td className="px-6 py-4 text-center font-black text-amber-700">{globalTableStats.servers}</td>
+                    <td className="px-6 py-4 text-center font-black text-slate-700">{globalTableStats.cancelled}</td>
+                    <td className="px-6 py-4 text-center font-black text-amber-700">{globalTableStats.refund}</td>
                     <td className="px-6 py-4 text-right font-black text-green-700">{formatMoney(globalTableStats.paid)}</td>
                     <td className="px-6 py-4 text-right font-black text-orange-600">{formatMoney(globalTableStats.pending)}</td>
                     <td className="px-6 py-4 text-right font-black text-indigo-900">{formatMoney(globalTableStats.expected)}</td>
@@ -6317,38 +8926,212 @@ const App = () => {
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mt-8">
           <div className="p-6 border-b border-slate-100">
             <h3 className="text-lg font-bold text-slate-800">Salida y Regreso por Sede</h3>
-            <p className="text-xs text-slate-400">Cantidad de registrados que salen de una sede y regresan a otra.</p>
+            <p className="text-xs text-slate-400">Distribución en valores absolutos (sin porcentajes).</p>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                  <th className="px-6 py-4">Sale de</th>
-                  <th className="px-6 py-4">Regresa a</th>
-                  <th className="px-6 py-4 text-right">Cantidad</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {(currentEvent?.locations || []).flatMap(from =>
-                  (currentEvent?.locations || []).map(to => ({ from, to, count: summary.travelStats?.[from]?.[to] || 0 }))
-                ).map(({ from, to, count }) => (
-                  <tr key={`${from}-${to}`} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="px-6 py-3 font-bold text-slate-700">{from}</td>
-                    <td className="px-6 py-3 font-medium text-slate-600">{to}</td>
-                    <td className="px-6 py-3 text-right font-black text-slate-800">{count}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {(() => {
+            const locations = currentEvent?.locations || [];
+            const departures = locations.map((loc) => ({
+              loc,
+              value: locations.reduce((sum, to) => sum + (summary.travelStats?.[loc]?.[to] || 0), 0),
+            }));
+            const returns = locations.map((loc) => ({
+              loc,
+              value: locations.reduce((sum, from) => sum + (summary.travelStats?.[from]?.[loc] || 0), 0),
+            }));
+            const depTotal = departures.reduce((s, x) => s + x.value, 0);
+            const retTotal = returns.reduce((s, x) => s + x.value, 0);
+            const buildPie = (rows, total) => {
+              if (total <= 0) return '#f1f5f9';
+              let cur = 0;
+              const segs = rows.map((row, i) => {
+                if (!row.value) return '';
+                const per = (row.value / total) * 100;
+                const seg = `${CHART_COLORS[i % CHART_COLORS.length]} ${cur}% ${cur + per}%`;
+                cur += per;
+                return seg;
+              }).filter(Boolean);
+              return `conic-gradient(${segs.join(', ')})`;
+            };
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6">
+                <div className="rounded-2xl border border-slate-100 p-5">
+                  <h4 className="text-sm font-black text-slate-700 mb-1">Asistentes que salen de cada sede</h4>
+                  <p className="text-[11px] text-slate-400 mb-4">Total: {depTotal}</p>
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="w-36 h-36 rounded-full shadow-inner border-4 border-white" style={{ background: buildPie(departures, depTotal) }} />
+                    <div className="w-full grid grid-cols-2 gap-2">
+                      {departures.map((row, i) => (
+                        <div key={`dep-${row.loc}`} className="flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-1.5">
+                            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} />
+                            <span className="font-semibold text-slate-600 truncate max-w-[80px]" title={row.loc}>{row.loc}</span>
+                          </div>
+                          <span className="font-black text-slate-800">{row.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-slate-100 p-5">
+                  <h4 className="text-sm font-black text-slate-700 mb-1">Asistentes que regresan a cada sede</h4>
+                  <p className="text-[11px] text-slate-400 mb-4">Total: {retTotal}</p>
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="w-36 h-36 rounded-full shadow-inner border-4 border-white" style={{ background: buildPie(returns, retTotal) }} />
+                    <div className="w-full grid grid-cols-2 gap-2">
+                      {returns.map((row, i) => (
+                        <div key={`ret-${row.loc}`} className="flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-1.5">
+                            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} />
+                            <span className="font-semibold text-slate-600 truncate max-w-[80px]" title={row.loc}>{row.loc}</span>
+                          </div>
+                          <span className="font-black text-slate-800">{row.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
       </div>
     );
   };
 
+  /** Columna «Participante» compartida: mismas etiquetas que en registro por sede (incl. lista de espera en vista global). */
+  const renderRegistrationParticipantColumn = (person) => {
+    const isBecado = isCampa && person.isScholarship === 'Sí';
+    const isWaitlist = (person?.status || 'active') === 'waitlist';
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center flex-wrap gap-2">
+          <p className="font-bold text-slate-800 text-sm flex items-center gap-1.5 flex-wrap">
+            <span>{person.name}</span>
+            {isWaitlist ? (
+              <span className="text-[8px] font-black uppercase bg-amber-50 text-amber-700 border border-amber-100 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center justify-center">
+                Lista de espera
+              </span>
+            ) : null}
+            {person.alias ? (
+              <span className="text-[8px] font-black uppercase bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
+                Alias: {person.alias}
+              </span>
+            ) : null}
+            {person.isFirstVnpId ? (
+              <span className="text-[8px] font-black uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center justify-center">
+                1
+              </span>
+            ) : null}
+            {participantIsCancelled(person) ? (
+              <span className="text-[8px] font-black uppercase bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
+                Cancelado
+              </span>
+            ) : null}
+            {(Number(person?.refundPendingAmount || 0) || 0) > 0 ? (
+              <span className="text-[8px] font-black uppercase bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
+                Devolución pendiente
+              </span>
+            ) : null}
+            {resolveResponsivaStatus(person) === 'Pendiente' ? (
+              <span className="text-[8px] font-black uppercase bg-rose-50 text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
+                Responsiva pendiente
+              </span>
+            ) : null}
+            {person._isDebug && person._debugSessionId === globalConfig?.debugSessionId && (
+              <Bug size={14} className="text-orange-500 inline-block ml-auto flex-shrink-0" title="Cambio no permanente" />
+            )}
+          </p>
+          {isBecado && (
+            <span className="bg-purple-100 text-purple-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1">
+              <GraduationCap size={10} />{' '}
+              {person.scholarshipType === 'partial' ? 'Beca parcial' : 'Becado'}
+            </span>
+          )}
+          {isCampa && normalizeAttendanceSpecial(person) === ATTENDANCE_SPECIAL.empleado && (
+            <span className="bg-teal-100 text-teal-800 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border border-teal-200">
+              <Briefcase size={10} /> Empleado
+            </span>
+          )}
+          {isCampa && normalizeAttendanceSpecial(person) === ATTENDANCE_SPECIAL.cortesia && (
+            <span className="bg-fuchsia-100 text-fuchsia-800 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border border-fuchsia-200">
+              <Gift size={10} /> Cortesía
+            </span>
+          )}
+          {person.isServer === 'Sí' ? (
+            <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>
+          ) : (
+            isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes')}</span>
+          )}
+          {isCampa && person.willBeBaptized === 'Sí' && (() => {
+            const seg = getBaptismAccountingSegment(person);
+            return (
+              <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border ${seg ? 'bg-sky-100 text-sky-800 border-sky-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`} title={seg ? `Conteo en ${seg}` : 'Servidor Ambos: elige Teens o Jóvenes en editar'}>
+                <Church size={10} /> Bautizo{seg ? ` · ${seg}` : ' · incompleto'}
+              </span>
+            );
+          })()}
+        </div>
+        {isWaitlist && isCampa && person.isScholarship === 'Sí' && person.scholarshipPendingApproval ? (
+          <p className="text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-100 rounded-lg px-2 py-1 inline-block">
+            Solicitud beca {person.scholarshipType === 'partial' ? 'parcial' : 'total'}
+            {person.scholarshipType === 'partial'
+              ? ` · monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}`
+              : ''}{' '}
+            (pendiente al promover)
+          </p>
+        ) : null}
+        <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1">
+          <span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone}</span>
+          {person.vnpPersonId && (
+            <span className="text-[10px] font-mono text-indigo-600 font-bold tracking-tight">VNPM {person.vnpPersonId}</span>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderRegistrationFinancesColumn = (person) => {
+    const isBecado = isCampa && person.isScholarship === 'Sí';
+    const liquidationTarget = getLiquidationTarget(person);
+    const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
+    return (
+      <div className="flex flex-col gap-2 w-full max-w-[140px]">
+        <div className="text-left space-y-0.5">
+          <p className="text-xs font-black text-green-600 flex justify-between"><span>Pagado:</span> <span>{formatMoney(person.paid || 0)}</span></p>
+          <p className={`text-[10px] font-bold flex justify-between ${isBecado && liquidationTarget <= 0 ? 'text-purple-600' : balance > 0 ? 'text-orange-500' : 'text-green-600'}`}>
+            <span>Restante:</span>{' '}
+            <span>
+              {liquidationTarget <= 0 ? 'No requerido' : balance > 0 ? formatMoney(balance) : 'Liquidado'}
+            </span>
+          </p>
+        </div>
+        <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1">
+          <div
+            className="h-full bg-green-50 transition-all"
+            style={{
+              width: `${liquidationTarget > 0 ? Math.min(((parseFloat(person.paid || 0) / liquidationTarget) * 100), 100) : 100}%`,
+            }}
+          />
+        </div>
+      </div>
+    );
+  };
+
   const renderLocationSheet = (loc) => {
     const visibleParticipants = getProcessedParticipantsForLocation(loc);
+    const waitlistFilteredForLoc = applyRosterLikeFilters(getSortedWaitlistForLocation(loc), sortBy === 'none');
+    const cancelledFilteredForLoc = applyRosterLikeFilters(getSortedCancelledForLocation(loc), sortBy === 'none');
+    const rosterSearchMatchCount = visibleParticipants.length + waitlistFilteredForLoc.length + cancelledFilteredForLoc.length;
+    const rosterSearchActive = searchTerm.trim().length > 0;
+    const showRosterActivos = rosterSearchActive ? visibleParticipants.length > 0 : rosterSectionExpanded.activos;
+    const showRosterWaitlist = rosterSearchActive ? waitlistFilteredForLoc.length > 0 : rosterSectionExpanded.waitlist;
+    const showRosterCancelled = rosterSearchActive ? cancelledFilteredForLoc.length > 0 : rosterSectionExpanded.cancelled;
+    const newRegCampaignsActive = getActiveDiscountCampaigns(currentEvent).filter((c) => campaignMatchesPersonProfile(c, newEntry));
+    const newRegSelectableCampaigns = getValidDiscountCampaignsForPerson(currentEvent, newEntry);
+    const newRegBaseList = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
+    const newRegCampPreview = resolveMatchedCampaignForNewEntry(newEntry);
+    const newRegLiqPreview = newRegCampPreview ? Math.max(0, Number(newRegCampPreview.finalAmount) || 0) : newRegBaseList;
     return (
     <div className="p-6 space-y-6 animate-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
@@ -6374,11 +9157,21 @@ const App = () => {
 
       {currentUser?.role !== 'Lector' && (
         <div className={`bg-white p-6 rounded-2xl shadow-sm border border-slate-100 transition-opacity ${!isLocOpen(loc) ? 'opacity-50 pointer-events-none' : ''}`}>
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex justify-between items-center mb-6 gap-2 flex-wrap">
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2"><Plus size={14} /> Nuevo Registro</h3>
-            {isGeneral && hasAdminRights && (
-              <button onClick={() => setCustomFieldsModal({ isOpen: true })} className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg border border-indigo-100 hover:bg-indigo-100 transition-colors"><ListPlus size={14} /> Configurar Campos Extra</button>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleClearRegistrationForm}
+                className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-200 transition-colors"
+                title="Vacía todos los campos del formulario y la búsqueda de perfil"
+              >
+                <RotateCcw size={14} /> Limpiar formulario
+              </button>
+              {isGeneral && hasAdminRights && (
+                <button onClick={() => setCustomFieldsModal({ isOpen: true })} className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg border border-indigo-100 hover:bg-indigo-100 transition-colors"><ListPlus size={14} /> Configurar Campos Extra</button>
+              )}
+            </div>
           </div>
 
           <div className="mb-5 p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
@@ -6448,6 +9241,10 @@ const App = () => {
                 <div className="space-y-1">
                   <label className={labelClasses}>Nombre completo</label>
                   <input placeholder="Ej. Juan Pérez López" className={`${inputClasses} ${getRequiredFieldClass(!hasValidFullName(newEntry.name || ''))}`} value={newEntry.name} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, name: e.target.value })} />
+                  <p className="text-[10px] text-slate-500 px-1">Debe incluir 1 nombre y 2 apellidos.</p>
+                  <p className="text-[10px] font-mono text-indigo-600 px-1">
+                    ID VNPM: {hasValidFullName(newEntry.name || '') && (newEntry.birthDate || '').trim() && String(newEntry.gender || '').trim() ? generateVnpPersonId(newEntry) : 'completa nombre, fecha de nacimiento y género'}
+                  </p>
                 </div>
                 <div className="space-y-1">
                   <label className={labelClasses}>Teléfono personal</label>
@@ -6512,7 +9309,7 @@ const App = () => {
             {(isCampa || isGeneral) && (
               <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
                 <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">2 · Contacto de emergencia</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div className="space-y-1">
                     <label className={labelClasses}>Nombre del contacto {isGeneral && '(Opcional)'}</label>
                     <input placeholder="Nombre contacto" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(newEntry.emergencyContact || '').trim())}`} value={newEntry.emergencyContact} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, emergencyContact: e.target.value })} />
@@ -6520,6 +9317,10 @@ const App = () => {
                   <div className="space-y-1">
                     <label className={labelClasses}>Teléfono de emergencia {isGeneral && '(Opcional)'}</label>
                     <input placeholder="55-1234-5678" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !isValidPhone(newEntry.emergencyPhone || ''))}`} value={newEntry.emergencyPhone} onChange={e => setNewEntry({ ...newEntry, emergencyPhone: formatPhoneNumber(e.target.value) })} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className={labelClasses}>Parentesco {isGeneral && '(Opcional)'}</label>
+                    <input placeholder="Ej. Madre, padre, tutor…" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(newEntry.emergencyRelationship || '').trim())}`} value={newEntry.emergencyRelationship || ''} onChange={e => setNewEntry({ ...newEntry, emergencyRelationship: e.target.value })} />
                   </div>
                 </div>
               </section>
@@ -6605,146 +9406,183 @@ const App = () => {
                     </button>
                   )}
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-                  <div className="space-y-1">
-                    <label className={labelClasses}>Becado</label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = newEntry.isScholarship === 'Sí' ? 'No' : 'Sí';
-                        setNewEntry({
-                          ...newEntry,
-                          isScholarship: next,
-                          scholarshipType: 'total',
-                          scholarshipPartialAmount: '',
-                          isPastorChild: next === 'Sí' ? 'No' : newEntry.isPastorChild,
-                          pastorChildWithoutPay: next === 'Sí' ? 'No' : newEntry.pastorChildWithoutPay,
-                          pastorChildSpecialDonationFinanceId: next === 'Sí' ? '' : newEntry.pastorChildSpecialDonationFinanceId,
-                        });
-                        if (next === 'Sí') setSendToWaitlist(false);
-                      }}
-                      className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.isScholarship === 'Sí' ? 'bg-purple-500 text-white border-purple-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}
-                    >
-                      <GraduationCap size={14} className={newEntry.isScholarship === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isScholarship}
-                    </button>
-                  </div>
-                  <div className="space-y-1">
-                    <label className={labelClasses}>Servidor</label>
-                    <button type="button" onClick={() => setNewEntry({
-                      ...newEntry,
-                      isServer: newEntry.isServer === 'Sí' ? 'No' : 'Sí',
-                      serverAssignment: '',
-                      isMarried: 'No',
-                      spouseName: '',
-                      goesWithChildren: 'No',
-                      childrenCount: '',
-                      servedOtherCampa: 'No',
-                      servedAreas: '',
-                      preferredServeArea: '',
-                      servesInCongress: 'No',
-                      congressServeArea: '',
-                    })} className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}><Users size={14} className={newEntry.isServer === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isServer}</button>
-                  </div>
-
-                  {newEntry.isServer === 'Sí' && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="space-y-2 min-w-0">
                     <div className="space-y-1">
-                      <label className={labelClasses}>Asignación de servidor</label>
-                      <select className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(newEntry.isServer === 'Sí' && !String(newEntry.serverAssignment || '').trim())}`} value={newEntry.serverAssignment} onChange={e => setNewEntry({ ...newEntry, serverAssignment: e.target.value })}>
-                        <option value="Teens">Teens</option>
-                        <option value="Jóvenes">Jóvenes</option>
-                        <option value="Ambos">Ambos</option>
-                      </select>
+                      <label className={labelClasses}>Becado</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = newEntry.isScholarship === 'Sí' ? 'No' : 'Sí';
+                          setNewEntry({
+                            ...newEntry,
+                            isScholarship: next,
+                            scholarshipType: 'total',
+                            scholarshipPartialAmount: '',
+                            attendanceSpecialType: next === 'Sí' ? ATTENDANCE_SPECIAL.ninguno : newEntry.attendanceSpecialType,
+                          });
+                          if (next === 'Sí') setSendToWaitlist(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.isScholarship === 'Sí' ? 'bg-purple-500 text-white border-purple-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}
+                      >
+                        <GraduationCap size={14} className={newEntry.isScholarship === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isScholarship}
+                      </button>
                     </div>
-                  )}
-
-                  {newEntry.isScholarship === 'Sí' && (
-                    <div className="md:col-span-2 lg:col-span-4 space-y-2 p-3 rounded-xl bg-purple-50 border border-purple-100">
-                      <p className="text-[10px] font-black text-purple-800 uppercase tracking-wider">Solicitud de beca → lista de espera</p>
-                      <p className="text-[11px] text-purple-900/80 leading-snug">
-                        No ocupa cupo hasta que un administrador promueva el registro. En beca parcial, el monto que indiques es lo único que cuenta como aporte de esa persona al recaudado (pueden pagarlo en cualquier momento); el resto del costo de lista queda saldado por la beca.
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setNewEntry({ ...newEntry, scholarshipType: 'total', scholarshipPartialAmount: '' })}
-                          className={`px-3 py-2 rounded-lg text-xs font-bold border transition-all ${newEntry.scholarshipType !== 'partial' ? 'bg-purple-600 text-white border-purple-500' : 'bg-white text-slate-600 border-slate-200'}`}
-                        >
-                          Beca total
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setNewEntry({ ...newEntry, scholarshipType: 'partial' })}
-                          className={`px-3 py-2 rounded-lg text-xs font-bold border transition-all ${newEntry.scholarshipType === 'partial' ? 'bg-purple-600 text-white border-purple-500' : 'bg-white text-slate-600 border-slate-200'}`}
-                        >
-                          Beca parcial
-                        </button>
-                      </div>
-                      {newEntry.scholarshipType === 'partial' && (
-                        <div className="space-y-1 max-w-md">
-                          <label className={labelClasses}>¿Cuánto puede abonar?</label>
-                          <p className="text-[10px] text-purple-900/85 leading-snug mb-1">
-                            Solo este monto cuenta como lo que aportan al recaudado del evento; pueden pagarlo en cualquier momento. El resto del costo de lista queda saldado por la beca.
-                          </p>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            placeholder="Ej. 500"
-                            className={`${inputClasses} ${getRequiredFieldClass(newEntry.isScholarship === 'Sí' && newEntry.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(newEntry.scholarshipPartialAmount)) || parseFloat(newEntry.scholarshipPartialAmount) <= 0 || parseFloat(newEntry.scholarshipPartialAmount) >= ((newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global)))}`}
-                            value={newEntry.scholarshipPartialAmount}
-                            onChange={(e) => setNewEntry({ ...newEntry, scholarshipPartialAmount: e.target.value })}
-                          />
-                          <p className="text-[10px] text-purple-800/90">
-                            {(() => {
-                              const list = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
-                              const p = parseFloat(newEntry.scholarshipPartialAmount || 0);
-                              if (!Number.isFinite(p) || p <= 0) {
-                                return <>Costo lista sede: ${list.toLocaleString('es-MX')} · Indica arriba su aporte para ver cuánto cubre la beca.</>;
-                              }
-                              const beca = Math.max(0, list - p);
-                              return (
-                                <>
-                                  Costo lista sede: ${list.toLocaleString('es-MX')} · Aporte al recaudado (ellos): ${p.toLocaleString('es-MX')} · Cubre la beca: ${beca.toLocaleString('es-MX')}
-                                </>
-                              );
-                            })()}
-                          </p>
+                    {newEntry.isScholarship === 'Sí' && (
+                      <>
+                        <div className="space-y-1">
+                          <label className={labelClasses}>Tipo de beca</label>
+                          <select
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700"
+                            value={newEntry.scholarshipType === 'partial' ? 'partial' : 'total'}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setNewEntry({
+                                ...newEntry,
+                                scholarshipType: v === 'partial' ? 'partial' : 'total',
+                                scholarshipPartialAmount: v === 'total' ? '' : newEntry.scholarshipPartialAmount,
+                              });
+                            }}
+                          >
+                            <option value="total">Beca total</option>
+                            <option value="partial">Beca parcial</option>
+                          </select>
                         </div>
-                      )}
+                        {newEntry.scholarshipType === 'partial' && (
+                          <div className="space-y-1">
+                            <label className={labelClasses}>Monto becado</label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="0.00"
+                              className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(newEntry.isScholarship === 'Sí' && newEntry.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(newEntry.scholarshipPartialAmount)) || parseFloat(newEntry.scholarshipPartialAmount) < 0 || parseFloat(newEntry.scholarshipPartialAmount) >= getPersonCost(newEntry, currentPricing)))}`}
+                              value={newEntry.scholarshipPartialAmount}
+                              onChange={(e) => setNewEntry({ ...newEntry, scholarshipPartialAmount: e.target.value })}
+                            />
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  <div className="space-y-2 min-w-0">
+                    <div className="space-y-1">
+                      <label className={labelClasses}>Servidor</label>
+                      <button type="button" onClick={() => setNewEntry({
+                        ...newEntry,
+                        isServer: newEntry.isServer === 'Sí' ? 'No' : 'Sí',
+                        serverAssignment: '',
+                        baptismSegment: '',
+                        isMarried: 'No',
+                        spouseName: '',
+                        goesWithChildren: 'No',
+                        childrenCount: '',
+                        servedOtherCampa: 'No',
+                        servedAreas: '',
+                        preferredServeArea: '',
+                        servesInCongress: 'No',
+                        congressServeArea: '',
+                      })} className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}><Users size={14} className={newEntry.isServer === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isServer}</button>
                     </div>
-                  )}
+                    {newEntry.isServer === 'Sí' && (
+                      <div className="space-y-1">
+                        <label className={labelClasses}>Asignación</label>
+                        <select className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(newEntry.isServer === 'Sí' && !String(newEntry.serverAssignment || '').trim())}`} value={newEntry.serverAssignment} onChange={e => {
+                          const v = e.target.value;
+                          setNewEntry({
+                            ...newEntry,
+                            serverAssignment: v,
+                            baptismSegment: v === 'Ambos' ? newEntry.baptismSegment : '',
+                          });
+                        }}>
+                          <option value="Teens">Teens</option>
+                          <option value="Jóvenes">Jóvenes</option>
+                          <option value="Ambos">Ambos</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2 min-w-0">
+                    <div className="space-y-1">
+                      <label className={labelClasses}>Bautizo</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = newEntry.willBeBaptized === 'Sí' ? 'No' : 'Sí';
+                          setNewEntry({
+                            ...newEntry,
+                            willBeBaptized: next,
+                            baptismSegment: next === 'No' ? '' : newEntry.baptismSegment,
+                          });
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.willBeBaptized === 'Sí' ? 'bg-sky-600 text-white border-sky-500' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}
+                      >
+                        <Church size={14} className={newEntry.willBeBaptized === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.willBeBaptized}
+                      </button>
+                    </div>
+                    {newEntry.willBeBaptized === 'Sí' && newEntry.isServer !== 'Sí' && (
+                      <p className="text-[9px] text-slate-500 leading-snug">
+                        Conteo en <strong>{parseInt(newEntry.age, 10) < 18 ? 'Teens' : 'Jóvenes'}</strong> según edad al guardar (campista).
+                      </p>
+                    )}
+                    {newEntry.willBeBaptized === 'Sí' && newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos' && (
+                      <div className="space-y-1">
+                        <label className={labelClasses}>¿Dónde se bautiza?</label>
+                        <select
+                          className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(!String(newEntry.baptismSegment || '').trim())}`}
+                          value={newEntry.baptismSegment || ''}
+                          onChange={(e) => setNewEntry({ ...newEntry, baptismSegment: e.target.value })}
+                        >
+                          <option value="">Selecciona…</option>
+                          <option value="Teens">Teens</option>
+                          <option value="Jóvenes">Jóvenes</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
 
                   {newEntry.isScholarship !== 'Sí' && (
-                    <div className="md:col-span-2 lg:col-span-4 flex flex-wrap items-center gap-4">
-                      <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none p-2 bg-white border border-slate-200 rounded-lg">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 accent-indigo-600 rounded"
-                          checked={newEntry.isPastorChild === 'Sí'}
-                          onChange={(e) => setNewEntry({
-                            ...newEntry,
-                            isPastorChild: e.target.checked ? 'Sí' : 'No',
-                            pastorChildWithoutPay: e.target.checked ? newEntry.pastorChildWithoutPay : 'No',
-                            pastorChildSpecialDonationFinanceId: '',
-                          })}
-                        />
-                        Hijo de pastor
-                      </label>
-                      {newEntry.isPastorChild === 'Sí' && (
-                        <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none p-2 bg-white border border-slate-200 rounded-lg">
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4 accent-amber-600 rounded"
-                            checked={newEntry.pastorChildWithoutPay === 'Sí'}
-                            onChange={(e) => setNewEntry({
-                              ...newEntry,
-                              pastorChildWithoutPay: e.target.checked ? 'Sí' : 'No',
-                              pastorChildSpecialDonationFinanceId: '',
-                            })}
-                          />
-                          ¿Va sin pagar?
-                        </label>
-                      )}
+                    <div className="sm:col-span-3 space-y-2">
+                      <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Asistencia sin cobro (cuenta en registro)</p>
+                      <div className="flex flex-wrap gap-2">
+                        {[
+                          { id: ATTENDANCE_SPECIAL.ninguno, label: 'Ninguno', Icon: null },
+                          { id: ATTENDANCE_SPECIAL.empleado, label: 'Empleado', Icon: Briefcase },
+                          { id: ATTENDANCE_SPECIAL.cortesia, label: 'Cortesía', Icon: Gift },
+                        ].map(({ id, label, Icon }) => (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() =>
+                              setNewEntry({
+                                ...newEntry,
+                                attendanceSpecialType: id,
+                                isScholarship: 'No',
+                                scholarshipType: 'total',
+                                scholarshipPartialAmount: '',
+                                selectedDiscountCampaignId: '',
+                              })
+                            }
+                            className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold border transition-all ${
+                              newEntry.attendanceSpecialType === id
+                                ? id === ATTENDANCE_SPECIAL.empleado
+                                  ? 'bg-teal-600 text-white border-teal-500'
+                                  : id === ATTENDANCE_SPECIAL.cortesia
+                                    ? 'bg-fuchsia-600 text-white border-fuchsia-500'
+                                    : 'bg-slate-200 text-slate-700 border-slate-300'
+                                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            {Icon ? <Icon size={14} /> : null}
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[9px] text-slate-500 leading-snug">
+                        Costo a liquidar: $0. No aplica con beca; las campañas de descuento se omiten.
+                      </p>
                     </div>
                   )}
                 </div>
@@ -6947,7 +9785,13 @@ const App = () => {
                 <div className="space-y-1">
                   <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1 flex items-center justify-between">
                     <span>Abono inicial ($)</span>
-                    {!(isCampa && newEntry.isScholarship === 'Sí') && <span className="text-indigo-400 normal-case tracking-normal">Mín. ${currentEvent.minDeposit}</span>}
+                    {isCampa && newEntry.isScholarship === 'Sí' && newEntry.scholarshipType === 'partial' ? (
+                      <span className="text-indigo-400 normal-case tracking-normal max-w-[14rem] text-right leading-tight" title="Permitido: $0, apartado mínimo del evento, o costo servidor (Ambos) si aplica.">
+                        Parcial: $0, mín. ${currentEvent.minDeposit} o costo Ambos (${Number(currentPricing.server || 0).toLocaleString('es-MX')})
+                      </span>
+                    ) : !(isCampa && newEntry.isScholarship === 'Sí') ? (
+                      <span className="text-indigo-400 normal-case tracking-normal">Mín. ${currentEvent.minDeposit}</span>
+                    ) : null}
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
@@ -6962,7 +9806,12 @@ const App = () => {
                         let numVal = parseFloat(val);
                         if (numVal < 0) numVal = 0;
                         const bc = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
-                        if (numVal > bc) numVal = bc;
+                        let maxCap = bc;
+                        if (isCampa && newEntry.isScholarship === 'Sí' && newEntry.scholarshipType === 'partial') {
+                          const liq = getLiquidationTarget({ ...newEntry, isScholarship: 'Sí', scholarshipType: 'partial' });
+                          maxCap = Math.min(bc, Math.max(0, liq));
+                        }
+                        if (numVal > maxCap) numVal = maxCap;
                         setNewEntry({ ...newEntry, paid: numVal });
                       }}
                     />
@@ -6983,6 +9832,74 @@ const App = () => {
                   </div>
                 )}
               </div>
+              {(currentEvent?.discountCampaigns || []).length > 0 && (
+                <details className="group/camp mt-2 rounded-lg border border-slate-200/80 bg-slate-50/40">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-2.5 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500 hover:text-slate-600 hover:bg-slate-100/40 rounded-lg [&::-webkit-details-marker]:hidden">
+                    <span>Campañas de descuento</span>
+                    <ChevronDown size={14} className="shrink-0 text-slate-400 transition-transform duration-200 group-open/camp:rotate-180" />
+                  </summary>
+                  <div className="border-t border-slate-200/60 px-2.5 pb-2.5 pt-2 space-y-2 text-[10px] text-slate-600">
+                    {newRegCampaignsActive.length > 0 ? (
+                      <ul className="space-y-0.5 list-disc list-inside text-slate-600">
+                        {newRegCampaignsActive.map((c) => (
+                          <li key={`newreg-camp-${c.id}`}>
+                            <span className="font-semibold text-slate-700">{c.concept || 'Sin nombre'}</span>
+                            {' · '}
+                            {c.startDate} → {c.endDate}
+                            {' · '}
+                            ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')}
+                            {' · '}
+                            {discountCampaignAppliesToLabel(c)}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : newRegSelectableCampaigns.length > 0 ? (
+                      <p className="text-slate-500 leading-snug">
+                        Ninguna vigente hoy para este perfil; puedes elegir una en el selector.
+                      </p>
+                    ) : (
+                      <p className="text-slate-500 leading-snug">
+                        Sin campañas aplicables. Lista: <span className="font-semibold text-slate-700">${newRegBaseList.toLocaleString('es-MX')}</span>.
+                      </p>
+                    )}
+                    {newRegSelectableCampaigns.length > 0 ? (
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide px-0.5">Aplicar campaña</label>
+                        <select
+                          className="w-full px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-700 outline-none focus:ring-2 focus:ring-slate-300"
+                          value={newEntry.selectedDiscountCampaignId || ''}
+                          onChange={(e) => setNewEntry({ ...newEntry, selectedDiscountCampaignId: e.target.value })}
+                        >
+                          <option value="">Automático (fechas vigentes hoy)</option>
+                          {newRegSelectableCampaigns.map((c) => {
+                            const activeToday = newRegCampaignsActive.some((a) => String(a.id) === String(c.id));
+                            const noDates = !discountCampaignHasDateRange(c);
+                            const suffix = noDates
+                              ? ' — manual'
+                              : activeToday
+                                ? ' — vigente'
+                                : ' — fuera de vigencia';
+                            return (
+                              <option key={`newreg-opt-${c.id}`} value={String(c.id)}>
+                                {c.concept || 'Campaña'} — ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')}
+                                {suffix}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+                    ) : null}
+                    <p className="text-[10px] text-slate-500 border-t border-slate-200/50 pt-2">
+                      A liquidar: <span className="font-semibold text-slate-700">${newRegLiqPreview.toLocaleString('es-MX')}</span>
+                      {newRegCampPreview ? (
+                        <> · «{newRegCampPreview.concept || '—'}» (sin campaña: ${newRegBaseList.toLocaleString('es-MX')}).</>
+                      ) : (
+                        <> · lista del evento para este perfil.</>
+                      )}
+                    </p>
+                  </div>
+                </details>
+              )}
               <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   {hasAdminRights && (
@@ -7028,17 +9945,24 @@ const App = () => {
         </div>
       )}
 
-      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col xl:flex-row gap-4 justify-between items-center">
-        <div className="relative w-full xl:w-1/4"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} /><input type="text" placeholder="Nombre, teléfono o ID VNPM…" className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div>
-        <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
-          <button onClick={() => exportPendingWhatsAppToExcel(loc)} className="flex items-center gap-2 bg-indigo-50 text-indigo-700 px-3 py-2 rounded-xl border border-indigo-100 hover:bg-indigo-100 transition-colors text-xs font-black uppercase tracking-wider">
-            <Download size={14} /> WhatsApp pendientes de enviar ({getPendingWhatsAppRowsForLocation(loc).length})
-          </button>
-          <div className="relative flex-1 lg:flex-none" data-dropdown-root="filters">
+      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col gap-3">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:gap-3">
+          <div className="flex flex-1 flex-wrap items-center gap-2 min-w-0">
+            <div className="relative flex-1 min-w-[min(100%,12rem)]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={18} />
+              <input
+                type="text"
+                placeholder="Nombre, teléfono o ID VNPM…"
+                className="w-full pl-10 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+            <div className="relative shrink-0" data-dropdown-root="filters">
             <button
               type="button"
               onClick={() => setFiltersDropdownOpen((v) => !v)}
-              className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-100 transition-colors text-xs font-black text-slate-700"
+              className="flex items-center gap-2 bg-slate-50 px-3 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-100 transition-colors text-xs font-black text-slate-700 h-[42px]"
             >
               <Filter size={14} className="text-slate-500" />
               Filtros
@@ -7081,19 +10005,14 @@ const App = () => {
                   ))}
                 </div>
                 <div>
-                  <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Estado de registro</p>
+                  <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Devolución pendiente</p>
                   {[
                     { id: 'all', label: 'Todos' },
-                    { id: 'active', label: 'Activos' },
-                    { id: 'cancelled', label: 'Cancelados' },
+                    { id: 'pending', label: 'Con devolución pendiente' },
+                    { id: 'none', label: 'Sin devolución pendiente' },
                   ].map((op) => (
                     <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 rounded accent-indigo-600"
-                        checked={filterCancelled === op.id}
-                        onChange={() => setFilterCancelled(filterCancelled === op.id ? 'all' : op.id)}
-                      />
+                      <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterPendingRefund === op.id} onChange={() => setFilterPendingRefund(filterPendingRefund === op.id ? 'all' : op.id)} />
                       {op.label}
                     </label>
                   ))}
@@ -7194,20 +10113,21 @@ const App = () => {
                       ))}
                     </div>
                     <div>
-                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Hijo de pastor</p>
-                      {['all', 'Sí', 'No'].map((op) => (
-                        <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
-                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterPastorChild === op} onChange={() => setFilterPastorChild(filterPastorChild === op ? 'all' : op)} />
-                          {op === 'all' ? 'Todos' : op}
-                        </label>
-                      ))}
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Va sin pagar</p>
-                      {['all', 'Sí', 'No'].map((op) => (
-                        <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
-                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterWithoutPay === op} onChange={() => setFilterWithoutPay(filterWithoutPay === op ? 'all' : op)} />
-                          {op === 'all' ? 'Todos' : op}
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asistencia especial</p>
+                      {[
+                        { id: 'all', label: 'Todos' },
+                        { id: 'ninguno', label: 'Sin especial' },
+                        { id: 'empleado', label: 'Empleado' },
+                        { id: 'cortesia', label: 'Cortesía' },
+                      ].map((op) => (
+                        <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded accent-indigo-600"
+                            checked={filterAttendanceSpecial === op.id}
+                            onChange={() => setFilterAttendanceSpecial(filterAttendanceSpecial === op.id ? 'all' : op.id)}
+                          />
+                          {op.label}
                         </label>
                       ))}
                     </div>
@@ -7231,6 +10151,25 @@ const App = () => {
                         <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
                           <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterSwim === op} onChange={() => setFilterSwim(filterSwim === op ? 'all' : op)} />
                           {op === 'all' ? 'Todos' : op}
+                        </label>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Bautizo</p>
+                      {[
+                        { id: 'all', label: 'Todos' },
+                        { id: 'teens', label: 'Si se bautiza en Teens' },
+                        { id: 'jovenes', label: 'Si se bautiza en Jóvenes' },
+                        { id: 'no', label: 'No se bautiza' },
+                      ].map((op) => (
+                        <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded accent-indigo-600"
+                            checked={filterBaptism === op.id}
+                            onChange={() => setFilterBaptism(filterBaptism === op.id ? 'all' : op.id)}
+                          />
+                          {op.label}
                         </label>
                       ))}
                     </div>
@@ -7266,11 +10205,12 @@ const App = () => {
                       setFilterPastorChild('all');
                       setFilterWithoutPay('all');
                       setFilterFirstTimeId('all');
-                      setFilterCancelled('all');
+                      setFilterPendingRefund('all');
                       setFilterAssignment('all');
                       setFilterScholarship('all');
                       setFilterMedical('all');
                       setFilterSwim('all');
+                      setFilterBaptism('all');
                       setFilterServer('all');
                     }}
                     className="w-full py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-black text-slate-700 transition-colors"
@@ -7281,19 +10221,84 @@ const App = () => {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex-1 lg:flex-none"><ArrowUpDown size={14} className="text-slate-400" /><select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="none">Ordenar...</option><option value="name-asc">Nombre (A-Z)</option><option value="name-desc">Nombre (Z-A)</option><option value="age-asc">Edad (Menor a Mayor)</option><option value="age-desc">Edad (Mayor a Menor)</option><option value="debt-asc">Deuda (Menor a Mayor)</option><option value="debt-desc">Deuda (Mayor a Menor)</option></select></div>
+            <div className="flex items-center gap-1.5 bg-slate-50 pl-2 pr-2 rounded-xl border border-slate-200 shrink-0 h-[42px] w-[9.25rem] sm:w-44">
+              <ArrowUpDown size={14} className="text-slate-400 shrink-0" />
+              <select
+                className="min-w-0 flex-1 max-w-[11rem] bg-transparent text-xs font-bold text-slate-600 outline-none"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+              >
+                <option value="none">Ordenar…</option>
+                <option value="name-asc">Nombre (A-Z)</option>
+                <option value="name-desc">Nombre (Z-A)</option>
+                <option value="age-asc">Edad (menor → mayor)</option>
+                <option value="age-desc">Edad (mayor → menor)</option>
+                <option value="debt-asc">Deuda (menor → mayor)</option>
+                <option value="debt-desc">Deuda (mayor → menor)</option>
+              </select>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => exportPendingWhatsAppToExcel(loc)}
+            title={`${getPendingWhatsAppRowsForLocation(loc).length} pendiente(s) de enviar`}
+            className="lg:ml-auto shrink-0 inline-flex flex-col items-center justify-center gap-0.5 max-w-[10.75rem] py-3 px-2.5 rounded-xl bg-indigo-50 text-indigo-800 border border-indigo-100 hover:bg-indigo-100 transition-colors text-center leading-tight"
+          >
+            <Download size={16} className="text-indigo-600 shrink-0" />
+            <span className="text-[10px] font-bold">
+              Descargar mensajes pendientes de enviar por WhatsApp
+            </span>
+            <span className="text-[9px] font-black text-indigo-600 tabular-nums">
+              ({getPendingWhatsAppRowsForLocation(loc).length})
+            </span>
+          </button>
+        </div>
+        <div className="space-y-1 pt-0.5">
+          <p className="text-[11px] font-bold text-slate-500 px-0.5">
+            Coincidencias: <span className="text-indigo-700">{rosterSearchMatchCount}</span>
+            {searchTerm.trim() ? (
+              <span className="text-slate-400 font-semibold normal-case">
+                {' '}
+                ({visibleParticipants.length} inscritos · {waitlistFilteredForLoc.length} lista de espera ·{' '}
+                {cancelledFilteredForLoc.length} cancelados)
+              </span>
+            ) : null}
+          </p>
+          <p className="text-[10px] text-slate-400 px-0.5 leading-snug">
+            Con búsqueda activa se despliegan solo las listas con coincidencias; al borrar el texto se restaura tu preferencia de panel (colapsado o expandido).
+          </p>
         </div>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+        <button
+          type="button"
+          disabled={rosterSearchActive}
+          onClick={() => !rosterSearchActive && toggleRosterSection('activos')}
+          className={`w-full flex items-center justify-between gap-3 px-4 py-4 border-b border-slate-100 text-left transition-colors ${rosterSearchActive ? 'bg-slate-50/80 cursor-default' : 'hover:bg-slate-50 cursor-pointer'}`}
+        >
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <Users size={18} className="text-indigo-600 shrink-0" />
+            <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Activos (inscritos)</span>
+            <span className="text-[10px] font-black text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-lg shrink-0">
+              {(data[loc] || []).length}
+            </span>
+            {rosterSearchActive && visibleParticipants.length > 0 ? (
+              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-lg">
+                {visibleParticipants.length} coincidencia{visibleParticipants.length === 1 ? '' : 's'}
+              </span>
+            ) : null}
+          </div>
+          {showRosterActivos ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
+        </button>
+        {showRosterActivos && (
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
               <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
                 <th className="px-4 py-4">Participante</th>
-                {isCampa ? <th className="px-4 py-4">Salud y Nado</th> : <th className="px-4 py-4">Detalles</th>}
                 <th className="px-4 py-4">Finanzas</th>
-                <th className="px-4 py-4 text-center">Acciones</th>
+                <th className="px-4 py-4 text-center">Acciones rápidas</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
@@ -7303,7 +10308,7 @@ const App = () => {
                     filterWhatsAppPending === 'pending'
                       ? `No hay inscritos con aviso de WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
                       : `No hay registros para mostrar en ${loc}.`;
-                  return <tr><td colSpan="4" className="px-6 py-16 text-center text-slate-400 italic font-medium">{emptyMsg}</td></tr>;
+                  return <tr><td colSpan="3" className="px-6 py-16 text-center text-slate-400 italic font-medium">{emptyMsg}</td></tr>;
                 }
 
                 return visibleParticipants.map((person) => {
@@ -7318,91 +10323,19 @@ const App = () => {
                     <React.Fragment key={person.id}>
                       <tr className={`hover:bg-slate-50/50 transition-colors group ${isExpanded ? 'bg-slate-50/50' : ''}`}>
                         <td className="px-4 py-4 align-top">
-                          <div className="space-y-1">
-                            <div className="flex items-center flex-wrap gap-2">
-                              <p className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
-                                <span>{person.name}</span>
-                                {person.alias ? (
-                                  <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">
-                                    Alias: {person.alias}
-                                  </span>
-                                ) : null}
-                                {person.isFirstVnpId ? (
-                                  <span className="text-[8px] font-black uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded">
-                                    Primera vez
-                                  </span>
-                                ) : null}
-                                {participantIsCancelled(person) ? (
-                                  <span className="text-[8px] font-black uppercase bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0.5 rounded">
-                                    Cancelado
-                                  </span>
-                                ) : null}
-                                {resolveResponsivaStatus(person) === 'Pendiente' ? (
-                                  <span className="text-[8px] font-black uppercase bg-rose-50 text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded">
-                                    Responsiva pendiente
-                                  </span>
-                                ) : null}
-                                {person._isDebug && person._debugSessionId === globalConfig?.debugSessionId && (
-                                  <Bug size={14} className="text-orange-500 inline-block" title="Cambio no permanente" />
-                                )}
-                              </p>
-                              {isBecado && (
-                                <span className="bg-purple-100 text-purple-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1">
-                                  <GraduationCap size={10} />{' '}
-                                  {person.scholarshipType === 'partial' ? 'Beca parcial' : 'Becado'}
-                                </span>
-                              )}
-                              {person.isServer === 'Sí' ? (
-                                <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>
-                              ) : (
-                                isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes')}</span>
-                              )}
-                            </div>
-                            <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1">
-                              <span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" />{person.phone}</span>
-                              {person.vnpPersonId && (
-                                <span className="text-[10px] font-mono text-indigo-600 font-bold tracking-tight">VNPM {person.vnpPersonId}</span>
-                              )}
-                            </div>
-                          </div>
+                          {renderRegistrationParticipantColumn(person)}
                         </td>
-                        {isCampa ? (
-                          <td className="px-4 py-4 align-top"><div className="flex flex-col gap-2 text-xs"><div className="flex flex-wrap items-center gap-2"><span className="px-2 py-0.5 bg-red-50 text-red-600 rounded font-black border border-red-100 uppercase text-[10px]">Sangre: {person.bloodType}</span><span className={`px-2 py-0.5 rounded font-bold text-[10px] border flex items-center gap-1 ${person.canSwim === 'Sí' ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>{person.canSwim === 'Sí' ? <CheckCircle2 size={12} /> : <XCircle size={12} />} Nadador: {person.canSwim}</span></div></div></td>
-                        ) : (
-                          <td className="px-4 py-4 align-top">
-                            <div className="text-xs text-slate-500 space-y-0.5">
-                              {person.age ? <p><strong className="text-slate-600">Edad:</strong> {person.age} años</p> : <p className="italic text-slate-400">Edad no provista</p>}
-                              {person.gender ? <p><strong className="text-slate-600">Género:</strong> {person.gender}</p> : <p className="italic text-slate-400">Género no provisto</p>}
-                              {isGeneral && person.customData && Object.keys(person.customData).length > 0 && <p className="text-[10px] mt-1 text-indigo-500 font-bold tracking-wider pt-1">+ Datos Extra ({Object.keys(person.customData).length})</p>}
-                            </div>
-                          </td>
-                        )}
                         <td className="px-4 py-4 align-top">
-                          <div className="flex flex-col gap-2 w-full max-w-[140px]">
-                            <div className="text-left space-y-0.5">
-                              <p className="text-xs font-black text-green-600 flex justify-between"><span>Pagado:</span> <span>{formatMoney(person.paid || 0)}</span></p>
-                              <p className={`text-[10px] font-bold flex justify-between ${isBecado && liquidationTarget <= 0 ? 'text-purple-600' : balance > 0 ? 'text-orange-500' : 'text-green-600'}`}>
-                                <span>Restante:</span>{' '}
-                                <span>
-                                  {liquidationTarget <= 0 ? 'No requerido' : balance > 0 ? formatMoney(balance) : 'Liquidado'}
-                                </span>
-                              </p>
-                            </div>
-                            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1">
-                              <div
-                                className="h-full bg-green-50 transition-all"
-                                style={{
-                                  width: `${liquidationTarget > 0 ? Math.min(((parseFloat(person.paid || 0) / liquidationTarget) * 100), 100) : 100}%`,
-                                }}
-                              />
-                            </div>
-                          </div>
+                          {renderRegistrationFinancesColumn(person)}
                         </td>
                         <td className="px-4 py-4 align-top text-center">
-                          <div className="flex items-center justify-center gap-2 opacity-100 lg:opacity-50 group-hover:opacity-100 transition-opacity">
-                            <button onClick={() => toggleRow(person.id)} className={`p-2 rounded-lg transition-all ${isExpanded ? 'bg-indigo-50 text-indigo-600' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`} title="Detalles">{isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
+                          <div className="flex flex-wrap items-center justify-center gap-1.5 opacity-100 lg:opacity-60 group-hover:opacity-100 transition-opacity">
+                            <button onClick={() => toggleRow(person.id)} className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all border ${isExpanded ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'text-slate-500 border-slate-200 hover:text-indigo-700 hover:bg-indigo-50 hover:border-indigo-200'}`} title="Detalles">
+                              {isExpanded ? <ChevronUp size={14} className="inline mr-1" /> : <ChevronDown size={14} className="inline mr-1" />}Detalles
+                            </button>
                             {currentUser?.role !== 'Lector' && (
                               <>
+                                {!participantIsCancelled(person) && (
                                 <button onClick={() => setEditRegistryModal({
                                   isOpen: true,
                                   loc,
@@ -7413,13 +10346,19 @@ const App = () => {
                                     travelTo: person.travelTo || person.location || loc,
                                     registeredCost: listPrice,
                                     campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes'),
+                                    willBeBaptized: person.willBeBaptized === 'Sí' ? 'Sí' : 'No',
+                                    baptismSegment: person.baptismSegment || '',
                                     scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
                                     scholarshipPartialAmount:
                                       person.scholarshipType === 'partial' && person.scholarshipPartialAmount != null && person.scholarshipPartialAmount !== ''
                                         ? String(person.scholarshipPartialAmount)
                                         : '',
+                                    attendanceSpecialType: normalizeAttendanceSpecial(person),
+                                    editApplyCampaignId: '',
                                   }
-                                })} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all" title="Editar Registro"><Edit3 size={18} /></button>
+                                })} className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border text-slate-500 border-slate-200 hover:text-indigo-700 hover:bg-indigo-50 hover:border-indigo-200 transition-all" title="Editar Registro"><Edit3 size={14} className="inline mr-1" />Editar</button>
+                                )}
+                                {!participantIsCancelled(person) && (
                                 <button onClick={() => setPaymentModal({
                                   isOpen: true,
                                   loc,
@@ -7433,14 +10372,15 @@ const App = () => {
                                   paymentMethod: 'Efectivo',
                                   paymentService: getAutoPaymentService(new Date()),
                                   cardReference: ''
-                                })} className="p-2 text-slate-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all" title="Abonar Pago"><CreditCard size={18} /></button>
-                                <button onClick={() => openWhatsAppModal(person, loc)} className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all" title="Enviar WhatsApp"><MessageCircle size={18} /></button>
-                                {!participantIsCancelled(person) ? (
-                                  <button onClick={() => cancelEntry(loc, person.id)} className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-all" title="Dar de baja (queda visible, no cuenta en inscritos/becados/servidores)"><Scissors size={18} /></button>
-                                ) : (
-                                  <button onClick={() => reactivateEntry(loc, person.id)} className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all" title="Reactivar registro"><CheckCircle2 size={18} /></button>
+                                })} className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border text-slate-500 border-slate-200 hover:text-green-700 hover:bg-green-50 hover:border-green-200 transition-all" title="Abonar Pago"><CreditCard size={14} className="inline mr-1" />Abonar</button>
                                 )}
-                                <button onClick={() => removeEntry(loc, person.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all" title="Archivar registro (deja de contar en el evento; datos e ID VNPM siguen para precargar)"><Trash2 size={18} /></button>
+                                <button onClick={() => openWhatsAppModal(person, loc)} className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border text-slate-500 border-slate-200 hover:text-emerald-700 hover:bg-emerald-50 hover:border-emerald-200 transition-all" title="Enviar WhatsApp"><MessageCircle size={14} className="inline mr-1" />WhatsApp</button>
+                                {!participantIsCancelled(person) ? (
+                                  <button onClick={() => cancelEntry(loc, person.id)} className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border text-slate-500 border-slate-200 hover:text-amber-700 hover:bg-amber-50 hover:border-amber-200 transition-all" title="Dar de baja (queda visible, no cuenta en inscritos/becados/servidores)"><Scissors size={14} className="inline mr-1" />Baja</button>
+                                ) : (
+                                  <button onClick={() => reactivateEntry(loc, person.id)} className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border text-slate-500 border-slate-200 hover:text-emerald-700 hover:bg-emerald-50 hover:border-emerald-200 transition-all" title="Reactivar registro"><CheckCircle2 size={14} className="inline mr-1" />Reactivar</button>
+                                )}
+                                <button onClick={() => removeEntry(loc, person.id)} className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border text-slate-500 border-slate-200 hover:text-red-700 hover:bg-red-50 hover:border-red-200 transition-all" title="Archivar registro (deja de contar en el evento; datos e ID VNPM siguen para precargar)"><Trash2 size={14} className="inline mr-1" />Archivar</button>
                               </>
                             )}
                           </div>
@@ -7448,7 +10388,7 @@ const App = () => {
                       </tr>
                       {isExpanded && (
                         <tr className="bg-indigo-50/30 border-b border-slate-100 animate-in fade-in zoom-in-95 duration-200">
-                          <td colSpan="4" className="px-6 py-5">
+                          <td colSpan="3" className="px-6 py-5">
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs items-start">
                               <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
                                 <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Detalles Generales</p>
@@ -7457,13 +10397,31 @@ const App = () => {
                                 ) : (
                                   <p className="mb-2 text-[10px] text-amber-700 bg-amber-50 px-2 py-1 rounded border border-amber-100">Sin ID VNPM (se asignará al guardar en editar).</p>
                                 )}
+                                <p className="mb-2 text-slate-600 flex flex-wrap items-center gap-2">
+                                  <span>
+                                    <strong>Fecha de registro:</strong>{' '}
+                                    {person.registeredAt ? (
+                                      new Date(person.registeredAt).toLocaleString('es-MX')
+                                    ) : (
+                                      <span className="text-slate-400 font-normal">Sin fecha guardada (registros antiguos)</span>
+                                    )}
+                                  </span>
+                                  {canEditRegistryDates && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openSuperRegistrationDateEdit(person, loc)}
+                                      className="text-[9px] font-black uppercase text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-lg hover:bg-violet-100 transition-colors"
+                                    >
+                                      Cambiar
+                                    </button>
+                                  )}
+                                </p>
                                 {person.alias ? <p className="mb-1 text-slate-600"><strong>Alias:</strong> {person.alias}</p> : null}
                                 <p className="mb-1 text-slate-600"><strong>Transporte:</strong> {resolveTransportSummary(person)}</p>
-                                {person.isPastorChild === 'Sí' ? (
-                                  <>
-                                    <p className="mb-1 text-slate-600"><strong>Hijo de pastor:</strong> Sí</p>
-                                    <p className="mb-1 text-slate-600"><strong>¿Va sin pagar?:</strong> {person.pastorChildWithoutPay || 'No'}</p>
-                                  </>
+                                {normalizeAttendanceSpecial(person) === ATTENDANCE_SPECIAL.empleado ? (
+                                  <p className="mb-1 text-slate-600"><strong>Asistencia especial:</strong> Empleado (sin cobro)</p>
+                                ) : normalizeAttendanceSpecial(person) === ATTENDANCE_SPECIAL.cortesia ? (
+                                  <p className="mb-1 text-slate-600"><strong>Asistencia especial:</strong> Cortesía (sin cobro)</p>
                                 ) : null}
                                 <p className="text-slate-600"><strong>Edad:</strong> {person.age || 'N/A'}</p>
                                 <p className="text-slate-600"><strong>Género:</strong> {person.gender || 'N/A'}</p>
@@ -7471,7 +10429,17 @@ const App = () => {
                               {(isCampa || isGeneral) ? (
                                 <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
                                   <p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Contacto de Emergencia</p>
-                                  {person.emergencyContact ? (<><p className="text-slate-700 font-semibold mb-1">{person.emergencyContact}</p><p className="flex items-center gap-1 text-slate-500 font-mono"><Phone size={10} /> {person.emergencyPhone}</p></>) : <p className="text-slate-400 italic">No provisto</p>}
+                                  {person.emergencyContact ? (
+                                    <>
+                                      <p className="text-slate-700 font-semibold mb-1">{person.emergencyContact}</p>
+                                      {person.emergencyRelationship ? (
+                                        <p className="text-slate-600 text-[11px] mb-1"><strong>Parentesco:</strong> {person.emergencyRelationship}</p>
+                                      ) : null}
+                                      <p className="flex items-center gap-1 text-slate-500 font-mono"><Phone size={10} /> {person.emergencyPhone}</p>
+                                    </>
+                                  ) : (
+                                    <p className="text-slate-400 italic">No provisto</p>
+                                  )}
                                 </div>
                               ) : <div />}
                               {isCampa && (
@@ -7516,7 +10484,7 @@ const App = () => {
                                       <div className="flex items-center gap-3">
                                         <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-500 text-[9px] font-black flex items-center justify-center flex-shrink-0">{idx + 1}</span>
                                         <div>
-                                          <p className="text-[11px] font-mono text-slate-500">{pay.date}</p>
+                                          <p className="text-[11px] font-mono text-slate-500">{formatPayHistoryRowDate(pay)}</p>
                                           <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
                                             <UserCircle size={10} className="text-slate-400" />
                                             <p className="text-[10px] text-slate-400 font-semibold">{pay.registeredBy}</p>
@@ -7556,11 +10524,31 @@ const App = () => {
                                           </div>
                                         </div>
                                       </div>
-                                      <div className="text-right">
+                                      <div className="text-right flex flex-col items-end gap-1">
                                         {pay.kind === 'comment' ? (
                                           <p className="text-sm font-black text-slate-400">—</p>
                                         ) : (
-                                          <p className={`text-sm font-black ${pay.amount < 0 ? 'text-red-500' : 'text-green-600'}`}>{pay.amount < 0 ? '-' : '+'}{formatMoney(Math.abs(pay.amount))}</p>
+                                          <>
+                                            <p className={`text-sm font-black ${pay.amount < 0 ? 'text-red-500' : 'text-green-600'}`}>{pay.amount < 0 ? '-' : '+'}{formatMoney(Math.abs(pay.amount))}</p>
+                                            {canEditRegistryDates && (
+                                              <button
+                                                type="button"
+                                                onClick={() => openSuperPaymentDateEdit(person, loc, idx)}
+                                                className="text-[9px] font-black uppercase text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-lg hover:bg-violet-100 transition-colors"
+                                              >
+                                                Cambiar fecha
+                                              </button>
+                                            )}
+                                            {hasAdminRights && (
+                                              <button
+                                                type="button"
+                                                onClick={() => openPaymentMethodEditModal(person, loc, idx)}
+                                                className="text-[9px] font-black uppercase text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-lg hover:bg-indigo-100 transition-colors"
+                                              >
+                                                Cambiar tipo
+                                              </button>
+                                            )}
+                                          </>
                                         )}
                                       </div>
                                     </div>
@@ -7598,17 +10586,31 @@ const App = () => {
             </tbody>
           </table>
         </div>
+        )}
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-        <div className="px-4 py-4 border-b border-slate-100 flex items-center justify-between">
-          <h3 className="text-sm font-black text-slate-700 uppercase tracking-wider flex items-center gap-2">
-            <CalendarRange size={16} className="text-amber-600" /> Lista de Espera - {loc}
-          </h3>
-          <span className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-100 px-2 py-1 rounded-lg">
-            {(waitlistData[loc] || []).length} en espera
-          </span>
-        </div>
+        <button
+          type="button"
+          disabled={rosterSearchActive}
+          onClick={() => !rosterSearchActive && toggleRosterSection('waitlist')}
+          className={`w-full flex items-center justify-between gap-3 px-4 py-4 border-b border-slate-100 text-left transition-colors ${rosterSearchActive ? 'bg-slate-50/80 cursor-default' : 'hover:bg-slate-50 cursor-pointer'}`}
+        >
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <GraduationCap size={18} className="text-amber-600 shrink-0" />
+            <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Becados (lista de espera)</span>
+            <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-lg shrink-0">
+              {(waitlistData[loc] || []).length} en espera
+            </span>
+            {rosterSearchActive && waitlistFilteredForLoc.length > 0 ? (
+              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-lg">
+                {waitlistFilteredForLoc.length} coincidencia{waitlistFilteredForLoc.length === 1 ? '' : 's'}
+              </span>
+            ) : null}
+          </div>
+          {showRosterWaitlist ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
+        </button>
+        {showRosterWaitlist && (
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
@@ -7621,21 +10623,16 @@ const App = () => {
             <tbody className="divide-y divide-slate-50">
               {(waitlistData[loc] || []).length === 0 ? (
                 <tr><td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">Sin personas en lista de espera en {loc}.</td></tr>
-              ) : (() => {
-                const sortedWaitlist = getSortedWaitlistForLocation(loc);
-                const wlFiltered = applyRosterLikeFilters(sortedWaitlist, sortBy === 'none');
-                if (wlFiltered.length === 0) {
-                  return (
+              ) : waitlistFilteredForLoc.length === 0 ? (
                     <tr>
                       <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">
                         {filterWhatsAppPending === 'pending'
                           ? `Nadie en lista de espera con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
-                          : `Ninguna entrada coincide con la búsqueda en lista de espera (${loc}).`}
+                          : `Ninguna entrada coincide con la búsqueda o filtros en lista de espera (${loc}).`}
                       </td>
                     </tr>
-                  );
-                }
-                return wlFiltered.map((person) => {
+                  ) : (
+                waitlistFilteredForLoc.map((person) => {
                     const listPrice = resolveRegisteredCost(person, currentPricing);
                     return (
                     <tr key={`wait-${person.id}`} className="hover:bg-slate-50/60 transition-colors">
@@ -7651,7 +10648,7 @@ const App = () => {
                           <p className="mt-1 text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-100 rounded-lg px-2 py-1 inline-block">
                             Solicitud beca {person.scholarshipType === 'partial' ? 'parcial' : 'total'}
                             {person.scholarshipType === 'partial'
-                              ? ` · aporte recaudado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}`
+                              ? ` · monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}`
                               : ''}{' '}
                             (pendiente al promover)
                           </p>
@@ -7675,11 +10672,15 @@ const App = () => {
                                   travelTo: person.travelTo || person.location || loc,
                                   registeredCost: listPrice,
                                   campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes'),
+                                  willBeBaptized: person.willBeBaptized === 'Sí' ? 'Sí' : 'No',
+                                  baptismSegment: person.baptismSegment || '',
                                   scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
                                   scholarshipPartialAmount:
                                     person.scholarshipType === 'partial' && person.scholarshipPartialAmount != null && person.scholarshipPartialAmount !== ''
                                       ? String(person.scholarshipPartialAmount)
                                       : '',
+                                  attendanceSpecialType: normalizeAttendanceSpecial(person),
+                                  editApplyCampaignId: '',
                                 }
                               })}
                               className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
@@ -7704,15 +10705,400 @@ const App = () => {
                       </td>
                     </tr>
                     );
-                  });
-              })()}
+                  })
+              )}
             </tbody>
           </table>
         </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+        <button
+          type="button"
+          disabled={rosterSearchActive}
+          onClick={() => !rosterSearchActive && toggleRosterSection('cancelled')}
+          className={`w-full flex items-center justify-between gap-3 px-4 py-4 border-b border-slate-100 text-left transition-colors ${rosterSearchActive ? 'bg-slate-50/80 cursor-default' : 'hover:bg-slate-50 cursor-pointer'}`}
+        >
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <Ban size={18} className="text-rose-600 shrink-0" />
+            <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Cancelados / dados de baja</span>
+            <span className="text-[10px] font-black text-rose-800 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded-lg shrink-0">
+              {(cancelledData[loc] || []).length} en esta sede
+            </span>
+            {rosterSearchActive && cancelledFilteredForLoc.length > 0 ? (
+              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-lg">
+                {cancelledFilteredForLoc.length} coincidencia{cancelledFilteredForLoc.length === 1 ? '' : 's'}
+              </span>
+            ) : null}
+          </div>
+          {showRosterCancelled ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
+        </button>
+        {showRosterCancelled && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                <th className="px-4 py-3">Participante</th>
+                <th className="px-4 py-3">Finanzas</th>
+                <th className="px-4 py-3 text-center">Acciones</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {(cancelledData[loc] || []).length === 0 ? (
+                <tr>
+                  <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">
+                    No hay registros dados de baja en {loc}.
+                  </td>
+                </tr>
+              ) : cancelledFilteredForLoc.length === 0 ? (
+                <tr>
+                  <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">
+                    {filterWhatsAppPending === 'pending'
+                      ? `Nadie cancelado con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
+                      : `Ningún cancelado coincide con la búsqueda o filtros en ${loc}.`}
+                  </td>
+                </tr>
+              ) : (
+                cancelledFilteredForLoc.map((person) => {
+                  const listPrice = resolveRegisteredCost(person, currentPricing);
+                  return (
+                    <tr key={`cxl-${person.id}`} className="hover:bg-rose-50/40 transition-colors">
+                      <td className="px-4 py-3 align-top">{renderRegistrationParticipantColumn(person)}</td>
+                      <td className="px-4 py-3 align-top">{renderRegistrationFinancesColumn(person)}</td>
+                      <td className="px-4 py-3 text-center align-top">
+                        <div className="flex flex-wrap items-center justify-center gap-1.5">
+                          {currentUser?.role !== 'Lector' && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditRegistryModal({
+                                    isOpen: true,
+                                    loc,
+                                    data: {
+                                      ...person,
+                                      location: person.location || loc,
+                                      travelFrom: person.travelFrom || person.location || loc,
+                                      travelTo: person.travelTo || person.location || loc,
+                                      registeredCost: listPrice,
+                                      campAssignment: person.campAssignment || (parseInt(person.age, 10) < 18 ? 'Teens' : 'Jóvenes'),
+                                      willBeBaptized: person.willBeBaptized === 'Sí' ? 'Sí' : 'No',
+                                      baptismSegment: person.baptismSegment || '',
+                                      scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
+                                      scholarshipPartialAmount:
+                                        person.scholarshipType === 'partial' &&
+                                        person.scholarshipPartialAmount != null &&
+                                        person.scholarshipPartialAmount !== ''
+                                          ? String(person.scholarshipPartialAmount)
+                                          : '',
+                                      attendanceSpecialType: normalizeAttendanceSpecial(person),
+                                      editApplyCampaignId: '',
+                                    },
+                                  })
+                                }
+                                className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                                title="Editar registro (permanece dado de baja hasta reactivar)"
+                              >
+                                <Edit3 size={17} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openWhatsAppModal(person, loc)}
+                                className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                                title="WhatsApp"
+                              >
+                                <MessageCircle size={17} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => reactivateEntry(loc, person.id)}
+                                className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                                title="Reactivar"
+                              >
+                                <CheckCircle2 size={17} />
+                              </button>
+                              {hasAdminRights && (
+                                <button
+                                  type="button"
+                                  onClick={() => removeEntry(loc, person.id)}
+                                  className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                  title="Archivar"
+                                >
+                                  <Trash2 size={17} />
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+        )}
       </div>
     </div>
   );
 };
+
+  const renderGlobalRegistryPage = () => {
+    const sourceRows = allParticipants.filter((p) => {
+      if (p.eventId !== currentEvent?.id) return false;
+      if (!visibleLocations.includes(p.location)) return false;
+      const status = p?.status || 'active';
+      if (status === PARTICIPANT_STATUS_ARCHIVED) return false;
+      return status === 'active' || status === 'waitlist' || status === PARTICIPANT_STATUS_CANCELLED;
+    });
+    const rowsByFilters = applyRosterLikeFilters(sourceRows);
+    const rows =
+      globalLocationFilters.length > 0
+        ? rowsByFilters.filter((p) => globalLocationFilters.includes(p.location))
+        : rowsByFilters;
+
+    return (
+      <div className="p-6 space-y-6 animate-in slide-in-from-bottom-4 duration-500">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-black text-slate-800 flex items-center gap-2">
+              <TableProperties size={20} className="text-indigo-600" />
+              Registro Global
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">Vista consolidada de todas las sedes (mismas etiquetas y filtros que en cada sede: inscritos, lista de espera y dados de baja). Solo lectura.</p>
+          </div>
+          <div className="text-right">
+            <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Coincidencias</p>
+            <p className="text-2xl font-black text-indigo-700">{rows.length}</p>
+          </div>
+        </div>
+
+        <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col gap-3">
+          <div className="relative w-full lg:w-1/3">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+            <input type="text" placeholder="Nombre, teléfono o ID VNPM…" className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+          </div>
+          <div className="flex flex-wrap items-center gap-2 w-full">
+            <div className="relative flex-1 lg:flex-none" data-dropdown-root="filters">
+              <button
+                type="button"
+                onClick={() => setFiltersDropdownOpen((v) => !v)}
+                className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-100 transition-colors text-xs font-black text-slate-700"
+              >
+                <Filter size={14} className="text-slate-500" />
+                Filtros
+              </button>
+              {filtersDropdownOpen && (
+                <div className="absolute top-full left-0 mt-2 z-30 w-[320px] max-w-[90vw] bg-white border border-slate-200 rounded-xl shadow-xl p-3 space-y-3">
+                  <div>
+                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">WhatsApp</p>
+                    {[
+                      { id: 'all', label: 'Todos' },
+                      { id: 'pending', label: 'Pendiente de enviar' },
+                    ].map((op) => (
+                      <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                        <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterWhatsAppPending === op.id} onChange={() => setFilterWhatsAppPending(filterWhatsAppPending === op.id ? 'all' : op.id)} />
+                        {op.label}
+                      </label>
+                    ))}
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">ID VNPM</p>
+                    {[
+                      { id: 'all', label: 'Todos' },
+                      { id: 'first', label: 'Primera vez' },
+                      { id: 'not-first', label: 'No primera vez' },
+                    ].map((op) => (
+                      <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                        <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterFirstTimeId === op.id} onChange={() => setFilterFirstTimeId(filterFirstTimeId === op.id ? 'all' : op.id)} />
+                        {op.label}
+                      </label>
+                    ))}
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Devolución pendiente</p>
+                    {[
+                      { id: 'all', label: 'Todos' },
+                      { id: 'pending', label: 'Con devolución pendiente' },
+                      { id: 'none', label: 'Sin devolución pendiente' },
+                    ].map((op) => (
+                      <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                        <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterPendingRefund === op.id} onChange={() => setFilterPendingRefund(filterPendingRefund === op.id ? 'all' : op.id)} />
+                        {op.label}
+                      </label>
+                    ))}
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Responsiva</p>
+                    {[
+                      { id: 'all', label: 'Todos' },
+                      { id: 'pending', label: 'Pendiente' },
+                      { id: 'delivered', label: 'Entregada' },
+                      { id: 'na', label: 'No aplica' },
+                    ].map((op) => (
+                      <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                        <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterResponsiva === op.id} onChange={() => setFilterResponsiva(filterResponsiva === op.id ? 'all' : op.id)} />
+                        {op.label}
+                      </label>
+                    ))}
+                  </div>
+                  {isCampa && (
+                    <>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asignación</p>{['all', 'Teens', 'Jóvenes', 'Ambos'].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterAssignment === op} onChange={() => setFilterAssignment(filterAssignment === op ? 'all' : op)} />{op === 'all' ? 'Todas' : op}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Beca</p>{[{ id: 'all', label: 'Todos' }, { id: 'No', label: 'No' }, { id: 'partial', label: 'Parcial' }, { id: 'total', label: 'Total' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterScholarship === op.id} onChange={() => setFilterScholarship(filterScholarship === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Género</p>{['all', ...GENDERS].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterGender === op} onChange={() => setFilterGender(filterGender === op ? 'all' : op)} />{op === 'all' ? 'Todos' : op}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Transporte</p>{[{ id: 'all', label: 'Todos' }, { id: 'go-bus', label: 'Llega en camión' }, { id: 'return-bus', label: 'Regresa en camión' }, { id: 'go-car', label: 'Llega en carro' }, { id: 'return-car', label: 'Regresa en carro' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterTransport === op.id} onChange={() => setFilterTransport(filterTransport === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Tipo de pago</p>{['all', 'Efectivo', 'Tarjeta'].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterPaymentType === op} onChange={() => setFilterPaymentType(filterPaymentType === op ? 'all' : op)} />{op === 'all' ? 'Todos' : op}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Sede de salida</p>{['all', ...(currentEvent?.locations || [])].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterTravelFrom === op} onChange={() => setFilterTravelFrom(filterTravelFrom === op ? 'all' : op)} />{op === 'all' ? 'Todas' : op}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Sede de regreso</p>{['all', ...(currentEvent?.locations || [])].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterTravelTo === op} onChange={() => setFilterTravelTo(filterTravelTo === op ? 'all' : op)} />{op === 'all' ? 'Todas' : op}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asistencia especial</p>{[{ id: 'all', label: 'Todos' }, { id: 'ninguno', label: 'Sin especial' }, { id: 'empleado', label: 'Empleado' }, { id: 'cortesia', label: 'Cortesía' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterAttendanceSpecial === op.id} onChange={() => setFilterAttendanceSpecial(filterAttendanceSpecial === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Salud</p>{[{ id: 'all', label: 'Todos' }, { id: 'allergy', label: 'Con alergias' }, { id: 'disease', label: 'Con enfermedades' }, { id: 'disability', label: 'Con discapacidades' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterMedical === op.id} onChange={() => setFilterMedical(filterMedical === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Nado</p>{['all', 'Sí', 'No'].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterSwim === op} onChange={() => setFilterSwim(filterSwim === op ? 'all' : op)} />{op === 'all' ? 'Todos' : op}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Bautizo</p>{[
+                        { id: 'all', label: 'Todos' },
+                        { id: 'teens', label: 'Si se bautiza en Teens' },
+                        { id: 'jovenes', label: 'Si se bautiza en Jóvenes' },
+                        { id: 'no', label: 'No se bautiza' },
+                      ].map((op) => (
+                        <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                          <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterBaptism === op.id} onChange={() => setFilterBaptism(filterBaptism === op.id ? 'all' : op.id)} />
+                          {op.label}
+                        </label>
+                      ))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Servidor</p>{[{ id: 'all', label: 'Todos' }, { id: 'Sí', label: 'Servidores' }, { id: 'No', label: 'Camperos' }, { id: 'Teens', label: 'Asig. Teens' }, { id: 'Jóvenes', label: 'Asig. Jóvenes' }, { id: 'Ambos', label: 'Asig. Ambos' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterServer === op.id} onChange={() => setFilterServer(filterServer === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
+                    </>
+                  )}
+                  <div className="pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFilterWhatsAppPending('all');
+                        setFilterResponsiva('all');
+                        setFilterGender('all');
+                        setFilterTransport('all');
+                        setFilterPaymentType('all');
+                        setFilterTravelFrom('all');
+                        setFilterTravelTo('all');
+                        setFilterPastorChild('all');
+                        setFilterWithoutPay('all');
+                        setFilterFirstTimeId('all');
+                        setFilterPendingRefund('all');
+                        setFilterAssignment('all');
+                        setFilterScholarship('all');
+                        setFilterMedical('all');
+                        setFilterSwim('all');
+                        setFilterBaptism('all');
+                        setFilterServer('all');
+                      }}
+                      className="w-full py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-black text-slate-700 transition-colors"
+                    >
+                      Limpiar filtros
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="relative flex-1 lg:flex-none" data-dropdown-root="global-locations-filters">
+              <button
+                type="button"
+                onClick={() => setGlobalLocationsDropdownOpen((v) => !v)}
+                className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-100 transition-colors text-xs font-black text-slate-700"
+              >
+                <MapPin size={14} className="text-slate-500" />
+                Filtrar por sede
+                {globalLocationFilters.length > 0 && (
+                  <span className="ml-1 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-black">
+                    {globalLocationFilters.length}
+                  </span>
+                )}
+              </button>
+              {globalLocationsDropdownOpen && (
+                <div className="absolute top-full right-0 mt-2 z-30 w-[280px] max-w-[90vw] bg-white border border-slate-200 rounded-xl shadow-xl p-3 space-y-2">
+                  {(currentEvent?.locations || []).map((loc) => {
+                    const checked = globalLocationFilters.includes(loc);
+                    return (
+                      <label key={`global-loc-filter-${loc}`} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded accent-indigo-600"
+                          checked={checked}
+                          onChange={() => {
+                            setGlobalLocationFilters((prev) => (checked ? prev.filter((v) => v !== loc) : [...prev, loc]));
+                          }}
+                        />
+                        {loc}
+                      </label>
+                    );
+                  })}
+                  <div className="pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => setGlobalLocationFilters([])}
+                      className="w-full py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-black text-slate-700 transition-colors"
+                    >
+                      Limpiar filtro de sede
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="w-full flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
+              <ArrowUpDown size={14} className="text-slate-400" />
+              <select className="bg-transparent text-xs font-bold text-slate-600 outline-none w-full" value={sortBy} onChange={e => setSortBy(e.target.value)}>
+                <option value="none">Ordenar...</option>
+                <option value="name-asc">Nombre (A-Z)</option>
+                <option value="name-desc">Nombre (Z-A)</option>
+                <option value="age-asc">Edad (Menor a Mayor)</option>
+                <option value="age-desc">Edad (Mayor a Menor)</option>
+                <option value="debt-asc">Deuda (Menor a Mayor)</option>
+                <option value="debt-desc">Deuda (Mayor a Menor)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                  <th className="px-4 py-4">Participante</th>
+                  <th className="px-4 py-4">Sede</th>
+                  <th className="px-4 py-4">Finanzas</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {rows.length === 0 ? (
+                  <tr>
+                    <td colSpan="3" className="px-6 py-14 text-center text-slate-400 italic font-medium">
+                      No hay registros para mostrar con los filtros actuales.
+                    </td>
+                  </tr>
+                ) : rows.map((person) => (
+                    <tr key={`global-${person.id}`} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="px-4 py-3 align-top">
+                        {renderRegistrationParticipantColumn(person)}
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        <span className="inline-flex items-center gap-1 text-xs font-black text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-lg px-2 py-1">
+                          <MapPin size={12} />
+                          {person.location || 'Sin sede'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        {renderRegistrationFinancesColumn(person)}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   const renderServerProfilesPage = () => {
     const rows = allParticipants
@@ -7857,33 +11243,35 @@ const App = () => {
         <nav className="flex-1 px-4 space-y-1 overflow-y-auto pb-6">
           <div className="pt-2 pb-2 px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Principal</div>
           <button onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Summary' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><BarChart3 size={20} className={activeTab === 'Summary' ? 'text-indigo-400' : ''} /><span className="font-bold">Resumen General</span></div>{activeTab === 'Summary' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
-          {isCampa && (
+          {isCampa && isPanelNavSectionAllowed('serversPage') && (
             <button onClick={() => goTo(systemView, selectedEventId, "ServersPage")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'ServersPage' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Users size={20} className={activeTab === 'ServersPage' ? 'text-amber-400' : ''} /><span className="font-bold">Página Servidores</span></div>{activeTab === 'ServersPage' && <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />}</button>
           )}
-          {hasAdminRights && (
-            <>
-              <button
-                onClick={() => goTo(systemView, selectedEventId, 'Becados')}
-                className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Becados' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}
-              >
-                <div className="flex items-center gap-3">
-                  <GraduationCap size={20} className={activeTab === 'Becados' ? 'text-purple-400' : ''} />
-                  <span className="font-bold">Becados</span>
-                </div>
-                {activeTab === 'Becados' && <div className="w-1.5 h-1.5 rounded-full bg-purple-400" />}
-              </button>
-              <button onClick={() => goTo(systemView, selectedEventId, "CashCut")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'CashCut' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Scissors size={20} className={activeTab === 'CashCut' ? 'text-green-400' : ''} /><span className="font-bold">Corte de Caja</span></div>{activeTab === 'CashCut' && <div className="w-1.5 h-1.5 rounded-full bg-green-400" />}</button>
-            </>
+          {hasAdminRights && isPanelNavSectionAllowed('becados') && (
+            <button
+              onClick={() => goTo(systemView, selectedEventId, 'Becados')}
+              className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Becados' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+            >
+              <div className="flex items-center gap-3">
+                <GraduationCap size={20} className={activeTab === 'Becados' ? 'text-purple-400' : ''} />
+                <span className="font-bold">Becados</span>
+              </div>
+              {activeTab === 'Becados' && <div className="w-1.5 h-1.5 rounded-full bg-purple-400" />}
+            </button>
           )}
-          {canAccessExpenses && (
+          {hasAdminRights && isPanelNavSectionAllowed('cashCut') && (
+            <button onClick={() => goTo(systemView, selectedEventId, "CashCut")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'CashCut' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Scissors size={20} className={activeTab === 'CashCut' ? 'text-green-400' : ''} /><span className="font-bold">Corte de Caja</span></div>{activeTab === 'CashCut' && <div className="w-1.5 h-1.5 rounded-full bg-green-400" />}</button>
+          )}
+          {canAccessExpenses && isPanelNavSectionAllowed('expenseList') && (
             <button onClick={() => goTo(systemView, selectedEventId, "ExpenseList")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'ExpenseList' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Receipt size={20} className={activeTab === 'ExpenseList' ? 'text-emerald-400' : ''} /><span className="font-bold">Lista de Gastos</span></div>{activeTab === 'ExpenseList' && <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />}</button>
           )}
           
+          {isPanelNavSectionAllowed('locations') && (
           <div className="flex items-center justify-between py-2 px-4 border-t border-slate-800/50 pt-4">
             <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Sedes Disponibles</span>
             {hasAdminRights && <button onClick={() => setIsAddLocModalOpen(true)} className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 p-1 rounded transition-colors" title="Añadir Sede"><Plus size={14} /></button>}
           </div>
-          {visibleLocations.map(loc => (
+          )}
+          {isPanelNavSectionAllowed('locations') && visibleLocations.map(loc => (
             <div key={loc} className="flex flex-col mb-1">
               <button onClick={() => goTo(systemView, selectedEventId, loc)} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all group ${activeTab === loc ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/40' : 'text-slate-500 hover:bg-white/5 hover:text-slate-300'}`}>
                 <div className="flex items-center gap-3"><MapPin size={20} className={activeTab === loc ? 'text-white' : 'text-slate-700 group-hover:text-slate-500'} /><span className="font-bold">{loc}</span></div>
@@ -7896,6 +11284,23 @@ const App = () => {
               {locError === loc && <span className="text-[10px] text-red-400 font-bold px-4 pt-1 animate-in slide-in-from-top-1 text-left">Sede con registros.</span>}
             </div>
           ))}
+          {isPanelNavSectionAllowed('registroGlobal') && (
+          <>
+          <div className="flex items-center justify-between py-2 px-4 border-t border-slate-800/50 mt-2 pt-4">
+            <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Consolidado</span>
+          </div>
+          <button
+            onClick={() => goTo(systemView, selectedEventId, 'RegistroGlobal')}
+            className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'RegistroGlobal' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+          >
+            <div className="flex items-center gap-3">
+              <TableProperties size={20} className={activeTab === 'RegistroGlobal' ? 'text-indigo-400' : ''} />
+              <span className="font-bold">Registro Global</span>
+            </div>
+            {activeTab === 'RegistroGlobal' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}
+          </button>
+          </>
+          )}
         </nav>
       </aside>
 
@@ -7926,94 +11331,97 @@ const App = () => {
             </div>
           </div>
           
-          <div className="flex items-center gap-1 md:gap-2 flex-shrink-0 relative">
-            <div className="hidden lg:flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200"><UserCircle size={16} className="text-slate-400" /><span className="text-xs font-bold text-slate-600">{currentUser.username}</span></div>
-            
-            <button onClick={() => goTo('events', null, "Summary")} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Cambiar de Evento">
-              <LayoutDashboard size={14} /><span className="hidden sm:inline">Eventos</span>
-            </button>
-            {hasAdminRights && (
-              <button onClick={() => goTo('users', null, 'Summary')} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Gestión de Usuarios">
-                <UserCog size={14} /><span className="hidden sm:inline">Usuarios</span>
+          <div className="flex items-start gap-2 flex-shrink-0">
+            <div className="flex flex-wrap items-center justify-end gap-1 md:gap-2">
+              <button type="button" onClick={() => goTo('events', null, "Summary")} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Cambiar de Evento">
+                <LayoutDashboard size={14} /><span className="hidden sm:inline">Eventos</span>
               </button>
-            )}
-            {currentUser?.role !== 'Lector' && (
-              <button onClick={() => goTo('logs', null, 'Summary')} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors" title="Logs Globales">
-                <History size={14} /><span className="hidden sm:inline">Logs</span>
-              </button>
-            )}
-
-            {/* BOTÓN EXPORTAR EXCEL */}
-            <button onClick={handleExportExcel} disabled={isExporting} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-green-700 bg-green-100 hover:bg-green-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Exportar Todo a Excel">
-              {isExporting ? <span className="animate-spin">⏳</span> : <FileSpreadsheet size={14} />}
-              <span className="hidden sm:inline">{isExporting ? 'Generando...' : 'Exportar Excel'}</span>
-            </button>
-            
-            {hasFinancialAccess && (
-              <button onClick={() => setShowMoney(!showMoney)} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors" title={showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}>{showMoney ? <EyeOff size={14} /> : <Eye size={14} />}<span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span></button>
-            )}
-            
-            {activeTab === "Summary" && (
-              <div className="relative">
-                <button onClick={() => setShowViewSettings(!showViewSettings)} className={`flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold transition-colors ${showViewSettings ? 'bg-indigo-100 text-indigo-600' : 'text-slate-500 hover:bg-slate-100'}`} title="Configurar Vista">
-                  <SlidersHorizontal size={14} /><span className="hidden sm:inline">Vista</span>
+              {hasAdminRights && (
+                <button type="button" onClick={() => goTo('users', null, 'Summary')} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Gestión de Usuarios">
+                  <UserCog size={14} /><span className="hidden sm:inline">Usuarios</span>
                 </button>
-                {showViewSettings && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setShowViewSettings(false)}></div>
-                    <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-2xl shadow-xl border border-slate-100 p-4 z-50 animate-in slide-in-from-top-2">
-                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 border-b border-slate-100 pb-2">Configurar Resumen</h4>
-                      <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
-                        {[
-                          { key: 'statsConfig', label: 'Tarjetas Principales' },
-                          { key: 'chartLocations', label: 'Gráfica: Sedes' },
-                          { key: 'chartIncome', label: 'Gráfica: Ingresos' },
-                          { key: 'chartPaymentStatus', label: 'Gráfica: Estado de Pagos' },
-                          { key: 'chartGender', label: 'Gráfica: Género' },
-                          { key: 'chartAgeBrackets', label: 'Gráfica: Rangos de Edad' },
-                          { key: 'chartBloodType', label: 'Gráfica: Tipo de Sangre', show: isCampa },
-                          { key: 'chartScholarship', label: 'Gráfica: Becas', show: isCampa },
-                          { key: 'chartSwimming', label: 'Gráfica: Nado', show: isCampa },
-                          { key: 'chartMedical', label: 'Gráfica: Salud', show: isCampa },
-                          { key: 'chartServers', label: 'Gráfica: Servidores', show: isCampa },
-                          { key: 'chartAges', label: 'Gráfica: Asignación', show: isCampa },
-                          { key: 'chartCustom', label: 'Gráfica: Campos Extra', show: isGeneral && currentEvent?.customFields?.length > 0 },
-                          { key: 'tableDetails', label: 'Tabla de Desglose General' },
-                        ].filter(item => item.show !== false).map(item => (
-                          <label key={item.key} className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-50 rounded-xl transition-colors">
-                            <span className="text-xs font-bold text-slate-600">{item.label}</span>
-                            <div className="relative flex items-center">
-                              <input type="checkbox" className="sr-only peer" checked={viewPrefs[item.key] !== false} onChange={() => togglePref(item.key)} />
-                              <div className="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-500"></div>
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  </>
+              )}
+
+              {/* BOTÓN EXPORTAR EXCEL */}
+              <button onClick={handleExportExcel} disabled={isExporting} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-green-700 bg-green-100 hover:bg-green-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Exportar Todo a Excel">
+                {isExporting ? <span className="animate-spin">⏳</span> : <FileSpreadsheet size={14} />}
+                <span className="hidden sm:inline">{isExporting ? 'Generando...' : 'Exportar Excel'}</span>
+              </button>
+              
+              {hasFinancialAccess && (
+                <button
+                  onClick={() => setShowMoney(!showMoney)}
+                  className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors"
+                  title={showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}
+                >
+                  {showMoney ? <EyeOff size={14} /> : <Eye size={14} />}
+                  <span className="hidden sm:inline">{showMoney ? 'Ocultar Dinero' : 'Mostrar Dinero'}</span>
+                </button>
+              )}
+
+              {/* Depurar / Logs / Salir (siempre a la izquierda del username). */}
+              {isSuperUser && (
+                <button
+                  type="button"
+                  onClick={toggleDebugMode}
+                  className={`flex items-center gap-1 md:gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold transition-colors shadow-sm ${
+                    globalConfig?.isDebugMode
+                      ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-red-200'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-500'
+                  }`}
+                  title="Modo de prueba aislada"
+                >
+                  <Bug size={14} />
+                  <span className="hidden sm:inline">
+                    {globalConfig?.isDebugMode ? 'Salir Depuración' : 'Depurar'}
+                  </span>
+                </button>
+              )}
+
+              {currentUser?.role !== 'Lector' && (
+                <button
+                  onClick={() => goTo('logs', null, 'Summary')}
+                  className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
+                  title="Logs Globales"
+                >
+                  <History size={14} /><span className="hidden sm:inline">Logs</span>
+                </button>
+              )}
+
+              <button
+                onClick={handleLogout}
+                className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-red-500 bg-red-50 hover:bg-red-100 transition-colors"
+                title="Cerrar Sesión"
+              >
+                <LogOut size={14} /><span className="hidden sm:inline">Salir</span>
+              </button>
+            </div>
+
+            <div className="flex flex-col items-end gap-2">
+              <div className="flex flex-col items-end gap-1 sm:flex-row sm:items-center sm:gap-2">
+                <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200">
+                  <UserCircle size={16} className="text-slate-400" />
+                  <span className="text-xs font-bold text-slate-600 max-w-[180px] truncate">{currentUser.username}</span>
+                </div>
+                {isSuperUser && (
+                  <span
+                    className="text-[9px] font-black uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full"
+                    title="Sesiones activas en tiempo real"
+                  >
+                    Activo · {superSessionCount} sesión{superSessionCount === 1 ? '' : 'es'}
+                  </span>
                 )}
               </div>
-            )}
-
-            <div className="bg-slate-100 rounded-full p-1 hidden sm:flex ml-1">
-              <button onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Summary' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Resumen General</button>
-              {isCampa && <button onClick={() => goTo(systemView, selectedEventId, "ServersPage")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'ServersPage' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Servidores</button>}
-              {hasAdminRights && <button onClick={() => goTo(systemView, selectedEventId, 'Becados')} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'Becados' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Becados</button>}
-              {hasAdminRights && <button onClick={() => goTo(systemView, selectedEventId, "CashCut")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'CashCut' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Corte de Caja</button>}
-              {canAccessExpenses && <button onClick={() => goTo(systemView, selectedEventId, "ExpenseList")} className={`px-4 py-1 rounded-full text-[10px] font-bold transition-all ${activeTab === 'ExpenseList' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>Gastos</button>}
             </div>
-            
-            <button onClick={handleLogout} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-red-500 bg-red-50 hover:bg-red-100 transition-colors ml-1" title="Cerrar Sesión">
-              <LogOut size={14} /><span className="hidden sm:inline">Salir</span>
-            </button>
           </div>
         </header>
         {activeTab === "Summary" && renderSummary()}
-        {activeTab === "ServersPage" && isCampa && renderServerProfilesPage()}
-        {activeTab === 'Becados' && hasAdminRights && renderBecadosPage()}
-        {activeTab === "CashCut" && hasAdminRights && renderCashCutPage()}
-        {activeTab === "ExpenseList" && canAccessExpenses && renderExpenseListPage()}
-        {visibleLocations.includes(activeTab) && renderLocationSheet(activeTab)}
+        {activeTab === "ServersPage" && isCampa && isPanelNavSectionAllowed('serversPage') && renderServerProfilesPage()}
+        {activeTab === 'Becados' && hasAdminRights && isPanelNavSectionAllowed('becados') && renderBecadosPage()}
+        {activeTab === 'RegistroGlobal' && isPanelNavSectionAllowed('registroGlobal') && renderGlobalRegistryPage()}
+        {activeTab === "CashCut" && hasAdminRights && isPanelNavSectionAllowed('cashCut') && renderCashCutPage()}
+        {activeTab === "ExpenseList" && canAccessExpenses && isPanelNavSectionAllowed('expenseList') && renderExpenseListPage()}
+        {visibleLocations.includes(activeTab) && isPanelNavSectionAllowed('locations') && renderLocationSheet(activeTab)}
       </main>
 
       {/* EDIT REGISTRY MODAL */}
@@ -8037,6 +11445,10 @@ const App = () => {
                 <div className="space-y-1">
                   <label className={labelClasses}>Nombre Completo</label>
                   <input type="text" required className={`${inputClasses} ${getRequiredFieldClass(!hasValidFullName(editRegistryModal.data.name || ''))}`} value={editRegistryModal.data.name} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, name: e.target.value } })} />
+                  <p className="text-[10px] text-slate-500 px-1">Debe incluir 1 nombre y 2 apellidos.</p>
+                  <p className="text-[10px] font-mono text-indigo-600 px-1">
+                    ID VNPM: {hasValidFullName(editRegistryModal.data.name || '') && (editRegistryModal.data.birthDate || '').trim() && String(editRegistryModal.data.gender || '').trim() ? generateVnpPersonId(editRegistryModal.data) : 'completa nombre, fecha de nacimiento y género'}
+                  </p>
                   <label className={labelClasses}>Alias (opcional)</label>
                   <input type="text" className={inputClasses} value={editRegistryModal.data.alias || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, alias: e.target.value } })} />
                 </div>
@@ -8113,7 +11525,6 @@ const App = () => {
                     {(currentEvent?.locations || []).map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
-
                 <div className="space-y-1">
                   <label className={labelClasses}>Transporte</label>
                   <div className="flex flex-wrap gap-3">
@@ -8147,6 +11558,7 @@ const App = () => {
                   <>
                     <div className="space-y-1"><label className={labelClasses}>Contacto Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(editRegistryModal.data.emergencyContact || '').trim())}`} value={editRegistryModal.data.emergencyContact} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyContact: e.target.value } })} /></div>
                     <div className="space-y-1"><label className={labelClasses}>Tel. Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className={`${inputClasses} ${getRequiredFieldClass(isCampa && !isValidPhone(editRegistryModal.data.emergencyPhone || ''))}`} value={editRegistryModal.data.emergencyPhone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyPhone: formatPhoneNumber(e.target.value) } })} /></div>
+                    <div className="space-y-1"><label className={labelClasses}>Parentesco {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} placeholder="Ej. Madre, tutor…" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(editRegistryModal.data.emergencyRelationship || '').trim())}`} value={editRegistryModal.data.emergencyRelationship || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyRelationship: e.target.value } })} /></div>
                   </>
                 )}
                 {isGeneral && currentEvent.customFields && currentEvent.customFields.map((field, idx) => (
@@ -8211,9 +11623,7 @@ const App = () => {
                               isScholarship: next,
                               scholarshipType: next === 'Sí' ? 'total' : 'none',
                               scholarshipPartialAmount: next === 'Sí' ? '' : '',
-                              isPastorChild: next === 'Sí' ? 'No' : editRegistryModal.data.isPastorChild,
-                              pastorChildWithoutPay: next === 'Sí' ? 'No' : editRegistryModal.data.pastorChildWithoutPay,
-                              pastorChildSpecialDonationFinanceId: next === 'Sí' ? '' : editRegistryModal.data.pastorChildSpecialDonationFinanceId
+                              attendanceSpecialType: next === 'Sí' ? ATTENDANCE_SPECIAL.ninguno : editRegistryModal.data.attendanceSpecialType,
                             }
                           });
                         }}
@@ -8225,9 +11635,7 @@ const App = () => {
                         ...editRegistryModal.data,
                         isServer: editRegistryModal.data.isServer === 'Sí' ? 'No' : 'Sí',
                         serverAssignment: '',
-                        isPastorChild: 'No',
-                        pastorChildWithoutPay: 'No',
-                        pastorChildSpecialDonationFinanceId: '',
+                        baptismSegment: '',
                         isMarried: 'No',
                         spouseName: '',
                         goesWithChildren: 'No',
@@ -8238,118 +11646,160 @@ const App = () => {
                         servesInCongress: 'No',
                         congressServeArea: '',
                       } })} className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Users size={16} /> Servidor: {editRegistryModal.data.isServer || 'No'}</button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = editRegistryModal.data.willBeBaptized === 'Sí' ? 'No' : 'Sí';
+                          setEditRegistryModal({
+                            ...editRegistryModal,
+                            data: {
+                              ...editRegistryModal.data,
+                              willBeBaptized: next,
+                              baptismSegment: next === 'No' ? '' : editRegistryModal.data.baptismSegment,
+                            },
+                          });
+                        }}
+                        className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.willBeBaptized === 'Sí' ? 'bg-sky-600 text-white border-sky-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}
+                      >
+                        <Church size={16} /> Bautizo: {editRegistryModal.data.willBeBaptized || 'No'}
+                      </button>
                     </div>
 
                     {editRegistryModal.data.isScholarship === 'Sí' && (
-                      <div className="p-4 bg-purple-50/80 border border-purple-100 rounded-xl mt-3 space-y-2">
-                        <p className="text-[10px] font-black text-purple-800 uppercase tracking-widest">Tipo de beca</p>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setEditRegistryModal({
-                              ...editRegistryModal,
-                              data: { ...editRegistryModal.data, scholarshipType: 'total', scholarshipPartialAmount: '' },
-                            })}
-                            className={`px-3 py-2 rounded-lg text-xs font-bold border ${editRegistryModal.data.scholarshipType !== 'partial' ? 'bg-purple-600 text-white border-purple-500' : 'bg-white text-slate-600 border-slate-200'}`}
+                      <div className="space-y-2 max-w-xs mt-3">
+                        <div className="space-y-1">
+                          <label className={labelClasses}>Tipo de beca</label>
+                          <select
+                            className={inputClasses}
+                            value={editRegistryModal.data.scholarshipType === 'partial' ? 'partial' : 'total'}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setEditRegistryModal({
+                                ...editRegistryModal,
+                                data: {
+                                  ...editRegistryModal.data,
+                                  scholarshipType: v === 'partial' ? 'partial' : 'total',
+                                  scholarshipPartialAmount: v === 'total' ? '' : editRegistryModal.data.scholarshipPartialAmount,
+                                },
+                              });
+                            }}
                           >
-                            Total
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setEditRegistryModal({
-                              ...editRegistryModal,
-                              data: { ...editRegistryModal.data, scholarshipType: 'partial' },
-                            })}
-                            className={`px-3 py-2 rounded-lg text-xs font-bold border ${editRegistryModal.data.scholarshipType === 'partial' ? 'bg-purple-600 text-white border-purple-500' : 'bg-white text-slate-600 border-slate-200'}`}
-                          >
-                            Parcial
-                          </button>
+                            <option value="total">Beca total</option>
+                            <option value="partial">Beca parcial</option>
+                          </select>
                         </div>
                         {editRegistryModal.data.scholarshipType === 'partial' && (
-                          <div className="space-y-1 max-w-md">
-                            <label className={labelClasses}>¿Cuánto puede abonar?</label>
-                            <p className="text-[10px] text-purple-900/85 leading-snug">
-                              Solo este monto cuenta como aporte al recaudado; puede pagarse en cualquier momento. El resto del costo de lista queda saldado por la beca.
-                            </p>
+                          <div className="space-y-1">
+                            <label className={labelClasses}>Monto becado</label>
                             <input
                               type="number"
                               min="0"
                               step="0.01"
-                              className={`${inputClasses} ${getRequiredFieldClass(editRegistryModal.data.isScholarship === 'Sí' && editRegistryModal.data.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(editRegistryModal.data.scholarshipPartialAmount)) || parseFloat(editRegistryModal.data.scholarshipPartialAmount) <= 0 || parseFloat(editRegistryModal.data.scholarshipPartialAmount) >= (Number(editRegistryModal.data.registeredCost) || 0)))}`}
+                              placeholder="0.00"
+                              className={`${inputClasses} ${getRequiredFieldClass(editRegistryModal.data.isScholarship === 'Sí' && editRegistryModal.data.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(editRegistryModal.data.scholarshipPartialAmount)) || parseFloat(editRegistryModal.data.scholarshipPartialAmount) < 0 || parseFloat(editRegistryModal.data.scholarshipPartialAmount) >= getPersonCost(editRegistryModal.data, currentPricing)))}`}
                               value={editRegistryModal.data.scholarshipPartialAmount ?? ''}
                               onChange={(e) => setEditRegistryModal({
                                 ...editRegistryModal,
                                 data: { ...editRegistryModal.data, scholarshipPartialAmount: e.target.value },
                               })}
                             />
-                            <p className="text-[10px] text-purple-800/90">
-                              {(() => {
-                                const list = Number(editRegistryModal.data.registeredCost) || 0;
-                                const p = parseFloat(editRegistryModal.data.scholarshipPartialAmount || 0);
-                                if (!list || !Number.isFinite(p) || p <= 0) {
-                                  return <>Costo de lista del registro: {list ? `$${list.toLocaleString('es-MX')}` : '—'} · Completa el monto para ver el desglose.</>;
-                                }
-                                const beca = Math.max(0, list - p);
-                                return (
-                                  <>
-                                    Costo lista: ${list.toLocaleString('es-MX')} · Aporte al recaudado: ${p.toLocaleString('es-MX')} · Cubre la beca: ${beca.toLocaleString('es-MX')}
-                                  </>
-                                );
-                              })()}
-                            </p>
                           </div>
                         )}
                       </div>
                     )}
 
-                    {editRegistryModal.data.isScholarship !== 'Sí' && (
-                      <div className="p-4 bg-indigo-50/60 border border-indigo-100 rounded-xl mt-3">
-                        <p className="text-[10px] font-black text-indigo-700 uppercase tracking-widest mb-2">Donación especial (hijos de pastores)</p>
-                        <label className="inline-flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4 accent-indigo-600 rounded"
-                            checked={editRegistryModal.data.isPastorChild === 'Sí'}
-                            onChange={(e) => setEditRegistryModal({
-                              ...editRegistryModal,
-                              data: {
-                                ...editRegistryModal.data,
-                                isPastorChild: e.target.checked ? 'Sí' : 'No',
-                                pastorChildWithoutPay: e.target.checked ? editRegistryModal.data.pastorChildWithoutPay : 'No',
-                                pastorChildSpecialDonationFinanceId: e.target.checked ? editRegistryModal.data.pastorChildSpecialDonationFinanceId : '',
-                              }
-                            })}
-                          />
-                          Hijo de pastor
-                        </label>
-
-                        {editRegistryModal.data.isPastorChild === 'Sí' && (
-                          <label className="inline-flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer select-none ml-0 mt-3">
-                            <input
-                              type="checkbox"
-                              className="h-4 w-4 accent-amber-600 rounded"
-                              checked={editRegistryModal.data.pastorChildWithoutPay === 'Sí'}
-                              onChange={(e) => setEditRegistryModal({
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
+                      <div className="space-y-2 min-w-0">
+                        {editRegistryModal.data.isServer === 'Sí' && (
+                          <div className="space-y-1">
+                            <label className={labelClasses}>Asignación</label>
+                            <select className={inputClasses} value={editRegistryModal.data.serverAssignment || ''} onChange={e => {
+                              const v = e.target.value;
+                              setEditRegistryModal({
                                 ...editRegistryModal,
-                                data: { ...editRegistryModal.data, pastorChildWithoutPay: e.target.checked ? 'Sí' : 'No' }
-                              })}
-                            />
-                            ¿Va sin pagar?
-                          </label>
+                                data: {
+                                  ...editRegistryModal.data,
+                                  serverAssignment: v,
+                                  baptismSegment: v === 'Ambos' ? editRegistryModal.data.baptismSegment : '',
+                                },
+                              });
+                            }}>
+                              <option value="Teens">Teens</option>
+                              <option value="Jóvenes">Jóvenes</option>
+                              <option value="Ambos">Ambos</option>
+                            </select>
+                          </div>
                         )}
+                      </div>
+                      <div className="space-y-2 min-w-0">
+                        {editRegistryModal.data.willBeBaptized === 'Sí' && editRegistryModal.data.isServer !== 'Sí' && (
+                          <p className="text-[10px] text-slate-600">
+                            Conteo del bautizo en <strong>{editRegistryModal.data.campAssignment || (parseInt(editRegistryModal.data.age, 10) < 18 ? 'Teens' : 'Jóvenes')}</strong> (campista, según asignación o edad).
+                          </p>
+                        )}
+                        {editRegistryModal.data.willBeBaptized === 'Sí' && editRegistryModal.data.isServer === 'Sí' && editRegistryModal.data.serverAssignment === 'Ambos' && (
+                          <div className="space-y-1">
+                            <label className={labelClasses}>¿Dónde se bautiza?</label>
+                            <select
+                              className={`${inputClasses} ${getRequiredFieldClass(!String(editRegistryModal.data.baptismSegment || '').trim())}`}
+                              value={editRegistryModal.data.baptismSegment || ''}
+                              onChange={(e) => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, baptismSegment: e.target.value } })}
+                            >
+                              <option value="">Selecciona…</option>
+                              <option value="Teens">Teens</option>
+                              <option value="Jóvenes">Jóvenes</option>
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {editRegistryModal.data.isScholarship !== 'Sí' && (
+                      <div className="p-4 bg-teal-50/50 border border-teal-100 rounded-xl mt-3">
+                        <p className="text-[10px] font-black text-teal-800 uppercase tracking-widest mb-2">Asistencia sin cobro (empleado / cortesía)</p>
+                        <p className="text-[10px] text-slate-600 mb-3">Costo a liquidar $0; cuenta en el registro. No aplica con beca.</p>
+                        <div className="flex flex-wrap gap-2">
+                          {[
+                            { id: ATTENDANCE_SPECIAL.ninguno, label: 'Ninguno', Icon: null },
+                            { id: ATTENDANCE_SPECIAL.empleado, label: 'Empleado', Icon: Briefcase },
+                            { id: ATTENDANCE_SPECIAL.cortesia, label: 'Cortesía', Icon: Gift },
+                          ].map(({ id, label, Icon }) => (
+                            <button
+                              key={id}
+                              type="button"
+                              onClick={() =>
+                                setEditRegistryModal({
+                                  ...editRegistryModal,
+                                  data: {
+                                    ...editRegistryModal.data,
+                                    attendanceSpecialType: id,
+                                    isScholarship: 'No',
+                                    scholarshipType: 'total',
+                                    scholarshipPartialAmount: '',
+                                    editApplyCampaignId: isFreeAttendanceType(id) ? '__clear__' : editRegistryModal.data.editApplyCampaignId,
+                                  },
+                                })
+                              }
+                              className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold border transition-all ${
+                                normalizeAttendanceSpecial(editRegistryModal.data) === id
+                                  ? id === ATTENDANCE_SPECIAL.empleado
+                                    ? 'bg-teal-600 text-white border-teal-500'
+                                    : id === ATTENDANCE_SPECIAL.cortesia
+                                      ? 'bg-fuchsia-600 text-white border-fuchsia-500'
+                                      : 'bg-slate-200 text-slate-800 border-slate-300'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              {Icon ? <Icon size={14} /> : null}
+                              {label}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     )}
 
                     {editRegistryModal.data.isServer === 'Sí' ? (
                       <div className="space-y-3 mt-3">
-                        <div className="space-y-1">
-                          <label className={labelClasses}>Asignación de Servidor</label>
-                          <select className={inputClasses} value={editRegistryModal.data.serverAssignment || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, serverAssignment: e.target.value } })}>
-                            <option value="Teens">Teens</option>
-                            <option value="Jóvenes">Jóvenes</option>
-                            <option value="Ambos">Ambos</option>
-                          </select>
-                        </div>
                         <div className="p-4 bg-amber-50/60 border border-amber-100 rounded-xl">
                           <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-3">Información adicional de servidor (opcional)</p>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -8497,6 +11947,95 @@ const App = () => {
                   <span>Costo Fijado (Total a Cobrar)</span>
                   {!hasAdminRights && <span className="flex items-center gap-1 text-amber-500 normal-case tracking-normal text-[9px]"><Lock size={10} /> Solo Administrador</span>}
                 </h4>
+                {(currentEvent?.discountCampaigns || []).length > 0 && editRegistryModal.data && (() => {
+                  const ed = editRegistryModal.data;
+                  const todayIsoEd = new Date().toISOString().split('T')[0];
+                  const activeForEd = getActiveDiscountCampaigns(currentEvent).filter((c) => campaignMatchesPersonProfile(c, ed));
+                  const manualOpts = getManualApplyCampaignOptions(currentEvent, ed);
+                  const listBaseEd = getPersonCost(ed, currentPricing);
+                  const liqPreview = Number.isFinite(parseFloat(ed.registeredCost)) && parseFloat(ed.registeredCost) > 0
+                    ? parseFloat(ed.registeredCost)
+                    : resolveRegisteredCost(ed, currentPricing);
+                  return (
+                    <div className="mb-4 p-3 rounded-xl bg-amber-50/80 border border-amber-100 space-y-2">
+                      <p className="text-[10px] font-black text-amber-800 uppercase tracking-wider">Campañas de descuento</p>
+                      <p className="text-[11px] text-slate-700">
+                        <strong>Campaña guardada en el registro:</strong>{' '}
+                        {ed.discountCampaignConcept || 'Ninguna'}
+                        {ed.discountCampaignId ? <span className="text-slate-500"> (id {ed.discountCampaignId})</span> : null}
+                      </p>
+                      <p className="text-[11px] text-slate-700">
+                        <strong>Costo de lista del evento</strong> (sin campaña, según este perfil):{' '}
+                        <strong>${listBaseEd.toLocaleString('es-MX')}</strong>.
+                        {' '}<strong>Costo fijado actual</strong> (base del registro; con beca parcial lo que liquida el participante es este costo menos el monto becado):{' '}
+                        <strong>${liqPreview.toLocaleString('es-MX')}</strong>
+                        {ed.discountCampaignConcept ? (
+                          <span className="text-amber-900/90"> — coherente con campaña «{ed.discountCampaignConcept}» si aplica.</span>
+                        ) : (
+                          <span className="text-slate-500"> — sin campaña aplicada en datos.</span>
+                        )}
+                      </p>
+                      {activeForEd.length > 0 ? (
+                        <ul className="text-[10px] text-amber-900/90 space-y-0.5 list-disc list-inside">
+                          <li className="font-black text-amber-800 list-none -ml-0 mb-0.5">Vigentes hoy para este perfil</li>
+                          {activeForEd.map((c) => (
+                            <li key={`ed-act-${c.id}`}>
+                              {c.concept} · {c.startDate} → {c.endDate} · liquidar ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')} · {discountCampaignAppliesToLabel(c)}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-[10px] text-amber-800/90">
+                          Ninguna campaña en <strong>vigencia hoy</strong> para este perfil. Aun así puedes aplicar o quitar una campaña con el selector (incluye fechas pasadas/futuras).
+                        </p>
+                      )}
+                      {manualOpts.length > 0 && hasAdminRights && (
+                        <div className="space-y-1 pt-1 border-t border-amber-200/80">
+                          <label className={labelClasses}>Al guardar: aplicar o quitar campaña</label>
+                          <select
+                            className={inputClasses}
+                            value={ed.editApplyCampaignId || ''}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              const next = { ...ed, editApplyCampaignId: v };
+                              if (v && v !== '__clear__') {
+                                const c = findDiscountCampaignById(currentEvent, v);
+                                if (c) next.registeredCost = String(Math.max(0, Number(c.finalAmount) || 0));
+                              } else if (v === '__clear__') {
+                                next.registeredCost = String(getPersonCost(ed, currentPricing));
+                              }
+                              setEditRegistryModal({ ...editRegistryModal, data: next });
+                            }}
+                          >
+                            <option value="">No cambiar campaña ni costo por este control</option>
+                            <option value="__clear__">Quitar campaña (costo = lista del evento para este perfil)</option>
+                            {manualOpts.map((c) => {
+                              const noDates = !discountCampaignHasDateRange(c);
+                              const vig = !noDates && isDiscountCampaignVigenteOnDate(c, todayIsoEd);
+                              const suffix = noDates
+                                ? ' (sin fechas; solo manual)'
+                                : vig
+                                  ? ' (vigente hoy)'
+                                  : ' (fuera de vigencia; se puede aplicar al guardar)';
+                              return (
+                                <option key={`ed-manual-${c.id}`} value={String(c.id)}>
+                                  Aplicar «{c.concept || 'Campaña'}» — ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')}
+                                  {suffix}
+                                </option>
+                              );
+                            })}
+                          </select>
+                          <p className="text-[10px] text-slate-600">
+                            Si eliges una campaña, el campo de costo se ajusta al monto a liquidar de esa campaña. Puedes editarlo después a mano. Si ya pagó de más tras bajar el costo, al guardar puede quedar devolución pendiente.
+                          </p>
+                        </div>
+                      )}
+                      {manualOpts.length > 0 && !hasAdminRights && (
+                        <p className="text-[10px] text-slate-500 pt-1 border-t border-amber-200/80">Solo administrador puede aplicar o quitar campañas y el costo fijado.</p>
+                      )}
+                    </div>
+                  );
+                })()}
                 {hasAdminRights ? (
                   <div className="relative max-w-xs">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold text-slate-400">$</span>
@@ -8562,6 +12101,46 @@ const App = () => {
                 </div>
               </div>
             )}
+            <div className={`mt-5 p-4 rounded-2xl border space-y-3 ${pricingForm.type === 'fixed' ? 'border-indigo-200 bg-indigo-50/50' : 'border-amber-200 bg-amber-50/40'}`}>
+              <p className={`text-xs font-black uppercase tracking-wider ${pricingForm.type === 'fixed' ? 'text-indigo-800' : 'text-amber-800'}`}>Campañas de descuento</p>
+              <p className={`text-[11px] ${pricingForm.type === 'fixed' ? 'text-indigo-700' : 'text-amber-700'}`}>
+                Define concepto y monto a liquidar. <strong>Inicio y fin son opcionales:</strong> con ambas fechas, la campaña puede aplicarse sola cuando esté vigente; sin fechas completas, solo al elegirla en el alta (pago) o al editar un registro.
+              </p>
+              <div className="space-y-2 max-h-56 overflow-y-auto">
+                {(pricingForm.campaigns || []).map((c, idx) => (
+                  <div
+                    key={c.id}
+                    className={`grid grid-cols-1 md:grid-cols-6 gap-2 bg-white p-2 rounded-xl border items-end ${pricingForm.type === 'fixed' ? 'border-indigo-100' : 'border-amber-100'}`}
+                  >
+                    <input className={`${inputClasses} md:col-span-2`} placeholder="Concepto" value={c.concept || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], concept: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
+                    <select className={inputClasses} value={c.appliesTo || 'all'} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], appliesTo: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }}>
+                      <option value="all">Todos</option>
+                      <option value="general">General</option>
+                      <option value="server_ambos">Servidor Ambos</option>
+                    </select>
+                    <input type="number" className={inputClasses} placeholder="Liquidar $" value={c.finalAmount || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], finalAmount: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
+                    <div className="space-y-0.5">
+                      <label className={`text-[9px] font-bold uppercase tracking-wide ${pricingForm.type === 'fixed' ? 'text-indigo-800/80' : 'text-amber-800/80'}`}>Inicio (opcional)</label>
+                      <input type="date" className={inputClasses} value={c.startDate || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], startDate: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <div className="flex-1 space-y-0.5 min-w-0">
+                        <label className={`text-[9px] font-bold uppercase tracking-wide ${pricingForm.type === 'fixed' ? 'text-indigo-800/80' : 'text-amber-800/80'}`}>Fin (opcional)</label>
+                        <input type="date" className={inputClasses} value={c.endDate || ''} onChange={(e) => { const next = [...(pricingForm.campaigns || [])]; next[idx] = { ...next[idx], endDate: e.target.value }; setPricingForm({ ...pricingForm, campaigns: next }); }} />
+                      </div>
+                      <button type="button" onClick={() => setPricingForm({ ...pricingForm, campaigns: (pricingForm.campaigns || []).filter((_, i) => i !== idx) })} className="p-2 text-red-500 hover:bg-red-50 rounded-lg"><Trash2 size={16} /></button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setPricingForm({ ...pricingForm, campaigns: [...(pricingForm.campaigns || []), { id: Date.now(), concept: '', appliesTo: 'all', finalAmount: 0, startDate: '', endDate: '', enabled: true }] })}
+                className={`w-full py-2 border border-dashed rounded-xl font-bold text-xs transition-colors ${pricingForm.type === 'fixed' ? 'border-indigo-300 text-indigo-700 hover:bg-indigo-100' : 'border-amber-300 text-amber-700 hover:bg-amber-100'}`}
+              >
+                + Añadir campaña
+              </button>
+            </div>
             <div className="flex gap-4 pt-6 mt-6 border-t border-slate-100">
               <button onClick={() => setPricingModal({ isOpen: false })} className={btnSecondary}>Cancelar</button>
               <button onClick={handleSavePricing} className={btnPrimary}><CheckCircle2 size={20} /> Guardar Precios</button>
@@ -8646,6 +12225,95 @@ const App = () => {
         </div>
       )}
 
+      {registryConfirmModal.isOpen && registryConfirmModal.type && (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[60] p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !registryConfirmBusy) closeRegistryConfirmModal();
+          }}
+        >
+          <div
+            className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 text-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {registryConfirmModal.type === 'delete_donation' || registryConfirmModal.type === 'cancel_entry' || registryConfirmModal.type === 'remove_pending_refund' ? (
+              <div className="bg-red-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <ShieldAlert size={32} className="text-red-500" />
+              </div>
+            ) : (
+              <div className="bg-amber-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Archive size={32} className="text-amber-600" />
+              </div>
+            )}
+            <h3 className="text-xl font-black text-slate-800 mb-2">
+              {registryConfirmModal.type === 'delete_donation' && 'Eliminar donación'}
+              {registryConfirmModal.type === 'cancel_entry' && 'Dar de baja'}
+              {registryConfirmModal.type === 'archive_waitlist' && 'Archivar lista de espera'}
+              {registryConfirmModal.type === 'archive_roster' && 'Archivar registro'}
+              {registryConfirmModal.type === 'remove_pending_refund' && 'Eliminar saldo pendiente'}
+            </h3>
+            <p className="text-sm text-slate-500 mb-6">
+              {registryConfirmModal.type === 'delete_donation' && (
+                <>
+                  ¿Eliminar la donación de{' '}
+                  <strong>${registryConfirmModal.donationAmount.toLocaleString('es-MX')}</strong>? Esta acción no se puede deshacer.
+                </>
+              )}
+              {registryConfirmModal.type === 'cancel_entry' && (
+                <>
+                  ¿Confirmas dar de baja a <strong>{registryConfirmModal.personName}</strong>? Dejará de contar en inscritos; si hubo pagos, puede quedar saldo pendiente de devolución.
+                </>
+              )}
+              {registryConfirmModal.type === 'archive_roster' && (
+                <>
+                  ¿Archivar a <strong>{registryConfirmModal.personName}</strong>? El ID VNPM y los datos personales se conservan para precargar en otros eventos.
+                </>
+              )}
+              {registryConfirmModal.type === 'archive_waitlist' && (
+                <>
+                  ¿Archivar a <strong>{registryConfirmModal.personName}</strong> de la lista de espera? Los datos siguen disponibles para precargar en otros eventos.
+                </>
+              )}
+              {registryConfirmModal.type === 'remove_pending_refund' && (
+                <>
+                  ¿Eliminar el saldo pendiente de devolución de <strong>{registryConfirmModal.personName}</strong> (
+                  <strong>${registryConfirmModal.refundAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</strong>
+                  )? Dejará de restarse en el balance neto de esta lista como si esa obligación ya no existiera. No se crea un registro visible en actividad; solo auditoría oculta.
+                </>
+              )}
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={closeRegistryConfirmModal}
+                disabled={registryConfirmBusy}
+                className={`flex-1 py-3 px-4 font-bold rounded-xl transition-colors text-sm ${registryConfirmBusy ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-100 hover:bg-slate-200 text-slate-600'}`}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleRegistryConfirmSubmit}
+                disabled={registryConfirmBusy}
+                className={`flex-1 py-3 px-4 text-white font-bold rounded-xl transition-colors text-sm shadow-lg disabled:opacity-60 disabled:cursor-not-allowed ${
+                  registryConfirmModal.type === 'delete_donation' || registryConfirmModal.type === 'cancel_entry' || registryConfirmModal.type === 'remove_pending_refund'
+                    ? 'bg-red-500 hover:bg-red-600 shadow-red-200'
+                    : 'bg-amber-600 hover:bg-amber-700 shadow-amber-200'
+                }`}
+              >
+                {registryConfirmBusy
+                  ? '…'
+                  : registryConfirmModal.type === 'delete_donation' || registryConfirmModal.type === 'remove_pending_refund'
+                    ? 'Sí, eliminar'
+                    : registryConfirmModal.type === 'cancel_entry'
+                      ? 'Sí, dar de baja'
+                      : 'Sí, archivar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* PAYMENT MODAL */}
       {paymentModal.isOpen && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -8699,6 +12367,53 @@ const App = () => {
                 <button onClick={() => setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' })} className={btnSecondary}>Cancelar</button>
                 <button onClick={submitAbono} className="flex-1 py-3 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl transition-colors shadow-lg shadow-green-200 text-sm flex justify-center items-center gap-2"><CreditCard size={18} /> Guardar</button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {paymentMethodEditModal.isOpen && hasAdminRights && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
+            <h3 className="text-lg font-bold text-slate-800 mb-1">Cambiar tipo de abono</h3>
+            <p className="text-sm text-slate-500 mb-5">
+              Movimiento de <strong className="text-slate-700">{paymentMethodEditModal.personName}</strong> · Monto {formatMoney(paymentMethodEditModal.amount || 0)}
+            </p>
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className={labelClasses}>Método</label>
+                <select
+                  className={inputClasses}
+                  value={paymentMethodEditModal.paymentMethod}
+                  onChange={(e) => {
+                    const method = e.target.value === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+                    setPaymentMethodEditModal((prev) => ({
+                      ...prev,
+                      paymentMethod: method,
+                      cardReference: method === 'Tarjeta' ? prev.cardReference : '',
+                    }));
+                  }}
+                >
+                  {PAYMENT_METHODS.map((m) => <option key={`edit-method-${m}`} value={m}>{m}</option>)}
+                </select>
+              </div>
+              {paymentMethodEditModal.paymentMethod === 'Tarjeta' && (
+                <div className="space-y-1">
+                  <label className={labelClasses}>Referencia de pago (opcional)</label>
+                  <input
+                    className={inputClasses}
+                    value={paymentMethodEditModal.cardReference}
+                    placeholder="Ej. folio / transacción"
+                    onChange={(e) => setPaymentMethodEditModal((prev) => ({ ...prev, cardReference: e.target.value }))}
+                  />
+                </div>
+              )}
+            </div>
+            <div className="flex gap-3 pt-6">
+              <button type="button" onClick={closePaymentMethodEditModal} className={btnSecondary}>Cancelar</button>
+              <button type="button" onClick={handleSavePaymentMethodEdit} className="flex-1 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-colors text-sm">
+                Guardar
+              </button>
             </div>
           </div>
         </div>
@@ -8897,7 +12612,7 @@ const App = () => {
                       </div>
                       {hasAdminRights && (
                         <button
-                          onClick={() => { if (window.confirm(`¿Eliminar donación de $${(don.amount || 0).toLocaleString()}?`)) handleDeleteDonation(don.id); }}
+                          onClick={() => openDeleteDonationConfirm(don)}
                           className="text-red-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors ml-2 flex-shrink-0"
                           title="Eliminar donación"
                         >
@@ -8915,6 +12630,42 @@ const App = () => {
                   <Plus size={18} /> Nueva Donación
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {superDateEditModal.isOpen && canEditRegistryDates && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-md animate-in zoom-in-95 duration-200">
+            <div className="flex justify-between items-start mb-6">
+              <h3 className="text-xl font-black text-slate-800 flex items-center gap-2">
+                <Calendar size={24} className="text-violet-600" />
+                {superDateEditModal.mode === 'registration' ? 'Fecha de registro' : 'Fecha del movimiento'}
+              </h3>
+              <button type="button" onClick={closeSuperDateEditModal} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
+            </div>
+            <p className="text-xs text-slate-500 mb-4">
+              {isSuperUser
+                ? 'SuperUsuario: la hora se interpreta según la zona horaria de este equipo.'
+                : 'Tu cuenta tiene permiso para corregir fechas. La hora se interpreta según la zona horaria de este equipo.'}
+            </p>
+            <label className="text-xs font-bold text-slate-500 mb-1 block">Fecha y hora</label>
+            <input
+              type="datetime-local"
+              className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-violet-500 outline-none"
+              value={superDateEditModal.datetimeLocal}
+              onChange={(e) => setSuperDateEditModal((prev) => ({ ...prev, datetimeLocal: e.target.value }))}
+            />
+            <div className="flex gap-3 pt-6">
+              <button type="button" onClick={closeSuperDateEditModal} className={btnSecondary}>Cancelar</button>
+              <button
+                type="button"
+                onClick={handleSuperSaveDateEdit}
+                className="flex-1 px-4 py-2.5 bg-violet-600 hover:bg-violet-700 text-white rounded-xl font-bold text-sm transition-colors flex items-center justify-center gap-2"
+              >
+                <CheckCircle2 size={18} /> Guardar
+              </button>
             </div>
           </div>
         </div>
@@ -8966,7 +12717,7 @@ const App = () => {
               <div className="flex justify-between items-start mb-6">
                 <div>
                   <h3 className="text-xl font-black text-slate-800 mb-1 flex items-center gap-2"><DollarSign size={24} className="text-emerald-600" /> Abono Parcial</h3>
-                  <p className="text-sm text-slate-500">{exp?.name || 'Gasto'}</p>
+                  <p className="text-sm text-slate-500">{exp && canSeeExpenseConceptForRow(exp) ? (exp?.name || 'Gasto') : MASKED_EXPENSE_CONCEPT_LABEL}</p>
                   <p className="text-xs text-slate-400 mt-1">Pendiente: <span className="font-bold text-amber-600">${remaining.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span></p>
                 </div>
                 <button onClick={() => setExpensePartialModal({ isOpen: false, expenseId: null, amount: '' })} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
@@ -9002,6 +12753,8 @@ const App = () => {
           </div>
         </div>
       )}
+
+      {panelNavModalEl}
 
     </div>
   );
