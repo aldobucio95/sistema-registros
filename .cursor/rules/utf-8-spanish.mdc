@@ -1,0 +1,12 @@
+---
+description: Mantener código y cadenas en español en UTF-8 válido sin mojibake
+globs: src/**/*.{js,jsx,ts,tsx}
+alwaysApply: false
+---
+
+# UTF-8 y texto en español
+
+- Guardar siempre los archivos de código como **UTF-8** (sin BOM). No mezclar Latin-1/Windows-1252 con UTF-8.
+- No introducir el carácter de reemplazo Unicode **U+FFFD** salvo casos excepcionales; suele indicar lectura con codificación incorrecta.
+- Para cadenas en español con tildes o ñ, escribir los caracteres reales o escapes Unicode en JS (`\u00e1`, etc.) si el editor no guarda bien UTF-8.
+- Tras editar mucho texto en español, ejecutar `npm run check:utf8` y `npm run build` antes de dar por cerrado el cambio.

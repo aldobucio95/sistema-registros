@@ -1,0 +1,7 @@
+# Evita guardar fuentes con codificación incorrecta (acentos en español).
+root = true
+
+[*.{js,jsx,ts,tsx,mjs,cjs,json,css,html,md}]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true

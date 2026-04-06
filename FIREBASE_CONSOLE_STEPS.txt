@@ -1,0 +1,14 @@
+Pasos en Firebase Console (proyecto alineado con .firebaserc, p. ej. registros-vnpm)
+
+1) Authentication
+   - Habilitar el proveedor "Correo electrónico/contraseña" (Email/Password).
+   - En "Dominios autorizados", incluir: localhost (desarrollo), el dominio de Hosting (*.web.app y *.firebaseapp.com) y cualquier dominio personalizado que uses.
+
+2) Hosting
+   - Tras el deploy, comprobar la URL de Hosting; las reglas de Auth deben incluir ese dominio.
+
+3) Primera instalación (sin datos previos en Firestore)
+   - Crear en Authentication un usuario con el correo sintético que usa la app: ver usernameToAuthEmail en src/firebaseConfig.js (local-part del usuario @ dominio VITE_AUTH_EMAIL_DOMAIN o vnpm-registros.invalid por defecto).
+   - Crear en Firestore el documento de perfil en artifacts/<appId>/public/data/app_users/<id> con los mismos campos de rol que antes y los campos authEmail y authUid (el UID lo muestra la consola de Authentication).
+
+4) Desactivar acceso anónimo en Authentication cuando ya no lo uses (la app ya no llama a signInAnonymously).

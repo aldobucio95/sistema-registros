@@ -34,12 +34,12 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const getColRef = (colName) => collection(db, 'artifacts', appId, 'public', 'data', colName);
 const getDocRef = (colName, docId) => doc(db, 'artifacts', appId, 'public', 'data', colName, docId);
 
-/** Ventana para considerar una sesión “activa” (debe ser > intervalo de heartbeat). */
+/** Ventana para considerar una sesi?n ?activa? (debe ser > intervalo de heartbeat). */
 const SESSION_TTL_MS = 45000;
-/** Heartbeat para mantener viva la sesión en Firestore y liberar al cerrar pestaña tras ~TTL. */
+/** Heartbeat para mantener viva la sesi?n en Firestore y liberar al cerrar pesta?a tras ~TTL. */
 const SESSION_HEARTBEAT_MS = 15000;
 
-/** ID único por pestaña (sessionStorage); al cerrar la pestaña desaparece, pero el doc en Firestore se borra en pagehide. */
+/** ID ?nico por pesta?a (sessionStorage); al cerrar la pesta?a desaparece, pero el doc en Firestore se borra en pagehide. */
 const getTabSessionId = () => {
   try {
     let id = sessionStorage.getItem('vnpm_tab_session_id');
@@ -74,9 +74,9 @@ const EVENT_TYPES = ["Campa", "Desayuno Conferencia", "General"];
 const RESPONSIVA_STATUSES = ["Pendiente", "Entregada"];
 const CHART_COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#0ea5e9'];
 
-/** Campaña de descuento aplica al perfil servidor/campista del registro. */
+/** Campa?a de descuento aplica al perfil servidor/campista del registro. */
 const campaignMatchesPersonProfile = (c, personLike) => {
-  const isServerAmbos = personLike?.isServer === 'Sí' && personLike?.serverAssignment === 'Ambos';
+  const isServerAmbos = isSiValue(personLike?.isServer) && personLike?.serverAssignment === 'Ambos';
   const appliesTo = c?.appliesTo || 'all';
   if (appliesTo === 'server_ambos') return isServerAmbos;
   if (appliesTo === 'general') return !isServerAmbos;
@@ -88,7 +88,7 @@ const isDiscountCampaignVigenteOnDate = (c, dayIso) => {
   return c.startDate <= dayIso && dayIso <= c.endDate;
 };
 
-/** Inicio y fin definidos → puede activarse sola por calendario (vigencia). Si falta alguna, solo manual (alta/edición). */
+/** Inicio y fin definidos ? puede activarse sola por calendario (vigencia). Si falta alguna, solo manual (alta/edici?n). */
 const discountCampaignHasDateRange = (c) =>
   !!(c?.startDate && String(c.startDate).trim() && c?.endDate && String(c.endDate).trim());
 
@@ -107,7 +107,7 @@ const getValidDiscountCampaignsForPerson = (eventLike, personLike) => {
 
 const discountCampaignAppliesToLabel = (c) => {
   const a = c?.appliesTo || 'all';
-  if (a === 'server_ambos') return 'Solo servidor (asignación Ambos)';
+  if (a === 'server_ambos') return 'Solo servidor (asignaci?n Ambos)';
   if (a === 'general') return 'Campistas y servidores no-Ambos';
   return 'Todos los perfiles';
 };
@@ -118,23 +118,23 @@ const findDiscountCampaignById = (eventLike, id) => {
   return all.find((x) => String(x.id) === String(id)) || null;
 };
 
-/** Segmento Teens / Jóvenes donde contabilizar el bautizo (evento). Null si no aplica o falta dato (ej. Ambos sin elegir). */
+/** Segmento Teens / J?venes donde contabilizar el bautizo (evento). Null si no aplica o falta dato (ej. Ambos sin elegir). */
 const getBaptismAccountingSegment = (personLike) => {
-  if (String(personLike?.willBeBaptized || '') !== 'Sí') return null;
-  const isServer = personLike?.isServer === 'Sí';
+  if (!isSiValue(personLike?.willBeBaptized)) return null;
+  const isServer = isSiValue(personLike?.isServer);
   if (isServer) {
     const sa = String(personLike?.serverAssignment || '').trim();
     if (sa === 'Ambos') {
       const bs = String(personLike?.baptismSegment || '').trim();
-      return bs === 'Teens' || bs === 'Jóvenes' ? bs : null;
+      return bs === 'Teens' || bs === 'J?venes' ? bs : null;
     }
-    if (sa === 'Teens' || sa === 'Jóvenes') return sa;
+    if (sa === 'Teens' || sa === 'J?venes') return sa;
     return null;
   }
   const camp = String(personLike?.campAssignment || '').trim();
-  if (camp === 'Teens' || camp === 'Jóvenes') return camp;
+  if (camp === 'Teens' || camp === 'J?venes') return camp;
   const ageNum = parseInt(personLike?.age, 10) || 0;
-  return ageNum < 18 ? 'Teens' : 'Jóvenes';
+  return ageNum < 18 ? 'Teens' : 'J?venes';
 };
 
 const PAYMENT_METHODS = ['Efectivo', 'Tarjeta'];
@@ -152,7 +152,7 @@ const parsePreferredServeArea = (str, knownOpts = DEFAULT_SERVE_AREA_OPTIONS) =>
     if (p === 'Otro') selected.add('Otro');
     else if (p.startsWith('Otro: ')) { selected.add('Otro'); otroText = p.slice(6).trim(); }
     else if (knownOpts.includes(p)) selected.add(p);
-    else { selected.add('Otro'); otroText = p; } // legacy free text → Otro
+    else { selected.add('Otro'); otroText = p; } // legacy free text ? Otro
   }
   return { selected, otroText };
 };
@@ -162,7 +162,7 @@ const formatPreferredServeArea = (selected, otroText) => {
   if (selected.has('Otro')) arr.push(otroText ? `Otro: ${otroText}` : 'Otro');
   return arr.join(', ');
 };
-// Horarios por defecto (24h). “Segundo” de 11 a 13; “Tercero” de 13 a 17.
+// Horarios por defecto (24h). ?Segundo? de 11 a 13; ?Tercero? de 13 a 17.
 const DEFAULT_SERVICE_SLOTS = {
   Primero: { start: '07:00', end: '11:00' },
   Segundo: { start: '11:00', end: '13:00' },
@@ -172,7 +172,7 @@ const DEFAULT_SERVICE_SLOTS = {
 const defaultLocations = ["Norte", "Sur", "Izcalli", "Coapa", "Acapulco", "Toluca"];
 const defaultRegStatus = defaultLocations.reduce((acc, loc) => ({ ...acc, [loc]: true }), {});
 
-/** Campa: asistencia sin cobro (sí cuentan en registro). Mutuamente excluyente con beca. */
+/** Campa: asistencia sin cobro (s? cuentan en registro). Mutuamente excluyente con beca. */
 const ATTENDANCE_SPECIAL = { ninguno: 'ninguno', empleado: 'empleado', cortesia: 'cortesia' };
 const isFreeAttendanceType = (t) => t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia;
 const normalizeAttendanceSpecial = (personLike) => {
@@ -180,6 +180,22 @@ const normalizeAttendanceSpecial = (personLike) => {
   if (t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia) return t;
   return ATTENDANCE_SPECIAL.ninguno;
 };
+/** Valor interno can?nico (sin tilde) para guardar y comparar con isSiValue(). */
+const SI = 'Si';
+/** Texto mostrado en pantalla para la opci?n afirmativa. */
+const SI_LABEL = 'S\u00ed';
+
+/** Compara beca/servidor/bautizo/etc.; acepta "Si", "S?" y datos legacy. */
+const isSiValue = (v) => {
+  const s = String(v ?? '').trim();
+  if (s === SI || s === SI_LABEL) return true;
+  if (s.toLowerCase() === 's\u00ed') return true;
+  if (s.length === 2 && s[0] === 'S' && (s[1] === '?' || s[1] === '\uFFFD')) return true;
+  return false;
+};
+
+/** Texto de UI para un campo Si/No (muestra SI_LABEL o "No"). */
+const formatSiNo = (v) => (isSiValue(v) ? SI_LABEL : 'No');
 
 const EMPTY_ENTRY = {
   name: '', phone: '', age: '', birthDate: '', bloodType: 'O+', gender: '',
@@ -189,28 +205,28 @@ const EMPTY_ENTRY = {
   attendanceSpecialType: ATTENDANCE_SPECIAL.ninguno,
   hasAllergy: 'No', allergyCategory: '', allergyDetails: '', hasDisease: 'No', diseaseDetails: '', diseaseMedication: '',
   hasDisability: 'No', disabilityDetails: '', isScholarship: 'No',
-  /** 'total' | 'partial' — solo aplica si isScholarship es Sí (formulario nuevo registro). */
+  /** 'total' | 'partial' ? solo aplica si isScholarship es S? (formulario nuevo registro). */
   scholarshipType: 'total',
-  /** Beca parcial: monto cubierto por la beca (cantidad becada); a liquidar = costo de lista actual − este monto. */
+  /** Beca parcial: monto cubierto por la beca (cantidad becada); a liquidar = costo de lista actual ? este monto. */
   scholarshipPartialAmount: '',
   isServer: 'No',
   serverAssignment: '', campAssignment: '', customData: {}, paymentHistory: [],
-  /** Campamentos: se bautiza en el evento; conteo por Teens / Jóvenes (servidor Ambos elige baptismSegment). */
+  /** Campamentos: se bautiza en el evento; conteo por Teens / J?venes (servidor Ambos elige baptismSegment). */
   willBeBaptized: 'No',
   baptismSegment: '',
   llegaEnCarro: false,
   regresaEnCarro: false,
-  transportType: 'Camión',
+  transportType: 'Cami?n',
   isMarried: 'No', spouseName: '', goesWithChildren: 'No', childrenCount: '', servedOtherCampa: 'No',
   servedAreas: '', preferredServeArea: '', servesInCongress: 'No', congressServeArea: '',
   travelFrom: '', travelTo: '',
-  // Sección 3: ID único de persona (persiste entre eventos del mismo perfil)
+  // Secci?n 3: ID ?nico de persona (persiste entre eventos del mismo perfil)
   vnpPersonId: '',
-  // Sección 1: Método / Servicio (para abono inicial y posterior)
+  // Secci?n 1: M?todo / Servicio (para abono inicial y posterior)
   paymentMethod: 'Efectivo',
   paymentService: '',
   cardReference: '',
-  /** '' = automático (primera campaña vigente hoy que aplique); si no, id de campaña elegida en el alta. */
+  /** '' = autom?tico (primera campa?a vigente hoy que aplique); si no, id de campa?a elegida en el alta. */
   selectedDiscountCampaignId: '',
 };
 
@@ -234,7 +250,7 @@ const defaultViewPrefs = {
   tableDetails: true
 };
 
-/** Menú lateral del evento: SuperUsuario define qué ven Editor y Lector. Administrador y SuperUsuario no se limitan. */
+/** Men? lateral del evento: SuperUsuario define qu? ven Editor y Lector. Administrador y SuperUsuario no se limitan. */
 const DEFAULT_PANEL_NAV = {
   serversPage: true,
   becados: true,
@@ -253,24 +269,24 @@ const PANEL_NAV_TAB_KEYS = {
 };
 
 const PANEL_NAV_CONFIG_ITEMS = [
-  { key: 'serversPage', label: 'Página Servidores', hint: 'Visible en campamentos cuando está activa.' },
-  { key: 'becados', label: 'Becados', hint: 'Quienes ya tenían permiso de administración siguen viéndola.' },
+  { key: 'serversPage', label: 'P?gina Servidores', hint: 'Visible en campamentos cuando est? activa.' },
+  { key: 'becados', label: 'Becados', hint: 'Quienes ya ten?an permiso de administraci?n siguen vi?ndola.' },
   { key: 'cashCut', label: 'Corte de caja', hint: 'Igual: respeta rol de administrador.' },
-  { key: 'expenseList', label: 'Lista de gastos', hint: 'Además debe tener permiso de gastos en su usuario.' },
+  { key: 'expenseList', label: 'Lista de gastos', hint: 'Adem?s debe tener permiso de gastos en su usuario.' },
   { key: 'registroGlobal', label: 'Registro global', hint: 'Tabla consolidada del evento.' },
-  { key: 'locations', label: 'Sedes en el menú', hint: 'Accesos directos a cada sede en el lateral.' }
+  { key: 'locations', label: 'Sedes en el men?', hint: 'Accesos directos a cada sede en el lateral.' }
 ];
 
 const lsKeyShowGrossCommission = (userId) => `vina_show_gross_commission_${userId}`;
-/** Filtros de listas (registro, resumen, logs, gastos, etc.) por usuario; sobreviven cierre de sesión y cambio de evento/sede/pestaña. */
+/** Filtros de listas (registro, resumen, logs, gastos, etc.) por usuario; sobreviven cierre de sesi?n y cambio de evento/sede/pesta?a. */
 const lsKeyUserFilters = (userId) => `vina_user_filters_${userId}`;
-/** Colapsar/expandir listas Activos · Becados (espera) · Cancelados en registro por sede (por usuario). */
+/** Colapsar/expandir listas Activos ? Becados (espera) ? Cancelados en registro por sede (por usuario). */
 const lsKeyRosterSections = (userId) => `vina_roster_sections_${userId}`;
 
 /** Texto mostrado en lugar del nombre del gasto cuando el creador oculta el concepto a otros. */
 const MASKED_EXPENSE_CONCEPT_LABEL = 'Oculto';
 
-/** Por defecto los conceptos propios están ocultos a otros; solo `hideMyExpenseConcepts === false` desactiva explícitamente. */
+/** Por defecto los conceptos propios est?n ocultos a otros; solo `hideMyExpenseConcepts === false` desactiva expl?citamente. */
 const isHideMyExpenseConceptsOn = (userLike) => userLike?.hideMyExpenseConcepts !== false;
 
 // Helper: Formatear fecha a DD-MMM-YYYY
@@ -314,7 +330,7 @@ const parseFlexibleInstantMs = (raw) => {
   }
   if (typeof raw === 'string') {
     const s = raw.trim();
-    // Solo fecha: usar mediodía local para que el día civil coincida con la sede (evita UTC medianoche → día anterior).
+    // Solo fecha: usar mediod?a local para que el d?a civil coincida con la sede (evita UTC medianoche ? d?a anterior).
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
       const [yy, mm, dd] = s.split('-').map((n) => parseInt(n, 10));
       const d = new Date(yy, mm - 1, dd, 12, 0, 0, 0);
@@ -330,7 +346,7 @@ const parseFlexibleInstantMs = (raw) => {
 const formatPayHistoryRowDate = (pay) => {
   const ms = parseFlexibleInstantMs(pay?.recordedAt);
   if (ms != null) return new Date(ms).toLocaleString('es-MX');
-  return pay?.date || '—';
+  return pay?.date || '?';
 };
 
 /** fallbackMs: p. ej. registeredAt del participante si recordedAt no parsea (evita usar Date.now() en cortes). */
@@ -380,23 +396,23 @@ const calculateAgeFromBirthDate = (birthDate) => {
 };
 const resolveLlegaEnCarro = (personLike) => {
   if (typeof personLike?.llegaEnCarro === 'boolean') return personLike.llegaEnCarro;
-  if (personLike?.llegaEnCarro === 'Sí') return true;
+  if (isSiValue(personLike?.llegaEnCarro)) return true;
   if (personLike?.llegaEnCarro === 'No') return false;
-  return (personLike?.transportType || 'Camión') === 'Carro';
+  return (personLike?.transportType || 'Cami?n') === 'Carro';
 };
 const resolveRegresaEnCarro = (personLike) => {
   if (typeof personLike?.regresaEnCarro === 'boolean') return personLike.regresaEnCarro;
-  if (personLike?.regresaEnCarro === 'Sí') return true;
+  if (isSiValue(personLike?.regresaEnCarro)) return true;
   if (personLike?.regresaEnCarro === 'No') return false;
-  return (personLike?.transportType || 'Camión') === 'Carro';
+  return (personLike?.transportType || 'Cami?n') === 'Carro';
 };
 const resolveTransportSummary = (personLike) => {
   const llegaCarro = resolveLlegaEnCarro(personLike);
   const regresaCarro = resolveRegresaEnCarro(personLike);
-  if (!llegaCarro && !regresaCarro) return 'Llega camión / Regresa camión';
+  if (!llegaCarro && !regresaCarro) return 'Llega cami?n / Regresa cami?n';
   if (llegaCarro && regresaCarro) return 'Llega carro / Regresa carro';
-  if (llegaCarro) return 'Llega carro / Regresa camión';
-  return 'Llega camión / Regresa carro';
+  if (llegaCarro) return 'Llega carro / Regresa cami?n';
+  return 'Llega cami?n / Regresa carro';
 };
 const btnPrimary = "py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2 text-sm";
 const btnSecondary = "py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-all text-sm flex justify-center items-center gap-2";
@@ -406,7 +422,7 @@ const getCommissionToggleBtnClasses = (isGrossView) =>
       ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200'
       : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
   }`;
-const getCommissionToggleLabel = (isGrossView) => (isGrossView ? 'Ver Neto (con comisión)' : 'Ver Bruto (sin comisión)');
+const getCommissionToggleLabel = (isGrossView) => (isGrossView ? 'Ver Neto (con comisi?n)' : 'Ver Bruto (sin comisi?n)');
 
 // Mini Components for UI optimization
 const StatCard = ({ icon: IconComponent, iconColor, bgIcon, title, value }) => (
@@ -431,10 +447,10 @@ const ProgressBar = ({ label, value, max, colorClass, bgClass }) => (
   </div>
 );
 
-/** Solo dígitos para comparar teléfonos (anti-duplicados / búsqueda). */
+/** Solo d?gitos para comparar tel?fonos (anti-duplicados / b?squeda). */
 const digitsOnlyPhone = (phone) => (phone || '').replace(/\D/g, '');
 
-/** Eliminación lógica: el documento sigue en Firestore para precargar en otros eventos. */
+/** Eliminaci?n l?gica: el documento sigue en Firestore para precargar en otros eventos. */
 const PARTICIPANT_STATUS_ARCHIVED = 'archived';
 const PARTICIPANT_STATUS_CANCELLED = 'cancelled';
 const participantIsArchived = (p) => (p?.status || 'active') === PARTICIPANT_STATUS_ARCHIVED;
@@ -450,7 +466,7 @@ const participantIsActiveInEvent = (p) => !participantIsArchived(p);
 
 const buildArchivedProfileSnapshot = (person) => {
   const isServerRaw = String(person?.isServer || 'No');
-  const isServerYes = ['sí', 'si', 'yes', 'true'].includes(isServerRaw.toLowerCase());
+  const isServerYes = ['s?', 'si', 'yes', 'true'].includes(isServerRaw.toLowerCase());
   const serverAssignmentRaw = String(person?.serverAssignment || '').trim();
   const campAssignmentRaw = String(person?.campAssignment || '').trim();
   const serverAssignmentResolved = isServerYes
@@ -480,7 +496,7 @@ const buildArchivedProfileSnapshot = (person) => {
     isServer: isServerRaw,
     serverAssignment: serverAssignmentResolved,
     campAssignment: campAssignmentRaw,
-    // Campo explícito para consultas históricas sin ambigüedad.
+    // Campo expl?cito para consultas hist?ricas sin ambig?edad.
     serverAssignmentResolved,
     isMarried: person?.isMarried || 'No',
     spouseName: person?.spouseName || '',
@@ -489,14 +505,14 @@ const buildArchivedProfileSnapshot = (person) => {
     servedOtherCampa: person?.servedOtherCampa || 'No',
     servedAreas: person?.servedAreas || '',
     preferredServeArea: person?.preferredServeArea || '',
-    // Campo de compatibilidad semántica para consultas externas.
+    // Campo de compatibilidad sem?ntica para consultas externas.
     hasChildren: person?.goesWithChildren || 'No',
     willBeBaptized: person?.willBeBaptized || 'No',
     baptismSegment: person?.baptismSegment || '',
   };
 };
 
-/** Índice global en Firebase: un documento por persona (vnp id o teléfono), sin duplicados lógicos. */
+/** ?ndice global en Firebase: un documento por persona (vnp id o tel?fono), sin duplicados l?gicos. */
 const ARCHIVE_PROFILES_COLLECTION = 'app_archived_profiles';
 
 const getArchiveProfileDocId = (person) => {
@@ -602,13 +618,13 @@ const normalizeIdText = (txt) =>
   String(txt || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    // ñ/Ñ no se separan en NFD; unificar a N para el algoritmo (solo A–Z en el ID).
+    // ?/? no se separan en NFD; unificar a N para el algoritmo (solo A?Z en el ID).
     .replace(/\u00f1/gi, 'n')
-    // ß → SS al pasar a mayúsculas
-    .replace(/ß/g, 'ss')
+    // ? ? SS al pasar a may?sculas
+    .replace(/?/g, 'ss')
     .toUpperCase();
 
-/** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A–Z0–9). */
+/** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A?Z0?9). */
 const canonicalizeVnpPersonId = (raw) => {
   const t = String(raw || '').trim();
   if (!t) return '';
@@ -664,7 +680,7 @@ const getNamePartsForFamilyCompare = (fullName) =>
     .filter((w) => !NAME_PARTICLES_FOR_FAMILY.has(w));
 
 /**
- * Dos apellidos (últimas dos palabras útiles) para excepción de teléfono duplicado en familia.
+ * Dos apellidos (?ltimas dos palabras ?tiles) para excepci?n de tel?fono duplicado en familia.
  * Con solo 2 palabras (nombre + un apellido) se usa *|apellido para hermanos con mismo apellido.
  */
 const getFamilySurnamePairKey = (fullName) => {
@@ -681,7 +697,7 @@ const isSameFamilyBySurnames = (nameA, nameB) => {
   return ka === kb;
 };
 
-/** Mismo teléfono en el evento = duplicado salvo si comparten los dos apellidos (familia). */
+/** Mismo tel?fono en el evento = duplicado salvo si comparten los dos apellidos (familia). */
 const phoneDuplicateInEvent = (fullName, phoneDigits, participants, eventId, excludeParticipantId) => {
   if (!phoneDigits || String(phoneDigits).length < 10) return false;
   return participants.some((p) => {
@@ -693,11 +709,11 @@ const phoneDuplicateInEvent = (fullName, phoneDigits, participants, eventId, exc
   });
 };
 
-/** Convierte teléfono local/internacional al formato que requiere wa.me */
+/** Convierte tel?fono local/internacional al formato que requiere wa.me */
 const normalizeWhatsAppPhone = (phone) => {
   const digits = digitsOnlyPhone(phone);
   if (digits.length < 10) return null;
-  if (digits.length === 10) return `52${digits}`; // MX por defecto para números locales
+  if (digits.length === 10) return `52${digits}`; // MX por defecto para n?meros locales
   if (digits.startsWith('52') && digits.length === 12) return digits;
   return digits;
 };
@@ -705,7 +721,7 @@ const normalizeWhatsAppPhone = (phone) => {
 const getWhatsAppNotificationMarkKey = (n) =>
   n?.id ? String(n.id) : `legacy-${n.createdAt ?? 0}-${n.kind ?? ''}`;
 
-/** Último movimiento financiero pendiente de avisar (más reciente por createdAt). */
+/** ?ltimo movimiento financiero pendiente de avisar (m?s reciente por createdAt). */
 const getLatestUnsentWhatsAppNotification = (person) => {
   const notifications = Array.isArray(person?.whatsAppFinanceNotifications) ? person.whatsAppFinanceNotifications : [];
   const pending = notifications.filter((n) => n && !n.sent);
@@ -715,7 +731,7 @@ const getLatestUnsentWhatsAppNotification = (person) => {
 
 const getWeekKeyFromDate = (dateStr) => {
   const d = dateStr ? new Date(`${dateStr}T00:00:00`) : new Date();
-  if (Number.isNaN(d.getTime())) return 'Semana inválida';
+  if (Number.isNaN(d.getTime())) return 'Semana inv?lida';
   const day = d.getDay(); // 0 domingo
   const diffToMonday = day === 0 ? -6 : 1 - day;
   const monday = new Date(d);
@@ -739,7 +755,7 @@ const toLocalISODate = (dateObj) => {
   return `${y}-${m}-${d}`;
 };
 
-/** Para ordenar, limpiar logs y filtros por fecha (soporta id numérico legacy o id string con prefijo temporal). */
+/** Para ordenar, limpiar logs y filtros por fecha (soporta id num?rico legacy o id string con prefijo temporal). */
 const extractLogMillis = (log) => {
   if (!log) return 0;
   if (Number.isFinite(log.createdAt)) return log.createdAt;
@@ -777,14 +793,14 @@ const formatDuration = (ms) => {
   return `${seconds}s`;
 };
 
-// Carga asíncrona de SheetJS para exportar a Excel
+// Carga as?ncrona de SheetJS para exportar a Excel
 const loadSheetJS = () => {
   return new Promise((resolve, reject) => {
     if (window.XLSX) return resolve(window.XLSX);
     const script = document.createElement('script');
     script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
     script.onload = () => resolve(window.XLSX);
-    script.onerror = () => reject(new Error('No se pudo cargar la librería de exportación a Excel.'));
+    script.onerror = () => reject(new Error('No se pudo cargar la librer?a de exportaci?n a Excel.'));
     document.body.appendChild(script);
   });
 };
@@ -866,7 +882,7 @@ const App = () => {
   const isGeneral = currentEvent?.eventType === 'General';
   const sortedEvents = useMemo(() => [...events].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)), [events]);
 
-  /** Sedes en configuración global + todas las creadas en cualquier evento (p. ej. alta de sede solo en un evento). */
+  /** Sedes en configuraci?n global + todas las creadas en cualquier evento (p. ej. alta de sede solo en un evento). */
   const allKnownLocationNames = useMemo(() => {
     const set = new Set((globalLocations || []).map((x) => String(x).trim()).filter(Boolean));
     (events || []).forEach((ev) => {
@@ -999,7 +1015,7 @@ const App = () => {
     return active.find((c) => campaignMatchesPersonProfile(c, personLike)) || null;
   }, [getActiveDiscountCampaigns]);
 
-  /** Campañas aplicables al perfil (válidas: concepto + monto); en edición se elige manual incluso sin vigencia por fecha. */
+  /** Campa?as aplicables al perfil (v?lidas: concepto + monto); en edici?n se elige manual incluso sin vigencia por fecha. */
   const getManualApplyCampaignOptions = useCallback((eventLike, personLike) => {
     return getValidDiscountCampaignsForPerson(eventLike, personLike);
   }, []);
@@ -1016,7 +1032,7 @@ const App = () => {
   );
 
   const getPersonCost = useCallback((person, pricing) => {
-    if (person.isServer === 'Sí' && person.serverAssignment === 'Ambos') {
+    if (isSiValue(person.isServer) && person.serverAssignment === 'Ambos') {
       return pricing.server;
     }
     return pricing.global;
@@ -1028,11 +1044,11 @@ const App = () => {
     return getPersonCost(person, pricing);
   }, [getPersonCost]);
 
-  /** Monto que debe liquidar la persona (0 = beca total cubierta). Beca parcial: lista − monto becado (scholarshipPartialAmount). */
+  /** Monto que debe liquidar la persona (0 = beca total cubierta). Beca parcial: lista ? monto becado (scholarshipPartialAmount). */
   const getLiquidationTarget = useCallback((person) => {
-    if (isFreeAttendanceType(person?.attendanceSpecialType)) return 0;
+    if (isFreeAttendanceType(normalizeAttendanceSpecial(person))) return 0;
     const listPrice = resolveRegisteredCost(person, currentPricing);
-    if (person?.isScholarship !== 'Sí') return listPrice;
+    if (!isSiValue(person?.isScholarship)) return listPrice;
     if (person?.scholarshipType === 'partial') {
       const montoBecado = parseFloat(person.scholarshipPartialAmount || 0);
       if (!Number.isFinite(montoBecado) || montoBecado <= 0) return listPrice;
@@ -1042,13 +1058,13 @@ const App = () => {
     return 0;
   }, [resolveRegisteredCost, currentPricing]);
 
-  /** Beca parcial (Campa): abono inicial válido si es 0, ≥ apartado mínimo del evento, o (servidor Ambos) el costo servidor configurado. */
+  /** Beca parcial (Campa): abono inicial v?lido si es 0, ? apartado m?nimo del evento, o (servidor Ambos) el costo servidor configurado. */
   const isValidPartialScholarshipInitialPaid = useCallback((entry, minDep) => {
     const paid = parseFloat(entry.paid) || 0;
     if (paid < 0) return false;
     const min = Number(minDep) || 0;
     const server = Number(currentPricing.server) || 0;
-    const ambos = entry.isServer === 'Sí' && entry.serverAssignment === 'Ambos';
+    const ambos = isSiValue(entry.isServer) && entry.serverAssignment === 'Ambos';
     if (paid === 0) return true;
     if (ambos && Math.abs(paid - server) < 1e-6) return true;
     if (paid >= min) return true;
@@ -1058,7 +1074,7 @@ const App = () => {
   /** Monto cubierto por beca respecto al costo de lista (para beca parcial = scholarshipPartialAmount si es coherente). */
   const getScholarshipCondonedAmount = useCallback(
     (person) => {
-      if (person?.isScholarship !== 'Sí') return 0;
+      if (!isSiValue(person?.isScholarship)) return 0;
       const listPrice = resolveRegisteredCost(person, currentPricing);
       const toPay = getLiquidationTarget(person);
       return Math.max(0, listPrice - toPay);
@@ -1103,7 +1119,7 @@ const App = () => {
   const [pricingForm, setPricingForm] = useState({ type: 'fixed', globalCost: 0, serverCost: 0, phases: [], campaigns: [] });
   const [customFieldsModal, setCustomFieldsModal] = useState({ isOpen: false });
   const [searchTerm, setSearchTerm] = useState("");
-  /** Búsqueda para importar datos desde otro evento del mismo tipo */
+  /** B?squeda para importar datos desde otro evento del mismo tipo */
   const [newRegProfileSearch, setNewRegProfileSearch] = useState('');
   const [sortBy, setSortBy] = useState("none");
   const [filterSwim, setFilterSwim] = useState("all");
@@ -1119,7 +1135,7 @@ const App = () => {
   const [filterAttendanceSpecial, setFilterAttendanceSpecial] = useState('all');
   const [filterFirstTimeId, setFilterFirstTimeId] = useState("all");
   const [filterPendingRefund, setFilterPendingRefund] = useState("all");
-  /** all | pending — solo filas con avisos WhatsApp financieros sin enviar */
+  /** all | pending ? solo filas con avisos WhatsApp financieros sin enviar */
   const [filterWhatsAppPending, setFilterWhatsAppPending] = useState("all");
   const [filterServer, setFilterServer] = useState("all");
   const [filterAssignment, setFilterAssignment] = useState("all");
@@ -1202,7 +1218,7 @@ const App = () => {
     canEditRegistryDates: false
   });
   const [restoreModal, setRestoreModal] = useState({ isOpen: false, log: null, type: 'single' });
-  /** Confirmación in-app: archivar / baja / eliminar donación (sustituye window.confirm). */
+  /** Confirmaci?n in-app: archivar / baja / eliminar donaci?n (sustituye window.confirm). */
   const [registryConfirmModal, setRegistryConfirmModal] = useState({
     isOpen: false,
     type: null,
@@ -1268,7 +1284,7 @@ const App = () => {
   const getCardCommissionRate = useCallback(() => {
     const raw = globalConfig?.cardCommissionRate ?? 0.04; // 4% por defecto
     const num = Number(raw) || 0;
-    // Permite guardar “4” o “0.04”
+    // Permite guardar ?4? o ?0.04?
     return num > 1 ? num / 100 : num;
   }, [globalConfig?.cardCommissionRate]);
 
@@ -1395,7 +1411,7 @@ const App = () => {
           diseaseMedication: src.diseaseMedication || '',
           hasDisability: src.hasDisability || 'No',
           disabilityDetails: src.disabilityDetails || '',
-          transportType: src.transportType || 'Camión',
+          transportType: src.transportType || 'Cami?n',
           isMarried: src.isMarried || 'No',
           spouseName: src.spouseName || '',
           goesWithChildren: src.goesWithChildren || 'No',
@@ -1405,7 +1421,7 @@ const App = () => {
           preferredServeArea: src.preferredServeArea || '',
           servesInCongress: src.servesInCongress || 'No',
           congressServeArea: src.congressServeArea || '',
-          willBeBaptized: src.willBeBaptized === 'Sí' ? 'Sí' : 'No',
+          willBeBaptized: isSiValue(src.willBeBaptized) ? SI : 'No',
           baptismSegment: src.baptismSegment || '',
         } : {}),
       };
@@ -1467,7 +1483,7 @@ const App = () => {
     if (view === 'events' && eventId && tab) {
       const panelKey = PANEL_NAV_TAB_KEYS[tab];
       if (panelKey && !isPanelNavSectionAllowed(panelKey)) {
-        showToast('Esta sección no está habilitada en el menú para tu usuario.');
+        showToast('Esta secci?n no est? habilitada en el men? para tu usuario.');
         setIsMobileMenuOpen(false);
         return;
       }
@@ -1478,7 +1494,7 @@ const App = () => {
           return;
         }
         if (!isPanelNavSectionAllowed('locations')) {
-          showToast('El acceso a sedes desde el menú no está habilitado para tu usuario.');
+          showToast('El acceso a sedes desde el men? no est? habilitado para tu usuario.');
           setIsMobileMenuOpen(false);
           return;
         }
@@ -1741,12 +1757,12 @@ const App = () => {
     if (prev !== undefined && current !== prev) {
       if (current) {
         setDebugToast({
-          msg: "El modo de depuración se activó. Las modificaciones con el insecto no son permanentes y se eliminarán.",
+          msg: "El modo de depuraci?n se activ?. Las modificaciones con el insecto no son permanentes y se eliminar?n.",
           type: "active"
         });
       } else {
         setDebugToast({
-          msg: "El modo de depuración terminó.",
+          msg: "El modo de depuraci?n termin?.",
           type: "inactive"
         });
       }
@@ -1788,10 +1804,10 @@ const App = () => {
         eventName: 'Sistema',
         timestamp: new Date().toLocaleString('es-MX'),
         username: currentUser.username,
-        action: 'Modo Depuración',
-        details: `El SuperUsuario "${currentUser.username}" activó el modo de depuración. Los cambios realizados durante esta sesión serán revertidos al salir.`,
+        action: 'Modo Depuraci?n',
+        details: `El SuperUsuario "${currentUser.username}" activ? el modo de depuraci?n. Los cambios realizados durante esta sesi?n ser?n revertidos al salir.`,
         revertInfo: null,
-        isDebug: false,        // ← importante: este log es PERMANENTE, no se revierte
+        isDebug: false,        // ? importante: este log es PERMANENTE, no se revierte
         debugSessionId: newSessionId
       });
     } else {
@@ -1814,7 +1830,7 @@ const App = () => {
         timestamp: new Date().toLocaleString('es-MX'),
         username: currentUser.username,
         action: 'Sistema',
-        details: `Salió de depuración. Se revirtieron ${logsToRevert.length} acciones temporales.`,
+        details: `Sali? de depuraci?n. Se revirtieron ${logsToRevert.length} acciones temporales.`,
         revertInfo: null,
       });
     }
@@ -1987,8 +2003,8 @@ const App = () => {
         const code = err?.code || '';
         setFirestoreUsersError(
           code === 'permission-denied'
-            ? 'Firestore rechazó la lectura (permiso denegado). Despliega las reglas: firebase deploy (o al menos firestore:rules) y espera un minuto.'
-            : 'No se pudo cargar la lista de usuarios. Revisa conexión, que Firestore esté activo y que el proyecto sea registros-vnpm.'
+            ? 'Firestore rechaz? la lectura (permiso denegado). Despliega las reglas: firebase deploy (o al menos firestore:rules) y espera un minuto.'
+            : 'No se pudo cargar la lista de usuarios. Revisa conexi?n, que Firestore est? activo y que el proyecto sea registros-vnpm.'
         );
         setUsers([]);
         setUsersAuthReady(true);
@@ -2167,7 +2183,7 @@ const App = () => {
         if (others > 0) {
           await signOut(auth);
           setLoginError(
-            'Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» allí, o espera unos segundos e intenta de nuevo.'
+            'Ya hay una sesi?n activa con este usuario en otra pesta?a o dispositivo. Cierra esa sesi?n, usa ?Salir? all?, o espera unos segundos e intenta de nuevo.'
           );
           return;
         }
@@ -2193,8 +2209,8 @@ const App = () => {
         preferredLandingTab: adminDefaultPref,
       });
       addLog(
-        'Inicio de Sesión',
-        `El usuario ${profile.username} recuperó sesión.`,
+        'Inicio de Sesi?n',
+        `El usuario ${profile.username} recuper? sesi?n.`,
         profile.username,
         { id: 'Global', name: 'Sistema' }
       );
@@ -2220,7 +2236,7 @@ const App = () => {
       users.find((u) => usernameToAuthEmail(u.username) === fbUser.email);
     if (profile) return;
     signOut(auth).catch(() => {});
-    setLoginError('Tu cuenta no tiene perfil en la aplicación. Contacta al administrador.');
+    setLoginError('Tu cuenta no tiene perfil en la aplicaci?n. Contacta al administrador.');
   }, [fbUser, usersAuthReady, users, currentUser, firestoreUsersError]);
 
   const handleSavePanelNavConfig = useCallback(async () => {
@@ -2229,12 +2245,12 @@ const App = () => {
       await updateDoc(getDocRef('app_data', 'config'), {
         panelNav: { ...DEFAULT_PANEL_NAV, ...panelNavForm }
       });
-      addLog('Configuración', 'Actualizó qué secciones del menú lateral ven los usuarios con rol Editor o Lector.');
+      addLog('Configuraci?n', 'Actualiz? qu? secciones del men? lateral ven los usuarios con rol Editor o Lector.');
       setPanelNavModalOpen(false);
-      showToast('Menú lateral (Editor/Lector) actualizado.');
+      showToast('Men? lateral (Editor/Lector) actualizado.');
     } catch (e) {
       console.error(e);
-      showToast('No se pudo guardar la configuración del menú.');
+      showToast('No se pudo guardar la configuraci?n del men?.');
     }
   }, [isSuperUser, panelNavForm, addLog, showToast]);
 
@@ -2244,10 +2260,10 @@ const App = () => {
     const next = !isHideMyExpenseConceptsOn(live);
     try {
       await updateDoc(getDocRef('app_users', String(currentUser.id)), { hideMyExpenseConcepts: next });
-      addLog('Gastos', 'Movimiento en lista de gastos: cambio de preferencia de privacidad de conceptos (auditoría sin detalle).');
+      addLog('Gastos', 'Movimiento en lista de gastos: cambio de preferencia de privacidad de conceptos (auditor?a sin detalle).');
       showToast(
         next
-          ? 'Los gastos que registres se mostrarán como «Oculto» a otros (tú y SuperUsuario verán el concepto).'
+          ? 'Los gastos que registres se mostrar?n como ?Oculto? a otros (t? y SuperUsuario ver?n el concepto).'
           : 'Tus conceptos de gasto vuelven a ser visibles para quien tenga acceso a la lista.'
       );
     } catch (e) {
@@ -2266,7 +2282,7 @@ const App = () => {
     let totalAttendanceEmpleado = 0;
     let totalAttendanceCortesia = 0;
 
-    // Sección 1: ingresos netos por Método y por Servicio (para gráficas)
+    // Secci?n 1: ingresos netos por M?todo y por Servicio (para gr?ficas)
     let paymentMethodTotals = {
       efectivo: { net: 0, gross: 0, countPayments: 0 },
       tarjeta: { net: 0, gross: 0, countPayments: 0 }
@@ -2309,11 +2325,11 @@ const App = () => {
         [...(data[loc] || []), ...(cancelledData[loc] || [])].forEach((person) => {
           if (person.gender === 'Hombre') totalMen++;
           else if (person.gender === 'Mujer') totalWomen++;
-          if (person.canSwim === 'Sí') totalSwimmers++; else totalNonSwimmers++;
-          if (person.hasAllergy === 'Sí') totalAllergies++;
-          if (person.hasDisease === 'Sí') totalDiseases++;
-          if (person.hasDisability === 'Sí') totalDisabilities++;
-          if (!participantIsCancelled(person) && person.isServer === 'Sí') { totalServers++; stats.all.servers++; }
+          if (isSiValue(person.canSwim)) totalSwimmers++; else totalNonSwimmers++;
+          if (isSiValue(person.hasAllergy)) totalAllergies++;
+          if (isSiValue(person.hasDisease)) totalDiseases++;
+          if (isSiValue(person.hasDisability)) totalDisabilities++;
+          if (!participantIsCancelled(person) && isSiValue(person.isServer)) { totalServers++; stats.all.servers++; }
           
           if (person.bloodType) {
             bloodTypeStats[person.bloodType] = (bloodTypeStats[person.bloodType] || 0) + 1;
@@ -2329,17 +2345,17 @@ const App = () => {
           }
 
           if (currentEvent.eventType === 'Campa' && !participantIsCancelled(person)) {
-            if (person.isServer === 'Sí') {
+            if (isSiValue(person.isServer)) {
               if (person.serverAssignment === 'Teens') totalMinors++;
-              else if (person.serverAssignment === 'Jóvenes') totalAdults++;
+              else if (person.serverAssignment === 'J?venes') totalAdults++;
               else if (person.serverAssignment === 'Ambos') { totalMinors++; totalAdults++; totalServersBoth++; }
             } else {
-              const assignment = person.campAssignment || (ageNum < 18 ? 'Teens' : 'Jóvenes');
+              const assignment = person.campAssignment || (ageNum < 18 ? 'Teens' : 'J?venes');
               if (assignment === 'Teens') totalMinors++; else totalAdults++;
             }
             const bSeg = getBaptismAccountingSegment(person);
             if (bSeg === 'Teens') baptismsTeens++;
-            else if (bSeg === 'Jóvenes') baptismsJovenes++;
+            else if (bSeg === 'J?venes') baptismsJovenes++;
             if (person.attendanceSpecialType === 'empleado') totalAttendanceEmpleado++;
             else if (person.attendanceSpecialType === 'cortesia') totalAttendanceCortesia++;
           }
@@ -2353,7 +2369,7 @@ const App = () => {
 
           const paidGross = parseFloat(person.paid || 0);
           const paidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGross;
-          const isBecado = person.isScholarship === 'Sí';
+          const isBecado = isSiValue(person.isScholarship);
           const isCancelled = participantIsCancelled(person);
           const baseCost = resolveRegisteredCost(person, currentPricing);
           const liqTarget = getLiquidationTarget(person);
@@ -2386,7 +2402,7 @@ const App = () => {
             stats.regular.paidGross += paidGross;
           }
 
-          // Totales de pagos por método/servicio (para gráficas)
+          // Totales de pagos por m?todo/servicio (para gr?ficas)
           const history = person.paymentHistory || [];
           history.forEach(h => {
             if (h.kind === 'comment') return; // Comentarios no afectan totales financieros
@@ -2476,13 +2492,13 @@ const App = () => {
       wsGeneralData.push(["Fecha:", currentEvent.date || 'Sin fecha especificada']);
       wsGeneralData.push([]);
       
-      wsGeneralData.push(["MÉTRICAS PRINCIPALES"]);
+      wsGeneralData.push(["M?TRICAS PRINCIPALES"]);
       wsGeneralData.push(["Total Registrados", summary.globalStats.all.count]);
       if (isCampa) {
         wsGeneralData.push(["Total Becados", summary.globalStats.all.scholarship]);
         wsGeneralData.push(["Total Servidores", summary.globalStats.all.servers]);
         wsGeneralData.push(["Asistencia empleado (sin cobro)", summary.totalAttendanceEmpleado]);
-        wsGeneralData.push(["Asistencia cortesía (sin cobro)", summary.totalAttendanceCortesia]);
+        wsGeneralData.push(["Asistencia cortes?a (sin cobro)", summary.totalAttendanceCortesia]);
       }
       wsGeneralData.push([]);
 
@@ -2517,46 +2533,46 @@ const App = () => {
       });
       wsGeneralData.push([]);
 
-      // Datos de Gráficas simulados en tablas
-      wsGeneralData.push(["MÉTRICAS: GÉNERO"]);
+      // Datos de Gr?ficas simulados en tablas
+      wsGeneralData.push(["M?TRICAS: G?NERO"]);
       wsGeneralData.push(["Hombres", summary.totalMen]);
       wsGeneralData.push(["Mujeres", summary.totalWomen]);
       wsGeneralData.push([]);
 
-      wsGeneralData.push(["MÉTRICAS: RANGOS DE EDAD"]);
-      wsGeneralData.push(["Niños (< 13)", summary.ageBrackets.kids]);
+      wsGeneralData.push(["M?TRICAS: RANGOS DE EDAD"]);
+      wsGeneralData.push(["Ni?os (< 13)", summary.ageBrackets.kids]);
       wsGeneralData.push(["Adolescentes (13-17)", summary.ageBrackets.teens]);
-      wsGeneralData.push(["Jóvenes (18-25)", summary.ageBrackets.youngAdults]);
+      wsGeneralData.push(["J?venes (18-25)", summary.ageBrackets.youngAdults]);
       wsGeneralData.push(["Adultos (26-40)", summary.ageBrackets.adults]);
       wsGeneralData.push(["Mayores (41+)", summary.ageBrackets.seniors]);
       wsGeneralData.push([]);
 
       if (isCampa) {
-        wsGeneralData.push(["MÉTRICAS: ASIGNACIÓN / SERVIDORES"]);
+        wsGeneralData.push(["M?TRICAS: ASIGNACI?N / SERVIDORES"]);
         wsGeneralData.push(["Campistas / Servidores Asignados a Teens", summary.totalMinors]);
-        wsGeneralData.push(["Campistas / Servidores Asignados a Jóvenes", summary.totalAdults]);
+        wsGeneralData.push(["Campistas / Servidores Asignados a J?venes", summary.totalAdults]);
         wsGeneralData.push(["Servidores que apoyan en Ambos", summary.totalServersBoth]);
         wsGeneralData.push([]);
-        wsGeneralData.push(["MÉTRICAS: BAUTIZOS (conteo por segmento del evento)"]);
-        wsGeneralData.push(["Total bautizos (Teens + Jóvenes)", summary.baptismsTeens + summary.baptismsJovenes]);
+        wsGeneralData.push(["M?TRICAS: BAUTIZOS (conteo por segmento del evento)"]);
+        wsGeneralData.push(["Total bautizos (Teens + J?venes)", summary.baptismsTeens + summary.baptismsJovenes]);
         wsGeneralData.push(["Bautizos contados en Teens", summary.baptismsTeens]);
-        wsGeneralData.push(["Bautizos contados en Jóvenes", summary.baptismsJovenes]);
+        wsGeneralData.push(["Bautizos contados en J?venes", summary.baptismsJovenes]);
         wsGeneralData.push([]);
 
-        wsGeneralData.push(["MÉTRICAS: SALUD"]);
+        wsGeneralData.push(["M?TRICAS: SALUD"]);
         wsGeneralData.push(["Con Alergias", summary.totalAllergies]);
         wsGeneralData.push(["Con Enfermedades", summary.totalDiseases]);
         wsGeneralData.push(["Con Discapacidades", summary.totalDisabilities]);
         wsGeneralData.push([]);
 
-        wsGeneralData.push(["MÉTRICAS: NADO"]);
+        wsGeneralData.push(["M?TRICAS: NADO"]);
         wsGeneralData.push(["Saben Nadar", summary.totalSwimmers]);
         wsGeneralData.push(["No Saben Nadar", summary.totalNonSwimmers]);
         wsGeneralData.push([]);
       }
 
       if (isGeneral && currentEvent.customFields && currentEvent.customFields.length > 0) {
-        wsGeneralData.push(["MÉTRICAS: CAMPOS PERSONALIZADOS"]);
+        wsGeneralData.push(["M?TRICAS: CAMPOS PERSONALIZADOS"]);
         currentEvent.customFields.forEach(field => {
           wsGeneralData.push([`Respuesta a: ${field}`, "Cantidad"]);
           const entries = Object.entries(summary.customFieldsStats[field] || {}).sort((a,b) => b[1] - a[1]);
@@ -2573,18 +2589,18 @@ const App = () => {
         const evtParticipants = allParticipants.filter(
           (p) => p.eventId === currentEvent.id && p.location === loc && participantIsActiveInEvent(p)
         );
-        if (evtParticipants.length === 0) return; // Omite sedes vacías en la exportación
+        if (evtParticipants.length === 0) return; // Omite sedes vac?as en la exportaci?n
         
         const locData = [];
-        const locHeaders = ['Nombre', 'Teléfono'];
+        const locHeaders = ['Nombre', 'Tel?fono'];
         
         if (isCampa) {
-          locHeaders.push('Edad', 'Género', 'Tipo Sangre', 'Nado', 'Alergias', 'Detalle Alergias', 'Enfermedades', 'Detalle Enfermedades', 'Medicamento Requerido', 'Discapacidades', 'Detalle Discapacidades', 'Contacto Emergencia', 'Tel Emergencia', 'Parentesco emergencia', 'Becado', 'Servidor', 'Asignación', 'Bautizo', 'Bautizo conteo en');
+          locHeaders.push('Edad', 'G?nero', 'Tipo Sangre', 'Nado', 'Alergias', 'Detalle Alergias', 'Enfermedades', 'Detalle Enfermedades', 'Medicamento Requerido', 'Discapacidades', 'Detalle Discapacidades', 'Contacto Emergencia', 'Tel Emergencia', 'Parentesco emergencia', 'Becado', 'Servidor', 'Asignaci?n', 'Bautizo', 'Bautizo conteo en');
         } else if (isGeneral) {
-          locHeaders.push('Edad', 'Género', 'Contacto Emergencia', 'Tel Emergencia', 'Parentesco emergencia');
+          locHeaders.push('Edad', 'G?nero', 'Contacto Emergencia', 'Tel Emergencia', 'Parentesco emergencia');
           if (currentEvent.customFields) locHeaders.push(...currentEvent.customFields);
         } else {
-          locHeaders.push('Edad', 'Género');
+          locHeaders.push('Edad', 'G?nero');
         }
 
         if (hasFinancialAccess) {
@@ -2599,17 +2615,17 @@ const App = () => {
           if (isCampa) {
             row.push(
               p.age || '', p.gender || '', p.bloodType || '', p.canSwim || '',
-              p.hasAllergy || 'No', p.hasAllergy === 'Sí' ? p.allergyDetails : '',
-              p.hasDisease || 'No', p.hasDisease === 'Sí' ? p.diseaseDetails : '', p.hasDisease === 'Sí' ? (p.diseaseMedication || '') : '',
-              p.hasDisability || 'No', p.hasDisability === 'Sí' ? p.disabilityDetails : '',
+              p.hasAllergy || 'No', isSiValue(p.hasAllergy) ? p.allergyDetails : '',
+              p.hasDisease || 'No', isSiValue(p.hasDisease) ? p.diseaseDetails : '', isSiValue(p.hasDisease) ? (p.diseaseMedication || '') : '',
+              p.hasDisability || 'No', isSiValue(p.hasDisability) ? p.disabilityDetails : '',
               p.emergencyContact || '', p.emergencyPhone || '', p.emergencyRelationship || '',
               p.isScholarship || 'No', p.isServer || 'No',
-              p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment,
+              isSiValue(p.isServer) ? p.serverAssignment : p.campAssignment,
               p.willBeBaptized || 'No',
               (() => {
                 const seg = getBaptismAccountingSegment(p);
                 if (seg) return seg;
-                if (p.willBeBaptized === 'Sí') return '— (falta segmento: servidor Ambos sin elegir)';
+                if (isSiValue(p.willBeBaptized)) return '? (falta segmento: servidor Ambos sin elegir)';
                 return '';
               })()
             );
@@ -2624,7 +2640,7 @@ const App = () => {
 
           if (hasFinancialAccess) {
             const baseCost = resolveRegisteredCost(p, currentPricing);
-            const isBecado = p.isScholarship === 'Sí';
+            const isBecado = isSiValue(p.isScholarship);
             const paid = parseFloat(p.paid || 0);
             const liq = getLiquidationTarget(p);
             const debt = Math.max(0, liq - paid);
@@ -2653,14 +2669,14 @@ const App = () => {
 
       XLSX.writeFile(wb, `Registros_${currentEvent.name.replace(/\s+/g, '_')}_${new Date().toLocaleDateString('es-MX')}.xlsx`);
       
-      // Registrar log de la exportación
-      await addLog('Exportación de Datos', `Descargó la base de datos completa del evento en formato Excel.`);
+      // Registrar log de la exportaci?n
+      await addLog('Exportaci?n de Datos', `Descarg? la base de datos completa del evento en formato Excel.`);
       
-      showToast("Archivo Excel generado con éxito.");
+      showToast("Archivo Excel generado con ?xito.");
 
     } catch (err) {
       console.error(err);
-      showToast("Hubo un error al generar el archivo de exportación.");
+      showToast("Hubo un error al generar el archivo de exportaci?n.");
     } finally {
       setIsExporting(false);
     }
@@ -2678,17 +2694,17 @@ const App = () => {
     ).length;
     if (logsToDelete.length > 0) {
       logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
-      addLog('Limpieza de Logs', `Se eliminaron ${logsToDelete.length} registros antiguos (> 30 días).`, null, { id: 'Global', name: 'Sistema' });
+      addLog('Limpieza de Logs', `Se eliminaron ${logsToDelete.length} registros antiguos (> 30 d?as).`, null, { id: 'Global', name: 'Sistema' });
       showToast(
         skippedBackup > 0
-          ? `Se eliminaron ${logsToDelete.length} registros antiguos. ${skippedBackup} log(s) de copia automática no se eliminan (restauración disponible).`
+          ? `Se eliminaron ${logsToDelete.length} registros antiguos. ${skippedBackup} log(s) de copia autom?tica no se eliminan (restauraci?n disponible).`
           : `Se eliminaron ${logsToDelete.length} registros antiguos.`
       );
     } else {
       showToast(
         skippedBackup > 0
-          ? 'No hay otros registros antiguos; los de copia automática se conservan para poder restaurar.'
-          : 'No hay registros con más de 30 días de antigüedad.'
+          ? 'No hay otros registros antiguos; los de copia autom?tica se conservan para poder restaurar.'
+          : 'No hay registros con m?s de 30 d?as de antig?edad.'
       );
     }
   };
@@ -2696,7 +2712,7 @@ const App = () => {
   const handleCleanRecentLogs = () => {
     if (!isSuperUser) return;
     if (globalConfig?.isDebugMode) {
-      showToast('En modo depuración no se pueden borrar logs con menos de 30 días.');
+      showToast('En modo depuraci?n no se pueden borrar logs con menos de 30 d?as.');
       return;
     }
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
@@ -2705,16 +2721,16 @@ const App = () => {
     const skippedBackup = logs.filter((log) => now - extractLogMillis(log) <= thirtyDaysMs && log.revertInfo?.isBackup).length;
     if (logsToDelete.length > 0) {
       logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
-      addLog('Limpieza de Logs', `El SuperUsuario eliminó ${logsToDelete.length} registros recientes (< 30 días).`, null, { id: 'Global', name: 'Sistema' });
+      addLog('Limpieza de Logs', `El SuperUsuario elimin? ${logsToDelete.length} registros recientes (< 30 d?as).`, null, { id: 'Global', name: 'Sistema' });
       showToast(
         skippedBackup > 0
-          ? `Se eliminaron ${logsToDelete.length} registros recientes. ${skippedBackup} log(s) de copia automática no se eliminan.`
+          ? `Se eliminaron ${logsToDelete.length} registros recientes. ${skippedBackup} log(s) de copia autom?tica no se eliminan.`
           : `Se eliminaron ${logsToDelete.length} registros recientes.`
       );
     } else {
       showToast(
         skippedBackup > 0
-          ? 'No hay otros registros recientes; los de copia automática se conservan para poder restaurar.'
+          ? 'No hay otros registros recientes; los de copia autom?tica se conservan para poder restaurar.'
           : 'No hay registros recientes para eliminar.'
       );
     }
@@ -2725,7 +2741,7 @@ const App = () => {
 
     if (type === 'single') {
       await applyRevert(log.revertInfo);
-      addLog('Restauración', `Se deshizo el cambio específico: "${log.action}" del usuario ${log.username}.`, null, { id: 'Global', name: 'Sistema' });
+      addLog('Restauraci?n', `Se deshizo el cambio espec?fico: "${log.action}" del usuario ${log.username}.`, null, { id: 'Global', name: 'Sistema' });
       showToast("Cambio revertido exitosamente.");
     } else if (type === 'rollback') {
       const anchorMs = extractLogMillis(log);
@@ -2735,7 +2751,7 @@ const App = () => {
       for (const l of logsToRevert) {
         await applyRevert(l.revertInfo);
       }
-      addLog('Restauración Masiva', `El SuperUsuario revirtió todos los cambios hasta el evento: "${log.action}" (${log.timestamp}).`, null, { id: 'Global', name: 'Sistema' });
+      addLog('Restauraci?n Masiva', `El SuperUsuario revirti? todos los cambios hasta el evento: "${log.action}" (${log.timestamp}).`, null, { id: 'Global', name: 'Sistema' });
       showToast(`Se han revertido ${logsToRevert.length} cambios exitosamente.`);
     } else if (type === 'cleanOld') {
       handleCleanLogs();
@@ -2745,7 +2761,7 @@ const App = () => {
       try {
         const backupSnap = await getDoc(getDocRef('app_backups', log.revertInfo.backupId));
         if (!backupSnap.exists()) {
-          showToast("Error: No se encontró la información de la copia de seguridad.");
+          showToast("Error: No se encontr? la informaci?n de la copia de seguridad.");
           setRestoreModal({ isOpen: false, log: null, type: 'single' });
           return;
         }
@@ -2759,11 +2775,11 @@ const App = () => {
         await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
         await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
 
-        addLog('Restauración de Sistema', `El SuperUsuario restauró el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
-        showToast("Sistema restaurado con éxito desde copia de seguridad.");
+        addLog('Restauraci?n de Sistema', `El SuperUsuario restaur? el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
+        showToast("Sistema restaurado con ?xito desde copia de seguridad.");
       } catch (err) {
         console.error(err);
-        showToast("Error crítico al restaurar la copia de seguridad.");
+        showToast("Error cr?tico al restaurar la copia de seguridad.");
       }
     }
     setRestoreModal({ isOpen: false, log: null, type: 'single' });
@@ -2818,17 +2834,17 @@ const App = () => {
       const c = err?.code;
       if (c === 'auth/invalid-credential' || c === 'auth/wrong-password' || c === 'auth/user-not-found') {
         setLoginError(
-          `Usuario o contraseña incorrectos.\n\n` +
+          `Usuario o contrase?a incorrectos.\n\n` +
             `Intentaste con:\n${email}\n\n` +
             `Si escribes solo el nombre (sin @), el correo se forma como nombre@${AUTH_EMAIL_DOMAIN}. ` +
-            `Si tu cuenta usa otro correo, escríbelo completo en el primer campo.`
+            `Si tu cuenta usa otro correo, escr?belo completo en el primer campo.`
         );
       } else if (c === 'auth/invalid-email') {
-        setLoginError('El correo no es válido. Usa el formato usuario@dominio o tu correo completo.');
+        setLoginError('El correo no es v?lido. Usa el formato usuario@dominio o tu correo completo.');
       } else if (c === 'auth/too-many-requests') {
         setLoginError('Demasiados intentos. Espera unos minutos e intenta de nuevo.');
       } else {
-        setLoginError('No se pudo iniciar sesión. Revisa la conexión e intenta de nuevo.');
+        setLoginError('No se pudo iniciar sesi?n. Revisa la conexi?n e intenta de nuevo.');
       }
       return;
     }
@@ -2861,7 +2877,7 @@ const App = () => {
       }
       if (!docSnap) {
         await signOut(auth);
-        setLoginError('Tu cuenta no tiene perfil en la aplicación. Contacta al administrador.');
+        setLoginError('Tu cuenta no tiene perfil en la aplicaci?n. Contacta al administrador.');
         loginInProgressRef.current = false;
         setLoginBusy(false);
         return;
@@ -2880,7 +2896,7 @@ const App = () => {
         const others = await countOtherActiveSessions(user.id, tabSessionId);
         if (others > 0) {
           await signOut(auth);
-          setLoginError('Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» allí, o espera unos segundos e intenta de nuevo.');
+          setLoginError('Ya hay una sesi?n activa con este usuario en otra pesta?a o dispositivo. Cierra esa sesi?n, usa ?Salir? all?, o espera unos segundos e intenta de nuevo.');
           loginInProgressRef.current = false;
           setLoginBusy(false);
           return;
@@ -2905,12 +2921,12 @@ const App = () => {
       });
       setLoginForm({ username: '', password: '' });
       setShowLoginPassword(false);
-      addLog('Inicio de Sesión', `El usuario ${user.username} inició sesión.`, user.username, { id: 'Global', name: 'Sistema' });
+      addLog('Inicio de Sesi?n', `El usuario ${user.username} inici? sesi?n.`, user.username, { id: 'Global', name: 'Sistema' });
       await updateDoc(getDocRef('app_users', String(user.id)), { isOnline: true });
     } catch (err) {
       console.error(err);
       await signOut(auth).catch(() => {});
-      setLoginError('No se pudo iniciar sesión. Revisa la conexión e intenta de nuevo.');
+      setLoginError('No se pudo iniciar sesi?n. Revisa la conexi?n e intenta de nuevo.');
     } finally {
       loginInProgressRef.current = false;
       setLoginBusy(false);
@@ -2921,7 +2937,7 @@ const App = () => {
     if (currentUser) {
       const activeTime = Date.now() - (currentUser.loginTime || Date.now());
       const formattedTime = formatDuration(activeTime);
-      addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión manualmente. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
+      addLog('Cierre de Sesi?n', `El usuario ${currentUser.username} cerr? sesi?n manualmente. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
       await removeCurrentUserSession(currentUser);
     }
     await signOut(auth).catch(() => {});
@@ -2952,9 +2968,9 @@ const App = () => {
           };
           await setDoc(getDocRef('app_backups', today), backupData);
           await updateDoc(getDocRef('app_data', 'config'), { lastBackupDate: today });
-          addLog('Sistema', `Copia de seguridad automática diaria (${today}) generada exitosamente.`, 'Sistema', { id: 'Global', name: 'Sistema' }, { isBackup: true, backupId: today });
+          addLog('Sistema', `Copia de seguridad autom?tica diaria (${today}) generada exitosamente.`, 'Sistema', { id: 'Global', name: 'Sistema' }, { isBackup: true, backupId: today });
         } catch (e) {
-          console.error("Backup automatico falló", e);
+          console.error("Backup automatico fall?", e);
         }
       }
     };
@@ -2976,8 +2992,8 @@ const App = () => {
         const formattedTime = formatDuration(activeTime);
         const u = currentUser;
         addLog(
-          'Cierre de Sesión Automático',
-          `Sesión finalizada por cierre de pestaña o navegador. (Tiempo activo: ${formattedTime})`,
+          'Cierre de Sesi?n Autom?tico',
+          `Sesi?n finalizada por cierre de pesta?a o navegador. (Tiempo activo: ${formattedTime})`,
           u.username,
           { id: 'Global', name: 'Sistema' }
         );
@@ -2988,7 +3004,7 @@ const App = () => {
     const performLogout = async () => {
       const activeTime = Date.now() - (currentUser.loginTime || Date.now());
       const formattedTime = formatDuration(activeTime);
-      addLog('Cierre de Sesión Automático', `Sesión finalizada por inactividad. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
+      addLog('Cierre de Sesi?n Autom?tico', `Sesi?n finalizada por inactividad. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
       await removeCurrentUserSession(currentUser);
       await signOut(auth).catch(() => {});
       setNavHistory([]);
@@ -2996,7 +3012,7 @@ const App = () => {
       setSelectedEventId(null);
       setActiveTab("Summary");
       setSystemView('events');
-      showToast("Tu sesión ha expirado por inactividad de 10 minutos.");
+      showToast("Tu sesi?n ha expirado por inactividad de 10 minutos.");
     };
 
     const resetTimer = () => {
@@ -3016,7 +3032,7 @@ const App = () => {
     resetTimer();
     activityEvents.forEach(e => window.addEventListener(e, handleActivity));
 
-    /** Cierre de pestaña o salida real de la página; `persisted` evita borrar al volver desde caché atrás. */
+    /** Cierre de pesta?a o salida real de la p?gina; `persisted` evita borrar al volver desde cach? atr?s. */
     const handlePageHide = (ev) => {
       if (ev && ev.persisted) return;
       handleBrowserClose();
@@ -3031,7 +3047,7 @@ const App = () => {
     };
   }, [currentUser, addLog, showToast, removeCurrentUserSession]);
 
-  /** Mantiene viva la sesión en Firestore (necesario para liberar el bloqueo de una sola sesión al cerrar la pestaña). */
+  /** Mantiene viva la sesi?n en Firestore (necesario para liberar el bloqueo de una sola sesi?n al cerrar la pesta?a). */
   useEffect(() => {
     if (!currentUser?.id || !currentUser.tabSessionId) return;
     const docId = sessionDocId(currentUser.id, currentUser.tabSessionId);
@@ -3043,7 +3059,7 @@ const App = () => {
     return () => clearInterval(iv);
   }, [currentUser?.id, currentUser?.tabSessionId]);
 
-  /** SuperUsuario: número de sesiones con heartbeat reciente (tiempo real). */
+  /** SuperUsuario: n?mero de sesiones con heartbeat reciente (tiempo real). */
   useEffect(() => {
     if (!isSuperUser || !currentUser?.id) {
       setSuperSessionCount(0);
@@ -3095,9 +3111,9 @@ const App = () => {
             canEditRegistryDates: !!liveUser.canEditRegistryDates
           }));
           if (financesChanged && liveUser.role === 'Lector') {
-            showToast(`Atención: Tus permisos han cambiado. Ahora ${liveUser.canViewFinances ? 'PUEDES' : 'NO PUEDES'} ver información financiera.`);
+            showToast(`Atenci?n: Tus permisos han cambiado. Ahora ${liveUser.canViewFinances ? 'PUEDES' : 'NO PUEDES'} ver informaci?n financiera.`);
           } else if (roleChanged) {
-            showToast(`Atención: Tu rol ha sido actualizado a ${liveUser.role}.`);
+            showToast(`Atenci?n: Tu rol ha sido actualizado a ${liveUser.role}.`);
           } else if (eventRestrictionChanged || locationRestrictionChanged) {
             showToast('Tus restricciones de evento/sede se actualizaron.');
           } else if (preferenceChanged) {
@@ -3129,7 +3145,7 @@ const App = () => {
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {})
     };
     await setDoc(getDocRef('app_events', newEvt.id), newEvt);
-    addLog('Gestión de Eventos', `Creó un nuevo evento (${newEvt.eventType}): ${newEvt.name} con base de $${newEvt.globalCost}`, null, newEvt, { collectionName: 'app_events', docId: newEvt.id, action: 'create', previousData: null });
+    addLog('Gesti?n de Eventos', `Cre? un nuevo evento (${newEvt.eventType}): ${newEvt.name} con base de $${newEvt.globalCost}`, null, newEvt, { collectionName: 'app_events', docId: newEvt.id, action: 'create', previousData: null });
     setIsAddEventModalOpen(false);
     setNewEventData({ name: '', type: 'Campa', date: '', baseCost: '' });
   };
@@ -3142,7 +3158,7 @@ const App = () => {
       if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
       
       await updateDoc(getDocRef('app_events', ev.id), payload);
-      addLog('Gestión de Eventos', `Renombró evento: "${ev.name}" -> "${renameModal.name.trim()}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
+      addLog('Gesti?n de Eventos', `Renombr? evento: "${ev.name}" -> "${renameModal.name.trim()}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
       showToast("Nombre del evento actualizado.");
     }
     setRenameModal({ isOpen: false, id: null, name: '' });
@@ -3186,13 +3202,13 @@ const App = () => {
   const handleSavePricing = async () => {
     if (!currentEvent) return;
     if (pricingForm.type === 'dynamic') {
-      if (pricingForm.phases.length === 0) { showToast("Debes añadir al menos una fase de precio."); return; }
+      if (pricingForm.phases.length === 0) { showToast("Debes a?adir al menos una fase de precio."); return; }
       for (const phase of pricingForm.phases) {
-        if (!phase.dateUntil) { showToast("Todas las fases deben tener una fecha límite."); return; }
-        if (currentEvent.date && phase.dateUntil > currentEvent.date) { showToast("Las fechas de fase no pueden superar la fecha límite del evento."); return; }
+        if (!phase.dateUntil) { showToast("Todas las fases deben tener una fecha l?mite."); return; }
+        if (currentEvent.date && phase.dateUntil > currentEvent.date) { showToast("Las fechas de fase no pueden superar la fecha l?mite del evento."); return; }
       }
       const dates = pricingForm.phases.map(p => p.dateUntil);
-      if (dates.length !== new Set(dates).size) { showToast("No puede haber dos fases con la misma fecha límite."); return; }
+      if (dates.length !== new Set(dates).size) { showToast("No puede haber dos fases con la misma fecha l?mite."); return; }
     }
     const sortedPhases = [...pricingForm.phases].sort((a, b) => a.dateUntil.localeCompare(b.dateUntil));
     await updateEventConfig({
@@ -3211,7 +3227,7 @@ const App = () => {
       })).filter((c) => c.concept && c.finalAmount > 0)
     });
     setPricingModal({ isOpen: false });
-    addLog('Configuración', `Actualizó la estructura de precios del evento a modalidad ${pricingForm.type}.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+    addLog('Configuraci?n', `Actualiz? la estructura de precios del evento a modalidad ${pricingForm.type}.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
     showToast('Precios actualizados correctamente.');
   };
 
@@ -3225,7 +3241,7 @@ const App = () => {
       };
     });
     await updateDoc(getDocRef('app_data', 'config'), { serviceSlots: payload });
-    addLog('Configuración', 'Actualizó los horarios de servicio (Primero/Segundo/Tercero).', null, { id: 'Global', name: 'Sistema' });
+    addLog('Configuraci?n', 'Actualiz? los horarios de servicio (Primero/Segundo/Tercero).', null, { id: 'Global', name: 'Sistema' });
     setServiceSlotsModal({ isOpen: false });
     showToast('Horarios de servicio actualizados.');
   };
@@ -3233,28 +3249,28 @@ const App = () => {
   const handleSaveServeAreaOptions = async () => {
     if (!hasAdminRights) return;
     const opts = serveAreaOptionsForm.filter(Boolean).map(s => s.trim());
-    if (opts.length === 0) { showToast('Debe haber al menos una opción.'); return; }
-    if (!opts.includes('Otro')) { showToast('Debe incluir la opción "Otro".'); return; }
+    if (opts.length === 0) { showToast('Debe haber al menos una opci?n.'); return; }
+    if (!opts.includes('Otro')) { showToast('Debe incluir la opci?n "Otro".'); return; }
     await updateDoc(getDocRef('app_data', 'config'), { serveAreaOptions: opts });
-    addLog('Configuración', 'Actualizó las opciones de área para servir.', null, { id: 'Global', name: 'Sistema' });
+    addLog('Configuraci?n', 'Actualiz? las opciones de ?rea para servir.', null, { id: 'Global', name: 'Sistema' });
     setServeAreaOptionsModal({ isOpen: false });
-    showToast('Opciones de área actualizadas.');
+    showToast('Opciones de ?rea actualizadas.');
   };
 
   const handleSaveAllergyOptions = async () => {
     if (!hasAdminRights) return;
     const opts = allergyOptionsForm.filter(Boolean).map((s) => s.trim()).filter(Boolean);
-    if (opts.length === 0) { showToast('Debe haber al menos una categoría de alergia.'); return; }
+    if (opts.length === 0) { showToast('Debe haber al menos una categor?a de alergia.'); return; }
     await updateDoc(getDocRef('app_data', 'config'), { allergyOptions: opts });
-    addLog('Configuración', 'Actualizó las categorías de alergias.', null, { id: 'Global', name: 'Sistema' });
+    addLog('Configuraci?n', 'Actualiz? las categor?as de alergias.', null, { id: 'Global', name: 'Sistema' });
     setAllergyOptionsModal({ isOpen: false });
-    showToast('Categorías de alergias actualizadas.');
+    showToast('Categor?as de alergias actualizadas.');
   };
 
   const handleAddDonation = async () => {
     if (!hasAdminRights || !currentEvent) return;
     const amount = parseFloat(donationModal.amount);
-    if (!Number.isFinite(amount) || amount <= 0) { showToast('Ingresa una cantidad válida.'); return; }
+    if (!Number.isFinite(amount) || amount <= 0) { showToast('Ingresa una cantidad v?lida.'); return; }
     const donationId = `don_${Date.now()}`;
     const payload = {
       eventId: currentEvent.id,
@@ -3264,9 +3280,9 @@ const App = () => {
       createdBy: currentUser?.username || 'Desconocido'
     };
     await setDoc(getDocRef('app_donations', donationId), payload);
-    addLog('Donación', `Nueva donación de $${amount.toLocaleString()}${payload.donorName ? ` (Donador: ${payload.donorName})` : ''}`);
+    addLog('Donaci?n', `Nueva donaci?n de $${amount.toLocaleString()}${payload.donorName ? ` (Donador: ${payload.donorName})` : ''}`);
     setDonationModal({ isOpen: false, amount: '', donorName: '' });
-    showToast('Donación registrada correctamente.');
+    showToast('Donaci?n registrada correctamente.');
   };
 
   const handleDeleteDonation = async (donationId) => {
@@ -3274,8 +3290,8 @@ const App = () => {
     const donation = donations.find(d => d.id === donationId);
     if (!donation) return;
     await deleteDoc(getDocRef('app_donations', donationId));
-    addLog('Donación', `Eliminó donación de $${(donation.amount || 0).toLocaleString()}${donation.donorName ? ` (Donador: ${donation.donorName})` : ''}`);
-    showToast('Donación eliminada.');
+    addLog('Donaci?n', `Elimin? donaci?n de $${(donation.amount || 0).toLocaleString()}${donation.donorName ? ` (Donador: ${donation.donorName})` : ''}`);
+    showToast('Donaci?n eliminada.');
   };
 
   const handleAddExpense = async () => {
@@ -3298,7 +3314,7 @@ const App = () => {
       createdBy: currentUser?.username || 'Desconocido',
       createdByUserId: currentUser?.id != null ? String(currentUser.id) : ''
     });
-    addLog('Gastos', 'Movimiento en lista de gastos: registro de nuevo ítem (auditoría sin concepto ni montos).');
+    addLog('Gastos', 'Movimiento en lista de gastos: registro de nuevo ?tem (auditor?a sin concepto ni montos).');
     setExpenseForm({ name: '', quantity: 1, unitPrice: '' });
     showToast('Gasto agregado.');
   };
@@ -3308,7 +3324,7 @@ const App = () => {
     const exp = expenses.find(e => e.id === expenseId);
     if (!exp) return;
     await deleteDoc(getDocRef('app_expenses', expenseId));
-    addLog('Gastos', 'Movimiento en lista de gastos: eliminación de ítem (auditoría sin detalle).');
+    addLog('Gastos', 'Movimiento en lista de gastos: eliminaci?n de ?tem (auditor?a sin detalle).');
     showToast('Gasto eliminado.');
   };
 
@@ -3323,7 +3339,7 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', 'Movimiento en lista de gastos: cambio de estado de pago (auditoría sin detalle).');
+    addLog('Gastos', 'Movimiento en lista de gastos: cambio de estado de pago (auditor?a sin detalle).');
   };
 
   const handleToggleExpenseCountInTotals = async (expenseId) => {
@@ -3336,13 +3352,13 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', 'Movimiento en lista de gastos: cambio de contabilización en totales (auditoría sin detalle).');
+    addLog('Gastos', 'Movimiento en lista de gastos: cambio de contabilizaci?n en totales (auditor?a sin detalle).');
   };
 
   const handleExpensePartialPayment = async () => {
     if (!canAccessExpenses || !expensePartialModal.expenseId) return;
     const amount = parseFloat(expensePartialModal.amount) || 0;
-    if (amount <= 0) { showToast('Ingresa una cantidad válida.'); return; }
+    if (amount <= 0) { showToast('Ingresa una cantidad v?lida.'); return; }
     const exp = expenses.find(e => e.id === expensePartialModal.expenseId);
     if (!exp) return;
     const newPaidAmount = Math.min((exp.paidAmount || 0) + amount, exp.totalPrice);
@@ -3352,7 +3368,7 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', 'Movimiento en lista de gastos: abono parcial (auditoría sin montos).');
+    addLog('Gastos', 'Movimiento en lista de gastos: abono parcial (auditor?a sin montos).');
     setExpensePartialModal({ isOpen: false, expenseId: null, amount: '' });
     showToast('Abono registrado.');
   };
@@ -3377,7 +3393,7 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', 'Movimiento en lista de gastos: edición de ítem (auditoría sin concepto ni cantidades).');
+    addLog('Gastos', 'Movimiento en lista de gastos: edici?n de ?tem (auditor?a sin concepto ni cantidades).');
     setExpenseEditModal({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' });
     showToast('Gasto actualizado.');
   };
@@ -3409,7 +3425,7 @@ const App = () => {
       allowedLocations,
       restrictedLocation: allowedLocations[0] || ''
     }, { locations: allKnownLocationNames });
-    /** Login usa Firebase Authentication (correo/contraseña), no credenciales solo en Firestore. */
+    /** Login usa Firebase Authentication (correo/contrase?a), no credenciales solo en Firestore. */
     const authEmail = usernameToAuthEmail(newUser.username.trim());
     let cred;
     try {
@@ -3457,9 +3473,9 @@ const App = () => {
     }
     await signOut(secondaryAuth).catch(() => {});
 
-    addLog('Gestión de Usuarios', `Añadió al nuevo usuario: ${newUser.username} (${newUser.role})`);
+    addLog('Gesti?n de Usuarios', `A?adi? al nuevo usuario: ${newUser.username} (${newUser.role})`);
     setNewUser({ username: '', password: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false });
-    showToast("Usuario añadido exitosamente.");
+    showToast("Usuario a?adido exitosamente.");
   };
 
   const handleUpdateUser = async (e) => {
@@ -3483,22 +3499,22 @@ const App = () => {
 
     if (isSelfEdit && (editingUser.currentPasswordInput || editingUser.newPassword)) {
       if (!auth.currentUser?.email) {
-        showToast('Sesión de acceso inválida.');
+        showToast('Sesi?n de acceso inv?lida.');
         return;
       }
       try {
         const cred = EmailAuthProvider.credential(auth.currentUser.email, editingUser.currentPasswordInput);
         await reauthenticateWithCredential(auth.currentUser, cred);
       } catch {
-        showToast('La contraseña actual es incorrecta.');
+        showToast('La contrase?a actual es incorrecta.');
         return;
       }
       if (editingUser.newPassword !== editingUser.confirmPassword) {
-        showToast("Las nuevas contraseñas no coinciden.");
+        showToast("Las nuevas contrase?as no coinciden.");
         return;
       }
       if (!editingUser.newPassword.trim()) {
-        showToast("La nueva contraseña no puede estar vacía.");
+        showToast("La nueva contrase?a no puede estar vac?a.");
         return;
       }
       await updatePassword(auth.currentUser, editingUser.newPassword.trim());
@@ -3540,12 +3556,12 @@ const App = () => {
     const changes = [];
     if (isSelfEdit && originalUser.username !== editingUser.username) changes.push(`Usuario (${originalUser.username} -> ${editingUser.username})`);
     if (originalUser.role !== nextRole) changes.push(`Rol (${originalUser.role} -> ${nextRole})`);
-    if (passwordChanged) changes.push(`Contraseña actualizada`);
-    if (originalUser.canViewFinances !== newCanViewFinances) changes.push(`Ver Finanzas (${originalUser.canViewFinances ? 'Sí' : 'No'} -> ${newCanViewFinances ? 'Sí' : 'No'})`);
-    if (originalUser.canViewHiddenDonations !== newCanViewHiddenDonations) changes.push(`Ver donaciones ocultas (${originalUser.canViewHiddenDonations ? 'Sí' : 'No'} -> ${newCanViewHiddenDonations ? 'Sí' : 'No'})`);
-    if ((!!originalUser.canViewExpenses) !== newCanViewExpenses) changes.push(`Ver Gastos (${originalUser.canViewExpenses ? 'Sí' : 'No'} -> ${newCanViewExpenses ? 'Sí' : 'No'})`);
-    if (originalHideMyExpenseConcepts !== newHideMyExpenseConcepts) changes.push(`Ocultar mis conceptos de gastos (${originalHideMyExpenseConcepts ? 'Sí' : 'No'} -> ${newHideMyExpenseConcepts ? 'Sí' : 'No'})`);
-    if (!!originalUser.canEditRegistryDates !== newCanEditRegistryDates) changes.push(`Editar fechas registro/abonos (${originalUser.canEditRegistryDates ? 'Sí' : 'No'} -> ${newCanEditRegistryDates ? 'Sí' : 'No'})`);
+    if (passwordChanged) changes.push(`Contrase?a actualizada`);
+    if (originalUser.canViewFinances !== newCanViewFinances) changes.push(`Ver Finanzas (${originalUser.canViewFinances ? SI_LABEL : 'No'} -> ${newCanViewFinances ? SI_LABEL : 'No'})`);
+    if (originalUser.canViewHiddenDonations !== newCanViewHiddenDonations) changes.push(`Ver donaciones ocultas (${originalUser.canViewHiddenDonations ? SI_LABEL : 'No'} -> ${newCanViewHiddenDonations ? SI_LABEL : 'No'})`);
+    if ((!!originalUser.canViewExpenses) !== newCanViewExpenses) changes.push(`Ver Gastos (${originalUser.canViewExpenses ? SI_LABEL : 'No'} -> ${newCanViewExpenses ? SI_LABEL : 'No'})`);
+    if (originalHideMyExpenseConcepts !== newHideMyExpenseConcepts) changes.push(`Ocultar mis conceptos de gastos (${originalHideMyExpenseConcepts ? SI_LABEL : 'No'} -> ${newHideMyExpenseConcepts ? SI_LABEL : 'No'})`);
+    if (!!originalUser.canEditRegistryDates !== newCanEditRegistryDates) changes.push(`Editar fechas registro/abonos (${originalUser.canEditRegistryDates ? SI_LABEL : 'No'} -> ${newCanEditRegistryDates ? SI_LABEL : 'No'})`);
     const prevAllowedEvents = getUserAllowedEventIds(originalUser);
     const prevAllowedLocations = getUserAllowedLocations(originalUser);
     if (prevAllowedEvents.slice().sort().join('|') !== newAllowedEventIds.slice().sort().join('|')) changes.push(`Eventos permitidos (${prevAllowedEvents.length ? prevAllowedEvents.length : 'Todos'} -> ${newAllowedEventIds.length ? newAllowedEventIds.length : 'Todos'})`);
@@ -3586,7 +3602,7 @@ const App = () => {
       });
     }
     
-    if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
+    if (changes.length > 0) addLog('Gesti?n de Usuarios', `Edit? al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
     
     setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false });
     showToast("Usuario actualizado.");
@@ -3602,7 +3618,7 @@ const App = () => {
     }
 
     await deleteDoc(getDocRef('app_users', String(id)));
-    addLog('Gestión de Usuarios', `Eliminó al usuario: ${username}`);
+    addLog('Gesti?n de Usuarios', `Elimin? al usuario: ${username}`);
     showToast("Usuario eliminado.");
   };
 
@@ -3615,16 +3631,16 @@ const App = () => {
       if (entry.hasAllergy !== 'No' && (entry.allergyDetails.trim() === '' && String(entry.allergyCategory || '').trim() === '')) return false;
       if (entry.hasDisease !== 'No' && entry.diseaseDetails.trim() === '') return false;
       if (entry.hasDisability !== 'No' && entry.disabilityDetails.trim() === '') return false;
-      if (entry.isServer === 'Sí' && !entry.serverAssignment) return false;
+      if (isSiValue(entry.isServer) && !entry.serverAssignment) return false;
       if (
-        entry.willBeBaptized === 'Sí' &&
-        entry.isServer === 'Sí' &&
+        isSiValue(entry.willBeBaptized) &&
+        isSiValue(entry.isServer) &&
         entry.serverAssignment === 'Ambos'
       ) {
         const bs = String(entry.baptismSegment || '').trim();
-        if (bs !== 'Teens' && bs !== 'Jóvenes') return false;
+        if (bs !== 'Teens' && bs !== 'J?venes') return false;
       }
-      if (entry.isScholarship === 'Sí') {
+      if (isSiValue(entry.isScholarship)) {
         if (entry.scholarshipType === 'partial') {
           const listPrice = getPersonCost(entry, currentPricing);
           const montoBecado = parseFloat(entry.scholarshipPartialAmount);
@@ -3635,7 +3651,7 @@ const App = () => {
         }
         return true;
       }
-      if (isFreeAttendanceType(entry.attendanceSpecialType)) return true;
+      if (isFreeAttendanceType(normalizeAttendanceSpecial(entry))) return true;
     }
     if ((parseFloat(entry.paid) || 0) < minDep) return false;
     return true;
@@ -3645,14 +3661,14 @@ const App = () => {
   const missingInitialPaid = !!currentEvent && (() => {
     const paid = parseFloat(newEntry.paid) || 0;
     const minDep = currentEvent.minDeposit || 0;
-    if (currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí') {
+    if (currentEvent.eventType === 'Campa' && isSiValue(newEntry.isScholarship)) {
       if (newEntry.scholarshipType === 'partial') return !isValidPartialScholarshipInitialPaid(newEntry, minDep);
       return false;
     }
     if (currentEvent.eventType === 'Campa' && isFreeAttendanceType(newEntry.attendanceSpecialType)) return false;
     return paid < minDep;
   })();
-  const handleNameInput = (val) => /^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]*$/.test(val);
+  const handleNameInput = (val) => /^[a-zA-Z????????????\s]*$/.test(val);
 
   const formatPhoneNumber = (value) => {
     if (value.startsWith('+')) return value.replace(/[^+0-9\s-]/g, '');
@@ -3671,7 +3687,7 @@ const App = () => {
     const tribuName = `Tribu Vida Nueva${personLoc ? ` ${personLoc}` : ''}`;
     const debtLine =
       target <= 0
-        ? 'Tu registro está marcado como becado (cobertura total).'
+        ? 'Tu registro est? marcado como becado (cobertura total).'
         : `Saldo pendiente: ${formatMoney(debt)}.`;
     const reportedAt = new Date().toLocaleString('es-MX');
     return [
@@ -3694,12 +3710,12 @@ const App = () => {
       ? `Abono inicial: $${amountText}.`
       : `Abono aplicado: $${amountText}.`;
     return [
-      `Hola ${person?.name || ''}, Se registró tu abono en ${currentEvent?.name || 'el evento'}.`,
+      `Hola ${person?.name || ''}, Se registr? tu abono en ${currentEvent?.name || 'el evento'}.`,
       `Fecha y hora del reporte: ${reportedAtText}.`,
-      `Tu ID único es: ${person?.vnpPersonId || 'N/A'}`,
+      `Tu ID ?nico es: ${person?.vnpPersonId || 'N/A'}`,
       abonoLine,
       isLiquidado ? 'Estado: LIQUIDADO.' : `Saldo pendiente: $${pendingText}.`,
-      ...(isLiquidado && eventDateText ? [`¡Nos vemos el ${eventDateText}!`] : []),
+      ...(isLiquidado && eventDateText ? [`?Nos vemos el ${eventDateText}!`] : []),
       'Gracias.'
     ].join('\n');
   }, [currentEvent?.name, currentEvent?.date]);
@@ -3715,7 +3731,7 @@ const App = () => {
         : 'Tus datos permanecen disponibles para futuras inscripciones.';
       const ctx = fromWaitlist
         ? 'Tu entrada en lista de espera fue archivada y ya no figura en este evento.'
-        : 'Tu registro en el evento fue archivado (dado de baja) y ya no apareces en la nómina activa.';
+        : 'Tu registro en el evento fue archivado (dado de baja) y ya no apareces en la n?mina activa.';
       return [
         `Hola ${person?.name || ''}, te contactamos de ${tribuName}.`,
         `Evento: ${eventLabel} (${loc}).`,
@@ -3790,7 +3806,7 @@ const App = () => {
     try {
       for (let i = 0; i < toArchive.length; i += 1) {
         const person = toArchive[i];
-        const loc = person.location || person.cancelledFromLocation || person.archivedFromLocation || '—';
+        const loc = person.location || person.cancelledFromLocation || person.archivedFromLocation || '?';
         const fromWaitlist = (person.status || 'active') === 'waitlist';
         await archiveParticipantToFirestore(person, loc, {
           fromWaitlist,
@@ -3800,8 +3816,8 @@ const App = () => {
       }
       await deleteDoc(getDocRef('app_events', id));
       addLog(
-        'Gestión de Eventos',
-        `Eliminó el evento: ${deleteEventModal.name}. Se archivaron ${toArchive.length} registro(s) antes de borrarlo.`,
+        'Gesti?n de Eventos',
+        `Elimin? el evento: ${deleteEventModal.name}. Se archivaron ${toArchive.length} registro(s) antes de borrarlo.`,
         null,
         evToDelete || { name: deleteEventModal.name },
         { collectionName: 'app_events', docId: id, action: 'delete', previousData: evToDelete }
@@ -3825,23 +3841,23 @@ const App = () => {
       const target = Number(getLiquidationTarget(person)) || 0;
       const paid = parseFloat(person?.paid || 0);
       const debt = Math.max(target - paid, 0);
-      const isBecado = person?.isScholarship === 'Sí';
+      const isBecado = isSiValue(person?.isScholarship);
 
       let promoLine;
       if (isBecado && person.scholarshipType === 'partial') {
         const becado = Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX');
-        promoLine = `Se aprobó tu beca parcial. La beca cubre $${becado} de tu costo de lista; debes liquidar ${formatMoney(target)} (puedes pagarlo en cualquier momento). Abono ya registrado: ${formatMoney(paid)}. Saliste de la lista de espera y ya quedaste inscrito en el evento.`;
+        promoLine = `Se aprob? tu beca parcial. La beca cubre $${becado} de tu costo de lista; debes liquidar ${formatMoney(target)} (puedes pagarlo en cualquier momento). Abono ya registrado: ${formatMoney(paid)}. Saliste de la lista de espera y ya quedaste inscrito en el evento.`;
       } else if (isBecado) {
-        promoLine = 'Se aprobó tu beca total. Saliste de la lista de espera y ya quedaste inscrito en el evento.';
+        promoLine = 'Se aprob? tu beca total. Saliste de la lista de espera y ya quedaste inscrito en el evento.';
       } else {
-        promoLine = 'Saliste de la lista de espera: tu registro quedó confirmado como inscrito en el evento.';
+        promoLine = 'Saliste de la lista de espera: tu registro qued? confirmado como inscrito en el evento.';
       }
 
       const debtLine =
         target <= 0 && isBecado
-          ? 'Cobertura de beca según tu registro.'
+          ? 'Cobertura de beca seg?n tu registro.'
           : debt <= 0
-            ? 'Estado de pago: liquidado según tu registro.'
+            ? 'Estado de pago: liquidado seg?n tu registro.'
             : `Saldo pendiente a liquidar: ${formatMoney(debt)}.`;
 
       const lines = [
@@ -3849,10 +3865,10 @@ const App = () => {
         `Evento: ${currentEvent?.name || 'el evento'} (${loc}).`,
         `Fecha y hora del reporte: ${reportedAtText}.`,
         promoLine,
-        `Tu ID único es: ${person?.vnpPersonId || 'N/A'}`,
+        `Tu ID ?nico es: ${person?.vnpPersonId || 'N/A'}`,
         debtLine,
       ];
-      if (debt <= 0 && eventDateText) lines.push(`¡Nos vemos el ${eventDateText}!`);
+      if (debt <= 0 && eventDateText) lines.push(`?Nos vemos el ${eventDateText}!`);
       lines.push('Gracias.');
       return lines.join('\n');
     },
@@ -3866,14 +3882,14 @@ const App = () => {
       const reportedAtText = new Date(Number(reportedAtMs) || Date.now()).toLocaleString('es-MX');
       const isPartial = person?.scholarshipType === 'partial';
       const partialAmount = Number(person?.scholarshipPartialAmount || 0);
-      const partialText = isPartial ? ` · monto becado: ${formatMoney(partialAmount)}` : '';
+      const partialText = isPartial ? ` ? monto becado: ${formatMoney(partialAmount)}` : '';
       return [
         `Hola ${person?.name || ''}, te contactamos de ${tribuName}.`,
         `Evento: ${currentEvent?.name || 'el evento'} (${loc}).`,
         `Fecha y hora del reporte: ${reportedAtText}.`,
-        `Tu solicitud de beca ${isPartial ? 'parcial' : 'total'} fue registrada en lista de espera y está pendiente de aprobación administrativa${partialText}.`,
+        `Tu solicitud de beca ${isPartial ? 'parcial' : 'total'} fue registrada en lista de espera y est? pendiente de aprobaci?n administrativa${partialText}.`,
         'Te avisaremos por este medio cuando sea aprobada y promovida a inscritos.',
-        `Tu ID único es: ${person?.vnpPersonId || 'N/A'}`,
+        `Tu ID ?nico es: ${person?.vnpPersonId || 'N/A'}`,
         'Gracias.',
       ].join('\n');
     },
@@ -3953,7 +3969,7 @@ const App = () => {
     if (isCampa) {
       if (filterAssignment !== 'all') {
         processedData = processedData.filter((p) => {
-          const assign = p.isServer === 'Sí' ? p.serverAssignment : p.campAssignment;
+          const assign = isSiValue(p.isServer) ? p.serverAssignment : p.campAssignment;
           return assign === filterAssignment;
         });
       }
@@ -3962,22 +3978,22 @@ const App = () => {
         processedData = processedData.filter((p) => {
           const seg = getBaptismAccountingSegment(p);
           if (filterBaptism === 'teens') return seg === 'Teens';
-          if (filterBaptism === 'jovenes') return seg === 'Jóvenes';
-          if (filterBaptism === 'no') return (p.willBeBaptized || 'No') !== 'Sí';
+          if (filterBaptism === 'jovenes') return seg === 'J?venes';
+          if (filterBaptism === 'no') return !isSiValue(p.willBeBaptized);
           return true;
         });
       }
-      if (filterScholarship === 'partial') processedData = processedData.filter((p) => p.isScholarship === 'Sí' && p.scholarshipType === 'partial');
-      else if (filterScholarship === 'total') processedData = processedData.filter((p) => p.isScholarship === 'Sí' && p.scholarshipType !== 'partial');
-      else if (filterScholarship === 'No') processedData = processedData.filter((p) => p.isScholarship !== 'Sí');
-      if (filterServer === 'Sí') processedData = processedData.filter((p) => p.isServer === 'Sí');
-      else if (filterServer === 'No') processedData = processedData.filter((p) => p.isServer !== 'Sí');
-      else if (filterServer === 'Teens') processedData = processedData.filter((p) => p.isServer === 'Sí' && p.serverAssignment === 'Teens');
-      else if (filterServer === 'Jóvenes') processedData = processedData.filter((p) => p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes');
-      else if (filterServer === 'Ambos') processedData = processedData.filter((p) => p.isServer === 'Sí' && p.serverAssignment === 'Ambos');
-      if (filterMedical === 'allergy') processedData = processedData.filter((p) => p.hasAllergy === 'Sí');
-      else if (filterMedical === 'disease') processedData = processedData.filter((p) => p.hasDisease === 'Sí');
-      else if (filterMedical === 'disability') processedData = processedData.filter((p) => p.hasDisability === 'Sí');
+      if (filterScholarship === 'partial') processedData = processedData.filter((p) => isSiValue(p.isScholarship) && p.scholarshipType === 'partial');
+      else if (filterScholarship === 'total') processedData = processedData.filter((p) => isSiValue(p.isScholarship) && p.scholarshipType !== 'partial');
+      else if (filterScholarship === 'No') processedData = processedData.filter((p) => !isSiValue(p.isScholarship));
+      if (isSiValue(filterServer)) processedData = processedData.filter((p) => isSiValue(p.isServer));
+      else if (filterServer === 'No') processedData = processedData.filter((p) => !isSiValue(p.isServer));
+      else if (filterServer === 'Teens') processedData = processedData.filter((p) => isSiValue(p.isServer) && p.serverAssignment === 'Teens');
+      else if (filterServer === 'J?venes') processedData = processedData.filter((p) => isSiValue(p.isServer) && p.serverAssignment === 'J?venes');
+      else if (filterServer === 'Ambos') processedData = processedData.filter((p) => isSiValue(p.isServer) && p.serverAssignment === 'Ambos');
+      if (filterMedical === 'allergy') processedData = processedData.filter((p) => isSiValue(p.hasAllergy));
+      else if (filterMedical === 'disease') processedData = processedData.filter((p) => isSiValue(p.hasDisease));
+      else if (filterMedical === 'disability') processedData = processedData.filter((p) => isSiValue(p.hasDisability));
     }
     if (!preserveOrder) {
       const getDebt = (p) => Math.max(0, getLiquidationTarget(p) - parseFloat(p.paid || 0));
@@ -3991,7 +4007,7 @@ const App = () => {
     return processedData;
   }, [searchTerm, filterWhatsAppPending, filterFirstTimeId, filterPendingRefund, filterResponsiva, filterGender, filterTransport, filterPaymentType, filterTravelFrom, filterTravelTo, filterAttendanceSpecial, isCampa, filterAssignment, filterSwim, filterBaptism, filterScholarship, filterServer, filterMedical, sortBy, getLiquidationTarget, getLastPaymentMethodForFilter]);
 
-  /** Cada fila = un movimiento pendiente de avisar por WhatsApp (registro, abono, promoción, baja, etc.). */
+  /** Cada fila = un movimiento pendiente de avisar por WhatsApp (registro, abono, promoci?n, baja, etc.). */
   const getPendingWhatsAppRowsForLocation = useCallback((loc) => {
     const rows = [];
     const sourceRows = [...(data[loc] || []), ...(waitlistData[loc] || []), ...(cancelledData[loc] || [])];
@@ -4022,7 +4038,7 @@ const App = () => {
     const XLSX = await loadSheetJS();
     const fecha = new Date().toLocaleDateString('es-MX').replace(/\//g, '-');
     const locSafe = loc.replace(/\s+/g, '_');
-    const header = [['Nombre', 'Teléfono', 'Mensaje', 'Monto Abono', 'Saldo Pendiente', 'Estado', 'Tipo']];
+    const header = [['Nombre', 'Tel?fono', 'Mensaje', 'Monto Abono', 'Saldo Pendiente', 'Estado', 'Tipo']];
     const cols = [{ wch: 25 }, { wch: 15 }, { wch: 60 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 10 }];
     const aoa = [...header];
     for (const item of targets) {
@@ -4066,9 +4082,9 @@ const App = () => {
     }
 
     if (failed > 0) {
-      showToast(`Archivo generado; no se pudo marcar como enviado en ${failed} registro(s). Revisa conexión o permisos.`);
+      showToast(`Archivo generado; no se pudo marcar como enviado en ${failed} registro(s). Revisa conexi?n o permisos.`);
     } else {
-      showToast(`Exportados ${targets.length} movimiento(s). Quedaron marcados como enviados hasta el próximo abono o registro.`);
+      showToast(`Exportados ${targets.length} movimiento(s). Quedaron marcados como enviados hasta el pr?ximo abono o registro.`);
     }
   }, [currentEvent?.id, hasEventAccess, hasLocationAccess, getPendingWhatsAppRowsForLocation, showToast]);
 
@@ -4093,7 +4109,7 @@ const App = () => {
   const sendWhatsAppMessage = useCallback(async () => {
     const waPhone = normalizeWhatsAppPhone(whatsAppModal.phone);
     if (!waPhone) {
-      setWhatsAppModal((prev) => ({ ...prev, error: 'Teléfono inválido para WhatsApp.' }));
+      setWhatsAppModal((prev) => ({ ...prev, error: 'Tel?fono inv?lido para WhatsApp.' }));
       return;
     }
     const text = (whatsAppModal.message || '').trim();
@@ -4137,7 +4153,7 @@ const App = () => {
       pendingNotificationMarkKey: null,
       whatsAppQueuedMessageSnapshot: null
     });
-    showToast('WhatsApp abierto en nueva pestaña.');
+    showToast('WhatsApp abierto en nueva pesta?a.');
   }, [whatsAppModal, showToast]);
 
   const getProcessedParticipantsForLocation = useCallback((loc) => {
@@ -4151,9 +4167,9 @@ const App = () => {
     const newRegStatus = { ...currentEvent.regStatus, [loc]: true };
     const newLocationCaps = { ...(currentEvent.locationCaps || {}), [loc]: 0 };
     await updateEventConfig({ locations: newLocations, regStatus: newRegStatus, locationCaps: newLocationCaps });
-    addLog('Gestión de Sedes', `Añadió la nueva sede: ${loc} al evento ${currentEvent.name}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+    addLog('Gesti?n de Sedes', `A?adi? la nueva sede: ${loc} al evento ${currentEvent.name}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
     setNewLocationName(''); setIsAddLocModalOpen(false); goTo(systemView, selectedEventId, loc);
-    showToast("Sede añadida.");
+    showToast("Sede a?adida.");
   };
 
   const handleDeleteLocation = async (loc) => {
@@ -4168,7 +4184,7 @@ const App = () => {
     delete newRegStatus[loc];
     delete newLocationCaps[loc];
     await updateEventConfig({ locations: newLocations, regStatus: newRegStatus, locationCaps: newLocationCaps });
-    addLog('Gestión de Sedes', `Eliminó la sede vacía: ${loc} del evento ${currentEvent.name}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+    addLog('Gesti?n de Sedes', `Elimin? la sede vac?a: ${loc} del evento ${currentEvent.name}`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
     goTo(systemView, selectedEventId, 'Summary');
     showToast("Sede eliminada.");
   };
@@ -4180,7 +4196,7 @@ const App = () => {
     if (currentFields.includes(newCustomField.trim())) return;
     const updated = [...currentFields, newCustomField.trim()];
     await updateEventConfig({ customFields: updated });
-    addLog('Campos Extra', `Añadió el campo "${newCustomField.trim()}" al evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+    addLog('Campos Extra', `A?adi? el campo "${newCustomField.trim()}" al evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
     setNewCustomField('');
   };
 
@@ -4188,7 +4204,7 @@ const App = () => {
     if (!currentEvent) return;
     const updated = (currentEvent.customFields || []).filter(f => f !== field);
     await updateEventConfig({ customFields: updated });
-    addLog('Campos Extra', `Eliminó el campo "${field}" del evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+    addLog('Campos Extra', `Elimin? el campo "${field}" del evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
   };
 
   const handleAddEntry = async (loc) => {
@@ -4197,7 +4213,7 @@ const App = () => {
       return;
     }
     if (!isFormValid || !isLocOpen(loc)) return;
-    if (isCampa && newEntry.isScholarship === 'Sí') {
+    if (isCampa && isSiValue(newEntry.isScholarship)) {
       await handleAddToWaitlist(loc);
       return;
     }
@@ -4208,7 +4224,7 @@ const App = () => {
 
     const phoneDigits = digitsOnlyPhone(newEntry.phone);
     if (phoneDuplicateInEvent(newEntry.name, phoneDigits, allParticipants, currentEvent.id, null)) {
-      showToast('Ya hay un registro con este teléfono en este evento.');
+      showToast('Ya hay un registro con este tel?fono en este evento.');
       return;
     }
     const vnpId = canonicalizeVnpPersonId(newEntry.vnpPersonId || '');
@@ -4248,13 +4264,13 @@ const App = () => {
       registeredBy: currentUser?.username
     }] : [];
 
-    const baseRegisteredCost = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos')
+    const baseRegisteredCost = (isSiValue(newEntry.isServer) && newEntry.serverAssignment === 'Ambos')
       ? currentPricing.server
       : currentPricing.global;
     const skipCampaignForAttendance = currentEvent.eventType === 'Campa' && isFreeAttendanceType(newEntry.attendanceSpecialType);
     const matchedCampaign = skipCampaignForAttendance ? null : resolveMatchedCampaignForNewEntry(newEntry);
     if (newEntry.selectedDiscountCampaignId && !skipCampaignForAttendance && !matchedCampaign) {
-      showToast('La campaña elegida no aplica a este perfil o no está bien configurada (concepto y monto).');
+      showToast('La campa?a elegida no aplica a este perfil o no est? bien configurada (concepto y monto).');
       return;
     }
     const registeredCost = skipCampaignForAttendance
@@ -4262,8 +4278,8 @@ const App = () => {
       : (matchedCampaign ? Math.max(0, Number(matchedCampaign.finalAmount) || 0) : baseRegisteredCost);
     const { selectedDiscountCampaignId: _newSelCamp, ...newEntryCore } = newEntry;
 
-    const initialCampAssignment = currentEvent.eventType === 'Campa' && newEntry.isServer !== 'Sí' 
-      ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'Jóvenes') 
+    const initialCampAssignment = currentEvent.eventType === 'Campa' && !isSiValue(newEntry.isServer) 
+      ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'J?venes') 
       : '';
 
     const finalVnpPersonId = candidateVnpId;
@@ -4301,8 +4317,8 @@ const App = () => {
     };
 
     if (currentEvent.eventType === 'Campa') {
-      personData.willBeBaptized = newEntry.willBeBaptized === 'Sí' ? 'Sí' : 'No';
-      if (personData.willBeBaptized !== 'Sí' || newEntry.isServer !== 'Sí' || newEntry.serverAssignment !== 'Ambos') {
+      personData.willBeBaptized = isSiValue(newEntry.willBeBaptized) ? SI : 'No';
+      if (!isSiValue(personData.willBeBaptized) || !isSiValue(newEntry.isServer) || newEntry.serverAssignment !== 'Ambos') {
         personData.baptismSegment = '';
       } else {
         personData.baptismSegment = String(newEntry.baptismSegment || '').trim();
@@ -4328,7 +4344,7 @@ const App = () => {
     const isLiquidado = personData.isScholarship === 'No' && initialPaidGross >= getLiquidationTarget(personData);
     addLog(
       'Nuevo Registro',
-      `Inscribió a ${newEntry.name} en la sede ${loc}.${paymentService ? ` (Servicio: ${paymentService})` : ''} (Pago inicial: $${initialPaidGross} ${paymentMethod === 'Tarjeta' ? `(Tarjeta, Neto: $${initialPaidNet})` : '(Efectivo)'} )${isLiquidado ? ' [LIQUIDADO]' : ''}`,
+      `Inscribi? a ${newEntry.name} en la sede ${loc}.${paymentService ? ` (Servicio: ${paymentService})` : ''} (Pago inicial: $${initialPaidGross} ${paymentMethod === 'Tarjeta' ? `(Tarjeta, Neto: $${initialPaidNet})` : '(Efectivo)'} )${isLiquidado ? ' [LIQUIDADO]' : ''}`,
       null,
       null,
       { collectionName: 'app_participants', docId: newPersonId, action: 'create', previousData: null }
@@ -4354,7 +4370,7 @@ const App = () => {
       paymentService: getAutoPaymentService(new Date()),
       cardReference: ''
     });
-    showToast("Registro añadido exitosamente.");
+    showToast("Registro a?adido exitosamente.");
   };
 
   const handleAddToWaitlist = async (loc) => {
@@ -4370,7 +4386,7 @@ const App = () => {
 
     const phoneDigits = digitsOnlyPhone(newEntry.phone);
     if (phoneDuplicateInEvent(newEntry.name, phoneDigits, allParticipants, currentEvent.id, null)) {
-      showToast('Ya existe un registro o espera con este teléfono en este evento.');
+      showToast('Ya existe un registro o espera con este tel?fono en este evento.');
       return;
     }
 
@@ -4387,15 +4403,15 @@ const App = () => {
       showToast('El ID VNPM ya existe en registros o lista de espera de este evento.');
       return;
     }
-    const initialCampAssignment = currentEvent.eventType === 'Campa' && newEntry.isServer !== 'Sí'
-      ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'Jóvenes')
+    const initialCampAssignment = currentEvent.eventType === 'Campa' && !isSiValue(newEntry.isServer)
+      ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'J?venes')
       : '';
 
-    const baseRegisteredCost = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
+    const baseRegisteredCost = (isSiValue(newEntry.isServer) && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
     const skipCampaignWl = currentEvent.eventType === 'Campa' && isFreeAttendanceType(newEntry.attendanceSpecialType);
     const matchedCampaign = skipCampaignWl ? null : resolveMatchedCampaignForNewEntry(newEntry);
     if (newEntry.selectedDiscountCampaignId && !skipCampaignWl && !matchedCampaign) {
-      showToast('La campaña elegida no aplica a este perfil o no está bien configurada (concepto y monto).');
+      showToast('La campa?a elegida no aplica a este perfil o no est? bien configurada (concepto y monto).');
       return;
     }
     const { selectedDiscountCampaignId: _wlSelCamp, ...newEntryCoreWl } = newEntry;
@@ -4430,8 +4446,8 @@ const App = () => {
     };
 
     if (currentEvent.eventType === 'Campa') {
-      personData.willBeBaptized = newEntry.willBeBaptized === 'Sí' ? 'Sí' : 'No';
-      if (personData.willBeBaptized !== 'Sí' || newEntry.isServer !== 'Sí' || newEntry.serverAssignment !== 'Ambos') {
+      personData.willBeBaptized = isSiValue(newEntry.willBeBaptized) ? SI : 'No';
+      if (!isSiValue(personData.willBeBaptized) || !isSiValue(newEntry.isServer) || newEntry.serverAssignment !== 'Ambos') {
         personData.baptismSegment = '';
       } else {
         personData.baptismSegment = String(newEntry.baptismSegment || '').trim();
@@ -4447,7 +4463,7 @@ const App = () => {
       personData.attendanceSpecialType = ATTENDANCE_SPECIAL.ninguno;
     }
 
-    if (currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí') {
+    if (currentEvent.eventType === 'Campa' && isSiValue(newEntry.isScholarship)) {
       personData.scholarshipPendingApproval = true;
       personData.scholarshipType = newEntry.scholarshipType === 'partial' ? 'partial' : 'total';
       personData.scholarshipPartialAmount = newEntry.scholarshipType === 'partial'
@@ -4460,7 +4476,7 @@ const App = () => {
     }
 
     await setDoc(getDocRef('app_participants', newPersonId), personData);
-    if (currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí') {
+    if (currentEvent.eventType === 'Campa' && isSiValue(newEntry.isScholarship)) {
       const now = Date.now();
       const pendingApprovalNotification = {
         id: `wa-bpd-${now}`,
@@ -4478,12 +4494,12 @@ const App = () => {
       });
     }
     const becaNote =
-      currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí'
-        ? ` Solicitud de beca ${newEntry.scholarshipType === 'partial' ? 'parcial' : 'total'}${newEntry.scholarshipType === 'partial' ? ` (monto becado $${parseFloat(newEntry.scholarshipPartialAmount || 0).toLocaleString('es-MX')})` : ''}, pendiente de aprobación al promover.`
+      currentEvent.eventType === 'Campa' && isSiValue(newEntry.isScholarship)
+        ? ` Solicitud de beca ${newEntry.scholarshipType === 'partial' ? 'parcial' : 'total'}${newEntry.scholarshipType === 'partial' ? ` (monto becado $${parseFloat(newEntry.scholarshipPartialAmount || 0).toLocaleString('es-MX')})` : ''}, pendiente de aprobaci?n al promover.`
         : '';
     addLog(
       'Lista de Espera',
-      `Añadió a ${newEntry.name} a la lista de espera en la sede ${loc}.${becaNote}`,
+      `A?adi? a ${newEntry.name} a la lista de espera en la sede ${loc}.${becaNote}`,
       null,
       null,
       { collectionName: 'app_participants', docId: newPersonId, action: 'create', previousData: null }
@@ -4495,8 +4511,8 @@ const App = () => {
       cardReference: ''
     });
     showToast(
-      currentEvent.eventType === 'Campa' && newEntry.isScholarship === 'Sí'
-        ? 'Solicitud de beca enviada a lista de espera (aprobación al promover).'
+      currentEvent.eventType === 'Campa' && isSiValue(newEntry.isScholarship)
+        ? 'Solicitud de beca enviada a lista de espera (aprobaci?n al promover).'
         : 'Registro enviado a lista de espera.'
     );
   };
@@ -4514,7 +4530,7 @@ const App = () => {
     if (
       phoneDuplicateInEvent(editedPerson.name, editDigits, allParticipants, currentEvent.id, editedPerson.id)
     ) {
-      showToast('Otro registro en este evento ya usa este teléfono.');
+      showToast('Otro registro en este evento ya usa este tel?fono.');
       return;
     }
 
@@ -4523,29 +4539,29 @@ const App = () => {
       (waitlistData[loc] || []).find((p) => String(p.id) === String(editedPerson.id)) ||
       (cancelledData[loc] || []).find((p) => String(p.id) === String(editedPerson.id));
     if (!originalPerson) {
-      showToast('No se encontró el registro a actualizar.');
+      showToast('No se encontr? el registro a actualizar.');
       return;
     }
     const changes = [];
     const fieldsToTrack = [
-      { key: 'name', label: 'Nombre' }, { key: 'phone', label: 'Teléfono' }, { key: 'paid', label: 'Monto Pagado' },
+      { key: 'name', label: 'Nombre' }, { key: 'phone', label: 'Tel?fono' }, { key: 'paid', label: 'Monto Pagado' },
       { key: 'emergencyContact', label: 'Contacto emergencia' }, { key: 'emergencyPhone', label: 'Tel. emergencia' }, { key: 'emergencyRelationship', label: 'Parentesco emergencia' },
       { key: 'alias', label: 'Alias' }, { key: 'birthDate', label: 'Fecha nacimiento' }, { key: 'llegaEnCarro', label: 'Llega en carro' }, { key: 'regresaEnCarro', label: 'Regresa en carro' },
       { key: 'attendanceSpecialType', label: 'Asistencia especial' },
       { key: 'isScholarship', label: 'Becado' },
       { key: 'scholarshipType', label: 'Tipo beca' },
-      { key: 'scholarshipPartialAmount', label: 'Beca parcial — monto becado ($)' },
+      { key: 'scholarshipPartialAmount', label: 'Beca parcial ? monto becado ($)' },
       { key: 'responsivaStatus', label: 'Responsiva' },
       { key: 'isServer', label: 'Servidor' },
-      { key: 'serverAssignment', label: 'Asignación' }, { key: 'campAssignment', label: 'Asig. Campista' },
-      { key: 'willBeBaptized', label: 'Bautizo' }, { key: 'baptismSegment', label: 'Bautizo (Teens/Jóvenes)' },
+      { key: 'serverAssignment', label: 'Asignaci?n' }, { key: 'campAssignment', label: 'Asig. Campista' },
+      { key: 'willBeBaptized', label: 'Bautizo' }, { key: 'baptismSegment', label: 'Bautizo (Teens/J?venes)' },
       { key: 'canSwim', label: 'Nado' }, { key: 'age', label: 'Edad' },
       { key: 'travelFrom', label: 'Sale de' }, { key: 'travelTo', label: 'Regresa a' },
       { key: 'isMarried', label: 'Es casado' }, { key: 'spouseName', label: 'Nombre de pareja' },
-      { key: 'goesWithChildren', label: 'Va con hijos' }, { key: 'childrenCount', label: 'Cant. hijos' }, { key: 'servedOtherCampa', label: 'Sirvió en otro campa' },
-      { key: 'servedAreas', label: 'Áreas previas' }, { key: 'preferredServeArea', label: 'Área deseada' },
-      { key: 'servesInCongress', label: 'Sirve en congreso' }, { key: 'congressServeArea', label: 'Área en congreso' },
-      { key: 'hasAllergy', label: 'Alergia' }, { key: 'allergyCategory', label: 'Categoría Alergia' }, { key: 'allergyDetails', label: 'Detalle Alergia' },
+      { key: 'goesWithChildren', label: 'Va con hijos' }, { key: 'childrenCount', label: 'Cant. hijos' }, { key: 'servedOtherCampa', label: 'Sirvi? en otro campa' },
+      { key: 'servedAreas', label: '?reas previas' }, { key: 'preferredServeArea', label: '?rea deseada' },
+      { key: 'servesInCongress', label: 'Sirve en congreso' }, { key: 'congressServeArea', label: '?rea en congreso' },
+      { key: 'hasAllergy', label: 'Alergia' }, { key: 'allergyCategory', label: 'Categor?a Alergia' }, { key: 'allergyDetails', label: 'Detalle Alergia' },
       { key: 'hasDisease', label: 'Enfermedad' }, { key: 'diseaseDetails', label: 'Detalle Enfermedad' }, { key: 'diseaseMedication', label: 'Medicamento' },
       { key: 'hasDisability', label: 'Discapacidad' }, { key: 'disabilityDetails', label: 'Detalle Discapacidad' }
     ];
@@ -4587,7 +4603,7 @@ const App = () => {
     }
 
     if (originalPerson.isServer !== editedPerson.isServer || originalPerson.serverAssignment !== editedPerson.serverAssignment) {
-      finalRegisteredCost = (editedPerson.isServer === 'Sí' && editedPerson.serverAssignment === 'Ambos')
+      finalRegisteredCost = (isSiValue(editedPerson.isServer) && editedPerson.serverAssignment === 'Ambos')
         ? currentPricing.server
         : currentPricing.global;
       changes.push(`Costo Ajustado a ${finalRegisteredCost}`);
@@ -4602,7 +4618,7 @@ const App = () => {
       registeredCost: finalRegisteredCost
     };
 
-    // Mantener consistencia de paidNet cuando admin modifica el total “paid”
+    // Mantener consistencia de paidNet cuando admin modifica el total ?paid?
     if (hasAdminRights && newPaid !== originalPaid) {
       const originalPaidNet = Number.isFinite(parseFloat(originalPerson.paidNet || 0)) ? parseFloat(originalPerson.paidNet || 0) : originalPaid;
       const adjustmentMethod = originalPerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
@@ -4625,17 +4641,17 @@ const App = () => {
       if (c) payload.vnpPersonId = c;
     }
 
-    if (currentEvent.eventType === 'Campa' && editedPerson.isScholarship === 'Sí' && editedPerson.scholarshipType === 'partial') {
+    if (currentEvent.eventType === 'Campa' && isSiValue(editedPerson.isScholarship) && editedPerson.scholarshipType === 'partial') {
       const montoBecado = parseFloat(editedPerson.scholarshipPartialAmount || 0);
       const partialScholarshipListCap = getPersonCost(editedPerson, currentPricing);
       // Requerimiento: el monto becado puede ser 0. Tope = costo lista por perfil (servidor Ambos = costo servidor).
       if (!Number.isFinite(montoBecado) || montoBecado < 0 || montoBecado >= partialScholarshipListCap) {
-        showToast('Beca parcial: el monto becado debe ser mayor o igual que 0 y menor que el costo de lista según asignación (Ambos = costo servidor).');
+        showToast('Beca parcial: el monto becado debe ser mayor o igual que 0 y menor que el costo de lista seg?n asignaci?n (Ambos = costo servidor).');
         return;
       }
     }
 
-    if (editedPerson.isScholarship === 'Sí') {
+    if (isSiValue(editedPerson.isScholarship)) {
       payload.scholarshipType = editedPerson.scholarshipType === 'partial' ? 'partial' : 'total';
       payload.scholarshipPartialAmount = editedPerson.scholarshipType === 'partial'
         ? parseFloat(editedPerson.scholarshipPartialAmount || 0)
@@ -4653,15 +4669,15 @@ const App = () => {
         payload.discountCampaignId = '';
         payload.discountCampaignConcept = '';
         payload.discountCampaignAppliedAt = null;
-        changes.push(`Campaña quitada; costo de lista del evento: $${payload.registeredCost}`);
+        changes.push(`Campa?a quitada; costo de lista del evento: $${payload.registeredCost}`);
       } else if (campaignEditChoice && campaignEditChoice !== '') {
         const c = findDiscountCampaignById(currentEvent, campaignEditChoice);
         if (!c || c.enabled === false) {
-          showToast('Campaña no válida o desactivada.');
+          showToast('Campa?a no v?lida o desactivada.');
           return;
         }
         if (!campaignMatchesPersonProfile(c, editedPerson)) {
-          showToast('Esa campaña no aplica al perfil servidor/campista de este registro.');
+          showToast('Esa campa?a no aplica al perfil servidor/campista de este registro.');
           return;
         }
         payload.registeredCost = Math.max(0, Number(c.finalAmount) || 0);
@@ -4671,11 +4687,11 @@ const App = () => {
         const todayIso = new Date().toISOString().split('T')[0];
         const vigenteHoy = discountCampaignHasDateRange(c) && isDiscountCampaignVigenteOnDate(c, todayIso);
         const campNote = !discountCampaignHasDateRange(c)
-          ? ' [sin fechas en campaña; solo manual]'
+          ? ' [sin fechas en campa?a; solo manual]'
           : vigenteHoy
             ? ''
-            : ' [fuera de vigencia por fechas; aplicación manual]';
-        changes.push(`Campaña aplicada (${c.concept}) → liquidar $${payload.registeredCost}${campNote}`);
+            : ' [fuera de vigencia por fechas; aplicaci?n manual]';
+        changes.push(`Campa?a aplicada (${c.concept}) ? liquidar $${payload.registeredCost}${campNote}`);
       }
     }
     delete payload.editApplyCampaignId;
@@ -4698,13 +4714,13 @@ const App = () => {
       payload.isPastorChild = deleteField();
       payload.pastorChildWithoutPay = deleteField();
       payload.pastorChildSpecialDonationFinanceId = deleteField();
-      payload.willBeBaptized = editedPerson.willBeBaptized === 'Sí' ? 'Sí' : 'No';
-      if (payload.willBeBaptized !== 'Sí' || editedPerson.isServer !== 'Sí' || editedPerson.serverAssignment !== 'Ambos') {
+      payload.willBeBaptized = isSiValue(editedPerson.willBeBaptized) ? SI : 'No';
+      if (!isSiValue(payload.willBeBaptized) || !isSiValue(editedPerson.isServer) || editedPerson.serverAssignment !== 'Ambos') {
         payload.baptismSegment = '';
       } else {
         const bs = String(editedPerson.baptismSegment || '').trim();
-        if (bs !== 'Teens' && bs !== 'Jóvenes') {
-          showToast('Si marca bautizo y el servidor es Ambos, elija si el conteo va en Teens o Jóvenes.');
+        if (bs !== 'Teens' && bs !== 'J?venes') {
+          showToast('Si marca bautizo y el servidor es Ambos, elija si el conteo va en Teens o J?venes.');
           return;
         }
         payload.baptismSegment = bs;
@@ -4723,7 +4739,7 @@ const App = () => {
     if ((originalPerson.status || 'active') === 'waitlist') {
       payload.status = 'waitlist';
       if (originalPerson.waitlistCreatedAt != null) payload.waitlistCreatedAt = originalPerson.waitlistCreatedAt;
-      if (editedPerson.isScholarship === 'Sí') payload.scholarshipPendingApproval = true;
+      if (isSiValue(editedPerson.isScholarship)) payload.scholarshipPendingApproval = true;
     } else if (participantIsCancelled(originalPerson)) {
       payload.status = PARTICIPANT_STATUS_CANCELLED;
       if (originalPerson.cancelledAt != null) payload.cancelledAt = originalPerson.cancelledAt;
@@ -4737,7 +4753,7 @@ const App = () => {
     if (changes.length > 0) {
       const mergedForLiq = { ...editedPerson, ...payload };
       const isLiquidado = parseFloat(mergedForLiq.paid) >= getLiquidationTarget(mergedForLiq);
-      addLog('Actualización de Registro', `Modificó datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: originalPerson });
+      addLog('Actualizaci?n de Registro', `Modific? datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: originalPerson });
     }
     setEditRegistryModal({ isOpen: false, loc: '', data: null }); setEditPreferredServeDropdownOpen(false); setEditServedAreasDropdownOpen(false);
     showToast("Registro actualizado.");
@@ -4754,13 +4770,13 @@ const App = () => {
       eventDisplayName: currentEvent?.name ?? null,
     });
     addLog(
-      'Eliminación de Registro',
-      `Archivó el registro de ${person.name} en la sede ${loc}. El ID VNPM y los datos personales permanecen en Firebase para precargar en otros eventos.`,
+      'Eliminaci?n de Registro',
+      `Archiv? el registro de ${person.name} en la sede ${loc}. El ID VNPM y los datos personales permanecen en Firebase para precargar en otros eventos.`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
     );
-    showToast('Registro archivado. Puedes precargar estos datos desde la búsqueda de perfiles.');
+    showToast('Registro archivado. Puedes precargar estos datos desde la b?squeda de perfiles.');
   };
 
   const performArchiveWaitlistEntry = async (loc, id) => {
@@ -4773,12 +4789,12 @@ const App = () => {
     });
     addLog(
       'Lista de Espera',
-      `Archivó a ${person.name} (lista de espera, sede ${loc}). Los datos personales siguen disponibles para precargar en otros eventos.`,
+      `Archiv? a ${person.name} (lista de espera, sede ${loc}). Los datos personales siguen disponibles para precargar en otros eventos.`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
     );
-    showToast('Entrada archivada. Puedes precargar estos datos desde la búsqueda de perfiles.');
+    showToast('Entrada archivada. Puedes precargar estos datos desde la b?squeda de perfiles.');
   };
 
   const performCancelEntry = async (loc, id) => {
@@ -4819,7 +4835,7 @@ const App = () => {
     await updateDoc(getDocRef('app_participants', String(id)), payload);
     addLog(
       'Baja de Registro',
-      `Dio de baja a ${person.name} en ${loc}.${refundPendingAmount > 0 ? ` Pendiente de devolución: $${refundPendingAmount}.` : ''}`,
+      `Dio de baja a ${person.name} en ${loc}.${refundPendingAmount > 0 ? ` Pendiente de devoluci?n: $${refundPendingAmount}.` : ''}`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
@@ -4845,7 +4861,7 @@ const App = () => {
     if (!m.isOpen || !m.type) return;
     if (registryConfirmBusy) return;
     setRegistryConfirmBusy(true);
-    // Cerrar de inmediato para evitar dobles confirmaciones por clicks rápidos.
+    // Cerrar de inmediato para evitar dobles confirmaciones por clicks r?pidos.
     closeRegistryConfirmModal();
     try {
       if (m.type === 'archive_roster') await performArchiveRosterEntry(m.loc, m.personId);
@@ -4855,7 +4871,7 @@ const App = () => {
       else if (m.type === 'remove_pending_refund' && m.personId) await removePendingRefundBySuperUser(m.personId);
     } catch (e) {
       console.error(e);
-      showToast('No se pudo completar la acción. Revisa conexión o permisos.');
+      showToast('No se pudo completar la acci?n. Revisa conexi?n o permisos.');
     } finally {
       setRegistryConfirmBusy(false);
     }
@@ -4954,8 +4970,8 @@ const App = () => {
     };
     await updateDoc(getDocRef('app_participants', String(id)), payload);
     addLog(
-      'Reactivación de Registro',
-      `Reactivó a ${person.name} en ${loc}. Vuelve a contar en inscritos/becados/servidores.`,
+      'Reactivaci?n de Registro',
+      `Reactiv? a ${person.name} en ${loc}. Vuelve a contar en inscritos/becados/servidores.`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
@@ -4973,8 +4989,8 @@ const App = () => {
       refundPendingAmount: 0,
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
     });
-    addLog('Gastos', 'Movimiento en lista de gastos: saldo pendiente de devolución marcado como donación (auditoría sin detalle de participante).');
-    showToast('Saldo marcado como donación. Vuelve a sumarse al balance neto.');
+    addLog('Gastos', 'Movimiento en lista de gastos: saldo pendiente de devoluci?n marcado como donaci?n (auditor?a sin detalle de participante).');
+    showToast('Saldo marcado como donaci?n. Vuelve a sumarse al balance neto.');
   };
 
   const removePendingRefundBySuperUser = async (personId) => {
@@ -4985,7 +5001,7 @@ const App = () => {
       ? 0
       : Math.max(0, Number(person.refundPendingAmount ?? person.paid ?? 0) || 0);
     if (pendingAmount <= 0) {
-      showToast('Ese saldo ya no está pendiente o fue actualizado.');
+      showToast('Ese saldo ya no est? pendiente o fue actualizado.');
       return;
     }
     const payload = {
@@ -4996,13 +5012,13 @@ const App = () => {
     await updateDoc(getDocRef('app_participants', String(personId)), payload);
     addLog(
       'Gastos',
-      `SuperUsuario eliminó saldo pendiente de devolución (lista de gastos). Monto quitado: $${pendingAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}. Participante doc: ${personId}. Evento: ${currentEvent?.name || currentEvent?.id || '—'}.`,
+      `SuperUsuario elimin? saldo pendiente de devoluci?n (lista de gastos). Monto quitado: $${pendingAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}. Participante doc: ${personId}. Evento: ${currentEvent?.name || currentEvent?.id || '?'}.`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
       { isHidden: true }
     );
-    showToast('Saldo eliminado de la lista. El balance neto se actualizó.');
+    showToast('Saldo eliminado de la lista. El balance neto se actualiz?.');
   };
 
   const openRemovePendingRefundConfirm = (p) => {
@@ -5031,13 +5047,13 @@ const App = () => {
       return;
     }
     if (!isLocOpen(loc)) {
-      showToast("La sede está cerrada. Abre registro para promover.");
+      showToast("La sede est? cerrada. Abre registro para promover.");
       return;
     }
     const person = (waitlistData[loc] || []).find(p => String(p.id) === String(id));
     if (!person) return;
     if (isLocationFull(loc)) {
-      showToast("No se puede promover: el cupo de la sede está lleno.");
+      showToast("No se puede promover: el cupo de la sede est? lleno.");
       return;
     }
     const promoteAt = Date.now();
@@ -5047,7 +5063,7 @@ const App = () => {
     const isLiquidadoPromote = paidPromote >= liqPromote;
     const promoteNotification = {
       id: `wa-prm-${promoteAt}`,
-      kind: person.isScholarship === 'Sí' ? 'beca_aprobada' : 'promocion_espera',
+      kind: isSiValue(person.isScholarship) ? 'beca_aprobada' : 'promocion_espera',
       amount: 0,
       pendingAmount: pendingAfterPromote,
       isLiquidado: isLiquidadoPromote,
@@ -5069,18 +5085,18 @@ const App = () => {
     await updateDoc(getDocRef('app_participants', String(id)), payload);
 
     const promBeca =
-      person.isScholarship === 'Sí'
+      isSiValue(person.isScholarship)
         ? ` Becado ${person.scholarshipType === 'partial' ? 'parcial' : 'total'}${person.scholarshipType === 'partial' ? ` (monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}, a liquidar $${Number(liqPromote || 0).toLocaleString('es-MX')}, abono $${paidPromote.toLocaleString('es-MX')})` : ''}.`
         : '';
     addLog(
       'Lista de Espera',
-      `Promovió a ${person.name} de lista de espera a inscritos en la sede ${loc}.${promBeca}`,
+      `Promovi? a ${person.name} de lista de espera a inscritos en la sede ${loc}.${promBeca}`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
     );
     showToast(
-      person.isScholarship === 'Sí' && person.scholarshipType === 'partial'
+      isSiValue(person.isScholarship) && person.scholarshipType === 'partial'
         ? `Inscrito (beca parcial). A liquidar: $${Number(liqPromote || 0).toLocaleString('es-MX')}. Abono: $${paidPromote.toLocaleString('es-MX')}.`
         : 'Registro promovido a inscritos.'
     );
@@ -5093,7 +5109,7 @@ const App = () => {
     }
     const newStatus = !isLocOpen(loc);
     await updateEventConfig({ regStatus: { ...currentEvent.regStatus, [loc]: newStatus } });
-    addLog('Cambio de Estado', `${newStatus ? 'Abrió' : 'Cerró'} las inscripciones en la sede ${loc}.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+    addLog('Cambio de Estado', `${newStatus ? 'Abri?' : 'Cerr?'} las inscripciones en la sede ${loc}.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
   };
 
   const toggleRow = (id) => {
@@ -5114,7 +5130,7 @@ const App = () => {
     if (addedAmount < 0) { setPaymentModal(prev => ({ ...prev, error: 'El abono no puede ser negativo.' })); return; }
     const baseCost = paymentModal.baseCost;
     if (paymentModal.currentPaid + addedAmount > baseCost) {
-      setPaymentModal(prev => ({ ...prev, error: `El abono supera el costo total. Máximo a abonar: $${baseCost - paymentModal.currentPaid}` }));
+      setPaymentModal(prev => ({ ...prev, error: `El abono supera el costo total. M?ximo a abonar: $${baseCost - paymentModal.currentPaid}` }));
       return;
     }
     const paymentMethod = paymentModal.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
@@ -5179,7 +5195,7 @@ const App = () => {
     await updateDoc(getDocRef('app_participants', String(person.id)), payload);
     addLog(
       'Abono Financiero',
-      `Registró un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${paymentModal.currentPaid} -> $${newPaidGross})${isLiquidado ? ' [LIQUIDADO]' : ''}`,
+      `Registr? un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${paymentModal.currentPaid} -> $${newPaidGross})${isLiquidado ? ' [LIQUIDADO]' : ''}`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
@@ -5229,7 +5245,7 @@ const App = () => {
     await updateDoc(getDocRef('app_participants', String(person.id)), payload);
     addLog(
       'Comentarios',
-      `Agregó comentario para ${person.name} en la sede ${loc}: "${draft}"`,
+      `Agreg? comentario para ${person.name} en la sede ${loc}: "${draft}"`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
@@ -5290,12 +5306,12 @@ const App = () => {
     }
     const row = hist[idx];
     if (!row || row.kind === 'comment') {
-      showToast('Ese movimiento no admite cambio de método.');
+      showToast('Ese movimiento no admite cambio de m?todo.');
       closePaymentMethodEditModal();
       return;
     }
     if (paymentMethodEditModal.paymentId != null && String(row.id) !== String(paymentMethodEditModal.paymentId)) {
-      showToast('El historial cambió; vuelve a abrir el editor.');
+      showToast('El historial cambi?; vuelve a abrir el editor.');
       closePaymentMethodEditModal();
       return;
     }
@@ -5341,7 +5357,7 @@ const App = () => {
     await updateDoc(getDocRef('app_participants', String(person.id)), payload);
     addLog(
       'Finanzas',
-      `Actualizó tipo de abono en historial para ${person.name} (${paymentMethodEditModal.loc || person.location || '—'}): ${oldMethod} -> ${newMethod}${nextReference ? ` (Ref: ${nextReference})` : ''}.`,
+      `Actualiz? tipo de abono en historial para ${person.name} (${paymentMethodEditModal.loc || person.location || '?'}): ${oldMethod} -> ${newMethod}${nextReference ? ` (Ref: ${nextReference})` : ''}.`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
@@ -5405,7 +5421,7 @@ const App = () => {
     if (!canEditRegistryDates || !superDateEditModal.isOpen) return;
     const iso = fromDatetimeLocalToIso(superDateEditModal.datetimeLocal);
     if (!iso) {
-      showToast('Indica una fecha y hora válidas.');
+      showToast('Indica una fecha y hora v?lidas.');
       return;
     }
     const personId = superDateEditModal.personId;
@@ -5456,7 +5472,7 @@ const App = () => {
         }
 
         // Requerimiento: al editar manualmente la fecha, el costo a pagar debe reflejar la fecha nueva,
-        // considerando tanto el precio dinámico como la vigencia de campañas de descuento.
+        // considerando tanto el precio din?mico como la vigencia de campa?as de descuento.
         const newAnchorMs = dNew.getTime();
         const isoDate = new Date(newAnchorMs).toISOString().split('T')[0];
         const pricingForNewDate = getPricingForDate(currentEvent, newAnchorMs);
@@ -5481,7 +5497,7 @@ const App = () => {
 
         let nextRegisteredCost = baseNew;
         if (hasDiscountSelection) {
-          // Si la campaña no aplica por vigencia/fechas, se revierte al costo base del evento para esa fecha.
+          // Si la campa?a no aplica por vigencia/fechas, se revierte al costo base del evento para esa fecha.
           nextRegisteredCost = campaignAppliesOnNewDate
             ? Math.max(0, Number(selectedCampaign?.finalAmount) || 0)
             : baseNew;
@@ -5497,7 +5513,7 @@ const App = () => {
         await updateDoc(getDocRef('app_participants', String(personId)), regPayload);
         addLog(
           'Sistema',
-          `${dateEditActor} ajustó la fecha de registro de ${person.name || 'participante'} (sede ${locLabel})${historyChanged ? ' y la marca de tiempo del pago inicial vinculado' : ''}.`,
+          `${dateEditActor} ajust? la fecha de registro de ${person.name || 'participante'} (sede ${locLabel})${historyChanged ? ' y la marca de tiempo del pago inicial vinculado' : ''}.`,
           null,
           null,
           { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
@@ -5512,19 +5528,19 @@ const App = () => {
         }
         const row = hist[idx];
         if (superDateEditModal.paymentId != null && String(row.id) !== String(superDateEditModal.paymentId)) {
-          showToast('El historial cambió; vuelve a abrir el editor.');
+          showToast('El historial cambi?; vuelve a abrir el editor.');
           return;
         }
         if (row.kind === 'comment') {
-          showToast('Este movimiento no admite cambio de fecha aquí.');
+          showToast('Este movimiento no admite cambio de fecha aqu?.');
           return;
         }
         const d = new Date(iso);
         const serviceForPayment = getAutoPaymentService(d);
         hist[idx] = { ...row, recordedAt: iso, date: d.toLocaleString('es-MX'), service: serviceForPayment };
 
-        // Si el pago editado estaba "anclado" al registro (o no existía registeredAt y es el primer pago),
-        // entonces el costo final (precio dinámico) debe recalcularse usando esta nueva fecha.
+        // Si el pago editado estaba "anclado" al registro (o no exist?a registeredAt y es el primer pago),
+        // entonces el costo final (precio din?mico) debe recalcularse usando esta nueva fecha.
         const firstPayIdx = hist.findIndex((r) => r && r.kind !== 'comment');
         const oldRegIso = person.registeredAt;
         const oldRegMs = parseFlexibleInstantMs(oldRegIso);
@@ -5538,7 +5554,7 @@ const App = () => {
         let nextRegisteredCost = null;
         if (isTiedToRegistration) {
           // Requerimiento: al editar manualmente la fecha del pago anclado al registro,
-          // el costo a pagar debe reflejar la fecha nueva, incluyendo vigencia de campañas.
+          // el costo a pagar debe reflejar la fecha nueva, incluyendo vigencia de campa?as.
           const anchorNewMs = d.getTime();
           const isoDate = new Date(anchorNewMs).toISOString().split('T')[0];
           const pricingForNewDate = getPricingForDate(currentEvent, anchorNewMs);
@@ -5578,7 +5594,7 @@ const App = () => {
         await updateDoc(getDocRef('app_participants', String(personId)), payload);
         addLog(
           'Sistema',
-          `${dateEditActor} ajustó la fecha de un movimiento en el historial de pagos de ${person.name || 'participante'} (sede ${locLabel}).`,
+          `${dateEditActor} ajust? la fecha de un movimiento en el historial de pagos de ${person.name || 'participante'} (sede ${locLabel}).`,
           null,
           null,
           { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
@@ -5595,15 +5611,15 @@ const App = () => {
     }
   };
 
-  // ─────────────────────────────────────────────
+  // ?????????????????????????????????????????????
   // REUSABLE COMPONENTS
-  // ─────────────────────────────────────────────
+  // ?????????????????????????????????????????????
   const renderUsers = () => (
     <div className="max-w-6xl mx-auto p-6 space-y-6 animate-in fade-in duration-500">
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
         <div>
           <h2 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
-            <UserCog className="text-indigo-500 shrink-0" /> Gestión de usuarios
+            <UserCog className="text-indigo-500 shrink-0" /> Gesti?n de usuarios
           </h2>
           <p className="text-sm text-slate-500 mt-1 max-w-xl">
             Alta de cuentas, roles (Administrador, Editor, Lector) y restricciones. Solo el SuperUsuario puede definir accesos por evento/sede y permisos avanzados.
@@ -5617,9 +5633,9 @@ const App = () => {
               setPanelNavModalOpen(true);
             }}
             className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-sm bg-violet-50 hover:bg-violet-100 text-violet-700 border border-violet-200 shrink-0"
-            title="Secciones del menú lateral visibles para Editor y Lector"
+            title="Secciones del men? lateral visibles para Editor y Lector"
           >
-            <PanelLeft size={16} /> Menú lateral (Editor/Lector)
+            <PanelLeft size={16} /> Men? lateral (Editor/Lector)
           </button>
         )}
       </div>
@@ -5638,8 +5654,8 @@ const App = () => {
                 <input type="text" required placeholder="Nombre de usuario" className={inputClasses} value={newUser.username} onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} />
               </div>
               <div className="space-y-1">
-                <label className={labelClasses}>Contraseña</label>
-                <input type="password" required placeholder="••••••••" className={inputClasses} value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} />
+                <label className={labelClasses}>Contrase?a</label>
+                <input type="password" required placeholder="????????" className={inputClasses} value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} />
               </div>
               <div className="space-y-1">
                 <label className={labelClasses}>Rol</label>
@@ -5780,14 +5796,14 @@ const App = () => {
                     disabled={!isSuperUser}
                     onChange={(e) => setNewUser({ ...newUser, canEditRegistryDates: e.target.checked })}
                   />
-                  <span>Puede editar fechas de registro y de abonos en el historial (misma lógica que SuperUsuario)</span>
+                  <span>Puede editar fechas de registro y de abonos en el historial (misma l?gica que SuperUsuario)</span>
                 </label>
               </div>
             </div>
 
             <div className="flex justify-end pt-1">
               <button type="submit" className={btnPrimary}>
-                <Plus size={18} /> Añadir usuario
+                <Plus size={18} /> A?adir usuario
               </button>
             </div>
           </form>
@@ -5823,11 +5839,11 @@ const App = () => {
                     <div className="flex items-center gap-2">
                       <div
                         className={`w-2.5 h-2.5 rounded-full shrink-0 ${u.isOnline ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse' : 'bg-slate-300'}`}
-                        title={u.isOnline ? 'En línea' : 'Desconectado'}
+                        title={u.isOnline ? 'En l?nea' : 'Desconectado'}
                       />
                       <span className="font-bold text-slate-800">{u.username}</span>
                       {currentUser.id === u.id && (
-                        <span className="text-[10px] text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full font-black">Tú</span>
+                        <span className="text-[10px] text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full font-black">T?</span>
                       )}
                     </div>
                   </td>
@@ -5981,18 +5997,18 @@ const App = () => {
       timestamp: new Date().toLocaleString('es-MX'),
       username: currentUser?.username || 'Sistema',
       action: 'Borrado Selectivo',
-      details: `El SuperUsuario intentó borrar ${selectedLogs.size} registro(s) de actividad. Eliminados: ${deletedCount}. Protegidos (< 30 días en depuración): ${blockedCount}.`,
+      details: `El SuperUsuario intent? borrar ${selectedLogs.size} registro(s) de actividad. Eliminados: ${deletedCount}. Protegidos (< 30 d?as en depuraci?n): ${blockedCount}.`,
       isHidden: true,
     };
     await setDoc(getDocRef('app_logs', String(logEntry.id)), logEntry);
     if (blockedCount > 0 && isDebug) {
       showToast(
         protectedBackupCount > 0
-          ? `Se eliminaron ${deletedCount} logs. Protegidos: ${blockedCount} reciente(s) en depuración, ${protectedBackupCount} copia automática.`
-          : `Se eliminaron ${deletedCount} logs. En depuración, se protegieron ${blockedCount} log(s) recientes (< 30 días).`
+          ? `Se eliminaron ${deletedCount} logs. Protegidos: ${blockedCount} reciente(s) en depuraci?n, ${protectedBackupCount} copia autom?tica.`
+          : `Se eliminaron ${deletedCount} logs. En depuraci?n, se protegieron ${blockedCount} log(s) recientes (< 30 d?as).`
       );
     } else if (protectedBackupCount > 0) {
-      showToast(`Se eliminaron ${deletedCount} logs. No se eliminaron ${protectedBackupCount} registro(s) de copia automática (restauración disponible).`);
+      showToast(`Se eliminaron ${deletedCount} logs. No se eliminaron ${protectedBackupCount} registro(s) de copia autom?tica (restauraci?n disponible).`);
     } else {
       showToast(`Se eliminaron ${deletedCount} logs.`);
     }
@@ -6083,7 +6099,7 @@ const App = () => {
                   <option value="none">Fecha: Sin filtro</option>
                   <option value="range">Fecha: Rango</option>
                   <option value="week">Fecha: Semana</option>
-                  <option value="day">Fecha: Día</option>
+                  <option value="day">Fecha: D?a</option>
                   <option value="month">Fecha: Mes</option>
                 </select>
               </div>
@@ -6138,7 +6154,7 @@ const App = () => {
               )}
               {logDateMode === 'day' && (
                 <select className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer" value={logSpecificDay} onChange={e => setLogSpecificDay(e.target.value)}>
-                  <option value="">Todos los días</option>
+                  <option value="">Todos los d?as</option>
                   {uniqueDays.map((d) => <option key={d} value={d}>{d}</option>)}
                 </select>
               )}
@@ -6167,25 +6183,25 @@ const App = () => {
                       isOpen: true,
                       type: 'backup',
                       log: {
-                        action: 'Copia de seguridad automática',
+                        action: 'Copia de seguridad autom?tica',
                         timestamp: lastAutoBackupId,
                         revertInfo: { isBackup: true, backupId: lastAutoBackupId },
                       },
                     })
                   }
                   className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-all active:scale-95"
-                  title="Restaurar la última copia guardada en Firestore (independiente del listado de logs)"
+                  title="Restaurar la ?ltima copia guardada en Firestore (independiente del listado de logs)"
                 >
-                  <Database size={14} /> Última copia automática
+                  <Database size={14} /> ?ltima copia autom?tica
                 </button>
               )}
-              {hasAdminRights && selectedLogs.size === 0 && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanOld', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
+              {hasAdminRights && selectedLogs.size === 0 && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanOld', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 d?as</button>}
               {isSuperUser && selectedLogs.size === 0 && !globalConfig?.isDebugMode && (
                 <button
                   onClick={() => setRestoreModal({ isOpen: true, type: 'cleanRecent', log: null })}
                   className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-500 text-white hover:bg-red-600 border border-red-600 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-200"
                 >
-                  <Trash2 size={14} /> Limpiar &lt; 30 días
+                  <Trash2 size={14} /> Limpiar &lt; 30 d?as
                 </button>
               )}
               <span className="bg-slate-100 text-slate-500 text-xs font-bold px-3 py-1 rounded-full">{displayedLogs.length} eventos</span>
@@ -6196,7 +6212,7 @@ const App = () => {
               <thead className="sticky top-0 bg-slate-50 shadow-sm">
                 <tr className="text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-200">
                   {isSuperUser && <th className="px-6 py-4 w-10"><input type="checkbox" onChange={(e) => toggleAllLogs(displayedLogs, e)} checked={selectableDisplayedLogs.length > 0 && selectableDisplayedLogs.every((l) => selectedLogs.has(l.id))} className="accent-indigo-600 w-4 h-4 rounded cursor-pointer" /></th>}
-                  <th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acción</th><th className="px-6 py-4">Detalles</th>{hasAdminRights && <th className="px-6 py-4 text-center">Acciones</th>}
+                  <th className="px-6 py-4">Fecha y Hora</th><th className="px-6 py-4">Contexto</th><th className="px-6 py-4">Usuario</th><th className="px-6 py-4">Acci?n</th><th className="px-6 py-4">Detalles</th>{hasAdminRights && <th className="px-6 py-4 text-center">Acciones</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
@@ -6212,7 +6228,7 @@ const App = () => {
                           checked={selectedLogs.has(log.id)}
                           onChange={() => toggleLogSelection(log.id)}
                           className="accent-indigo-600 w-4 h-4 rounded cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                          title={log.revertInfo?.isBackup ? 'No se puede borrar: referencia de la última copia automática' : undefined}
+                          title={log.revertInfo?.isBackup ? 'No se puede borrar: referencia de la ?ltima copia autom?tica' : undefined}
                         />
                       </td>
                     )}
@@ -6222,7 +6238,7 @@ const App = () => {
                     <td className="px-6 py-4">
                       <span className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${log.isDebug ? 'bg-orange-100 text-orange-700' : log.isHidden ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>
                         {log.action} 
-                        {log.isDebug && <span className="text-red-500 ml-1 font-black">(DEPURACIÓN)</span>}
+                        {log.isDebug && <span className="text-red-500 ml-1 font-black">(DEPURACI?N)</span>}
                         {log.isHidden && <span className="text-purple-600 ml-1 font-black">(OCULTO)</span>}
                       </span>
                     </td>
@@ -6233,9 +6249,9 @@ const App = () => {
                           <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'backup' })} className="p-1.5 bg-indigo-50 text-indigo-600 hover:text-white hover:bg-indigo-600 rounded-lg transition-colors shadow-sm" title="Restaurar Copia de Seguridad Completa"><Database size={14} /></button>
                         ) : log.revertInfo ? (
                           <div className="flex justify-center items-center gap-2">
-                            <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'single' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors" title="Restaurar este cambio específico"><Undo size={14} /></button>
+                            <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'single' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors" title="Restaurar este cambio espec?fico"><Undo size={14} /></button>
                             {isSuperUser && (
-                              <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'rollback' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Revertir todos los cambios hasta aquí"><History size={14} /></button>
+                              <button onClick={() => setRestoreModal({ isOpen: true, log, type: 'rollback' })} className="p-1.5 bg-slate-100 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Revertir todos los cambios hasta aqu?"><History size={14} /></button>
                             )}
                           </div>
                         ) : (
@@ -6259,11 +6275,11 @@ const App = () => {
         <div className="p-6 border-b border-slate-100 flex justify-between items-start gap-3">
           <div>
             <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
-              <PanelLeft className="text-violet-600 shrink-0" size={22} /> Menú lateral del evento
+              <PanelLeft className="text-violet-600 shrink-0" size={22} /> Men? lateral del evento
             </h3>
             <p className="text-xs text-slate-500 mt-2 leading-relaxed">
               Activa o desactiva entradas del panel para usuarios con rol <span className="font-bold text-slate-700">Editor</span> o <span className="font-bold text-slate-700">Lector</span>.
-              Los <span className="font-bold text-slate-700">Administradores</span> y el <span className="font-bold text-slate-700">SuperUsuario</span> siempre ven el menú completo. <span className="font-bold text-slate-700">Resumen general</span> no se oculta.
+              Los <span className="font-bold text-slate-700">Administradores</span> y el <span className="font-bold text-slate-700">SuperUsuario</span> siempre ven el men? completo. <span className="font-bold text-slate-700">Resumen general</span> no se oculta.
             </p>
           </div>
           <button type="button" onClick={() => setPanelNavModalOpen(false)} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full shrink-0"><XCircle size={20} /></button>
@@ -6292,14 +6308,14 @@ const App = () => {
     </div>
   );
 
-  // ─────────────────────────────────────────────
+  // ?????????????????????????????????????????????
   //  SCREEN 1: LOGIN
-  // ─────────────────────────────────────────────
+  // ?????????????????????????????????????????????
   if (!currentUser) {
     if (fbUser && !usersAuthReady) {
       return (
         <div className="min-h-screen bg-blue-950 flex items-center justify-center p-4">
-          <p className="text-white font-semibold">Cargando…</p>
+          <p className="text-white font-semibold">Cargando?</p>
         </div>
       );
     }
@@ -6328,10 +6344,10 @@ const App = () => {
             <h1 className="text-2xl font-black text-white tracking-tight leading-tight">
               Registros VNPM
             </h1>
-            <p className="text-blue-200 text-xs uppercase tracking-widest mt-2 font-bold">Sistema de Gestión</p>
+            <p className="text-blue-200 text-xs uppercase tracking-widest mt-2 font-bold">Sistema de Gesti?n</p>
           </div>
           <div className="p-8">
-            <h2 className="text-lg font-black text-slate-800 text-center mb-6">Iniciar sesión</h2>
+            <h2 className="text-lg font-black text-slate-800 text-center mb-6">Iniciar sesi?n</h2>
             <form onSubmit={handleLogin} className="space-y-5">
               <div>
                 <label className={labelClasses}>Usuario o correo</label>
@@ -6341,7 +6357,7 @@ const App = () => {
                 </div>
               </div>
               <div>
-                <label className={labelClasses} htmlFor="login-password">Contraseña</label>
+                <label className={labelClasses} htmlFor="login-password">Contrase?a</label>
                 <div className="relative mt-1">
                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                   <input
@@ -6353,7 +6369,7 @@ const App = () => {
                     autoCapitalize="off"
                     autoCorrect="off"
                     className="w-full pl-10 pr-12 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-600 transition-all"
-                    placeholder="••••••••"
+                    placeholder="????????"
                     value={loginForm.password}
                     onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
                   />
@@ -6361,8 +6377,8 @@ const App = () => {
                     type="button"
                     onClick={() => setShowLoginPassword((v) => !v)}
                     className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors"
-                    title={showLoginPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
-                    aria-label={showLoginPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                    title={showLoginPassword ? 'Ocultar contrase?a' : 'Mostrar contrase?a'}
+                    aria-label={showLoginPassword ? 'Ocultar contrase?a' : 'Mostrar contrase?a'}
                   >
                     {showLoginPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                   </button>
@@ -6374,7 +6390,7 @@ const App = () => {
                 </p>
               )}
               <button type="submit" disabled={loginBusy} className="w-full bg-blue-800 hover:bg-blue-900 disabled:bg-slate-400 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-blue-900/20 active:scale-95 flex justify-center items-center gap-2">
-                {loginBusy ? <span className="animate-pulse">Iniciando sesión…</span> : 'Iniciar sesión'}
+                {loginBusy ? <span className="animate-pulse">Iniciando sesi?n?</span> : 'Iniciar sesi?n'}
               </button>
             </form>
           </div>
@@ -6383,9 +6399,9 @@ const App = () => {
     );
   }
 
-  // ─────────────────────────────────────────────
+  // ?????????????????????????????????????????????
   //  SCREEN 2: EVENT SELECTOR
-  // ─────────────────────────────────────────────
+  // ?????????????????????????????????????????????
   if (currentUser && !selectedEventId) {
     return (
       <div className="min-h-screen bg-slate-50 p-4 md:p-8 animate-in fade-in duration-500 relative">
@@ -6409,7 +6425,7 @@ const App = () => {
               <div>
                 <h1 className="text-2xl font-black text-slate-800">
                   {systemView === 'users'
-                    ? 'Gestión de Usuarios'
+                    ? 'Gesti?n de Usuarios'
                     : systemView === 'logs'
                       ? 'Registro de Actividad'
                       : systemView === 'archive'
@@ -6430,7 +6446,7 @@ const App = () => {
             <div className="flex flex-wrap items-center gap-4 border-t md:border-t-0 md:border-l border-slate-100 pt-4 md:pt-0 md:pl-6">
               {isSuperUser && (
                 <button type="button" onClick={toggleDebugMode} className={`flex items-center gap-1 md:gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-colors shadow-sm ${globalConfig?.isDebugMode ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-500'}`} title="Modo de prueba aislada">
-                  <Bug size={14} /><span className="hidden sm:inline">{globalConfig?.isDebugMode ? 'Salir Depuración' : 'Depurar'}</span>
+                  <Bug size={14} /><span className="hidden sm:inline">{globalConfig?.isDebugMode ? 'Salir Depuraci?n' : 'Depurar'}</span>
                 </button>
               )}
               {systemView !== 'events' && (
@@ -6462,9 +6478,9 @@ const App = () => {
                 {isSuperUser && (
                   <span
                     className="text-[10px] font-black uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-lg"
-                    title="Sesiones activas (esta pestaña y otras con el mismo usuario)"
+                    title="Sesiones activas (esta pesta?a y otras con el mismo usuario)"
                   >
-                    Activo · {superSessionCount} sesión{superSessionCount === 1 ? '' : 'es'}
+                    Activo ? {superSessionCount} sesi?n{superSessionCount === 1 ? '' : 'es'}
                   </span>
                 )}
               </span>
@@ -6476,9 +6492,9 @@ const App = () => {
             <div className="bg-orange-50 border border-orange-200 p-4 rounded-2xl flex items-start gap-3 shadow-sm animate-in fade-in">
               <div className="bg-orange-100 p-2 rounded-lg"><Bug className="text-orange-500" size={20} /></div>
               <div>
-                <h4 className="text-sm font-black text-orange-800">Modo de Depuración Activo</h4>
+                <h4 className="text-sm font-black text-orange-800">Modo de Depuraci?n Activo</h4>
                 <p className="text-xs text-orange-700 mt-1">
-                  Las modificaciones marcadas con el insecto no son permanentes y se eliminarán al salir de este modo.
+                  Las modificaciones marcadas con el insecto no son permanentes y se eliminar?n al salir de este modo.
                 </p>
               </div>
             </div>
@@ -6498,7 +6514,7 @@ const App = () => {
               ) : (
                 archivedParticipantsForView.map((p) => {
                   const ev = events.find((e) => e.id === p.eventId);
-                  const summary = `${p.name || '(sin nombre)'} · ${ev?.name || p.eventId || '—'} · ${p.archivedAt ? new Date(p.archivedAt).toLocaleString('es-MX') : '—'}`;
+                  const summary = `${p.name || '(sin nombre)'} ? ${ev?.name || p.eventId || '?'} ? ${p.archivedAt ? new Date(p.archivedAt).toLocaleString('es-MX') : '?'}`;
                   return (
                     <details key={p.id} className="bg-white border border-slate-200 rounded-lg">
                       <summary className="px-3 py-2 cursor-pointer text-xs font-bold text-slate-700 hover:bg-slate-50">
@@ -6559,7 +6575,7 @@ const App = () => {
                                   const payload = { date: newVal };
                                   if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
                                   await updateDoc(getDocRef('app_events', ev.id), payload);
-                                  addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
+                                  addLog('Gesti?n de Eventos', `Cambi? fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
                                 }
                               }}
                               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer"
@@ -6604,11 +6620,11 @@ const App = () => {
               <div className="bg-red-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><ShieldAlert size={32} className="text-red-500" /></div>
               <h3 className="text-xl font-black text-slate-800 mb-2">Eliminar Evento</h3>
               <p className="text-sm text-slate-500 mb-6">
-                ¿Estás seguro de que deseas eliminar <strong>&ldquo;{deleteEventModal.name}&rdquo;</strong>? Todos los registros del evento se archivarán antes de borrarlo. Esta acción no se puede deshacer.
+                ?Est?s seguro de que deseas eliminar <strong>&ldquo;{deleteEventModal.name}&rdquo;</strong>? Todos los registros del evento se archivar?n antes de borrarlo. Esta acci?n no se puede deshacer.
               </p>
               <div className="flex gap-3">
                 <button onClick={() => setDeleteEventModal({ isOpen: false, id: null, name: '' })} className={btnSecondary}>Cancelar</button>
-                <button onClick={confirmDeleteEvent} className="flex-1 py-3 px-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-colors text-sm shadow-lg shadow-red-200">Sí, eliminar</button>
+                <button onClick={confirmDeleteEvent} className="flex-1 py-3 px-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-colors text-sm shadow-lg shadow-red-200">{SI_LABEL}, eliminar</button>
               </div>
             </div>
           </div>
@@ -6621,8 +6637,8 @@ const App = () => {
               <p className="text-sm text-slate-500 mb-6">Ingresa los detalles para el nuevo evento.</p>
               <div className="space-y-4">
                 <div className="space-y-1">
-                  <label className={labelClasses}>Título del Evento</label>
-                  <input type="text" autoFocus className={inputClasses} placeholder="Ej. Campamento Jóvenes 2027" value={newEventData.name} onChange={e => setNewEventData({ ...newEventData, name: e.target.value })} />
+                  <label className={labelClasses}>T?tulo del Evento</label>
+                  <input type="text" autoFocus className={inputClasses} placeholder="Ej. Campamento J?venes 2027" value={newEventData.name} onChange={e => setNewEventData({ ...newEventData, name: e.target.value })} />
                 </div>
                 <div className="space-y-1">
                   <label className={labelClasses}>Costo Base ($) Inicial</label>
@@ -6661,7 +6677,7 @@ const App = () => {
                 <div>
                   <label className={labelClasses}>Usuario</label>
                   <input type="text" required disabled={!isSelfEdit} className={`${inputClasses} ${!isSelfEdit ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : ''}`} value={editingUser.username} onChange={e => setEditingUser({ ...editingUser, username: e.target.value })} />
-                  {!isSelfEdit && <p className="text-[10px] text-slate-500 font-semibold mt-1">Solo el propio usuario puede modificar usuario y contraseña.</p>}
+                  {!isSelfEdit && <p className="text-[10px] text-slate-500 font-semibold mt-1">Solo el propio usuario puede modificar usuario y contrase?a.</p>}
                 </div>
                 <div>
                   <label className={labelClasses}>Rol</label>
@@ -6806,10 +6822,10 @@ const App = () => {
                 )}
                 {isSelfEdit && (
                   <div className="border-t border-slate-100 pt-4 mt-2 space-y-4">
-                    <p className="text-xs font-bold text-slate-800">Cambio de Contraseña <span className="text-[10px] text-slate-400 font-normal">(Opcional)</span></p>
-                    <div><label className={labelClasses}>Contraseña Actual</label><input type="password" className={inputClasses} value={editingUser.currentPasswordInput} onChange={e => setEditingUser({ ...editingUser, currentPasswordInput: e.target.value })} /></div>
-                    <div><label className={labelClasses}>Nueva Contraseña</label><input type="password" className={inputClasses} value={editingUser.newPassword} onChange={e => setEditingUser({ ...editingUser, newPassword: e.target.value })} /></div>
-                    <div><label className={labelClasses}>Confirmar Nueva Contraseña</label><input type="password" className={inputClasses} value={editingUser.confirmPassword} onChange={e => setEditingUser({ ...editingUser, confirmPassword: e.target.value })} /></div>
+                    <p className="text-xs font-bold text-slate-800">Cambio de Contrase?a <span className="text-[10px] text-slate-400 font-normal">(Opcional)</span></p>
+                    <div><label className={labelClasses}>Contrase?a Actual</label><input type="password" className={inputClasses} value={editingUser.currentPasswordInput} onChange={e => setEditingUser({ ...editingUser, currentPasswordInput: e.target.value })} /></div>
+                    <div><label className={labelClasses}>Nueva Contrase?a</label><input type="password" className={inputClasses} value={editingUser.newPassword} onChange={e => setEditingUser({ ...editingUser, newPassword: e.target.value })} /></div>
+                    <div><label className={labelClasses}>Confirmar Nueva Contrase?a</label><input type="password" className={inputClasses} value={editingUser.confirmPassword} onChange={e => setEditingUser({ ...editingUser, confirmPassword: e.target.value })} /></div>
                   </div>
                 )}
                 <div className="flex gap-3 pt-4">
@@ -6851,19 +6867,19 @@ const App = () => {
               </h3>
               <p className="text-sm text-slate-500 mb-6">
                 {restoreModal.type === 'single' 
-                  ? `¿Deseas deshacer la acción específica: "${restoreModal.log?.action}"?` 
+                  ? `?Deseas deshacer la acci?n espec?fica: "${restoreModal.log?.action}"?` 
                   : restoreModal.type === 'rollback'
-                  ? `¿Estás seguro de deshacer TODOS los cambios desde el evento "${restoreModal.log?.action}" hasta ahora? Esta acción revertirá múltiples operaciones.`
+                  ? `?Est?s seguro de deshacer TODOS los cambios desde el evento "${restoreModal.log?.action}" hasta ahora? Esta acci?n revertir? m?ltiples operaciones.`
                   : restoreModal.type === 'backup'
-                  ? `ATENCIÓN: Estás a punto de restaurar la base de datos a la versión del: ${restoreModal.log?.revertInfo?.backupId}. Esto sobrescribirá todos los participantes y eventos actuales. ¿Deseas continuar?`
+                  ? `ATENCI?N: Est?s a punto de restaurar la base de datos a la versi?n del: ${restoreModal.log?.revertInfo?.backupId}. Esto sobrescribir? todos los participantes y eventos actuales. ?Deseas continuar?`
                   : restoreModal.type === 'cleanOld'
-                  ? `¿Estás seguro de eliminar todos los registros de actividad con más de 30 días de antigüedad? Esta acción no se puede deshacer.`
-                  : `ATENCIÓN SUPERUSUARIO: ¿Estás seguro de eliminar todos los registros RECIENTES (menos de 30 días)? Esta acción es irreversible.`}
+                  ? `?Est?s seguro de eliminar todos los registros de actividad con m?s de 30 d?as de antig?edad? Esta acci?n no se puede deshacer.`
+                  : `ATENCI?N SUPERUSUARIO: ?Est?s seguro de eliminar todos los registros RECIENTES (menos de 30 d?as)? Esta acci?n es irreversible.`}
               </p>
               <div className="flex gap-3">
                 <button onClick={() => setRestoreModal({ isOpen: false, log: null, type: 'single' })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
                 <button onClick={confirmRestore} className={`flex-1 py-3 px-4 text-white font-bold rounded-xl transition-colors text-sm shadow-lg ${restoreModal.type === 'single' || restoreModal.type === 'backup' ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200' : 'bg-red-500 hover:bg-red-600 shadow-red-200'}`}>
-                  Sí, Confirmar
+                  {SI_LABEL}, Confirmar
                 </button>
               </div>
             </div>
@@ -6874,9 +6890,9 @@ const App = () => {
     );
   }
 
-  // ─────────────────────────────────────────────
+  // ?????????????????????????????????????????????
   //  SCREEN 3: MAIN APP
-  // ─────────────────────────────────────────────
+  // ?????????????????????????????????????????????
   const getPieChartGradient = (dataKey) => {
     const totalPaid = showGrossWithoutCommission
       ? (summary.globalStats.all.paidGross ?? summary.globalStats.all.paid)
@@ -6904,7 +6920,7 @@ const App = () => {
     const approvedRaw = [];
     const pendingRaw = [];
     for (const p of allParticipants) {
-      if (p.eventId !== eventId || !participantIsActiveInEvent(p) || p.isScholarship !== 'Sí') continue;
+      if (p.eventId !== eventId || !participantIsActiveInEvent(p) || !isSiValue(p.isScholarship)) continue;
       if (participantIsRosterRow(p)) approvedRaw.push(p);
       else if (participantIsWaitlistRow(p)) pendingRaw.push(p);
     }
@@ -6919,7 +6935,7 @@ const App = () => {
     for (const p of approved) totalCondonedApproved += getScholarshipCondonedAmount(p);
     for (const p of pending) totalCondonedPending += getScholarshipCondonedAmount(p);
 
-    const rowSede = (p) => p.location || p.travelFrom || p.travelTo || '—';
+    const rowSede = (p) => p.location || p.travelFrom || p.travelTo || '?';
     const rowTipo = (p) => {
       if (p.scholarshipType === 'partial') return 'Parcial';
       if (p.scholarshipType === 'total' || p.scholarshipType === 'none') return 'Total';
@@ -6948,7 +6964,7 @@ const App = () => {
                 const cond = getScholarshipCondonedAmount(p);
                 return (
                   <tr key={p.id} className="hover:bg-slate-50/80">
-                    <td className="px-4 py-3 font-bold text-slate-800">{p.name || '—'}</td>
+                    <td className="px-4 py-3 font-bold text-slate-800">{p.name || '?'}</td>
                     <td className="px-4 py-3 text-slate-600">{rowSede(p)}</td>
                     <td className="px-4 py-3">
                       <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-lg bg-purple-50 text-purple-700 border border-purple-100">
@@ -7017,7 +7033,7 @@ const App = () => {
             </div>
           </div>
           <p className="text-sm text-slate-500 mt-1">
-            Becados ya inscritos en el evento y solicitudes de beca en lista de espera. El condonado es lo que la organización deja de cobrar respecto al costo de lista.
+            Becados ya inscritos en el evento y solicitudes de beca en lista de espera. El condonado es lo que la organizaci?n deja de cobrar respecto al costo de lista.
           </p>
         </div>
 
@@ -7099,7 +7115,7 @@ const App = () => {
           method: paymentMethod,
           service: svc,
           reference: (person.cardReference || '').trim(),
-          registeredBy: person.registeredBy || '—',
+          registeredBy: person.registeredBy || '?',
           _ts: fb,
           _date: new Date(fb),
           _personName: person.name || '',
@@ -7248,7 +7264,7 @@ const App = () => {
       const sun = new Date(mon);
       sun.setDate(sun.getDate() + 6);
       const f = (d) => d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' });
-      return `${f(mon)} – ${f(sun)}, ${mon.getFullYear()}`;
+      return `${f(mon)} ? ${f(sun)}, ${mon.getFullYear()}`;
     };
 
     const formatSunday = (dk) => {
@@ -7277,7 +7293,7 @@ const App = () => {
             <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3">
               <Scissors size={24} className="text-green-600" /> Corte de Caja
             </h2>
-            <p className="text-sm text-slate-500 mt-1">Resumen de ingresos por periodo · {currentEvent?.name}</p>
+            <p className="text-sm text-slate-500 mt-1">Resumen de ingresos por periodo ? {currentEvent?.name}</p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -7317,7 +7333,7 @@ const App = () => {
           </div>
           {cashCutMode === 'daily' && dayKeys.length > 0 && (
             <select value={cashCutSelected} onChange={e => { setCashCutSelected(e.target.value); setExpandedCut(null); }} className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-green-500">
-              <option value="all">Todos los días</option>
+              <option value="all">Todos los d?as</option>
               {dayKeys.map(dk => <option key={dk} value={dk}>{formatDay(dk)}</option>)}
             </select>
           )}
@@ -7341,7 +7357,7 @@ const App = () => {
           )}
           {cashCutMode === 'sunday' && (
             <div className="text-xs text-slate-400 font-bold">
-              Horarios: {serviceOrder.map(s => `${s} ${serviceSlots[s]?.start || '?'}–${serviceSlots[s]?.end || '?'}`).join(' · ')}
+              Horarios: {serviceOrder.map(s => `${s} ${serviceSlots[s]?.start || '?'}?${serviceSlots[s]?.end || '?'}`).join(' ? ')}
             </div>
           )}
         </div>
@@ -7372,7 +7388,7 @@ const App = () => {
                     <div className="flex items-center gap-4">
                       <div className="text-right">
                         <p className="text-lg font-black text-green-600">{formatMoney(cashCutGross ? cut.total : cut.totalNet)}</p>
-                        <p className="text-[10px] text-slate-400 font-bold">Efectivo: {formatMoney(cut.efectivo)} · Tarjeta: {formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
+                        <p className="text-[10px] text-slate-400 font-bold">Efectivo: {formatMoney(cut.efectivo)} ? Tarjeta: {formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
                       </div>
                       {isExpanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
                     </div>
@@ -7386,7 +7402,7 @@ const App = () => {
                             <div key={svc} className="rounded-xl border border-slate-100 bg-slate-50/50 p-4">
                               <p className="text-xs font-black text-slate-500 uppercase tracking-wider mb-2">{svc}</p>
                               <p className="text-sm text-slate-400 italic">Sin movimientos</p>
-                              <p className="text-[10px] text-slate-400 mt-1">{serviceSlots[svc]?.start || '?'} – {serviceSlots[svc]?.end || '?'}</p>
+                              <p className="text-[10px] text-slate-400 mt-1">{serviceSlots[svc]?.start || '?'} ? {serviceSlots[svc]?.end || '?'}</p>
                             </div>
                           );
                           return (
@@ -7398,7 +7414,7 @@ const App = () => {
                                 <div className="flex justify-between"><span className="text-emerald-600">Efectivo</span><span className="font-bold">{formatMoney(svcData.efectivo)}</span></div>
                                 <div className="flex justify-between"><span className="text-indigo-600">Tarjeta</span><span className="font-bold">{formatMoney(cashCutGross ? svcData.tarjeta : (svcData.totalNet - svcData.efectivo))}</span></div>
                               </div>
-                              <p className="text-[10px] text-slate-400 mt-2">{serviceSlots[svc]?.start || '?'} – {serviceSlots[svc]?.end || '?'}</p>
+                              <p className="text-[10px] text-slate-400 mt-2">{serviceSlots[svc]?.start || '?'} ? {serviceSlots[svc]?.end || '?'}</p>
                             </div>
                           );
                         })}
@@ -7425,9 +7441,9 @@ const App = () => {
                               <th className="px-4 py-2.5">Persona</th>
                               <th className="px-4 py-2.5">Sede</th>
                               <th className="px-4 py-2.5">Servicio</th>
-                              <th className="px-4 py-2.5">Método</th>
+                              <th className="px-4 py-2.5">M?todo</th>
                               <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                              <th className="px-4 py-2.5">Registró</th>
+                              <th className="px-4 py-2.5">Registr?</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-50">
@@ -7439,7 +7455,7 @@ const App = () => {
                                 <td className="px-4 py-2"><span className="text-[10px] font-bold bg-green-50 text-green-700 px-2 py-0.5 rounded-full border border-green-100">{p.service || NO_SERVICE_LABEL}</span></td>
                                 <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
                                 <td className="px-4 py-2 text-right font-bold text-slate-800">{formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}</td>
-                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '–'}</td>
+                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '?'}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -7479,7 +7495,7 @@ const App = () => {
                     <div className="flex items-center gap-4">
                       <div className="text-right">
                         <p className="text-lg font-black text-green-600">{formatMoney(cashCutGross ? cut.total : cut.totalNet)}</p>
-                        <p className="text-[10px] text-slate-400 font-bold">Efectivo: {formatMoney(cut.efectivo)} · Tarjeta: {formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
+                        <p className="text-[10px] text-slate-400 font-bold">Efectivo: {formatMoney(cut.efectivo)} ? Tarjeta: {formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
                       </div>
                       {isExpanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
                     </div>
@@ -7492,7 +7508,7 @@ const App = () => {
                           <p className="text-lg font-black text-slate-800">{formatMoney(cashCutGross ? cut.total : cut.totalNet)}</p>
                         </div>
                         <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                          <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Comisión tarjeta</p>
+                          <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Comisi?n tarjeta</p>
                           <p className="text-lg font-black text-red-500">-{formatMoney(cut.total - cut.totalNet)}</p>
                         </div>
                         <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
@@ -7517,9 +7533,9 @@ const App = () => {
                               <th className="px-4 py-2.5">Fecha / Hora</th>
                               <th className="px-4 py-2.5">Persona</th>
                               <th className="px-4 py-2.5">Sede</th>
-                              <th className="px-4 py-2.5">Método</th>
+                              <th className="px-4 py-2.5">M?todo</th>
                               <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                              <th className="px-4 py-2.5">Registró</th>
+                              <th className="px-4 py-2.5">Registr?</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-50">
@@ -7530,7 +7546,7 @@ const App = () => {
                                 <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
                                 <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
                                 <td className="px-4 py-2 text-right font-bold text-slate-800">{formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}</td>
-                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '–'}</td>
+                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '?'}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -7560,13 +7576,13 @@ const App = () => {
                       <div className={`p-2.5 rounded-xl ${cut.isSunday ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-600'}`}><Calendar size={20} /></div>
                       <div>
                         <p className="font-black text-slate-800 capitalize">{formatDay(dk)}</p>
-                        <p className="text-xs text-slate-500 mt-0.5">{cut.count} movimiento{cut.count !== 1 ? 's' : ''}{cut.donations > 0 ? ` + donaciones $${cut.donations.toLocaleString()}` : ''}{cut.isSunday ? ' · Domingo' : ''}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{cut.count} movimiento{cut.count !== 1 ? 's' : ''}{cut.donations > 0 ? ` + donaciones $${cut.donations.toLocaleString()}` : ''}{cut.isSunday ? ' ? Domingo' : ''}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-4">
                       <div className="text-right">
                         <p className="text-lg font-black text-green-600">{formatMoney(cashCutGross ? cut.total : cut.totalNet)}</p>
-                        <p className="text-[10px] text-slate-400 font-bold">Efectivo: {formatMoney(cut.efectivo)} · Tarjeta: {formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
+                        <p className="text-[10px] text-slate-400 font-bold">Efectivo: {formatMoney(cut.efectivo)} ? Tarjeta: {formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
                       </div>
                       {isExpanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
                     </div>
@@ -7581,7 +7597,7 @@ const App = () => {
                               <div key={svc} className="rounded-xl border border-slate-100 bg-slate-50/50 p-4">
                                 <p className="text-xs font-black text-slate-500 uppercase tracking-wider mb-2">{svc}</p>
                                 <p className="text-sm text-slate-400 italic">Sin movimientos</p>
-                                <p className="text-[10px] text-slate-400 mt-1">{serviceSlots[svc]?.start || '?'} – {serviceSlots[svc]?.end || '?'}</p>
+                                <p className="text-[10px] text-slate-400 mt-1">{serviceSlots[svc]?.start || '?'} ? {serviceSlots[svc]?.end || '?'}</p>
                               </div>
                             );
                             return (
@@ -7593,7 +7609,7 @@ const App = () => {
                                   <div className="flex justify-between"><span className="text-emerald-600">Efectivo</span><span className="font-bold">{formatMoney(svcData.efectivo)}</span></div>
                                   <div className="flex justify-between"><span className="text-indigo-600">Tarjeta</span><span className="font-bold">{formatMoney(cashCutGross ? svcData.tarjeta : (svcData.totalNet - svcData.efectivo))}</span></div>
                                 </div>
-                                <p className="text-[10px] text-slate-400 mt-2">{serviceSlots[svc]?.start || '?'} – {serviceSlots[svc]?.end || '?'}</p>
+                                <p className="text-[10px] text-slate-400 mt-2">{serviceSlots[svc]?.start || '?'} ? {serviceSlots[svc]?.end || '?'}</p>
                               </div>
                             );
                           })}
@@ -7607,9 +7623,9 @@ const App = () => {
                               <th className="px-4 py-2.5">Persona</th>
                               <th className="px-4 py-2.5">Sede</th>
                               {cut.isSunday && <th className="px-4 py-2.5">Servicio</th>}
-                              <th className="px-4 py-2.5">Método</th>
+                              <th className="px-4 py-2.5">M?todo</th>
                               <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                              <th className="px-4 py-2.5">Registró</th>
+                              <th className="px-4 py-2.5">Registr?</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-50">
@@ -7621,7 +7637,7 @@ const App = () => {
                                 {cut.isSunday && <td className="px-4 py-2"><span className="text-[10px] font-bold bg-green-50 text-green-700 px-2 py-0.5 rounded-full border border-green-100">{p.service || NO_SERVICE_LABEL}</span></td>}
                                 <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
                                 <td className="px-4 py-2 text-right font-bold text-slate-800">{formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}</td>
-                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '–'}</td>
+                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '?'}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -7657,7 +7673,7 @@ const App = () => {
                     <div className="flex items-center gap-4">
                       <div className="text-right">
                         <p className="text-lg font-black text-green-600">{formatMoney(cashCutGross ? cut.total : cut.totalNet)}</p>
-                        <p className="text-[10px] text-slate-400 font-bold">Efectivo: {formatMoney(cut.efectivo)} · Tarjeta: {formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
+                        <p className="text-[10px] text-slate-400 font-bold">Efectivo: {formatMoney(cut.efectivo)} ? Tarjeta: {formatMoney(cashCutGross ? cut.tarjeta : (cut.totalNet - cut.efectivo - cut.donations))}</p>
                       </div>
                       {isExpanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
                     </div>
@@ -7670,7 +7686,7 @@ const App = () => {
                           <p className="text-lg font-black text-slate-800">{formatMoney(cashCutGross ? cut.total : cut.totalNet)}</p>
                         </div>
                         <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                          <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Comisión tarjeta</p>
+                          <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Comisi?n tarjeta</p>
                           <p className="text-lg font-black text-red-500">-{formatMoney(cut.total - cut.totalNet)}</p>
                         </div>
                         <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
@@ -7695,9 +7711,9 @@ const App = () => {
                               <th className="px-4 py-2.5">Fecha / Hora</th>
                               <th className="px-4 py-2.5">Persona</th>
                               <th className="px-4 py-2.5">Sede</th>
-                              <th className="px-4 py-2.5">Método</th>
+                              <th className="px-4 py-2.5">M?todo</th>
                               <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                              <th className="px-4 py-2.5">Registró</th>
+                              <th className="px-4 py-2.5">Registr?</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-50">
@@ -7708,7 +7724,7 @@ const App = () => {
                                 <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
                                 <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
                                 <td className="px-4 py-2 text-right font-bold text-slate-800">{formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}</td>
-                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '–'}</td>
+                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '?'}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -7743,12 +7759,12 @@ const App = () => {
                 <button type="button" onClick={() => setCashCutTotalsView(cashCutTotalsView === 'all' ? null : 'all')} className={`rounded-xl border p-4 text-left transition-colors ${cashCutTotalsView === 'all' ? 'border-slate-400 bg-slate-100 ring-2 ring-slate-300' : 'border-slate-200 bg-slate-50 hover:border-slate-300'}`}>
                   <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Total Movimientos</p>
                   <p className="text-2xl font-black text-slate-800">{allPayments.length}</p>
-                  <p className="text-[10px] text-slate-400 font-bold mt-1">{cashCutGross ? formatMoney(totalBruto) : formatMoney(totalNeto)} · Click para ver</p>
+                  <p className="text-[10px] text-slate-400 font-bold mt-1">{cashCutGross ? formatMoney(totalBruto) : formatMoney(totalNeto)} ? Click para ver</p>
                 </button>
                 <div className="rounded-xl border border-green-200 bg-green-50 p-4">
                   <p className="text-[10px] font-black text-green-700 uppercase tracking-wider">{cashCutGross ? 'Total Bruto' : 'Total Neto'}</p>
                   <p className="text-2xl font-black text-slate-800">{cashCutGross ? formatMoney(totalBruto) : formatMoney(totalNeto)}</p>
-                  {!cashCutGross && totalComision > 0 && <p className="text-[10px] text-slate-400 font-bold mt-1">Comisión tarjeta: -{formatMoney(totalComision)}</p>}
+                  {!cashCutGross && totalComision > 0 && <p className="text-[10px] text-slate-400 font-bold mt-1">Comisi?n tarjeta: -{formatMoney(totalComision)}</p>}
                 </div>
                 <button type="button" onClick={() => setCashCutTotalsView(cashCutTotalsView === 'efectivo' ? null : 'efectivo')} className={`rounded-xl border p-4 text-left transition-colors ${cashCutTotalsView === 'efectivo' ? 'border-emerald-400 bg-emerald-100 ring-2 ring-emerald-300' : 'border-emerald-200 bg-emerald-50 hover:border-emerald-300'}`}>
                   <p className="text-[10px] font-black text-emerald-700 uppercase tracking-wider">Total Efectivo</p>
@@ -7758,7 +7774,7 @@ const App = () => {
                 <button type="button" onClick={() => setCashCutTotalsView(cashCutTotalsView === 'tarjeta' ? null : 'tarjeta')} className={`rounded-xl border p-4 text-left transition-colors ${cashCutTotalsView === 'tarjeta' ? 'border-indigo-400 bg-indigo-100 ring-2 ring-indigo-300' : 'border-indigo-200 bg-indigo-50 hover:border-indigo-300'}`}>
                   <p className="text-[10px] font-black text-indigo-700 uppercase tracking-wider">Total Tarjeta {cashCutGross ? '(Bruto)' : '(Neto)'}</p>
                   <p className="text-2xl font-black text-slate-800">{cashCutGross ? formatMoney(tarjetaBruto) : formatMoney(tarjetaNeto)}</p>
-                  <p className="text-[10px] text-slate-400 font-bold mt-1">{tarjetaPayments.length} movimiento{tarjetaPayments.length !== 1 ? 's' : ''}{!cashCutGross && totalComision > 0 ? ` · -${formatMoney(totalComision)} comisión` : ''}</p>
+                  <p className="text-[10px] text-slate-400 font-bold mt-1">{tarjetaPayments.length} movimiento{tarjetaPayments.length !== 1 ? 's' : ''}{!cashCutGross && totalComision > 0 ? ` ? -${formatMoney(totalComision)} comisi?n` : ''}</p>
                 </button>
               </div>
               {activeList && (
@@ -7769,10 +7785,10 @@ const App = () => {
                         <th className="px-4 py-2.5">Fecha / Hora</th>
                         <th className="px-4 py-2.5">Persona</th>
                         <th className="px-4 py-2.5">Sede</th>
-                        <th className="px-4 py-2.5">Método</th>
+                        <th className="px-4 py-2.5">M?todo</th>
                         <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                        {!cashCutGross && cashCutTotalsView === 'tarjeta' && <th className="px-4 py-2.5 text-right">Comisión</th>}
-                        <th className="px-4 py-2.5">Registró</th>
+                        {!cashCutGross && cashCutTotalsView === 'tarjeta' && <th className="px-4 py-2.5 text-right">Comisi?n</th>}
+                        <th className="px-4 py-2.5">Registr?</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
@@ -7783,8 +7799,8 @@ const App = () => {
                           <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
                           <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
                           <td className="px-4 py-2 text-right font-bold text-slate-800">{cashCutGross ? formatMoney(p.amount) : formatMoney(p.netAmount ?? p.amount)}</td>
-                          {!cashCutGross && cashCutTotalsView === 'tarjeta' && <td className="px-4 py-2 text-right text-xs text-red-500 font-bold">{p.commission ? `-${formatMoney(p.commission)}` : '–'}</td>}
-                          <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '–'}</td>
+                          {!cashCutGross && cashCutTotalsView === 'tarjeta' && <td className="px-4 py-2 text-right text-xs text-red-500 font-bold">{p.commission ? `-${formatMoney(p.commission)}` : '?'}</td>}
+                          <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '?'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -7807,7 +7823,7 @@ const App = () => {
       let approvedCondoned = 0;
       let pendingCondoned = 0;
       for (const p of allParticipants) {
-        if (p.eventId !== eventId || !participantIsActiveInEvent(p) || p.isScholarship !== 'Sí') continue;
+        if (p.eventId !== eventId || !participantIsActiveInEvent(p) || !isSiValue(p.isScholarship)) continue;
         const condoned = getScholarshipCondonedAmount(p);
         if (participantIsRosterRow(p)) approvedCondoned += condoned;
         else if (participantIsWaitlistRow(p)) pendingCondoned += condoned;
@@ -7900,8 +7916,8 @@ const App = () => {
                 <span className="text-xs font-black text-slate-800 block">Ocultar mis conceptos para otros</span>
                 <span className="text-[10px] text-slate-500 font-semibold leading-snug block mt-1">
                   {hideMyExpenseConceptsChecked
-                    ? 'Por defecto está activada: los gastos que registraste muestran «Oculto» a otros; tú y el SuperUsuario veis el concepto. Desmarca para que todos vean tus nombres de concepto.'
-                    : 'Has desactivado la opción: los conceptos de los gastos que registres serán visibles para quien tenga acceso a esta lista. Vuelve a marcar para ocultarlos a otros.'}
+                    ? 'Por defecto est? activada: los gastos que registraste muestran ?Oculto? a otros; t? y el SuperUsuario veis el concepto. Desmarca para que todos vean tus nombres de concepto.'
+                    : 'Has desactivado la opci?n: los conceptos de los gastos que registres ser?n visibles para quien tenga acceso a esta lista. Vuelve a marcar para ocultarlos a otros.'}
                 </span>
               </span>
             </label>
@@ -7917,7 +7933,7 @@ const App = () => {
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
-                placeholder="Buscar gasto por nombre…"
+                placeholder="Buscar gasto por nombre?"
                 value={expenseSearch}
                 onChange={e => setExpenseSearch(e.target.value)}
                 className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
@@ -7945,7 +7961,7 @@ const App = () => {
                     </label>
                   </div>
                   <div>
-                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Contabilización</p>
+                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Contabilizaci?n</p>
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
                       <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={expenseFilters.counted} onChange={() => setExpenseFilters((prev) => ({ ...prev, counted: !prev.counted }))} />
                       Contabilizado
@@ -8030,10 +8046,10 @@ const App = () => {
                         />
                       </td>
                       <td className={`px-4 py-3 text-sm font-semibold ${exp.paid ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
-                        {rowConceptVisible ? (exp.name || '—') : MASKED_EXPENSE_CONCEPT_LABEL}
+                        {rowConceptVisible ? (exp.name || '?') : MASKED_EXPENSE_CONCEPT_LABEL}
                         {isAutoScholarship ? (
                           <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-purple-50 text-purple-700 border border-purple-100">
-                            Automático
+                            Autom?tico
                           </span>
                         ) : null}
                       </td>
@@ -8052,7 +8068,7 @@ const App = () => {
                               disabled={!rowConceptVisible}
                               onClick={() => setExpenseEditModal({ isOpen: true, id: exp.id, name: exp.name, quantity: exp.quantity, unitPrice: exp.unitPrice })}
                               className={`p-1.5 rounded-lg transition-colors ${rowConceptVisible ? 'text-slate-400 hover:bg-slate-100 hover:text-slate-600' : 'text-slate-200 cursor-not-allowed'}`}
-                              title={rowConceptVisible ? 'Editar' : 'No disponible: concepto oculto por el usuario que lo registró'}
+                              title={rowConceptVisible ? 'Editar' : 'No disponible: concepto oculto por el usuario que lo registr?'}
                             >
                               <Edit3 size={15} />
                             </button>
@@ -8062,7 +8078,7 @@ const App = () => {
                                 disabled={!rowConceptVisible}
                                 onClick={() => setExpensePartialModal({ isOpen: true, expenseId: exp.id, amount: '' })}
                                 className={`p-1.5 rounded-lg transition-colors ${rowConceptVisible ? 'text-indigo-500 hover:bg-indigo-50' : 'text-slate-200 cursor-not-allowed'}`}
-                                title={rowConceptVisible ? 'Abono parcial' : 'No disponible: concepto oculto por el usuario que lo registró'}
+                                title={rowConceptVisible ? 'Abono parcial' : 'No disponible: concepto oculto por el usuario que lo registr?'}
                               >
                                 <DollarSign size={15} />
                               </button>
@@ -8072,7 +8088,7 @@ const App = () => {
                               disabled={!rowConceptVisible}
                               onClick={() => handleDeleteExpense(exp.id)}
                               className={`p-1.5 rounded-lg transition-colors ${rowConceptVisible ? 'text-red-400 hover:bg-red-50 hover:text-red-600' : 'text-slate-200 cursor-not-allowed'}`}
-                              title={rowConceptVisible ? 'Eliminar' : 'No disponible: concepto oculto por el usuario que lo registró'}
+                              title={rowConceptVisible ? 'Eliminar' : 'No disponible: concepto oculto por el usuario que lo registr?'}
                             >
                               <Trash2 size={15} />
                             </button>
@@ -8115,23 +8131,23 @@ const App = () => {
 
         <div className="bg-white rounded-2xl border border-amber-200 shadow-sm p-5 space-y-3">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-[10px] font-black text-amber-700 uppercase">Saldo pendiente de devolución</p>
+            <p className="text-[10px] font-black text-amber-700 uppercase">Saldo pendiente de devoluci?n</p>
             <p className="text-lg font-black text-amber-700">${totalPendingRefund.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
           </div>
           <p className="text-xs text-slate-600">
             Este saldo ya no figura dentro del balance neto, pero se mantiene dentro de lo recaudado.
-            Si se marca como donación, se elimina de esta lista y vuelve a sumarse al balance neto.
-            El SuperUsuario puede eliminar un renglón: el balance neto deja de restar ese monto (solo auditoría oculta).
+            Si se marca como donaci?n, se elimina de esta lista y vuelve a sumarse al balance neto.
+            El SuperUsuario puede eliminar un rengl?n: el balance neto deja de restar ese monto (solo auditor?a oculta).
           </p>
           {pendingRefundRows.length === 0 ? (
-            <p className="text-xs text-slate-400 italic">No hay saldos pendientes de devolución.</p>
+            <p className="text-xs text-slate-400 italic">No hay saldos pendientes de devoluci?n.</p>
           ) : (
             <div className="space-y-2">
               {pendingRefundRows.map((p) => (
                 <div key={`refund-${p.id}`} className="flex items-center justify-between gap-3 bg-amber-50/50 border border-amber-100 rounded-xl px-3 py-2">
                   <div className="min-w-0">
                     <p className="text-sm font-bold text-slate-800 truncate">{p.name || 'Sin nombre'}</p>
-                    <p className="text-[11px] text-slate-500">Sede: {p.location || '—'} · ID: {p.vnpPersonId || '—'}</p>
+                    <p className="text-[11px] text-slate-500">Sede: {p.location || '?'} ? ID: {p.vnpPersonId || '?'}</p>
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <span className="text-sm font-black text-amber-700">${p._refundPendingAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
@@ -8140,14 +8156,14 @@ const App = () => {
                       onClick={() => markCancelledRefundAsDonation(p.id)}
                       className="px-2.5 py-1.5 rounded-lg text-[11px] font-black bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors"
                     >
-                      Marcar como donación
+                      Marcar como donaci?n
                     </button>
                     {isSuperUser && (
                       <button
                         type="button"
                         onClick={() => openRemovePendingRefundConfirm(p)}
                         className="px-2.5 py-1.5 rounded-lg text-[11px] font-black bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 transition-colors"
-                        title="Solo SuperUsuario: quita el saldo de la lista y el balance neto deja de restarlo (auditoría oculta)"
+                        title="Solo SuperUsuario: quita el saldo de la lista y el balance neto deja de restarlo (auditor?a oculta)"
                       >
                         Eliminar
                       </button>
@@ -8163,10 +8179,10 @@ const App = () => {
           <div className={`rounded-2xl border shadow-sm p-5 ${balanceNeto >= 0 ? 'bg-indigo-50 border-indigo-200' : 'bg-red-50 border-red-200'}`}>
             <p className={`text-[10px] font-black uppercase mb-1 ${balanceNeto >= 0 ? 'text-indigo-500' : 'text-red-500'}`}>Balance Neto ({expenseGross ? 'Bruto' : 'Neto'})</p>
             <p className={`text-2xl font-black ${balanceNeto >= 0 ? 'text-indigo-700' : 'text-red-700'}`}>${balanceNeto.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
-            <p className={`text-[10px] mt-1 ${balanceNeto >= 0 ? 'text-indigo-400' : 'text-red-400'}`}>Recaudación − Costo ({formatMoney(realCostNum)} × {totalRegs})</p>
+            <p className={`text-[10px] mt-1 ${balanceNeto >= 0 ? 'text-indigo-400' : 'text-red-400'}`}>Recaudaci?n ? Costo ({formatMoney(realCostNum)} ? {totalRegs})</p>
           </div>
           <div className={`rounded-2xl border shadow-sm p-5 ${balanceFinal >= 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
-            <p className={`text-[10px] font-black uppercase mb-1 ${balanceFinal >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>Balance Neto − Gastos</p>
+            <p className={`text-[10px] font-black uppercase mb-1 ${balanceFinal >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>Balance Neto ? Gastos</p>
             <p className={`text-2xl font-black ${balanceFinal >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>${balanceFinal.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
             <p className={`text-[10px] mt-1 ${balanceFinal >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{balanceFinal >= 0 ? 'Saldo positivo' : 'Saldo negativo'}</p>
           </div>
@@ -8190,15 +8206,15 @@ const App = () => {
 
     // Listados al hacer click en "Registrados" / "Becados"
     const rosterLocations = (visibleLocations && visibleLocations.length) ? visibleLocations : (currentEvent?.locations || []);
-    const rosterRegulars = rosterLocations.flatMap((loc) => (data[loc] || []).filter((p) => p.isScholarship !== 'Sí'));
-    const rosterScholarship = rosterLocations.flatMap((loc) => (data[loc] || []).filter((p) => p.isScholarship === 'Sí'));
+    const rosterRegulars = rosterLocations.flatMap((loc) => (data[loc] || []).filter((p) => !isSiValue(p.isScholarship)));
+    const rosterScholarship = rosterLocations.flatMap((loc) => (data[loc] || []).filter((p) => isSiValue(p.isScholarship)));
 
     const attendanceEmpleadoList = rosterRegulars.filter((p) => p.attendanceSpecialType === 'empleado');
     const attendanceCortesiaList = rosterRegulars.filter((p) => p.attendanceSpecialType === 'cortesia');
     const freeAttendanceNeedsTransport = [...attendanceEmpleadoList, ...attendanceCortesiaList].filter((p) => !resolveLlegaEnCarro(p));
     const rosterListForModal = summaryRosterModal.type === 'scholarship' ? rosterScholarship : rosterRegulars;
 
-    // Sección 1: filtros y gráficas por Método/Servicio (Neto o Bruto)
+    // Secci?n 1: filtros y gr?ficas por M?todo/Servicio (Neto o Bruto)
     const efectivoNetTotal = summary.paymentMethodTotals?.efectivo?.net ?? 0;
     const tarjetaNetTotal = summary.paymentMethodTotals?.tarjeta?.net ?? 0;
     const efectivoGrossTotal = summary.paymentMethodTotals?.efectivo?.gross ?? 0;
@@ -8236,8 +8252,8 @@ const App = () => {
         const liq = getLiquidationTarget(p);
         const paid = parseFloat(p.paid || 0) || 0;
         acc.count += 1;
-        if (p.isScholarship === 'Sí') acc.scholarship += 1;
-        if (p.isServer === 'Sí') acc.servers += 1;
+        if (isSiValue(p.isScholarship)) acc.scholarship += 1;
+        if (isSiValue(p.isServer)) acc.servers += 1;
         if (participantIsCancelled(p)) acc.cancelled += 1;
         if ((Number(p.refundPendingAmount || 0) || 0) > 0) acc.refund += 1;
         acc.paid += paid;
@@ -8306,20 +8322,20 @@ const App = () => {
                 <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
                   {[
                     { key: 'statsConfig', label: 'Tarjetas Principales' },
-                    { key: 'chartLocations', label: 'Gráfica: Sedes' },
-                    { key: 'chartIncome', label: 'Gráfica: Ingresos' },
-                    { key: 'chartPaymentStatus', label: 'Gráfica: Estado de Pagos' },
-                    { key: 'chartGender', label: 'Gráfica: Género' },
-                    { key: 'chartAgeBrackets', label: 'Gráfica: Rangos de Edad' },
-                    { key: 'chartBloodType', label: 'Gráfica: Tipo de Sangre', show: isCampa },
-                    { key: 'chartScholarship', label: 'Gráfica: Becas', show: isCampa },
-                    { key: 'chartSwimming', label: 'Gráfica: Nado', show: isCampa },
-                    { key: 'chartMedical', label: 'Gráfica: Salud', show: isCampa },
-                    { key: 'chartServers', label: 'Gráfica: Servidores', show: isCampa },
-                    { key: 'chartAges', label: 'Gráfica: Asignación', show: isCampa },
-                    { key: 'chartBaptism', label: 'Gráfica: Bautizos', show: isCampa },
-                    { key: 'chartAttendanceSpecial', label: 'Gráfica: Empleado / Cortesía', show: isCampa },
-                    { key: 'chartCustom', label: 'Gráfica: Campos Extra', show: isGeneral && currentEvent?.customFields?.length > 0 },
+                    { key: 'chartLocations', label: 'Gr?fica: Sedes' },
+                    { key: 'chartIncome', label: 'Gr?fica: Ingresos' },
+                    { key: 'chartPaymentStatus', label: 'Gr?fica: Estado de Pagos' },
+                    { key: 'chartGender', label: 'Gr?fica: G?nero' },
+                    { key: 'chartAgeBrackets', label: 'Gr?fica: Rangos de Edad' },
+                    { key: 'chartBloodType', label: 'Gr?fica: Tipo de Sangre', show: isCampa },
+                    { key: 'chartScholarship', label: 'Gr?fica: Becas', show: isCampa },
+                    { key: 'chartSwimming', label: 'Gr?fica: Nado', show: isCampa },
+                    { key: 'chartMedical', label: 'Gr?fica: Salud', show: isCampa },
+                    { key: 'chartServers', label: 'Gr?fica: Servidores', show: isCampa },
+                    { key: 'chartAges', label: 'Gr?fica: Asignaci?n', show: isCampa },
+                    { key: 'chartBaptism', label: 'Gr?fica: Bautizos', show: isCampa },
+                    { key: 'chartAttendanceSpecial', label: 'Gr?fica: Empleado / Cortes?a', show: isCampa },
+                    { key: 'chartCustom', label: 'Gr?fica: Campos Extra', show: isGeneral && currentEvent?.customFields?.length > 0 },
                     { key: 'tableDetails', label: 'Tabla de Desglose General' },
                   ]
                     .filter(item => item.show !== false)
@@ -8350,7 +8366,7 @@ const App = () => {
                   <p className="text-sm text-slate-500 mt-1">
                     Total: <strong>{rosterListForModal.length}</strong>
                     {summaryRosterModal.type === 'regular' && (attendanceEmpleadoList.length > 0 || attendanceCortesiaList.length > 0)
-                      ? ` · Empleado: ${attendanceEmpleadoList.length} · Cortesía: ${attendanceCortesiaList.length}`
+                      ? ` ? Empleado: ${attendanceEmpleadoList.length} ? Cortes?a: ${attendanceCortesiaList.length}`
                       : ''}
                   </p>
                 </div>
@@ -8372,11 +8388,11 @@ const App = () => {
                       <p className="text-2xl font-black text-slate-800">{attendanceEmpleadoList.length}</p>
                     </div>
                     <div className="rounded-xl border border-fuchsia-100 bg-white p-4">
-                      <p className="text-[10px] font-black uppercase tracking-widest text-fuchsia-800">Cortesía (sin cobro)</p>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-fuchsia-800">Cortes?a (sin cobro)</p>
                       <p className="text-2xl font-black text-slate-800">{attendanceCortesiaList.length}</p>
                     </div>
                     <div className="rounded-xl border border-slate-100 bg-white p-4">
-                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-700">Necesitan transporte (camión)</p>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-700">Necesitan transporte (cami?n)</p>
                       <p className="text-2xl font-black text-slate-800">{freeAttendanceNeedsTransport.length}</p>
                     </div>
                   </div>
@@ -8415,7 +8431,7 @@ const App = () => {
                               {summaryRosterModal.type === 'regular' && (
                                 <>
                                   <td className="px-4 py-3 text-slate-600">
-                                    {p.attendanceSpecialType === 'empleado' ? 'Empleado' : p.attendanceSpecialType === 'cortesia' ? 'Cortesía' : '—'}
+                                    {p.attendanceSpecialType === 'empleado' ? 'Empleado' : p.attendanceSpecialType === 'cortesia' ? 'Cortes?a' : '?'}
                                   </td>
                                   <td className="px-4 py-3 text-slate-600">{resolveTransportSummary(p)}</td>
                                 </>
@@ -8470,7 +8486,7 @@ const App = () => {
                     <span className="text-xs font-bold text-slate-500">Donaciones</span>
                   </div>
                   <p className="text-2xl font-black text-slate-800">{formatMoney(donationsTotal)}</p>
-                  <p className="text-[10px] text-slate-400 font-bold mt-1">{eventDonations.length} donación{eventDonations.length !== 1 ? 'es' : ''}</p>
+                  <p className="text-[10px] text-slate-400 font-bold mt-1">{eventDonations.length} donaci?n{eventDonations.length !== 1 ? 'es' : ''}</p>
                 </div>
               </button>
             )}
@@ -8486,7 +8502,7 @@ const App = () => {
                         const newVal = e.target.value;
                         if (newVal !== (currentEvent.date || '')) {
                           await updateEventConfig({ date: newVal });
-                          addLog('Configuración', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                          addLog('Configuraci?n', `Fecha del evento: "${currentEvent.date || 'Sin fecha'}" -> "${newVal}"`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                         }
                       }}
                       className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer" />
@@ -8504,7 +8520,7 @@ const App = () => {
                 {hasAdminRights && <button onClick={openPricingModal} className="p-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><Settings2 size={14} /></button>}
               </div>
               <div className="flex items-center text-2xl font-black text-slate-800">{canSeeMoney ? `$${currentPricing.global}` : '$***'}</div>
-              {currentEvent.pricingType === 'dynamic' && <p className="text-[10px] text-indigo-500 font-bold mt-1 uppercase">Precio Dinámico</p>}
+              {currentEvent.pricingType === 'dynamic' && <p className="text-[10px] text-indigo-500 font-bold mt-1 uppercase">Precio Din?mico</p>}
             </div>
 
             {isCampa && (
@@ -8518,7 +8534,7 @@ const App = () => {
             )}
 
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
-              <div className="flex items-center gap-2 mb-3"><div className="bg-teal-100 p-2 rounded-lg text-teal-600"><Wallet size={18} /></div><span className="text-xs font-bold text-slate-500">Apartado Mín.</span></div>
+              <div className="flex items-center gap-2 mb-3"><div className="bg-teal-100 p-2 rounded-lg text-teal-600"><Wallet size={18} /></div><span className="text-xs font-bold text-slate-500">Apartado M?n.</span></div>
               <div className="flex items-center text-2xl font-black text-slate-800">
                 {canSeeMoney ? (
                   <><span className="mr-1">$</span>
@@ -8527,7 +8543,7 @@ const App = () => {
                         const newVal = parseFloat(e.target.value) || 0;
                         if (newVal !== currentEvent.minDeposit) {
                           await updateEventConfig({ minDeposit: newVal });
-                          addLog('Configuración', `Apartado mín: $${currentEvent.minDeposit} -> $${newVal}`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                          addLog('Configuraci?n', `Apartado m?n: $${currentEvent.minDeposit} -> $${newVal}`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                         }
                       }}
                       className={`bg-transparent border-b-2 outline-none w-20 transition-colors ${!hasAdminRights ? 'border-transparent cursor-not-allowed' : 'border-transparent hover:border-slate-200 focus:border-indigo-500'}`} /></>
@@ -8545,7 +8561,7 @@ const App = () => {
                         const newVal = parseFloat(e.target.value) || 0;
                         if (newVal !== (currentEvent.realCost || 0)) {
                           await updateEventConfig({ realCost: newVal });
-                          addLog('Configuración', `Costo Real: $${currentEvent.realCost || 0} -> $${newVal}`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                          addLog('Configuraci?n', `Costo Real: $${currentEvent.realCost || 0} -> $${newVal}`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                         }
                       }}
                       className={`bg-transparent border-b-2 outline-none w-24 transition-colors ${!hasAdminRights ? 'border-transparent cursor-not-allowed' : 'border-transparent hover:border-slate-200 focus:border-indigo-500'}`} /></>
@@ -8564,7 +8580,7 @@ const App = () => {
               <p className={`text-2xl font-black ${balanceNeto >= 0 ? 'text-green-600' : 'text-red-500'}`}>
                 {formatMoney(balanceNeto)}
               </p>
-              <p className="text-[10px] text-slate-400 font-bold mt-1">Recaudado - (Costo Real × #Registrados)</p>
+              <p className="text-[10px] text-slate-400 font-bold mt-1">Recaudado - (Costo Real ? #Registrados)</p>
             </div>
           </div>
         )}
@@ -8602,7 +8618,7 @@ const App = () => {
                           if (prevCap === nextCap) return;
                           const updatedCaps = { ...(currentEvent?.locationCaps || {}), [loc]: nextCap };
                           await updateEventConfig({ locationCaps: updatedCaps });
-                          addLog('Configuración', `Cupo en ${loc}: ${prevCap || 'Ilimitado'} -> ${nextCap || 'Ilimitado'}`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+                          addLog('Configuraci?n', `Cupo en ${loc}: ${prevCap || 'Ilimitado'} -> ${nextCap || 'Ilimitado'}`, null, { id: 'Global', name: 'Sistema' }, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
                         }}
                         className="w-24 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500"
                       />
@@ -8614,7 +8630,7 @@ const App = () => {
                 );
               })}
             </div>
-            <p className="text-[10px] text-slate-400 font-bold mt-3">Usa 0 para cupo ilimitado. Al llenarse, “Registrar” envía automáticamente a lista de espera.</p>
+            <p className="text-[10px] text-slate-400 font-bold mt-3">Usa 0 para cupo ilimitado. Al llenarse, ?Registrar? env?a autom?ticamente a lista de espera.</p>
 
             <div className="mt-5 border-t border-slate-100 pt-4">
               <h4 className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Cupo vs Espera por Sede</h4>
@@ -8668,7 +8684,7 @@ const App = () => {
                   {showLocChartValues ? 'Ver %' : 'Ver #'}
                 </button>
               </div>
-              <p className="text-xs text-slate-400 mb-6">Proporción de inscritos totales</p>
+              <p className="text-xs text-slate-400 mb-6">Proporci?n de inscritos totales</p>
               <div className="flex flex-col items-center justify-center gap-6">
                 <div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('count') }} />
                 <div className="w-full grid grid-cols-2 gap-2">
@@ -8696,7 +8712,7 @@ const App = () => {
                   {showIncChartValues ? 'Ver %' : 'Ver $'}
                 </button>
               </div>
-              <p className="text-xs text-slate-400 mb-6">Porcentaje de recaudación</p>
+              <p className="text-xs text-slate-400 mb-6">Porcentaje de recaudaci?n</p>
               <div className="flex flex-col items-center justify-center gap-6">
                 <div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={{ background: getPieChartGradient('paid') }} />
                 <div className="w-full grid grid-cols-2 gap-2">
@@ -8733,17 +8749,17 @@ const App = () => {
           )}
           
           {viewPrefs.chartGender && (
-            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Inscritos por Género</h3><p className="text-xs text-slate-400 mb-6">Comparativa de inscripciones por género</p><div className="flex-1 flex flex-col justify-center gap-6 mt-4 pb-2 w-full"><ProgressBar label="Hombres" value={summary.totalMen} max={summary.totalMen + summary.totalWomen} colorClass="text-blue-600" bgClass="bg-blue-500" /><ProgressBar label="Mujeres" value={summary.totalWomen} max={summary.totalMen + summary.totalWomen} colorClass="text-pink-600" bgClass="bg-pink-500" /></div></div>
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Inscritos por G?nero</h3><p className="text-xs text-slate-400 mb-6">Comparativa de inscripciones por g?nero</p><div className="flex-1 flex flex-col justify-center gap-6 mt-4 pb-2 w-full"><ProgressBar label="Hombres" value={summary.totalMen} max={summary.totalMen + summary.totalWomen} colorClass="text-blue-600" bgClass="bg-blue-500" /><ProgressBar label="Mujeres" value={summary.totalWomen} max={summary.totalMen + summary.totalWomen} colorClass="text-pink-600" bgClass="bg-pink-500" /></div></div>
           )}
 
           {viewPrefs.chartAgeBrackets && (
             <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
               <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><UserCircle className="text-cyan-500" size={20} /> Rangos de Edad</h3>
-              <p className="text-xs text-slate-400 mb-6">Distribución detallada por edades</p>
+              <p className="text-xs text-slate-400 mb-6">Distribuci?n detallada por edades</p>
               <div className="space-y-4 w-full mt-2 max-h-64 overflow-y-auto pr-2">
-                <ProgressBar label="Niños (< 13)" value={summary.ageBrackets.kids} max={totalRegs} colorClass="text-cyan-600" bgClass="bg-cyan-500" />
+                <ProgressBar label="Ni?os (< 13)" value={summary.ageBrackets.kids} max={totalRegs} colorClass="text-cyan-600" bgClass="bg-cyan-500" />
                 <ProgressBar label="Adolescentes (13 - 17)" value={summary.ageBrackets.teens} max={totalRegs} colorClass="text-blue-600" bgClass="bg-blue-500" />
-                <ProgressBar label="Jóvenes (18 - 25)" value={summary.ageBrackets.youngAdults} max={totalRegs} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
+                <ProgressBar label="J?venes (18 - 25)" value={summary.ageBrackets.youngAdults} max={totalRegs} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
                 <ProgressBar label="Adultos (26 - 40)" value={summary.ageBrackets.adults} max={totalRegs} colorClass="text-purple-600" bgClass="bg-purple-500" />
                 <ProgressBar label="Mayores (41+)" value={summary.ageBrackets.seniors} max={totalRegs} colorClass="text-pink-600" bgClass="bg-pink-500" />
               </div>
@@ -8755,32 +8771,32 @@ const App = () => {
               {viewPrefs.chartBloodType && (
                 <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
                   <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Droplets className="text-red-500" size={20} /> Tipos de Sangre</h3>
-                  <p className="text-xs text-slate-400 mb-6">Distribución de participantes por tipo de sangre</p>
+                  <p className="text-xs text-slate-400 mb-6">Distribuci?n de participantes por tipo de sangre</p>
                   <div className="flex-1 flex flex-col justify-center gap-4 mt-4 pb-2 w-full max-h-64 overflow-y-auto pr-2">
                     {Object.entries(summary.bloodTypeStats).sort((a,b)=>b[1]-a[1]).map(([bt, count]) => count > 0 && (
                       <ProgressBar key={bt} label={bt} value={count} max={totalRegs} colorClass="text-red-600" bgClass="bg-red-500" />
                     ))}
-                    {Object.values(summary.bloodTypeStats).every(v => v === 0) && <p className="text-xs text-slate-400 italic">No hay datos registrados aún.</p>}
+                    {Object.values(summary.bloodTypeStats).every(v => v === 0) && <p className="text-xs text-slate-400 italic">No hay datos registrados a?n.</p>}
                   </div>
                 </div>
               )}
               
               {viewPrefs.chartSwimming && (
-                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Droplets className="text-blue-500" size={20} /> Habilidades Acuáticas</h3><p className="text-xs text-slate-400 mb-6">Capacidad de nado de los inscritos</p><div className="space-y-5 w-full mt-2"><ProgressBar label="Saben Nadar" value={summary.totalSwimmers} max={totalRegs} colorClass="text-blue-600" bgClass="bg-blue-500" /><ProgressBar label="No Saben Nadar" value={summary.totalNonSwimmers} max={totalRegs} colorClass="text-slate-500" bgClass="bg-slate-400" /></div></div>
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Droplets className="text-blue-500" size={20} /> Habilidades Acu?ticas</h3><p className="text-xs text-slate-400 mb-6">Capacidad de nado de los inscritos</p><div className="space-y-5 w-full mt-2"><ProgressBar label="Saben Nadar" value={summary.totalSwimmers} max={totalRegs} colorClass="text-blue-600" bgClass="bg-blue-500" /><ProgressBar label="No Saben Nadar" value={summary.totalNonSwimmers} max={totalRegs} colorClass="text-slate-500" bgClass="bg-slate-400" /></div></div>
               )}
               
               {viewPrefs.chartMedical && (
-                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Activity className="text-red-500" size={20} /> Condiciones de Salud</h3><p className="text-xs text-slate-400 mb-6">Incidencia de condiciones médicas especiales</p><div className="space-y-5 w-full mt-2"><ProgressBar label="Con Alergias" value={summary.totalAllergies} max={totalRegs} colorClass="text-orange-600" bgClass="bg-orange-500" /><ProgressBar label="Con Enfermedades" value={summary.totalDiseases} max={totalRegs} colorClass="text-red-600" bgClass="bg-red-500" /><ProgressBar label="Con Discapacidades" value={summary.totalDisabilities} max={totalRegs} colorClass="text-purple-600" bgClass="bg-purple-500" /></div></div>
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Activity className="text-red-500" size={20} /> Condiciones de Salud</h3><p className="text-xs text-slate-400 mb-6">Incidencia de condiciones m?dicas especiales</p><div className="space-y-5 w-full mt-2"><ProgressBar label="Con Alergias" value={summary.totalAllergies} max={totalRegs} colorClass="text-orange-600" bgClass="bg-orange-500" /><ProgressBar label="Con Enfermedades" value={summary.totalDiseases} max={totalRegs} colorClass="text-red-600" bgClass="bg-red-500" /><ProgressBar label="Con Discapacidades" value={summary.totalDisabilities} max={totalRegs} colorClass="text-purple-600" bgClass="bg-purple-500" /></div></div>
               )}
               
               {viewPrefs.chartServers && (
                 <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
                   <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-amber-500" size={20} /> Servidores</h3>
-                  <p className="text-xs text-slate-400 mb-6">Distribución de servidores por asignación</p>
+                  <p className="text-xs text-slate-400 mb-6">Distribuci?n de servidores por asignaci?n</p>
                   <div className="space-y-5 w-full mt-2">
                     <ProgressBar label="Total Servidores" value={summary.totalServers} max={totalRegs} colorClass="text-amber-600" bgClass="bg-amber-500" />
-                    <ProgressBar label="Teens" value={allParticipants.filter(p => p.eventId === currentEvent?.id && participantIsActiveInEvent(p) && p.isServer === 'Sí' && p.serverAssignment === 'Teens').length} max={summary.totalServers} colorClass="text-indigo-600" bgClass="bg-indigo-400" />
-                    <ProgressBar label="Jóvenes" value={allParticipants.filter(p => p.eventId === currentEvent?.id && participantIsActiveInEvent(p) && p.isServer === 'Sí' && p.serverAssignment === 'Jóvenes').length} max={summary.totalServers} colorClass="text-blue-600" bgClass="bg-blue-400" />
+                    <ProgressBar label="Teens" value={allParticipants.filter(p => p.eventId === currentEvent?.id && participantIsActiveInEvent(p) && isSiValue(p.isServer) && p.serverAssignment === 'Teens').length} max={summary.totalServers} colorClass="text-indigo-600" bgClass="bg-indigo-400" />
+                    <ProgressBar label="J?venes" value={allParticipants.filter(p => p.eventId === currentEvent?.id && participantIsActiveInEvent(p) && isSiValue(p.isServer) && p.serverAssignment === 'J?venes').length} max={summary.totalServers} colorClass="text-blue-600" bgClass="bg-blue-400" />
                     <ProgressBar label="Ambos" value={summary.totalServersBoth} max={summary.totalServers} colorClass="text-amber-600" bgClass="bg-amber-400" />
                   </div>
                 </div>
@@ -8788,11 +8804,11 @@ const App = () => {
 
               {viewPrefs.chartAges && (
                 <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
-                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Asignación a Eventos</h3>
-                  <p className="text-xs text-slate-400 mb-6">Teens (&lt;18) vs Jóvenes (18+)</p>
+                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Asignaci?n a Eventos</h3>
+                  <p className="text-xs text-slate-400 mb-6">Teens (&lt;18) vs J?venes (18+)</p>
                   <div className="space-y-5 w-full mt-2">
                     <ProgressBar label="Teens (<18)" value={summary.totalMinors} max={summary.totalMinors + summary.totalAdults} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
-                    <ProgressBar label="Jóvenes (18+)" value={summary.totalAdults} max={summary.totalMinors + summary.totalAdults} colorClass="text-blue-500" bgClass="bg-blue-400" />
+                    <ProgressBar label="J?venes (18+)" value={summary.totalAdults} max={summary.totalMinors + summary.totalAdults} colorClass="text-blue-500" bgClass="bg-blue-400" />
                     {summary.totalServersBoth > 0 && (
                       <div className="pt-4 mt-2 border-t border-slate-100">
                         <div className="flex justify-between text-xs font-bold"><span className="text-amber-600 uppercase tracking-wider">Servidores en Ambos</span><span className="text-amber-600 font-black">{summary.totalServersBoth}</span></div>
@@ -8805,22 +8821,22 @@ const App = () => {
               {viewPrefs.chartBaptism && (
                 <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
                   <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Church className="text-sky-600" size={20} /> Bautizos</h3>
-                  <p className="text-xs text-slate-400 mb-6">Conteo por segmento del evento (Teens / Jóvenes). Servidor Ambos define dónde cuenta.</p>
+                  <p className="text-xs text-slate-400 mb-6">Conteo por segmento del evento (Teens / J?venes). Servidor Ambos define d?nde cuenta.</p>
                   <div className="space-y-5 w-full mt-2">
                     <ProgressBar label="Total" value={summary.baptismsTeens + summary.baptismsJovenes} max={Math.max(summary.globalStats.all.count, 1)} colorClass="text-sky-700" bgClass="bg-sky-500" />
                     <ProgressBar label="En Teens" value={summary.baptismsTeens} max={Math.max(summary.baptismsTeens + summary.baptismsJovenes, 1)} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
-                    <ProgressBar label="En Jóvenes" value={summary.baptismsJovenes} max={Math.max(summary.baptismsTeens + summary.baptismsJovenes, 1)} colorClass="text-blue-600" bgClass="bg-blue-500" />
+                    <ProgressBar label="En J?venes" value={summary.baptismsJovenes} max={Math.max(summary.baptismsTeens + summary.baptismsJovenes, 1)} colorClass="text-blue-600" bgClass="bg-blue-500" />
                   </div>
                 </div>
               )}
 
               {viewPrefs.chartAttendanceSpecial && (
                 <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
-                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Briefcase className="text-teal-600" size={20} /> Empleado y cortesía</h3>
+                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Briefcase className="text-teal-600" size={20} /> Empleado y cortes?a</h3>
                   <p className="text-xs text-slate-400 mb-6">Inscritos con costo a liquidar $0 (siguen en el conteo del evento)</p>
                   <div className="space-y-5 w-full mt-2">
                     <ProgressBar label="Empleado" value={summary.totalAttendanceEmpleado} max={Math.max(totalRegs, 1)} colorClass="text-teal-700" bgClass="bg-teal-500" />
-                    <ProgressBar label="Cortesía" value={summary.totalAttendanceCortesia} max={Math.max(totalRegs, 1)} colorClass="text-fuchsia-700" bgClass="bg-fuchsia-500" />
+                    <ProgressBar label="Cortes?a" value={summary.totalAttendanceCortesia} max={Math.max(totalRegs, 1)} colorClass="text-fuchsia-700" bgClass="bg-fuchsia-500" />
                     <ProgressBar
                       label="Sin asistencia especial"
                       value={Math.max(0, totalRegs - summary.totalAttendanceEmpleado - summary.totalAttendanceCortesia)}
@@ -8840,12 +8856,12 @@ const App = () => {
             return (
               <div key={idx} className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
                 <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><ListPlus className="text-indigo-500" size={20} /> {field}</h3>
-                <p className="text-xs text-slate-400 mb-6">Distribución de respuestas</p>
+                <p className="text-xs text-slate-400 mb-6">Distribuci?n de respuestas</p>
                 <div className="space-y-4 w-full mt-2 max-h-48 overflow-y-auto pr-2">
                   {entries.map(([val, count], i) => (
                     <ProgressBar key={i} label={val} value={count} max={totalRegs} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
                   ))}
-                  {entries.length === 0 && <p className="text-xs text-slate-400 italic">No hay datos registrados aún.</p>}
+                  {entries.length === 0 && <p className="text-xs text-slate-400 italic">No hay datos registrados a?n.</p>}
                 </div>
               </div>
             );
@@ -8857,7 +8873,7 @@ const App = () => {
             <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="bg-slate-100 p-2 rounded-lg text-slate-600"><TableProperties size={20} /></div>
-                <div><h3 className="text-lg font-bold text-slate-800">Visualización de Datos Generales</h3><p className="text-xs text-slate-400">Resumen por sede (aplica filtros concatenados activos).</p></div>
+                <div><h3 className="text-lg font-bold text-slate-800">Visualizaci?n de Datos Generales</h3><p className="text-xs text-slate-400">Resumen por sede (aplica filtros concatenados activos).</p></div>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[11px] font-bold text-slate-500">Filtros:</span>
@@ -8880,7 +8896,7 @@ const App = () => {
                     <th className="px-6 py-4 text-center">Becados</th>
                     <th className="px-6 py-4 text-center">Servidores</th>
                     <th className="px-6 py-4 text-center">Cancelados</th>
-                    <th className="px-6 py-4 text-center">Con devolución</th>
+                    <th className="px-6 py-4 text-center">Con devoluci?n</th>
                     <th className="px-6 py-4 text-right">Recaudado</th>
                     <th className="px-6 py-4 text-right">Pendiente</th>
                     <th className="px-6 py-4 text-right">Total Esperado</th>
@@ -8926,7 +8942,7 @@ const App = () => {
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mt-8">
           <div className="p-6 border-b border-slate-100">
             <h3 className="text-lg font-bold text-slate-800">Salida y Regreso por Sede</h3>
-            <p className="text-xs text-slate-400">Distribución en valores absolutos (sin porcentajes).</p>
+            <p className="text-xs text-slate-400">Distribuci?n en valores absolutos (sin porcentajes).</p>
           </div>
           {(() => {
             const locations = currentEvent?.locations || [];
@@ -8999,9 +9015,9 @@ const App = () => {
     );
   };
 
-  /** Columna «Participante» compartida: mismas etiquetas que en registro por sede (incl. lista de espera en vista global). */
+  /** Columna ?Participante? compartida: mismas etiquetas que en registro por sede (incl. lista de espera en vista global). */
   const renderRegistrationParticipantColumn = (person) => {
-    const isBecado = isCampa && person.isScholarship === 'Sí';
+    const isBecado = isCampa && isSiValue(person.isScholarship);
     const isWaitlist = (person?.status || 'active') === 'waitlist';
     return (
       <div className="space-y-1">
@@ -9030,7 +9046,7 @@ const App = () => {
             ) : null}
             {(Number(person?.refundPendingAmount || 0) || 0) > 0 ? (
               <span className="text-[8px] font-black uppercase bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center">
-                Devolución pendiente
+                Devoluci?n pendiente
               </span>
             ) : null}
             {resolveResponsivaStatus(person) === 'Pendiente' ? (
@@ -9055,28 +9071,28 @@ const App = () => {
           )}
           {isCampa && normalizeAttendanceSpecial(person) === ATTENDANCE_SPECIAL.cortesia && (
             <span className="bg-fuchsia-100 text-fuchsia-800 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border border-fuchsia-200">
-              <Gift size={10} /> Cortesía
+              <Gift size={10} /> Cortes?a
             </span>
           )}
-          {person.isServer === 'Sí' ? (
+          {isSiValue(person.isServer) ? (
             <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>
           ) : (
-            isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes')}</span>
+            isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'J?venes')}</span>
           )}
-          {isCampa && person.willBeBaptized === 'Sí' && (() => {
+          {isCampa && isSiValue(person.willBeBaptized) && (() => {
             const seg = getBaptismAccountingSegment(person);
             return (
-              <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border ${seg ? 'bg-sky-100 text-sky-800 border-sky-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`} title={seg ? `Conteo en ${seg}` : 'Servidor Ambos: elige Teens o Jóvenes en editar'}>
-                <Church size={10} /> Bautizo{seg ? ` · ${seg}` : ' · incompleto'}
+              <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border ${seg ? 'bg-sky-100 text-sky-800 border-sky-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`} title={seg ? `Conteo en ${seg}` : 'Servidor Ambos: elige Teens o J?venes en editar'}>
+                <Church size={10} /> Bautizo{seg ? ` ? ${seg}` : ' ? incompleto'}
               </span>
             );
           })()}
         </div>
-        {isWaitlist && isCampa && person.isScholarship === 'Sí' && person.scholarshipPendingApproval ? (
+        {isWaitlist && isCampa && isSiValue(person.isScholarship) && person.scholarshipPendingApproval ? (
           <p className="text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-100 rounded-lg px-2 py-1 inline-block">
             Solicitud beca {person.scholarshipType === 'partial' ? 'parcial' : 'total'}
             {person.scholarshipType === 'partial'
-              ? ` · monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}`
+              ? ` ? monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}`
               : ''}{' '}
             (pendiente al promover)
           </p>
@@ -9092,7 +9108,7 @@ const App = () => {
   };
 
   const renderRegistrationFinancesColumn = (person) => {
-    const isBecado = isCampa && person.isScholarship === 'Sí';
+    const isBecado = isCampa && isSiValue(person.isScholarship);
     const liquidationTarget = getLiquidationTarget(person);
     const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
     return (
@@ -9129,7 +9145,7 @@ const App = () => {
     const showRosterCancelled = rosterSearchActive ? cancelledFilteredForLoc.length > 0 : rosterSectionExpanded.cancelled;
     const newRegCampaignsActive = getActiveDiscountCampaigns(currentEvent).filter((c) => campaignMatchesPersonProfile(c, newEntry));
     const newRegSelectableCampaigns = getValidDiscountCampaignsForPerson(currentEvent, newEntry);
-    const newRegBaseList = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
+    const newRegBaseList = (isSiValue(newEntry.isServer) && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
     const newRegCampPreview = resolveMatchedCampaignForNewEntry(newEntry);
     const newRegLiqPreview = newRegCampPreview ? Math.max(0, Number(newRegCampPreview.finalAmount) || 0) : newRegBaseList;
     return (
@@ -9164,7 +9180,7 @@ const App = () => {
                 type="button"
                 onClick={handleClearRegistrationForm}
                 className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-200 transition-colors"
-                title="Vacía todos los campos del formulario y la búsqueda de perfil"
+                title="Vac?a todos los campos del formulario y la b?squeda de perfil"
               >
                 <RotateCcw size={14} /> Limpiar formulario
               </button>
@@ -9179,7 +9195,7 @@ const App = () => {
               <Database size={14} className="text-indigo-500" /> Buscar persona en eventos anteriores
             </p>
             <p className="text-[11px] text-slate-500">
-              Escribe nombre, ID VNPM o al menos 4 dígitos del teléfono. Se incluyen personas de todos los eventos (activos y archivados/eliminados). Lo que no aplique al formulario actual se descarta al usar datos.
+              Escribe nombre, ID VNPM o al menos 4 d?gitos del tel?fono. Se incluyen personas de todos los eventos (activos y archivados/eliminados). Lo que no aplique al formulario actual se descarta al usar datos.
             </p>
             {pastProfilesForImport.length === 0 && (
               <p className="text-[11px] text-amber-800 bg-amber-50 px-3 py-2 rounded-lg border border-amber-100">
@@ -9191,14 +9207,14 @@ const App = () => {
               <input
                 type="text"
                 className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                placeholder="Nombre, ID VNPM o teléfono…"
+                placeholder="Nombre, ID VNPM o tel?fono?"
                 value={newRegProfileSearch}
                 onChange={(e) => setNewRegProfileSearch(e.target.value)}
               />
             </div>
             {newEntry.vnpPersonId ? (
               <p className="text-[11px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-lg">
-                ID VNPM vinculado: <strong>{newEntry.vnpPersonId}</strong> (nuevo registro reutilizará este ID)
+                ID VNPM vinculado: <strong>{newEntry.vnpPersonId}</strong> (nuevo registro reutilizar? este ID)
               </p>
             ) : null}
             {profileImportMatches.length > 0 && (
@@ -9211,7 +9227,7 @@ const App = () => {
                     <li key={`${p.eventId}-${p.id}`} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 text-xs">
                       <div className="min-w-0 flex-1">
                         <p className="font-bold text-slate-800 truncate">{p.name}</p>
-                        <p className="text-slate-500">{p.phone} · {evName}{isArchived ? ' · Archivado' : ''}</p>
+                        <p className="text-slate-500">{p.phone} ? {evName}{isArchived ? ' ? Archivado' : ''}</p>
                         {archivedHere ? (
                           <p className="text-[10px] font-bold text-amber-700 mt-0.5">Archivado en este evento</p>
                         ) : isArchived ? (
@@ -9236,18 +9252,18 @@ const App = () => {
           <div className="space-y-4">
             {/* 1. Datos generales */}
             <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
-              <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">1 · Datos generales</h4>
+              <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">1 ? Datos generales</h4>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                 <div className="space-y-1">
                   <label className={labelClasses}>Nombre completo</label>
-                  <input placeholder="Ej. Juan Pérez López" className={`${inputClasses} ${getRequiredFieldClass(!hasValidFullName(newEntry.name || ''))}`} value={newEntry.name} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, name: e.target.value })} />
+                  <input placeholder="Ej. Juan P?rez L?pez" className={`${inputClasses} ${getRequiredFieldClass(!hasValidFullName(newEntry.name || ''))}`} value={newEntry.name} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, name: e.target.value })} />
                   <p className="text-[10px] text-slate-500 px-1">Debe incluir 1 nombre y 2 apellidos.</p>
                   <p className="text-[10px] font-mono text-indigo-600 px-1">
-                    ID VNPM: {hasValidFullName(newEntry.name || '') && (newEntry.birthDate || '').trim() && String(newEntry.gender || '').trim() ? generateVnpPersonId(newEntry) : 'completa nombre, fecha de nacimiento y género'}
+                    ID VNPM: {hasValidFullName(newEntry.name || '') && (newEntry.birthDate || '').trim() && String(newEntry.gender || '').trim() ? generateVnpPersonId(newEntry) : 'completa nombre, fecha de nacimiento y g?nero'}
                   </p>
                 </div>
                 <div className="space-y-1">
-                  <label className={labelClasses}>Teléfono personal</label>
+                  <label className={labelClasses}>Tel?fono personal</label>
                   <input placeholder="55-1234-5678" className={`${inputClasses} ${getRequiredFieldClass(!isValidPhone(newEntry.phone || ''))}`} value={newEntry.phone} onChange={e => setNewEntry({ ...newEntry, phone: formatPhoneNumber(e.target.value) })} />
                 </div>
                 <div className="space-y-1">
@@ -9261,7 +9277,7 @@ const App = () => {
                       setNewEntry({ ...newEntry, birthDate, age: calculateAgeFromBirthDate(birthDate) });
                     }}
                   />
-                  <p className="text-[10px] text-slate-500 font-semibold px-1">Edad calculada: {newEntry.age || '—'}</p>
+                  <p className="text-[10px] text-slate-500 font-semibold px-1">Edad calculada: {newEntry.age || '?'}</p>
                 </div>
                 {(() => {
                   const ageNum = parseInt(newEntry.age, 10);
@@ -9282,7 +9298,7 @@ const App = () => {
                   );
                 })()}
                 <div className="space-y-1">
-                  <label className={labelClasses}>Género {!isCampa && '(Opcional)'}</label>
+                  <label className={labelClasses}>G?nero {!isCampa && '(Opcional)'}</label>
                   <select className={`${inputClasses} ${getRequiredFieldClass(isCampa && !String(newEntry.gender || '').trim())}`} value={newEntry.gender} onChange={e => setNewEntry({ ...newEntry, gender: e.target.value })}>
                     <option value="">Seleccionar {!isCampa && '(Opcional)'}</option>
                     {GENDERS.map(g => <option key={g} value={g}>{g}</option>)}
@@ -9308,28 +9324,28 @@ const App = () => {
             {/* 2. Contacto de emergencia */}
             {(isCampa || isGeneral) && (
               <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
-                <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">2 · Contacto de emergencia</h4>
+                <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">2 ? Contacto de emergencia</h4>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div className="space-y-1">
                     <label className={labelClasses}>Nombre del contacto {isGeneral && '(Opcional)'}</label>
                     <input placeholder="Nombre contacto" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(newEntry.emergencyContact || '').trim())}`} value={newEntry.emergencyContact} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, emergencyContact: e.target.value })} />
                   </div>
                   <div className="space-y-1">
-                    <label className={labelClasses}>Teléfono de emergencia {isGeneral && '(Opcional)'}</label>
+                    <label className={labelClasses}>Tel?fono de emergencia {isGeneral && '(Opcional)'}</label>
                     <input placeholder="55-1234-5678" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !isValidPhone(newEntry.emergencyPhone || ''))}`} value={newEntry.emergencyPhone} onChange={e => setNewEntry({ ...newEntry, emergencyPhone: formatPhoneNumber(e.target.value) })} />
                   </div>
                   <div className="space-y-1">
                     <label className={labelClasses}>Parentesco {isGeneral && '(Opcional)'}</label>
-                    <input placeholder="Ej. Madre, padre, tutor…" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(newEntry.emergencyRelationship || '').trim())}`} value={newEntry.emergencyRelationship || ''} onChange={e => setNewEntry({ ...newEntry, emergencyRelationship: e.target.value })} />
+                    <input placeholder="Ej. Madre, padre, tutor?" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(newEntry.emergencyRelationship || '').trim())}`} value={newEntry.emergencyRelationship || ''} onChange={e => setNewEntry({ ...newEntry, emergencyRelationship: e.target.value })} />
                   </div>
                 </div>
               </section>
             )}
 
-            {/* 3. Datos médicos (Campa) */}
+            {/* 3. Datos m?dicos (Campa) */}
             {isCampa && (
               <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
-                <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">3 · Datos médicos</h4>
+                <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">3 ? Datos m?dicos</h4>
                 <div className="flex flex-col gap-2">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-1">
@@ -9339,8 +9355,8 @@ const App = () => {
                       </select>
                     </div>
                     <div className="space-y-1">
-                      <label className={labelClasses}>¿Sabe nadar?</label>
-                      <button type="button" onClick={() => setNewEntry({ ...newEntry, canSwim: newEntry.canSwim === 'Sí' ? 'No' : 'Sí' })} className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border ${newEntry.canSwim === 'Sí' ? 'bg-blue-500 text-white border-blue-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}>{newEntry.canSwim}</button>
+                      <label className={labelClasses}>?Sabe nadar?</label>
+                      <button type="button" onClick={() => setNewEntry({ ...newEntry, canSwim: isSiValue(newEntry.canSwim) ? 'No' : SI })} className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border ${isSiValue(newEntry.canSwim) ? 'bg-blue-500 text-white border-blue-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}>{formatSiNo(newEntry.canSwim)}</button>
                     </div>
                   </div>
                   <div className="space-y-1">
@@ -9355,19 +9371,19 @@ const App = () => {
                           }}
                           className="text-[10px] font-bold text-orange-600 hover:text-orange-700 flex items-center gap-1"
                         >
-                          <Settings2 size={12} /> Categorías
+                          <Settings2 size={12} /> Categor?as
                         </button>
                       )}
                     </div>
                     <div className="flex gap-2 flex-wrap">
-                      <select className={`p-2.5 bg-slate-50 border rounded-lg outline-none text-sm ${newEntry.hasAllergy === 'Sí' ? 'border-orange-300 text-orange-700 bg-orange-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasAllergy} onChange={e => setNewEntry({ ...newEntry, hasAllergy: e.target.value, allergyCategory: e.target.value === 'Sí' ? (newEntry.allergyCategory || '') : '', allergyDetails: e.target.value === 'Sí' ? (newEntry.allergyDetails || '') : '' })}><option value="No">No</option><option value="Sí">Sí</option></select>
-                      {newEntry.hasAllergy === 'Sí' && (
+                      <select className={`p-2.5 bg-slate-50 border rounded-lg outline-none text-sm ${isSiValue(newEntry.hasAllergy) ? 'border-orange-300 text-orange-700 bg-orange-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasAllergy} onChange={e => setNewEntry({ ...newEntry, hasAllergy: e.target.value, allergyCategory: isSiValue(e.target.value) ? (newEntry.allergyCategory || '') : '', allergyDetails: isSiValue(e.target.value) ? (newEntry.allergyDetails || '') : '' })}><option value="No">No</option><option value={SI}>{SI_LABEL}</option></select>
+                      {isSiValue(newEntry.hasAllergy) && (
                         <>
                           <select className="flex-1 min-w-[150px] p-2.5 bg-slate-50 border border-orange-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-orange-500" value={newEntry.allergyCategory || ''} onChange={e => setNewEntry({ ...newEntry, allergyCategory: e.target.value })}>
-                            <option value="">Categoría (opcional)</option>
+                            <option value="">Categor?a (opcional)</option>
                             {(globalConfig?.allergyOptions?.length ? globalConfig.allergyOptions : DEFAULT_ALLERGY_OPTIONS).map((opt) => <option key={`allergy-opt-${opt}`} value={opt}>{opt}</option>)}
                           </select>
-                          <input placeholder="Detalle (opcional si eliges categoría)" className={`flex-1 min-w-[180px] p-2.5 bg-slate-50 border border-orange-300 rounded-lg text-sm ${getRequiredFieldClass(!(newEntry.allergyDetails || '').trim() && !(newEntry.allergyCategory || '').trim())}`} value={newEntry.allergyDetails} onChange={e => setNewEntry({ ...newEntry, allergyDetails: e.target.value })} />
+                          <input placeholder="Detalle (opcional si eliges categor?a)" className={`flex-1 min-w-[180px] p-2.5 bg-slate-50 border border-orange-300 rounded-lg text-sm ${getRequiredFieldClass(!(newEntry.allergyDetails || '').trim() && !(newEntry.allergyCategory || '').trim())}`} value={newEntry.allergyDetails} onChange={e => setNewEntry({ ...newEntry, allergyDetails: e.target.value })} />
                         </>
                       )}
                     </div>
@@ -9375,8 +9391,8 @@ const App = () => {
                   <div className="space-y-1">
                     <label className={labelClasses}>Enfermedades</label>
                     <div className="flex gap-2 flex-wrap">
-                      <select className={`p-2.5 bg-slate-50 border rounded-lg outline-none text-sm ${newEntry.hasDisease === 'Sí' ? 'border-red-300 text-red-700 bg-red-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasDisease} onChange={e => setNewEntry({ ...newEntry, hasDisease: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>
-                      {newEntry.hasDisease === 'Sí' && (
+                      <select className={`p-2.5 bg-slate-50 border rounded-lg outline-none text-sm ${isSiValue(newEntry.hasDisease) ? 'border-red-300 text-red-700 bg-red-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasDisease} onChange={e => setNewEntry({ ...newEntry, hasDisease: e.target.value })}><option value="No">No</option><option value={SI}>{SI_LABEL}</option></select>
+                      {isSiValue(newEntry.hasDisease) && (
                         <>
                           <input placeholder="Enfermedad" className={`flex-1 min-w-[120px] p-2.5 bg-slate-50 border border-red-300 rounded-lg text-sm ${getRequiredFieldClass(!(newEntry.diseaseDetails || '').trim())}`} value={newEntry.diseaseDetails} onChange={e => setNewEntry({ ...newEntry, diseaseDetails: e.target.value })} />
                           <input placeholder="Medicamento (opc.)" className="flex-1 min-w-[120px] p-2.5 bg-slate-50 border border-red-300 rounded-lg text-sm" value={newEntry.diseaseMedication || ''} onChange={e => setNewEntry({ ...newEntry, diseaseMedication: e.target.value })} />
@@ -9387,8 +9403,8 @@ const App = () => {
                   <div className="space-y-1">
                     <label className={labelClasses}>Discapacidades</label>
                     <div className="flex gap-2">
-                      <select className={`p-2.5 bg-slate-50 border rounded-lg outline-none text-sm ${newEntry.hasDisability === 'Sí' ? 'border-purple-300 text-purple-700 bg-purple-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasDisability} onChange={e => setNewEntry({ ...newEntry, hasDisability: e.target.value })}><option value="No">No</option><option value="Sí">Sí</option></select>
-                      {newEntry.hasDisability === 'Sí' && <input placeholder="Detalles" className={`flex-1 p-2.5 bg-slate-50 border border-purple-300 rounded-lg text-sm ${getRequiredFieldClass(!(newEntry.disabilityDetails || '').trim())}`} value={newEntry.disabilityDetails} onChange={e => setNewEntry({ ...newEntry, disabilityDetails: e.target.value })} />}
+                      <select className={`p-2.5 bg-slate-50 border rounded-lg outline-none text-sm ${isSiValue(newEntry.hasDisability) ? 'border-purple-300 text-purple-700 bg-purple-50' : 'border-slate-200 focus:ring-2 focus:ring-indigo-500'}`} value={newEntry.hasDisability} onChange={e => setNewEntry({ ...newEntry, hasDisability: e.target.value })}><option value="No">No</option><option value={SI}>{SI_LABEL}</option></select>
+                      {isSiValue(newEntry.hasDisability) && <input placeholder="Detalles" className={`flex-1 p-2.5 bg-slate-50 border border-purple-300 rounded-lg text-sm ${getRequiredFieldClass(!(newEntry.disabilityDetails || '').trim())}`} value={newEntry.disabilityDetails} onChange={e => setNewEntry({ ...newEntry, disabilityDetails: e.target.value })} />}
                     </div>
                   </div>
                 </div>
@@ -9399,10 +9415,10 @@ const App = () => {
             {isCampa && (
               <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
                 <div className="flex items-center justify-between mb-3 pb-1.5 border-b border-slate-200">
-                  <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em]">4 · Tipo de asistencia</h4>
+                  <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em]">4 ? Tipo de asistencia</h4>
                   {hasAdminRights && (
                     <button type="button" onClick={() => { setServeAreaOptionsForm(globalConfig?.serveAreaOptions?.length ? [...globalConfig.serveAreaOptions] : [...DEFAULT_SERVE_AREA_OPTIONS]); setServeAreaOptionsModal({ isOpen: true }); }} className="text-[10px] font-bold text-amber-600 hover:text-amber-700 flex items-center gap-1">
-                      <Settings2 size={12} /> Áreas para servir
+                      <Settings2 size={12} /> ?reas para servir
                     </button>
                   )}
                 </div>
@@ -9413,22 +9429,22 @@ const App = () => {
                       <button
                         type="button"
                         onClick={() => {
-                          const next = newEntry.isScholarship === 'Sí' ? 'No' : 'Sí';
+                          const next = isSiValue(newEntry.isScholarship) ? 'No' : SI;
                           setNewEntry({
                             ...newEntry,
                             isScholarship: next,
                             scholarshipType: 'total',
                             scholarshipPartialAmount: '',
-                            attendanceSpecialType: next === 'Sí' ? ATTENDANCE_SPECIAL.ninguno : newEntry.attendanceSpecialType,
+                            attendanceSpecialType: isSiValue(next) ? ATTENDANCE_SPECIAL.ninguno : newEntry.attendanceSpecialType,
                           });
-                          if (next === 'Sí') setSendToWaitlist(false);
+                          if (isSiValue(next)) setSendToWaitlist(false);
                         }}
-                        className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.isScholarship === 'Sí' ? 'bg-purple-500 text-white border-purple-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}
+                        className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${isSiValue(newEntry.isScholarship) ? 'bg-purple-500 text-white border-purple-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}
                       >
-                        <GraduationCap size={14} className={newEntry.isScholarship === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isScholarship}
+                        <GraduationCap size={14} className={isSiValue(newEntry.isScholarship) ? 'text-white' : 'text-slate-400'} /> {formatSiNo(newEntry.isScholarship)}
                       </button>
                     </div>
-                    {newEntry.isScholarship === 'Sí' && (
+                    {isSiValue(newEntry.isScholarship) && (
                       <>
                         <div className="space-y-1">
                           <label className={labelClasses}>Tipo de beca</label>
@@ -9456,7 +9472,7 @@ const App = () => {
                               min="0"
                               step="0.01"
                               placeholder="0.00"
-                              className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(newEntry.isScholarship === 'Sí' && newEntry.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(newEntry.scholarshipPartialAmount)) || parseFloat(newEntry.scholarshipPartialAmount) < 0 || parseFloat(newEntry.scholarshipPartialAmount) >= getPersonCost(newEntry, currentPricing)))}`}
+                              className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(isSiValue(newEntry.isScholarship) && newEntry.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(newEntry.scholarshipPartialAmount)) || parseFloat(newEntry.scholarshipPartialAmount) < 0 || parseFloat(newEntry.scholarshipPartialAmount) >= getPersonCost(newEntry, currentPricing)))}`}
                               value={newEntry.scholarshipPartialAmount}
                               onChange={(e) => setNewEntry({ ...newEntry, scholarshipPartialAmount: e.target.value })}
                             />
@@ -9471,7 +9487,7 @@ const App = () => {
                       <label className={labelClasses}>Servidor</label>
                       <button type="button" onClick={() => setNewEntry({
                         ...newEntry,
-                        isServer: newEntry.isServer === 'Sí' ? 'No' : 'Sí',
+                        isServer: isSiValue(newEntry.isServer) ? 'No' : SI,
                         serverAssignment: '',
                         baptismSegment: '',
                         isMarried: 'No',
@@ -9483,12 +9499,12 @@ const App = () => {
                         preferredServeArea: '',
                         servesInCongress: 'No',
                         congressServeArea: '',
-                      })} className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}><Users size={14} className={newEntry.isServer === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.isServer}</button>
+                      })} className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${isSiValue(newEntry.isServer) ? 'bg-amber-500 text-white border-amber-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}><Users size={14} className={isSiValue(newEntry.isServer) ? 'text-white' : 'text-slate-400'} /> {formatSiNo(newEntry.isServer)}</button>
                     </div>
-                    {newEntry.isServer === 'Sí' && (
+                    {isSiValue(newEntry.isServer) && (
                       <div className="space-y-1">
-                        <label className={labelClasses}>Asignación</label>
-                        <select className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(newEntry.isServer === 'Sí' && !String(newEntry.serverAssignment || '').trim())}`} value={newEntry.serverAssignment} onChange={e => {
+                        <label className={labelClasses}>Asignaci?n</label>
+                        <select className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(isSiValue(newEntry.isServer) && !String(newEntry.serverAssignment || '').trim())}`} value={newEntry.serverAssignment} onChange={e => {
                           const v = e.target.value;
                           setNewEntry({
                             ...newEntry,
@@ -9497,7 +9513,7 @@ const App = () => {
                           });
                         }}>
                           <option value="Teens">Teens</option>
-                          <option value="Jóvenes">Jóvenes</option>
+                          <option value="J?venes">J?venes</option>
                           <option value="Ambos">Ambos</option>
                         </select>
                       </div>
@@ -9510,47 +9526,47 @@ const App = () => {
                       <button
                         type="button"
                         onClick={() => {
-                          const next = newEntry.willBeBaptized === 'Sí' ? 'No' : 'Sí';
+                          const next = isSiValue(newEntry.willBeBaptized) ? 'No' : SI;
                           setNewEntry({
                             ...newEntry,
                             willBeBaptized: next,
                             baptismSegment: next === 'No' ? '' : newEntry.baptismSegment,
                           });
                         }}
-                        className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${newEntry.willBeBaptized === 'Sí' ? 'bg-sky-600 text-white border-sky-500' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}
+                        className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${isSiValue(newEntry.willBeBaptized) ? 'bg-sky-600 text-white border-sky-500' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}
                       >
-                        <Church size={14} className={newEntry.willBeBaptized === 'Sí' ? 'text-white' : 'text-slate-400'} /> {newEntry.willBeBaptized}
+                        <Church size={14} className={isSiValue(newEntry.willBeBaptized) ? 'text-white' : 'text-slate-400'} /> {formatSiNo(newEntry.willBeBaptized)}
                       </button>
                     </div>
-                    {newEntry.willBeBaptized === 'Sí' && newEntry.isServer !== 'Sí' && (
+                    {isSiValue(newEntry.willBeBaptized) && !isSiValue(newEntry.isServer) && (
                       <p className="text-[9px] text-slate-500 leading-snug">
-                        Conteo en <strong>{parseInt(newEntry.age, 10) < 18 ? 'Teens' : 'Jóvenes'}</strong> según edad al guardar (campista).
+                        Conteo en <strong>{parseInt(newEntry.age, 10) < 18 ? 'Teens' : 'J?venes'}</strong> seg?n edad al guardar (campista).
                       </p>
                     )}
-                    {newEntry.willBeBaptized === 'Sí' && newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos' && (
+                    {isSiValue(newEntry.willBeBaptized) && isSiValue(newEntry.isServer) && newEntry.serverAssignment === 'Ambos' && (
                       <div className="space-y-1">
-                        <label className={labelClasses}>¿Dónde se bautiza?</label>
+                        <label className={labelClasses}>?D?nde se bautiza?</label>
                         <select
                           className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(!String(newEntry.baptismSegment || '').trim())}`}
                           value={newEntry.baptismSegment || ''}
                           onChange={(e) => setNewEntry({ ...newEntry, baptismSegment: e.target.value })}
                         >
-                          <option value="">Selecciona…</option>
+                          <option value="">Selecciona?</option>
                           <option value="Teens">Teens</option>
-                          <option value="Jóvenes">Jóvenes</option>
+                          <option value="J?venes">J?venes</option>
                         </select>
                       </div>
                     )}
                   </div>
 
-                  {newEntry.isScholarship !== 'Sí' && (
+                  {!isSiValue(newEntry.isScholarship) && (
                     <div className="sm:col-span-3 space-y-2">
                       <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Asistencia sin cobro (cuenta en registro)</p>
                       <div className="flex flex-wrap gap-2">
                         {[
                           { id: ATTENDANCE_SPECIAL.ninguno, label: 'Ninguno', Icon: null },
                           { id: ATTENDANCE_SPECIAL.empleado, label: 'Empleado', Icon: Briefcase },
-                          { id: ATTENDANCE_SPECIAL.cortesia, label: 'Cortesía', Icon: Gift },
+                          { id: ATTENDANCE_SPECIAL.cortesia, label: 'Cortes?a', Icon: Gift },
                         ].map(({ id, label, Icon }) => (
                           <button
                             key={id}
@@ -9581,49 +9597,49 @@ const App = () => {
                         ))}
                       </div>
                       <p className="text-[9px] text-slate-500 leading-snug">
-                        Costo a liquidar: $0. No aplica con beca; las campañas de descuento se omiten.
+                        Costo a liquidar: $0. No aplica con beca; las campa?as de descuento se omiten.
                       </p>
                     </div>
                   )}
                 </div>
 
-                {newEntry.isServer === 'Sí' && (
+                {isSiValue(newEntry.isServer) && (
                   <div className="mt-3 p-3 bg-amber-50/50 border border-amber-100 rounded-lg">
-                    <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-2">Información adicional de servidor (opcional)</p>
+                    <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-2">Informaci?n adicional de servidor (opcional)</p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div className="space-y-1">
-                        <label className={labelClasses}>¿Es casado?</label>
-                        <select className={inputClasses} value={newEntry.isMarried || 'No'} onChange={e => setNewEntry({ ...newEntry, isMarried: e.target.value, spouseName: e.target.value === 'Sí' ? newEntry.spouseName : '' })}>
-                          <option value="No">No</option><option value="Sí">Sí</option>
+                        <label className={labelClasses}>?Es casado?</label>
+                        <select className={inputClasses} value={newEntry.isMarried || 'No'} onChange={e => setNewEntry({ ...newEntry, isMarried: e.target.value, spouseName: isSiValue(e.target.value) ? newEntry.spouseName : '' })}>
+                          <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                         </select>
                       </div>
-                      {newEntry.isMarried === 'Sí' && (
+                      {isSiValue(newEntry.isMarried) && (
                         <div className="space-y-1">
                           <label className={labelClasses}>Nombre de pareja</label>
                           <input className={inputClasses} value={newEntry.spouseName || ''} onChange={e => setNewEntry({ ...newEntry, spouseName: e.target.value })} />
                         </div>
                       )}
                       <div className="space-y-1">
-                        <label className={labelClasses}>¿Va con hijos?</label>
-                        <select className={inputClasses} value={newEntry.goesWithChildren || 'No'} onChange={e => setNewEntry({ ...newEntry, goesWithChildren: e.target.value, childrenCount: e.target.value === 'Sí' ? newEntry.childrenCount : '' })}>
-                          <option value="No">No</option><option value="Sí">Sí</option>
+                        <label className={labelClasses}>?Va con hijos?</label>
+                        <select className={inputClasses} value={newEntry.goesWithChildren || 'No'} onChange={e => setNewEntry({ ...newEntry, goesWithChildren: e.target.value, childrenCount: isSiValue(e.target.value) ? newEntry.childrenCount : '' })}>
+                          <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                         </select>
                       </div>
-                      {newEntry.goesWithChildren === 'Sí' && (
+                      {isSiValue(newEntry.goesWithChildren) && (
                         <div className="space-y-1">
-                          <label className={labelClasses}>¿Cuántos?</label>
-                          <input type="number" min="1" className={inputClasses} placeholder="Número" value={newEntry.childrenCount || ''} onChange={e => setNewEntry({ ...newEntry, childrenCount: e.target.value })} />
+                          <label className={labelClasses}>?Cu?ntos?</label>
+                          <input type="number" min="1" className={inputClasses} placeholder="N?mero" value={newEntry.childrenCount || ''} onChange={e => setNewEntry({ ...newEntry, childrenCount: e.target.value })} />
                         </div>
                       )}
                       <div className="space-y-1">
-                        <label className={labelClasses}>¿Han servido en otro campa?</label>
-                        <select className={inputClasses} value={newEntry.servedOtherCampa || 'No'} onChange={e => setNewEntry({ ...newEntry, servedOtherCampa: e.target.value, servedAreas: e.target.value === 'Sí' ? newEntry.servedAreas : '' })}>
-                          <option value="No">No</option><option value="Sí">Sí</option>
+                        <label className={labelClasses}>?Han servido en otro campa?</label>
+                        <select className={inputClasses} value={newEntry.servedOtherCampa || 'No'} onChange={e => setNewEntry({ ...newEntry, servedOtherCampa: e.target.value, servedAreas: isSiValue(e.target.value) ? newEntry.servedAreas : '' })}>
+                          <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                         </select>
                       </div>
-                      {newEntry.servedOtherCampa === 'Sí' && (
+                      {isSiValue(newEntry.servedOtherCampa) && (
                         <div className="space-y-1">
-                          <label className={labelClasses}>¿En qué áreas?</label>
+                          <label className={labelClasses}>?En qu? ?reas?</label>
                           {(() => {
                             const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
                             const { selected, otroText } = parsePreferredServeArea(newEntry.servedAreas, opts);
@@ -9651,7 +9667,7 @@ const App = () => {
                                             {opt}
                                           </label>
                                           {opt === 'Otro' && selected.has('Otro') && (
-                                            <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm" value={otroText} onChange={e => setNewEntry({ ...newEntry, servedAreas: formatPreferredServeArea(selected, e.target.value) })} onClick={e => e.stopPropagation()} />
+                                            <input type="text" placeholder="?Cu?l?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm" value={otroText} onChange={e => setNewEntry({ ...newEntry, servedAreas: formatPreferredServeArea(selected, e.target.value) })} onClick={e => e.stopPropagation()} />
                                           )}
                                         </div>
                                       ))}
@@ -9664,7 +9680,7 @@ const App = () => {
                         </div>
                       )}
                       <div className="space-y-1 sm:col-span-2">
-                        <label className={labelClasses}>¿En qué área les gustaría servir?</label>
+                        <label className={labelClasses}>?En qu? ?rea les gustar?a servir?</label>
                         {(() => {
                           const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
                           const { selected, otroText } = parsePreferredServeArea(newEntry.preferredServeArea, opts);
@@ -9693,7 +9709,7 @@ const App = () => {
                                           {opt}
                                         </label>
                                         {opt === 'Otro' && selected.has('Otro') && (
-                                          <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm" value={otroText} onChange={e => setNewEntry({ ...newEntry, preferredServeArea: formatPreferredServeArea(selected, e.target.value) })} onClick={e => e.stopPropagation()} />
+                                          <input type="text" placeholder="?Cu?l?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm" value={otroText} onChange={e => setNewEntry({ ...newEntry, preferredServeArea: formatPreferredServeArea(selected, e.target.value) })} onClick={e => e.stopPropagation()} />
                                         )}
                                       </div>
                                     ))}
@@ -9705,14 +9721,14 @@ const App = () => {
                         })()}
                       </div>
                       <div className="space-y-1">
-                        <label className={labelClasses}>¿Sirven en sus congres?</label>
-                        <select className={inputClasses} value={newEntry.servesInCongress || 'No'} onChange={e => setNewEntry({ ...newEntry, servesInCongress: e.target.value, congressServeArea: e.target.value === 'Sí' ? newEntry.congressServeArea : '' })}>
-                          <option value="No">No</option><option value="Sí">Sí</option>
+                        <label className={labelClasses}>?Sirven en sus congres?</label>
+                        <select className={inputClasses} value={newEntry.servesInCongress || 'No'} onChange={e => setNewEntry({ ...newEntry, servesInCongress: e.target.value, congressServeArea: isSiValue(e.target.value) ? newEntry.congressServeArea : '' })}>
+                          <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                         </select>
                       </div>
-                      {newEntry.servesInCongress === 'Sí' && (
+                      {isSiValue(newEntry.servesInCongress) && (
                         <div className="space-y-1">
-                          <label className={labelClasses}>¿En qué área?</label>
+                          <label className={labelClasses}>?En qu? ?rea?</label>
                           <input className={inputClasses} value={newEntry.congressServeArea || ''} onChange={e => setNewEntry({ ...newEntry, congressServeArea: e.target.value })} />
                         </div>
                       )}
@@ -9724,7 +9740,7 @@ const App = () => {
 
             {/* 5. Transporte */}
             <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
-              <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">5 · Transporte</h4>
+              <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">5 ? Transporte</h4>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                 <div className="space-y-1">
                   <label className={labelClasses}>Sale de sede</label>
@@ -9760,17 +9776,17 @@ const App = () => {
                       Regresa en carro
                     </label>
                   </div>
-                  <p className="text-[10px] text-slate-500">Si no marcas ninguno: llega en camión y regresa en camión.</p>
+                  <p className="text-[10px] text-slate-500">Si no marcas ninguno: llega en cami?n y regresa en cami?n.</p>
                 </div>
               </div>
             </section>
 
-            {/* 6. Información de pago */}
+            {/* 6. Informaci?n de pago */}
             <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
-              <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">6 · Información de pago</h4>
+              <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">6 ? Informaci?n de pago</h4>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className={labelClasses}>Método de pago</label>
+                  <label className={labelClasses}>M?todo de pago</label>
                   <select
                     className={inputClasses}
                     value={newEntry.paymentMethod}
@@ -9785,12 +9801,12 @@ const App = () => {
                 <div className="space-y-1">
                   <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1 flex items-center justify-between">
                     <span>Abono inicial ($)</span>
-                    {isCampa && newEntry.isScholarship === 'Sí' && newEntry.scholarshipType === 'partial' ? (
-                      <span className="text-indigo-400 normal-case tracking-normal max-w-[14rem] text-right leading-tight" title="Permitido: $0, apartado mínimo del evento, o costo servidor (Ambos) si aplica.">
-                        Parcial: $0, mín. ${currentEvent.minDeposit} o costo Ambos (${Number(currentPricing.server || 0).toLocaleString('es-MX')})
+                    {isCampa && isSiValue(newEntry.isScholarship) && newEntry.scholarshipType === 'partial' ? (
+                      <span className="text-indigo-400 normal-case tracking-normal max-w-[14rem] text-right leading-tight" title="Permitido: $0, apartado m?nimo del evento, o costo servidor (Ambos) si aplica.">
+                        Parcial: $0, m?n. ${currentEvent.minDeposit} o costo Ambos (${Number(currentPricing.server || 0).toLocaleString('es-MX')})
                       </span>
-                    ) : !(isCampa && newEntry.isScholarship === 'Sí') ? (
-                      <span className="text-indigo-400 normal-case tracking-normal">Mín. ${currentEvent.minDeposit}</span>
+                    ) : !(isCampa && isSiValue(newEntry.isScholarship)) ? (
+                      <span className="text-indigo-400 normal-case tracking-normal">M?n. ${currentEvent.minDeposit}</span>
                     ) : null}
                   </label>
                   <div className="relative">
@@ -9805,17 +9821,17 @@ const App = () => {
                         if (val === '') { setNewEntry({ ...newEntry, paid: '' }); return; }
                         let numVal = parseFloat(val);
                         if (numVal < 0) numVal = 0;
-                        const bc = (newEntry.isServer === 'Sí' && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
+                        const bc = (isSiValue(newEntry.isServer) && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
                         let maxCap = bc;
-                        if (isCampa && newEntry.isScholarship === 'Sí' && newEntry.scholarshipType === 'partial') {
-                          const liq = getLiquidationTarget({ ...newEntry, isScholarship: 'Sí', scholarshipType: 'partial' });
+                        if (isCampa && isSiValue(newEntry.isScholarship) && newEntry.scholarshipType === 'partial') {
+                          const liq = getLiquidationTarget({ ...newEntry, isScholarship: SI, scholarshipType: 'partial' });
                           maxCap = Math.min(bc, Math.max(0, liq));
                         }
                         if (numVal > maxCap) numVal = maxCap;
                         setNewEntry({ ...newEntry, paid: numVal });
                       }}
                     />
-                    {!(isCampa && newEntry.isScholarship === 'Sí') && newEntry.paid !== '' && parseFloat(newEntry.paid) < currentEvent.minDeposit && (
+                    {!(isCampa && isSiValue(newEntry.isScholarship)) && newEntry.paid !== '' && parseFloat(newEntry.paid) < currentEvent.minDeposit && (
                       <span className="text-[10px] text-red-500 font-bold px-1 absolute top-full left-0 mt-0.5 whitespace-nowrap z-10">Falta ${currentEvent.minDeposit - (parseFloat(newEntry.paid) || 0)} para el apartado</span>
                     )}
                   </div>
@@ -9826,7 +9842,7 @@ const App = () => {
                     <input
                       className={inputClasses}
                       value={newEntry.cardReference}
-                      placeholder="Ej. folio / transacción"
+                      placeholder="Ej. folio / transacci?n"
                       onChange={(e) => setNewEntry({ ...newEntry, cardReference: e.target.value })}
                     />
                   </div>
@@ -9835,7 +9851,7 @@ const App = () => {
               {(currentEvent?.discountCampaigns || []).length > 0 && (
                 <details className="group/camp mt-2 rounded-lg border border-slate-200/80 bg-slate-50/40">
                   <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-2.5 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500 hover:text-slate-600 hover:bg-slate-100/40 rounded-lg [&::-webkit-details-marker]:hidden">
-                    <span>Campañas de descuento</span>
+                    <span>Campa?as de descuento</span>
                     <ChevronDown size={14} className="shrink-0 text-slate-400 transition-transform duration-200 group-open/camp:rotate-180" />
                   </summary>
                   <div className="border-t border-slate-200/60 px-2.5 pb-2.5 pt-2 space-y-2 text-[10px] text-slate-600">
@@ -9844,11 +9860,11 @@ const App = () => {
                         {newRegCampaignsActive.map((c) => (
                           <li key={`newreg-camp-${c.id}`}>
                             <span className="font-semibold text-slate-700">{c.concept || 'Sin nombre'}</span>
-                            {' · '}
-                            {c.startDate} → {c.endDate}
-                            {' · '}
+                            {' ? '}
+                            {c.startDate} ? {c.endDate}
+                            {' ? '}
                             ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')}
-                            {' · '}
+                            {' ? '}
                             {discountCampaignAppliesToLabel(c)}
                           </li>
                         ))}
@@ -9859,29 +9875,29 @@ const App = () => {
                       </p>
                     ) : (
                       <p className="text-slate-500 leading-snug">
-                        Sin campañas aplicables. Lista: <span className="font-semibold text-slate-700">${newRegBaseList.toLocaleString('es-MX')}</span>.
+                        Sin campa?as aplicables. Lista: <span className="font-semibold text-slate-700">${newRegBaseList.toLocaleString('es-MX')}</span>.
                       </p>
                     )}
                     {newRegSelectableCampaigns.length > 0 ? (
                       <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide px-0.5">Aplicar campaña</label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide px-0.5">Aplicar campa?a</label>
                         <select
                           className="w-full px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-700 outline-none focus:ring-2 focus:ring-slate-300"
                           value={newEntry.selectedDiscountCampaignId || ''}
                           onChange={(e) => setNewEntry({ ...newEntry, selectedDiscountCampaignId: e.target.value })}
                         >
-                          <option value="">Automático (fechas vigentes hoy)</option>
+                          <option value="">Autom?tico (fechas vigentes hoy)</option>
                           {newRegSelectableCampaigns.map((c) => {
                             const activeToday = newRegCampaignsActive.some((a) => String(a.id) === String(c.id));
                             const noDates = !discountCampaignHasDateRange(c);
                             const suffix = noDates
-                              ? ' — manual'
+                              ? ' ? manual'
                               : activeToday
-                                ? ' — vigente'
-                                : ' — fuera de vigencia';
+                                ? ' ? vigente'
+                                : ' ? fuera de vigencia';
                             return (
                               <option key={`newreg-opt-${c.id}`} value={String(c.id)}>
-                                {c.concept || 'Campaña'} — ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')}
+                                {c.concept || 'Campa?a'} ? ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')}
                                 {suffix}
                               </option>
                             );
@@ -9892,9 +9908,9 @@ const App = () => {
                     <p className="text-[10px] text-slate-500 border-t border-slate-200/50 pt-2">
                       A liquidar: <span className="font-semibold text-slate-700">${newRegLiqPreview.toLocaleString('es-MX')}</span>
                       {newRegCampPreview ? (
-                        <> · «{newRegCampPreview.concept || '—'}» (sin campaña: ${newRegBaseList.toLocaleString('es-MX')}).</>
+                        <> ? ?{newRegCampPreview.concept || '?'}? (sin campa?a: ${newRegBaseList.toLocaleString('es-MX')}).</>
                       ) : (
-                        <> · lista del evento para este perfil.</>
+                        <> ? lista del evento para este perfil.</>
                       )}
                     </p>
                   </div>
@@ -9908,21 +9924,21 @@ const App = () => {
                       onClick={() => setDonationModal({ isOpen: true, amount: '', donorName: '' })}
                       className="px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors"
                     >
-                      <Receipt size={16} /> Donación
+                      <Receipt size={16} /> Donaci?n
                     </button>
                   )}
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
-                  <label className={`inline-flex items-center gap-2 text-sm ${isCampa && newEntry.isScholarship === 'Sí' ? 'text-slate-400 cursor-not-allowed' : 'text-slate-600'}`}>
+                  <label className={`inline-flex items-center gap-2 text-sm ${isCampa && isSiValue(newEntry.isScholarship) ? 'text-slate-400 cursor-not-allowed' : 'text-slate-600'}`}>
                     <input
                       type="checkbox"
                       className="h-4 w-4 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
                       checked={sendToWaitlist}
                       onChange={(e) => setSendToWaitlist(e.target.checked)}
-                      disabled={!isLocOpen(loc) || (isCampa && newEntry.isScholarship === 'Sí')}
+                      disabled={!isLocOpen(loc) || (isCampa && isSiValue(newEntry.isScholarship))}
                     />
                     Lista de espera
-                    {isCampa && newEntry.isScholarship === 'Sí' ? (
+                    {isCampa && isSiValue(newEntry.isScholarship) ? (
                       <span className="text-[10px] font-bold text-purple-600 normal-case">(la beca ya va a espera)</span>
                     ) : null}
                   </label>
@@ -9932,7 +9948,7 @@ const App = () => {
                     className={`px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all shadow-lg active:scale-95 ${isFormValid && isLocOpen(loc) ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-100' : 'bg-slate-300 text-slate-400 cursor-not-allowed shadow-none'}`}
                   >
                     <Plus size={20} />{' '}
-                    {isCampa && newEntry.isScholarship === 'Sí'
+                    {isCampa && isSiValue(newEntry.isScholarship)
                       ? 'Enviar solicitud de beca'
                       : sendToWaitlist || isLocationFull(loc)
                         ? 'Registrar (a espera)'
@@ -9952,7 +9968,7 @@ const App = () => {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={18} />
               <input
                 type="text"
-                placeholder="Nombre, teléfono o ID VNPM…"
+                placeholder="Nombre, tel?fono o ID VNPM?"
                 className="w-full pl-10 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -10005,11 +10021,11 @@ const App = () => {
                   ))}
                 </div>
                 <div>
-                  <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Devolución pendiente</p>
+                  <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Devoluci?n pendiente</p>
                   {[
                     { id: 'all', label: 'Todos' },
-                    { id: 'pending', label: 'Con devolución pendiente' },
-                    { id: 'none', label: 'Sin devolución pendiente' },
+                    { id: 'pending', label: 'Con devoluci?n pendiente' },
+                    { id: 'none', label: 'Sin devoluci?n pendiente' },
                   ].map((op) => (
                     <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
                       <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterPendingRefund === op.id} onChange={() => setFilterPendingRefund(filterPendingRefund === op.id ? 'all' : op.id)} />
@@ -10039,8 +10055,8 @@ const App = () => {
                 {isCampa && (
                   <>
                     <div>
-                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asignación</p>
-                      {['all', 'Teens', 'Jóvenes', 'Ambos'].map((op) => (
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asignaci?n</p>
+                      {['all', 'Teens', 'J?venes', 'Ambos'].map((op) => (
                         <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
                           <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterAssignment === op} onChange={() => setFilterAssignment(filterAssignment === op ? 'all' : op)} />
                           {op === 'all' ? 'Todas' : op}
@@ -10062,11 +10078,11 @@ const App = () => {
                       ))}
                     </div>
                     <div>
-                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Género</p>
+                      <p className="text-[10px] font-black text-slate-500 uppercase mb-1">G?nero</p>
                       {['all', ...GENDERS].map((op) => (
                         <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
                           <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterGender === op} onChange={() => setFilterGender(filterGender === op ? 'all' : op)} />
-                          {op === 'all' ? 'Todos' : op}
+                          {op === 'all' ? 'Todos' : op === SI ? SI_LABEL : op}
                         </label>
                       ))}
                     </div>
@@ -10074,8 +10090,8 @@ const App = () => {
                       <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Transporte</p>
                       {[
                         { id: 'all', label: 'Todos' },
-                        { id: 'go-bus', label: 'Llega en camión' },
-                        { id: 'return-bus', label: 'Regresa en camión' },
+                        { id: 'go-bus', label: 'Llega en cami?n' },
+                        { id: 'return-bus', label: 'Regresa en cami?n' },
                         { id: 'go-car', label: 'Llega en carro' },
                         { id: 'return-car', label: 'Regresa en carro' },
                       ].map((op) => (
@@ -10118,7 +10134,7 @@ const App = () => {
                         { id: 'all', label: 'Todos' },
                         { id: 'ninguno', label: 'Sin especial' },
                         { id: 'empleado', label: 'Empleado' },
-                        { id: 'cortesia', label: 'Cortesía' },
+                        { id: 'cortesia', label: 'Cortes?a' },
                       ].map((op) => (
                         <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
                           <input
@@ -10147,7 +10163,7 @@ const App = () => {
                     </div>
                     <div>
                       <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Nado</p>
-                      {['all', 'Sí', 'No'].map((op) => (
+                      {['all', SI, 'No'].map((op) => (
                         <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
                           <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterSwim === op} onChange={() => setFilterSwim(filterSwim === op ? 'all' : op)} />
                           {op === 'all' ? 'Todos' : op}
@@ -10159,7 +10175,7 @@ const App = () => {
                       {[
                         { id: 'all', label: 'Todos' },
                         { id: 'teens', label: 'Si se bautiza en Teens' },
-                        { id: 'jovenes', label: 'Si se bautiza en Jóvenes' },
+                        { id: 'jovenes', label: 'Si se bautiza en J?venes' },
                         { id: 'no', label: 'No se bautiza' },
                       ].map((op) => (
                         <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
@@ -10177,10 +10193,10 @@ const App = () => {
                       <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Servidor</p>
                       {[
                         { id: 'all', label: 'Todos' },
-                        { id: 'Sí', label: 'Servidores' },
+                        { id: SI, label: 'Servidores' },
                         { id: 'No', label: 'Camperos' },
                         { id: 'Teens', label: 'Asig. Teens' },
-                        { id: 'Jóvenes', label: 'Asig. Jóvenes' },
+                        { id: 'J?venes', label: 'Asig. J?venes' },
                         { id: 'Ambos', label: 'Asig. Ambos' },
                       ].map((op) => (
                         <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
@@ -10228,13 +10244,13 @@ const App = () => {
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value)}
               >
-                <option value="none">Ordenar…</option>
+                <option value="none">Ordenar?</option>
                 <option value="name-asc">Nombre (A-Z)</option>
                 <option value="name-desc">Nombre (Z-A)</option>
-                <option value="age-asc">Edad (menor → mayor)</option>
-                <option value="age-desc">Edad (mayor → menor)</option>
-                <option value="debt-asc">Deuda (menor → mayor)</option>
-                <option value="debt-desc">Deuda (mayor → menor)</option>
+                <option value="age-asc">Edad (menor ? mayor)</option>
+                <option value="age-desc">Edad (mayor ? menor)</option>
+                <option value="debt-asc">Deuda (menor ? mayor)</option>
+                <option value="debt-desc">Deuda (mayor ? menor)</option>
               </select>
             </div>
           </div>
@@ -10259,13 +10275,13 @@ const App = () => {
             {searchTerm.trim() ? (
               <span className="text-slate-400 font-semibold normal-case">
                 {' '}
-                ({visibleParticipants.length} inscritos · {waitlistFilteredForLoc.length} lista de espera ·{' '}
+                ({visibleParticipants.length} inscritos ? {waitlistFilteredForLoc.length} lista de espera ?{' '}
                 {cancelledFilteredForLoc.length} cancelados)
               </span>
             ) : null}
           </p>
           <p className="text-[10px] text-slate-400 px-0.5 leading-snug">
-            Con búsqueda activa se despliegan solo las listas con coincidencias; al borrar el texto se restaura tu preferencia de panel (colapsado o expandido).
+            Con b?squeda activa se despliegan solo las listas con coincidencias; al borrar el texto se restaura tu preferencia de panel (colapsado o expandido).
           </p>
         </div>
       </div>
@@ -10298,7 +10314,7 @@ const App = () => {
               <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
                 <th className="px-4 py-4">Participante</th>
                 <th className="px-4 py-4">Finanzas</th>
-                <th className="px-4 py-4 text-center">Acciones rápidas</th>
+                <th className="px-4 py-4 text-center">Acciones r?pidas</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
@@ -10306,14 +10322,14 @@ const App = () => {
                 if (visibleParticipants.length === 0) {
                   const emptyMsg =
                     filterWhatsAppPending === 'pending'
-                      ? `No hay inscritos con aviso de WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
+                      ? `No hay inscritos con aviso de WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la b?squeda)' : ''}.`
                       : `No hay registros para mostrar en ${loc}.`;
                   return <tr><td colSpan="3" className="px-6 py-16 text-center text-slate-400 italic font-medium">{emptyMsg}</td></tr>;
                 }
 
                 return visibleParticipants.map((person) => {
                   const isExpanded = expandedRows.has(person.id);
-                  const isBecado = isCampa && person.isScholarship === 'Sí';
+                  const isBecado = isCampa && isSiValue(person.isScholarship);
                   const listPrice = resolveRegisteredCost(person, currentPricing);
                   const liquidationTarget = getLiquidationTarget(person);
                   const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
@@ -10345,8 +10361,8 @@ const App = () => {
                                     travelFrom: person.travelFrom || person.location || loc,
                                     travelTo: person.travelTo || person.location || loc,
                                     registeredCost: listPrice,
-                                    campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes'),
-                                    willBeBaptized: person.willBeBaptized === 'Sí' ? 'Sí' : 'No',
+                                    campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'J?venes'),
+                                    willBeBaptized: isSiValue(person.willBeBaptized) ? SI : 'No',
                                     baptismSegment: person.baptismSegment || '',
                                     scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
                                     scholarshipPartialAmount:
@@ -10367,7 +10383,7 @@ const App = () => {
                                   amount: '',
                                   currentPaid: parseFloat(person.paid || 0),
                                   error: '',
-                                  isScholarship: isBecado ? 'Sí' : 'No',
+                                  isScholarship: isBecado ? SI : 'No',
                                   baseCost: liquidationTarget,
                                   paymentMethod: 'Efectivo',
                                   paymentService: getAutoPaymentService(new Date()),
@@ -10395,7 +10411,7 @@ const App = () => {
                                 {person.vnpPersonId ? (
                                   <p className="mb-2 text-[11px] font-mono text-indigo-700 bg-indigo-50 px-2 py-1 rounded border border-indigo-100"><strong>ID VNPM:</strong> {person.vnpPersonId}</p>
                                 ) : (
-                                  <p className="mb-2 text-[10px] text-amber-700 bg-amber-50 px-2 py-1 rounded border border-amber-100">Sin ID VNPM (se asignará al guardar en editar).</p>
+                                  <p className="mb-2 text-[10px] text-amber-700 bg-amber-50 px-2 py-1 rounded border border-amber-100">Sin ID VNPM (se asignar? al guardar en editar).</p>
                                 )}
                                 <p className="mb-2 text-slate-600 flex flex-wrap items-center gap-2">
                                   <span>
@@ -10421,10 +10437,10 @@ const App = () => {
                                 {normalizeAttendanceSpecial(person) === ATTENDANCE_SPECIAL.empleado ? (
                                   <p className="mb-1 text-slate-600"><strong>Asistencia especial:</strong> Empleado (sin cobro)</p>
                                 ) : normalizeAttendanceSpecial(person) === ATTENDANCE_SPECIAL.cortesia ? (
-                                  <p className="mb-1 text-slate-600"><strong>Asistencia especial:</strong> Cortesía (sin cobro)</p>
+                                  <p className="mb-1 text-slate-600"><strong>Asistencia especial:</strong> Cortes?a (sin cobro)</p>
                                 ) : null}
                                 <p className="text-slate-600"><strong>Edad:</strong> {person.age || 'N/A'}</p>
-                                <p className="text-slate-600"><strong>Género:</strong> {person.gender || 'N/A'}</p>
+                                <p className="text-slate-600"><strong>G?nero:</strong> {person.gender || 'N/A'}</p>
                               </div>
                               {(isCampa || isGeneral) ? (
                                 <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
@@ -10443,7 +10459,7 @@ const App = () => {
                                 </div>
                               ) : <div />}
                               {isCampa && (
-                                <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100"><p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Condiciones Especiales</p><div className="space-y-1.5"><p className="text-slate-600"><strong>Alergias:</strong> {person.hasAllergy === 'Sí' ? <span className="text-orange-600 font-bold">{person.allergyDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Enfermedades:</strong> {person.hasDisease === 'Sí' ? <span className="text-red-600 font-bold">{person.diseaseDetails}</span> : <span>Ninguna</span>}</p>{person.hasDisease === 'Sí' && <p className="text-slate-600"><strong>Medicamento:</strong> {person.diseaseMedication ? <span className="text-red-600 font-bold">{person.diseaseMedication}</span> : <span>No especificado</span>}</p>}<p className="text-slate-600"><strong>Discapacidades:</strong> {person.hasDisability === 'Sí' ? <span className="text-purple-600 font-bold">{person.disabilityDetails}</span> : <span>Ninguna</span>}</p></div></div>
+                                <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100"><p className="font-bold text-indigo-900 mb-2 uppercase tracking-wider text-[10px]">Condiciones Especiales</p><div className="space-y-1.5"><p className="text-slate-600"><strong>Alergias:</strong> {isSiValue(person.hasAllergy) ? <span className="text-orange-600 font-bold">{person.allergyDetails}</span> : <span>Ninguna</span>}</p><p className="text-slate-600"><strong>Enfermedades:</strong> {isSiValue(person.hasDisease) ? <span className="text-red-600 font-bold">{person.diseaseDetails}</span> : <span>Ninguna</span>}</p>{isSiValue(person.hasDisease) && <p className="text-slate-600"><strong>Medicamento:</strong> {person.diseaseMedication ? <span className="text-red-600 font-bold">{person.diseaseMedication}</span> : <span>No especificado</span>}</p>}<p className="text-slate-600"><strong>Discapacidades:</strong> {isSiValue(person.hasDisability) ? <span className="text-purple-600 font-bold">{person.disabilityDetails}</span> : <span>Ninguna</span>}</p></div></div>
                               )}
                               {isGeneral && person.customData && Object.keys(person.customData).length > 0 && (
                                 <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
@@ -10464,7 +10480,7 @@ const App = () => {
                                     <textarea
                                       className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-semibold"
                                       rows={2}
-                                      placeholder="Escribe un comentario para este registro…"
+                                      placeholder="Escribe un comentario para este registro?"
                                       value={commentDrafts[String(person.id)] || ''}
                                       onChange={(e) => setCommentDrafts(prev => ({ ...prev, [String(person.id)]: e.target.value }))}
                                     />
@@ -10526,7 +10542,7 @@ const App = () => {
                                       </div>
                                       <div className="text-right flex flex-col items-end gap-1">
                                         {pay.kind === 'comment' ? (
-                                          <p className="text-sm font-black text-slate-400">—</p>
+                                          <p className="text-sm font-black text-slate-400">?</p>
                                         ) : (
                                           <>
                                             <p className={`text-sm font-black ${pay.amount < 0 ? 'text-red-500' : 'text-green-600'}`}>{pay.amount < 0 ? '-' : '+'}{formatMoney(Math.abs(pay.amount))}</p>
@@ -10559,7 +10575,7 @@ const App = () => {
                                     <textarea
                                       className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-semibold"
                                       rows={2}
-                                      placeholder="Escribe un comentario para este registro…"
+                                      placeholder="Escribe un comentario para este registro?"
                                       value={commentDrafts[String(person.id)] || ''}
                                       onChange={(e) => setCommentDrafts(prev => ({ ...prev, [String(person.id)]: e.target.value }))}
                                     />
@@ -10627,8 +10643,8 @@ const App = () => {
                     <tr>
                       <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">
                         {filterWhatsAppPending === 'pending'
-                          ? `Nadie en lista de espera con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
-                          : `Ninguna entrada coincide con la búsqueda o filtros en lista de espera (${loc}).`}
+                          ? `Nadie en lista de espera con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la b?squeda)' : ''}.`
+                          : `Ninguna entrada coincide con la b?squeda o filtros en lista de espera (${loc}).`}
                       </td>
                     </tr>
                   ) : (
@@ -10641,14 +10657,14 @@ const App = () => {
                         {person.vnpPersonId && <p className="text-[10px] font-mono text-indigo-600">{person.vnpPersonId}</p>}
                         {resolveResponsivaStatus(person) === 'Pendiente' ? (
                           <p className="mt-1 text-[10px] font-black text-rose-700 bg-rose-50 border border-rose-100 rounded-lg px-2 py-1 inline-block">
-                            Menor de edad · responsiva pendiente
+                            Menor de edad ? responsiva pendiente
                           </p>
                         ) : null}
-                        {person.isScholarship === 'Sí' && (
+                        {isSiValue(person.isScholarship) && (
                           <p className="mt-1 text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-100 rounded-lg px-2 py-1 inline-block">
                             Solicitud beca {person.scholarshipType === 'partial' ? 'parcial' : 'total'}
                             {person.scholarshipType === 'partial'
-                              ? ` · monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}`
+                              ? ` ? monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}`
                               : ''}{' '}
                             (pendiente al promover)
                           </p>
@@ -10671,8 +10687,8 @@ const App = () => {
                                   travelFrom: person.travelFrom || person.location || loc,
                                   travelTo: person.travelTo || person.location || loc,
                                   registeredCost: listPrice,
-                                  campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes'),
-                                  willBeBaptized: person.willBeBaptized === 'Sí' ? 'Sí' : 'No',
+                                  campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'J?venes'),
+                                  willBeBaptized: isSiValue(person.willBeBaptized) ? SI : 'No',
                                   baptismSegment: person.baptismSegment || '',
                                   scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
                                   scholarshipPartialAmount:
@@ -10755,8 +10771,8 @@ const App = () => {
                 <tr>
                   <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">
                     {filterWhatsAppPending === 'pending'
-                      ? `Nadie cancelado con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
-                      : `Ningún cancelado coincide con la búsqueda o filtros en ${loc}.`}
+                      ? `Nadie cancelado con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la b?squeda)' : ''}.`
+                      : `Ning?n cancelado coincide con la b?squeda o filtros en ${loc}.`}
                   </td>
                 </tr>
               ) : (
@@ -10782,8 +10798,8 @@ const App = () => {
                                       travelFrom: person.travelFrom || person.location || loc,
                                       travelTo: person.travelTo || person.location || loc,
                                       registeredCost: listPrice,
-                                      campAssignment: person.campAssignment || (parseInt(person.age, 10) < 18 ? 'Teens' : 'Jóvenes'),
-                                      willBeBaptized: person.willBeBaptized === 'Sí' ? 'Sí' : 'No',
+                                      campAssignment: person.campAssignment || (parseInt(person.age, 10) < 18 ? 'Teens' : 'J?venes'),
+                                      willBeBaptized: isSiValue(person.willBeBaptized) ? SI : 'No',
                                       baptismSegment: person.baptismSegment || '',
                                       scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
                                       scholarshipPartialAmount:
@@ -10878,7 +10894,7 @@ const App = () => {
         <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col gap-3">
           <div className="relative w-full lg:w-1/3">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-            <input type="text" placeholder="Nombre, teléfono o ID VNPM…" className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+            <input type="text" placeholder="Nombre, tel?fono o ID VNPM?" className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
           </div>
           <div className="flex flex-wrap items-center gap-2 w-full">
             <div className="relative flex-1 lg:flex-none" data-dropdown-root="filters">
@@ -10918,11 +10934,11 @@ const App = () => {
                     ))}
                   </div>
                   <div>
-                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Devolución pendiente</p>
+                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Devoluci?n pendiente</p>
                     {[
                       { id: 'all', label: 'Todos' },
-                      { id: 'pending', label: 'Con devolución pendiente' },
-                      { id: 'none', label: 'Sin devolución pendiente' },
+                      { id: 'pending', label: 'Con devoluci?n pendiente' },
+                      { id: 'none', label: 'Sin devoluci?n pendiente' },
                     ].map((op) => (
                       <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
                         <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterPendingRefund === op.id} onChange={() => setFilterPendingRefund(filterPendingRefund === op.id ? 'all' : op.id)} />
@@ -10946,20 +10962,20 @@ const App = () => {
                   </div>
                   {isCampa && (
                     <>
-                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asignación</p>{['all', 'Teens', 'Jóvenes', 'Ambos'].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterAssignment === op} onChange={() => setFilterAssignment(filterAssignment === op ? 'all' : op)} />{op === 'all' ? 'Todas' : op}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asignaci?n</p>{['all', 'Teens', 'J?venes', 'Ambos'].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterAssignment === op} onChange={() => setFilterAssignment(filterAssignment === op ? 'all' : op)} />{op === 'all' ? 'Todas' : op}</label>))}</div>
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Beca</p>{[{ id: 'all', label: 'Todos' }, { id: 'No', label: 'No' }, { id: 'partial', label: 'Parcial' }, { id: 'total', label: 'Total' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterScholarship === op.id} onChange={() => setFilterScholarship(filterScholarship === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
-                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Género</p>{['all', ...GENDERS].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterGender === op} onChange={() => setFilterGender(filterGender === op ? 'all' : op)} />{op === 'all' ? 'Todos' : op}</label>))}</div>
-                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Transporte</p>{[{ id: 'all', label: 'Todos' }, { id: 'go-bus', label: 'Llega en camión' }, { id: 'return-bus', label: 'Regresa en camión' }, { id: 'go-car', label: 'Llega en carro' }, { id: 'return-car', label: 'Regresa en carro' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterTransport === op.id} onChange={() => setFilterTransport(filterTransport === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">G?nero</p>{['all', ...GENDERS].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterGender === op} onChange={() => setFilterGender(filterGender === op ? 'all' : op)} />{op === 'all' ? 'Todos' : op}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Transporte</p>{[{ id: 'all', label: 'Todos' }, { id: 'go-bus', label: 'Llega en cami?n' }, { id: 'return-bus', label: 'Regresa en cami?n' }, { id: 'go-car', label: 'Llega en carro' }, { id: 'return-car', label: 'Regresa en carro' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterTransport === op.id} onChange={() => setFilterTransport(filterTransport === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Tipo de pago</p>{['all', 'Efectivo', 'Tarjeta'].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterPaymentType === op} onChange={() => setFilterPaymentType(filterPaymentType === op ? 'all' : op)} />{op === 'all' ? 'Todos' : op}</label>))}</div>
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Sede de salida</p>{['all', ...(currentEvent?.locations || [])].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterTravelFrom === op} onChange={() => setFilterTravelFrom(filterTravelFrom === op ? 'all' : op)} />{op === 'all' ? 'Todas' : op}</label>))}</div>
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Sede de regreso</p>{['all', ...(currentEvent?.locations || [])].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterTravelTo === op} onChange={() => setFilterTravelTo(filterTravelTo === op ? 'all' : op)} />{op === 'all' ? 'Todas' : op}</label>))}</div>
-                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asistencia especial</p>{[{ id: 'all', label: 'Todos' }, { id: 'ninguno', label: 'Sin especial' }, { id: 'empleado', label: 'Empleado' }, { id: 'cortesia', label: 'Cortesía' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterAttendanceSpecial === op.id} onChange={() => setFilterAttendanceSpecial(filterAttendanceSpecial === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asistencia especial</p>{[{ id: 'all', label: 'Todos' }, { id: 'ninguno', label: 'Sin especial' }, { id: 'empleado', label: 'Empleado' }, { id: 'cortesia', label: 'Cortes?a' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterAttendanceSpecial === op.id} onChange={() => setFilterAttendanceSpecial(filterAttendanceSpecial === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Salud</p>{[{ id: 'all', label: 'Todos' }, { id: 'allergy', label: 'Con alergias' }, { id: 'disease', label: 'Con enfermedades' }, { id: 'disability', label: 'Con discapacidades' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterMedical === op.id} onChange={() => setFilterMedical(filterMedical === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
-                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Nado</p>{['all', 'Sí', 'No'].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterSwim === op} onChange={() => setFilterSwim(filterSwim === op ? 'all' : op)} />{op === 'all' ? 'Todos' : op}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Nado</p>{['all', SI, 'No'].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterSwim === op} onChange={() => setFilterSwim(filterSwim === op ? 'all' : op)} />{op === 'all' ? 'Todos' : op}</label>))}</div>
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Bautizo</p>{[
                         { id: 'all', label: 'Todos' },
                         { id: 'teens', label: 'Si se bautiza en Teens' },
-                        { id: 'jovenes', label: 'Si se bautiza en Jóvenes' },
+                        { id: 'jovenes', label: 'Si se bautiza en J?venes' },
                         { id: 'no', label: 'No se bautiza' },
                       ].map((op) => (
                         <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
@@ -10967,7 +10983,7 @@ const App = () => {
                           {op.label}
                         </label>
                       ))}</div>
-                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Servidor</p>{[{ id: 'all', label: 'Todos' }, { id: 'Sí', label: 'Servidores' }, { id: 'No', label: 'Camperos' }, { id: 'Teens', label: 'Asig. Teens' }, { id: 'Jóvenes', label: 'Asig. Jóvenes' }, { id: 'Ambos', label: 'Asig. Ambos' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterServer === op.id} onChange={() => setFilterServer(filterServer === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Servidor</p>{[{ id: 'all', label: 'Todos' }, { id: SI, label: 'Servidores' }, { id: 'No', label: 'Camperos' }, { id: 'Teens', label: 'Asig. Teens' }, { id: 'J?venes', label: 'Asig. J?venes' }, { id: 'Ambos', label: 'Asig. Ambos' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterServer === op.id} onChange={() => setFilterServer(filterServer === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
                     </>
                   )}
                   <div className="pt-2 border-t border-slate-100">
@@ -11102,7 +11118,7 @@ const App = () => {
 
   const renderServerProfilesPage = () => {
     const rows = allParticipants
-      .filter((p) => p.eventId === currentEvent?.id && participantIsActiveInEvent(p) && p.isServer === 'Sí')
+      .filter((p) => p.eventId === currentEvent?.id && participantIsActiveInEvent(p) && isSiValue(p.isServer))
       .filter((p) => serverPageFromFilter === 'all' || (p.travelFrom || p.location) === serverPageFromFilter)
       .filter((p) => serverPageToFilter === 'all' || (p.travelTo || p.location) === serverPageToFilter)
       .filter((p) => serverPageAssignmentFilter === 'all' || (p.serverAssignment || '') === serverPageAssignmentFilter)
@@ -11111,7 +11127,7 @@ const App = () => {
     return (
       <div className="p-6 space-y-5 animate-in fade-in duration-300">
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
-          <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Users className="text-amber-500" size={18} /> Servidores - Página adicional</h3>
+          <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Users className="text-amber-500" size={18} /> Servidores - P?gina adicional</h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <select className={inputClasses} value={serverPageFromFilter} onChange={(e) => setServerPageFromFilter(e.target.value)}>
               <option value="all">Filtrar sede de origen: Todas</option>
@@ -11122,9 +11138,9 @@ const App = () => {
               {(currentEvent?.locations || []).map((l) => <option key={`spt-${l}`} value={l}>{l}</option>)}
             </select>
             <select className={inputClasses} value={serverPageAssignmentFilter} onChange={(e) => setServerPageAssignmentFilter(e.target.value)}>
-              <option value="all">Asignación: Todas</option>
+              <option value="all">Asignaci?n: Todas</option>
               <option value="Teens">Teens</option>
-              <option value="Jóvenes">Jóvenes</option>
+              <option value="J?venes">J?venes</option>
               <option value="Ambos">Ambos</option>
             </select>
           </div>
@@ -11137,14 +11153,14 @@ const App = () => {
                 <th className="px-3 py-3">Servidor</th>
                 <th className="px-3 py-3">Sale de</th>
                 <th className="px-3 py-3">Regresa a</th>
-                <th className="px-3 py-3">Asignación</th>
+                <th className="px-3 py-3">Asignaci?n</th>
                 <th className="px-3 py-3">Casado / Pareja</th>
                 <th className="px-3 py-3">Hijos</th>
-                <th className="px-3 py-3">Sirvió en otro campa</th>
-                <th className="px-3 py-3">Áreas previas</th>
-                <th className="px-3 py-3">Área deseada</th>
+                <th className="px-3 py-3">Sirvi? en otro campa</th>
+                <th className="px-3 py-3">?reas previas</th>
+                <th className="px-3 py-3">?rea deseada</th>
                 <th className="px-3 py-3">Sirve en congreso</th>
-                <th className="px-3 py-3">Área en congreso</th>
+                <th className="px-3 py-3">?rea en congreso</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -11153,16 +11169,16 @@ const App = () => {
               ) : rows.map((p) => (
                 <tr key={`srv-${p.id}`} className="hover:bg-slate-50/60">
                   <td className="px-3 py-2 font-bold text-slate-700">{p.name}</td>
-                  <td className="px-3 py-2 text-slate-600">{p.travelFrom || p.location || '—'}</td>
-                  <td className="px-3 py-2 text-slate-600">{p.travelTo || p.location || '—'}</td>
-                  <td className="px-3 py-2 text-slate-600">{p.serverAssignment || '—'}</td>
-                  <td className="px-3 py-2 text-slate-600">{p.isMarried === 'Sí' ? `Sí${p.spouseName ? ` (${p.spouseName})` : ''}` : 'No'}</td>
-                  <td className="px-3 py-2 text-slate-600">{p.goesWithChildren === 'Sí' ? `Sí${(p.childrenCount && String(p.childrenCount).trim()) ? ` (${p.childrenCount})` : ''}` : 'No'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.travelFrom || p.location || '?'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.travelTo || p.location || '?'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.serverAssignment || '?'}</td>
+                  <td className="px-3 py-2 text-slate-600">{isSiValue(p.isMarried) ? `S?${p.spouseName ? ` (${p.spouseName})` : ''}` : 'No'}</td>
+                  <td className="px-3 py-2 text-slate-600">{isSiValue(p.goesWithChildren) ? `S?${(p.childrenCount && String(p.childrenCount).trim()) ? ` (${p.childrenCount})` : ''}` : 'No'}</td>
                   <td className="px-3 py-2 text-slate-600">{p.servedOtherCampa || 'No'}</td>
-                  <td className="px-3 py-2 text-slate-600">{p.servedAreas || '—'}</td>
-                  <td className="px-3 py-2 text-slate-600">{p.preferredServeArea || '—'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.servedAreas || '?'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.preferredServeArea || '?'}</td>
                   <td className="px-3 py-2 text-slate-600">{p.servesInCongress || 'No'}</td>
-                  <td className="px-3 py-2 text-slate-600">{p.congressServeArea || '—'}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.congressServeArea || '?'}</td>
                 </tr>
               ))}
             </tbody>
@@ -11187,7 +11203,7 @@ const App = () => {
         </div>
       )}
 
-      {/* Overlay del Menú Móvil */}
+      {/* Overlay del Men? M?vil */}
       {isMobileMenuOpen && (
          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-30 lg:hidden transition-opacity duration-300" onClick={() => setIsMobileMenuOpen(false)} />
       )}
@@ -11244,7 +11260,7 @@ const App = () => {
           <div className="pt-2 pb-2 px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Principal</div>
           <button onClick={() => goTo(systemView, selectedEventId, "Summary")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'Summary' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><BarChart3 size={20} className={activeTab === 'Summary' ? 'text-indigo-400' : ''} /><span className="font-bold">Resumen General</span></div>{activeTab === 'Summary' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}</button>
           {isCampa && isPanelNavSectionAllowed('serversPage') && (
-            <button onClick={() => goTo(systemView, selectedEventId, "ServersPage")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'ServersPage' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Users size={20} className={activeTab === 'ServersPage' ? 'text-amber-400' : ''} /><span className="font-bold">Página Servidores</span></div>{activeTab === 'ServersPage' && <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />}</button>
+            <button onClick={() => goTo(systemView, selectedEventId, "ServersPage")} className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all mb-1 ${activeTab === 'ServersPage' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}><div className="flex items-center gap-3"><Users size={20} className={activeTab === 'ServersPage' ? 'text-amber-400' : ''} /><span className="font-bold">P?gina Servidores</span></div>{activeTab === 'ServersPage' && <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />}</button>
           )}
           {hasAdminRights && isPanelNavSectionAllowed('becados') && (
             <button
@@ -11268,7 +11284,7 @@ const App = () => {
           {isPanelNavSectionAllowed('locations') && (
           <div className="flex items-center justify-between py-2 px-4 border-t border-slate-800/50 pt-4">
             <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Sedes Disponibles</span>
-            {hasAdminRights && <button onClick={() => setIsAddLocModalOpen(true)} className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 p-1 rounded transition-colors" title="Añadir Sede"><Plus size={14} /></button>}
+            {hasAdminRights && <button onClick={() => setIsAddLocModalOpen(true)} className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 p-1 rounded transition-colors" title="A?adir Sede"><Plus size={14} /></button>}
           </div>
           )}
           {isPanelNavSectionAllowed('locations') && visibleLocations.map(loc => (
@@ -11308,8 +11324,8 @@ const App = () => {
         <header className="sticky top-0 z-10 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 md:px-8 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3 flex-1 min-w-0 mr-4">
             
-            {/* Botón Hamburguesa para Móviles */}
-            <button onClick={() => setIsMobileMenuOpen(true)} className="lg:hidden p-2 bg-slate-100 text-slate-600 hover:text-indigo-600 hover:bg-slate-200 rounded-xl transition-colors flex-shrink-0" title="Abrir Menú">
+            {/* Bot?n Hamburguesa para M?viles */}
+            <button onClick={() => setIsMobileMenuOpen(true)} className="lg:hidden p-2 bg-slate-100 text-slate-600 hover:text-indigo-600 hover:bg-slate-200 rounded-xl transition-colors flex-shrink-0" title="Abrir Men?">
               <Menu size={20} />
             </button>
 
@@ -11337,14 +11353,14 @@ const App = () => {
                 <LayoutDashboard size={14} /><span className="hidden sm:inline">Eventos</span>
               </button>
               {hasAdminRights && (
-                <button type="button" onClick={() => goTo('users', null, 'Summary')} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Gestión de Usuarios">
+                <button type="button" onClick={() => goTo('users', null, 'Summary')} className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors" title="Gesti?n de Usuarios">
                   <UserCog size={14} /><span className="hidden sm:inline">Usuarios</span>
                 </button>
               )}
 
-              {/* BOTÓN EXPORTAR EXCEL */}
+              {/* BOT?N EXPORTAR EXCEL */}
               <button onClick={handleExportExcel} disabled={isExporting} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-green-700 bg-green-100 hover:bg-green-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Exportar Todo a Excel">
-                {isExporting ? <span className="animate-spin">⏳</span> : <FileSpreadsheet size={14} />}
+                {isExporting ? <span className="animate-spin">?</span> : <FileSpreadsheet size={14} />}
                 <span className="hidden sm:inline">{isExporting ? 'Generando...' : 'Exportar Excel'}</span>
               </button>
               
@@ -11373,7 +11389,7 @@ const App = () => {
                 >
                   <Bug size={14} />
                   <span className="hidden sm:inline">
-                    {globalConfig?.isDebugMode ? 'Salir Depuración' : 'Depurar'}
+                    {globalConfig?.isDebugMode ? 'Salir Depuraci?n' : 'Depurar'}
                   </span>
                 </button>
               )}
@@ -11391,7 +11407,7 @@ const App = () => {
               <button
                 onClick={handleLogout}
                 className="flex items-center gap-1.5 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-red-500 bg-red-50 hover:bg-red-100 transition-colors"
-                title="Cerrar Sesión"
+                title="Cerrar Sesi?n"
               >
                 <LogOut size={14} /><span className="hidden sm:inline">Salir</span>
               </button>
@@ -11408,7 +11424,7 @@ const App = () => {
                     className="text-[9px] font-black uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full"
                     title="Sesiones activas en tiempo real"
                   >
-                    Activo · {superSessionCount} sesión{superSessionCount === 1 ? '' : 'es'}
+                    Activo ? {superSessionCount} sesi?n{superSessionCount === 1 ? '' : 'es'}
                   </span>
                 )}
               </div>
@@ -11447,19 +11463,19 @@ const App = () => {
                   <input type="text" required className={`${inputClasses} ${getRequiredFieldClass(!hasValidFullName(editRegistryModal.data.name || ''))}`} value={editRegistryModal.data.name} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, name: e.target.value } })} />
                   <p className="text-[10px] text-slate-500 px-1">Debe incluir 1 nombre y 2 apellidos.</p>
                   <p className="text-[10px] font-mono text-indigo-600 px-1">
-                    ID VNPM: {hasValidFullName(editRegistryModal.data.name || '') && (editRegistryModal.data.birthDate || '').trim() && String(editRegistryModal.data.gender || '').trim() ? generateVnpPersonId(editRegistryModal.data) : 'completa nombre, fecha de nacimiento y género'}
+                    ID VNPM: {hasValidFullName(editRegistryModal.data.name || '') && (editRegistryModal.data.birthDate || '').trim() && String(editRegistryModal.data.gender || '').trim() ? generateVnpPersonId(editRegistryModal.data) : 'completa nombre, fecha de nacimiento y g?nero'}
                   </p>
                   <label className={labelClasses}>Alias (opcional)</label>
                   <input type="text" className={inputClasses} value={editRegistryModal.data.alias || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, alias: e.target.value } })} />
                 </div>
-                <div className="space-y-1"><label className={labelClasses}>Teléfono</label><input type="text" required className={`${inputClasses} ${getRequiredFieldClass(!isValidPhone(editRegistryModal.data.phone || ''))}`} value={editRegistryModal.data.phone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, phone: formatPhoneNumber(e.target.value) } })} /></div>
+                <div className="space-y-1"><label className={labelClasses}>Tel?fono</label><input type="text" required className={`${inputClasses} ${getRequiredFieldClass(!isValidPhone(editRegistryModal.data.phone || ''))}`} value={editRegistryModal.data.phone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, phone: formatPhoneNumber(e.target.value) } })} /></div>
                 <div className="space-y-1 md:col-span-2">
-                  <label className={labelClasses}>ID VNPM (único, lectura)</label>
+                  <label className={labelClasses}>ID VNPM (?nico, lectura)</label>
                   <input
                     type="text"
                     readOnly
                     className={`${inputClasses} bg-slate-100 text-slate-600 cursor-default font-mono text-xs`}
-                    value={editRegistryModal.data.vnpPersonId || '— Se generará al guardar si aún no existe —'}
+                    value={editRegistryModal.data.vnpPersonId || '? Se generar? al guardar si a?n no existe ?'}
                   />
                 </div>
                 <div className="space-y-1">
@@ -11477,7 +11493,7 @@ const App = () => {
                       });
                     }}
                   />
-                  <p className="text-[10px] text-slate-500 font-semibold px-1">Edad calculada: {editRegistryModal.data.age || '—'}</p>
+                  <p className="text-[10px] text-slate-500 font-semibold px-1">Edad calculada: {editRegistryModal.data.age || '?'}</p>
                 </div>
                 {(() => {
                   const ageNum = parseInt(editRegistryModal.data.age, 10);
@@ -11497,7 +11513,7 @@ const App = () => {
                     </div>
                   );
                 })()}
-                <div className="space-y-1"><label className={labelClasses}>Género {!isCampa && "(Opcional)"}</label>
+                <div className="space-y-1"><label className={labelClasses}>G?nero {!isCampa && "(Opcional)"}</label>
                   <select required={isCampa} className={`${inputClasses} ${getRequiredFieldClass(isCampa && !String(editRegistryModal.data.gender || '').trim())}`} value={editRegistryModal.data.gender} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, gender: e.target.value } })}>
                     <option value="">Seleccionar {!isCampa && "(Opcional)"}</option>
                     {GENDERS.map(g => <option key={g} value={g}>{g}</option>)}
@@ -11558,7 +11574,7 @@ const App = () => {
                   <>
                     <div className="space-y-1"><label className={labelClasses}>Contacto Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(editRegistryModal.data.emergencyContact || '').trim())}`} value={editRegistryModal.data.emergencyContact} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyContact: e.target.value } })} /></div>
                     <div className="space-y-1"><label className={labelClasses}>Tel. Emergencia {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} className={`${inputClasses} ${getRequiredFieldClass(isCampa && !isValidPhone(editRegistryModal.data.emergencyPhone || ''))}`} value={editRegistryModal.data.emergencyPhone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyPhone: formatPhoneNumber(e.target.value) } })} /></div>
-                    <div className="space-y-1"><label className={labelClasses}>Parentesco {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} placeholder="Ej. Madre, tutor…" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(editRegistryModal.data.emergencyRelationship || '').trim())}`} value={editRegistryModal.data.emergencyRelationship || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyRelationship: e.target.value } })} /></div>
+                    <div className="space-y-1"><label className={labelClasses}>Parentesco {isGeneral && "(Opcional)"}</label><input type="text" required={isCampa} placeholder="Ej. Madre, tutor?" className={`${inputClasses} ${getRequiredFieldClass(isCampa && !(editRegistryModal.data.emergencyRelationship || '').trim())}`} value={editRegistryModal.data.emergencyRelationship || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyRelationship: e.target.value } })} /></div>
                   </>
                 )}
                 {isGeneral && currentEvent.customFields && currentEvent.customFields.map((field, idx) => (
@@ -11571,24 +11587,24 @@ const App = () => {
 
               {isCampa && (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 p-6 bg-red-50/30 rounded-2xl border border-red-100">
-                  <h4 className="col-span-full text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] pb-2 border-b border-red-100">Condiciones Médicas</h4>
+                  <h4 className="col-span-full text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] pb-2 border-b border-red-100">Condiciones M?dicas</h4>
                   <div className="space-y-1">
                     <label className={labelClasses}>Alergias</label>
                     <div className="flex gap-2 flex-wrap">
-                      <select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasAllergy === 'Sí' ? 'border-orange-300 text-orange-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasAllergy} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasAllergy: e.target.value, allergyCategory: e.target.value === 'Sí' ? (editRegistryModal.data.allergyCategory || '') : '', allergyDetails: e.target.value === 'Sí' ? (editRegistryModal.data.allergyDetails || '') : '' } })}><option value="No">No</option><option value="Sí">Sí</option></select>
-                      {editRegistryModal.data.hasAllergy === 'Sí' && (
+                      <select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${isSiValue(editRegistryModal.data.hasAllergy) ? 'border-orange-300 text-orange-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasAllergy} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasAllergy: e.target.value, allergyCategory: isSiValue(e.target.value) ? (editRegistryModal.data.allergyCategory || '') : '', allergyDetails: isSiValue(e.target.value) ? (editRegistryModal.data.allergyDetails || '') : '' } })}><option value="No">No</option><option value={SI}>{SI_LABEL}</option></select>
+                      {isSiValue(editRegistryModal.data.hasAllergy) && (
                         <>
                           <select className="flex-1 min-w-[150px] p-2.5 bg-white border border-orange-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-xs font-semibold" value={editRegistryModal.data.allergyCategory || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, allergyCategory: e.target.value } })}>
-                            <option value="">Categoría (opcional)</option>
+                            <option value="">Categor?a (opcional)</option>
                             {(globalConfig?.allergyOptions?.length ? globalConfig.allergyOptions : DEFAULT_ALLERGY_OPTIONS).map((opt) => <option key={`edit-allergy-opt-${opt}`} value={opt}>{opt}</option>)}
                           </select>
-                          <input placeholder="Detalle (opcional si eliges categoría)" className={`flex-1 min-w-[180px] p-2.5 bg-white border border-orange-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-xs font-semibold ${getRequiredFieldClass(!(editRegistryModal.data.allergyDetails || '').trim() && !(editRegistryModal.data.allergyCategory || '').trim())}`} value={editRegistryModal.data.allergyDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, allergyDetails: e.target.value } })} />
+                          <input placeholder="Detalle (opcional si eliges categor?a)" className={`flex-1 min-w-[180px] p-2.5 bg-white border border-orange-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-xs font-semibold ${getRequiredFieldClass(!(editRegistryModal.data.allergyDetails || '').trim() && !(editRegistryModal.data.allergyCategory || '').trim())}`} value={editRegistryModal.data.allergyDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, allergyDetails: e.target.value } })} />
                         </>
                       )}
                     </div>
                   </div>
-                  <div className="space-y-1"><label className={labelClasses}>Enfermedades</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasDisease === 'Sí' ? 'border-red-300 text-red-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasDisease} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasDisease: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasDisease === 'Sí' && <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-2"><input placeholder="¿Cuál?" className={`p-2.5 bg-white border border-red-200 rounded-xl outline-none focus:ring-2 focus:ring-red-500 text-xs font-semibold ${getRequiredFieldClass(!(editRegistryModal.data.diseaseDetails || '').trim())}`} value={editRegistryModal.data.diseaseDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, diseaseDetails: e.target.value } })} /><input placeholder="Medicamento requerido (opcional)" className="p-2.5 bg-white border border-red-200 rounded-xl outline-none focus:ring-2 focus:ring-red-500 text-xs font-semibold" value={editRegistryModal.data.diseaseMedication || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, diseaseMedication: e.target.value } })} /></div>}</div></div>
-                  <div className="space-y-1"><label className={labelClasses}>Discapacidades</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${editRegistryModal.data.hasDisability === 'Sí' ? 'border-purple-300 text-purple-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasDisability} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasDisability: e.target.value } })}><option value="No">No</option><option value="Sí">Sí</option></select>{editRegistryModal.data.hasDisability === 'Sí' && <input placeholder="¿Cuál?" className={`flex-1 p-2.5 bg-white border border-purple-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500 text-xs font-semibold ${getRequiredFieldClass(!(editRegistryModal.data.disabilityDetails || '').trim())}`} value={editRegistryModal.data.disabilityDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, disabilityDetails: e.target.value } })} />}</div></div>
+                  <div className="space-y-1"><label className={labelClasses}>Enfermedades</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${isSiValue(editRegistryModal.data.hasDisease) ? 'border-red-300 text-red-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasDisease} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasDisease: e.target.value } })}><option value="No">No</option><option value={SI}>{SI_LABEL}</option></select>{isSiValue(editRegistryModal.data.hasDisease) && <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-2"><input placeholder="?Cu?l?" className={`p-2.5 bg-white border border-red-200 rounded-xl outline-none focus:ring-2 focus:ring-red-500 text-xs font-semibold ${getRequiredFieldClass(!(editRegistryModal.data.diseaseDetails || '').trim())}`} value={editRegistryModal.data.diseaseDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, diseaseDetails: e.target.value } })} /><input placeholder="Medicamento requerido (opcional)" className="p-2.5 bg-white border border-red-200 rounded-xl outline-none focus:ring-2 focus:ring-red-500 text-xs font-semibold" value={editRegistryModal.data.diseaseMedication || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, diseaseMedication: e.target.value } })} /></div>}</div></div>
+                  <div className="space-y-1"><label className={labelClasses}>Discapacidades</label><div className="flex gap-2"><select className={`p-2.5 bg-white border rounded-xl outline-none text-xs font-bold ${isSiValue(editRegistryModal.data.hasDisability) ? 'border-purple-300 text-purple-600' : 'border-slate-200'}`} value={editRegistryModal.data.hasDisability} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, hasDisability: e.target.value } })}><option value="No">No</option><option value={SI}>{SI_LABEL}</option></select>{isSiValue(editRegistryModal.data.hasDisability) && <input placeholder="?Cu?l?" className={`flex-1 p-2.5 bg-white border border-purple-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500 text-xs font-semibold ${getRequiredFieldClass(!(editRegistryModal.data.disabilityDetails || '').trim())}`} value={editRegistryModal.data.disabilityDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, disabilityDetails: e.target.value } })} />}</div></div>
                 </div>
               )}
 
@@ -11604,36 +11620,36 @@ const App = () => {
                         </select>
                       </div>
                       <div className="flex-1 space-y-1">
-                        <label className={labelClasses}>¿Sabe nadar?</label>
-                        <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, canSwim: editRegistryModal.data.canSwim === 'Sí' ? 'No' : 'Sí' } })} className={`w-full py-3 rounded-xl text-sm font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.canSwim === 'Sí' ? 'bg-blue-600 text-white border-blue-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Droplets size={16} /> ¿Sabe nadar?: {editRegistryModal.data.canSwim}</button>
+                        <label className={labelClasses}>?Sabe nadar?</label>
+                        <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, canSwim: isSiValue(editRegistryModal.data.canSwim) ? 'No' : SI } })} className={`w-full py-3 rounded-xl text-sm font-bold border transition-all flex items-center justify-center gap-2 ${isSiValue(editRegistryModal.data.canSwim) ? 'bg-blue-600 text-white border-blue-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Droplets size={16} /> ?Sabe nadar?: {formatSiNo(editRegistryModal.data.canSwim)}</button>
                       </div>
                     </div>
                   </div>
                   <div className="space-y-4">
-                    <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] border-b border-slate-200 pb-2">Configuración Especial</h4>
+                    <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] border-b border-slate-200 pb-2">Configuraci?n Especial</h4>
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
                         onClick={() => {
-                          const next = editRegistryModal.data.isScholarship === 'Sí' ? 'No' : 'Sí';
+                          const next = isSiValue(editRegistryModal.data.isScholarship) ? 'No' : SI;
                           setEditRegistryModal({
                             ...editRegistryModal,
                             data: {
                               ...editRegistryModal.data,
                               isScholarship: next,
-                              scholarshipType: next === 'Sí' ? 'total' : 'none',
-                              scholarshipPartialAmount: next === 'Sí' ? '' : '',
-                              attendanceSpecialType: next === 'Sí' ? ATTENDANCE_SPECIAL.ninguno : editRegistryModal.data.attendanceSpecialType,
+                              scholarshipType: isSiValue(next) ? 'total' : 'none',
+                              scholarshipPartialAmount: isSiValue(next) ? '' : '',
+                              attendanceSpecialType: isSiValue(next) ? ATTENDANCE_SPECIAL.ninguno : editRegistryModal.data.attendanceSpecialType,
                             }
                           });
                         }}
-                        className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.isScholarship === 'Sí' ? 'bg-purple-600 text-white border-purple-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}
+                        className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${isSiValue(editRegistryModal.data.isScholarship) ? 'bg-purple-600 text-white border-purple-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}
                       >
-                        <GraduationCap size={16} /> Becado: {editRegistryModal.data.isScholarship}
+                        <GraduationCap size={16} /> Becado: {formatSiNo(editRegistryModal.data.isScholarship)}
                       </button>
                       <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: {
                         ...editRegistryModal.data,
-                        isServer: editRegistryModal.data.isServer === 'Sí' ? 'No' : 'Sí',
+                        isServer: isSiValue(editRegistryModal.data.isServer) ? 'No' : SI,
                         serverAssignment: '',
                         baptismSegment: '',
                         isMarried: 'No',
@@ -11645,11 +11661,11 @@ const App = () => {
                         preferredServeArea: '',
                         servesInCongress: 'No',
                         congressServeArea: '',
-                      } })} className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.isServer === 'Sí' ? 'bg-amber-500 text-white border-amber-400 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Users size={16} /> Servidor: {editRegistryModal.data.isServer || 'No'}</button>
+                      } })} className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${isSiValue(editRegistryModal.data.isServer) ? 'bg-amber-500 text-white border-amber-400 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Users size={16} /> Servidor: {formatSiNo(editRegistryModal.data.isServer)}</button>
                       <button
                         type="button"
                         onClick={() => {
-                          const next = editRegistryModal.data.willBeBaptized === 'Sí' ? 'No' : 'Sí';
+                          const next = isSiValue(editRegistryModal.data.willBeBaptized) ? 'No' : SI;
                           setEditRegistryModal({
                             ...editRegistryModal,
                             data: {
@@ -11659,13 +11675,13 @@ const App = () => {
                             },
                           });
                         }}
-                        className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${editRegistryModal.data.willBeBaptized === 'Sí' ? 'bg-sky-600 text-white border-sky-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}
+                        className={`flex-1 min-w-[100px] py-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${isSiValue(editRegistryModal.data.willBeBaptized) ? 'bg-sky-600 text-white border-sky-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}
                       >
-                        <Church size={16} /> Bautizo: {editRegistryModal.data.willBeBaptized || 'No'}
+                        <Church size={16} /> Bautizo: {formatSiNo(editRegistryModal.data.willBeBaptized)}
                       </button>
                     </div>
 
-                    {editRegistryModal.data.isScholarship === 'Sí' && (
+                    {isSiValue(editRegistryModal.data.isScholarship) && (
                       <div className="space-y-2 max-w-xs mt-3">
                         <div className="space-y-1">
                           <label className={labelClasses}>Tipo de beca</label>
@@ -11696,7 +11712,7 @@ const App = () => {
                               min="0"
                               step="0.01"
                               placeholder="0.00"
-                              className={`${inputClasses} ${getRequiredFieldClass(editRegistryModal.data.isScholarship === 'Sí' && editRegistryModal.data.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(editRegistryModal.data.scholarshipPartialAmount)) || parseFloat(editRegistryModal.data.scholarshipPartialAmount) < 0 || parseFloat(editRegistryModal.data.scholarshipPartialAmount) >= getPersonCost(editRegistryModal.data, currentPricing)))}`}
+                              className={`${inputClasses} ${getRequiredFieldClass(isSiValue(editRegistryModal.data.isScholarship) && editRegistryModal.data.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(editRegistryModal.data.scholarshipPartialAmount)) || parseFloat(editRegistryModal.data.scholarshipPartialAmount) < 0 || parseFloat(editRegistryModal.data.scholarshipPartialAmount) >= getPersonCost(editRegistryModal.data, currentPricing)))}`}
                               value={editRegistryModal.data.scholarshipPartialAmount ?? ''}
                               onChange={(e) => setEditRegistryModal({
                                 ...editRegistryModal,
@@ -11710,9 +11726,9 @@ const App = () => {
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
                       <div className="space-y-2 min-w-0">
-                        {editRegistryModal.data.isServer === 'Sí' && (
+                        {isSiValue(editRegistryModal.data.isServer) && (
                           <div className="space-y-1">
-                            <label className={labelClasses}>Asignación</label>
+                            <label className={labelClasses}>Asignaci?n</label>
                             <select className={inputClasses} value={editRegistryModal.data.serverAssignment || ''} onChange={e => {
                               const v = e.target.value;
                               setEditRegistryModal({
@@ -11725,44 +11741,44 @@ const App = () => {
                               });
                             }}>
                               <option value="Teens">Teens</option>
-                              <option value="Jóvenes">Jóvenes</option>
+                              <option value="J?venes">J?venes</option>
                               <option value="Ambos">Ambos</option>
                             </select>
                           </div>
                         )}
                       </div>
                       <div className="space-y-2 min-w-0">
-                        {editRegistryModal.data.willBeBaptized === 'Sí' && editRegistryModal.data.isServer !== 'Sí' && (
+                        {isSiValue(editRegistryModal.data.willBeBaptized) && !isSiValue(editRegistryModal.data.isServer) && (
                           <p className="text-[10px] text-slate-600">
-                            Conteo del bautizo en <strong>{editRegistryModal.data.campAssignment || (parseInt(editRegistryModal.data.age, 10) < 18 ? 'Teens' : 'Jóvenes')}</strong> (campista, según asignación o edad).
+                            Conteo del bautizo en <strong>{editRegistryModal.data.campAssignment || (parseInt(editRegistryModal.data.age, 10) < 18 ? 'Teens' : 'J?venes')}</strong> (campista, seg?n asignaci?n o edad).
                           </p>
                         )}
-                        {editRegistryModal.data.willBeBaptized === 'Sí' && editRegistryModal.data.isServer === 'Sí' && editRegistryModal.data.serverAssignment === 'Ambos' && (
+                        {isSiValue(editRegistryModal.data.willBeBaptized) && isSiValue(editRegistryModal.data.isServer) && editRegistryModal.data.serverAssignment === 'Ambos' && (
                           <div className="space-y-1">
-                            <label className={labelClasses}>¿Dónde se bautiza?</label>
+                            <label className={labelClasses}>?D?nde se bautiza?</label>
                             <select
                               className={`${inputClasses} ${getRequiredFieldClass(!String(editRegistryModal.data.baptismSegment || '').trim())}`}
                               value={editRegistryModal.data.baptismSegment || ''}
                               onChange={(e) => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, baptismSegment: e.target.value } })}
                             >
-                              <option value="">Selecciona…</option>
+                              <option value="">Selecciona?</option>
                               <option value="Teens">Teens</option>
-                              <option value="Jóvenes">Jóvenes</option>
+                              <option value="J?venes">J?venes</option>
                             </select>
                           </div>
                         )}
                       </div>
                     </div>
 
-                    {editRegistryModal.data.isScholarship !== 'Sí' && (
+                    {!isSiValue(editRegistryModal.data.isScholarship) && (
                       <div className="p-4 bg-teal-50/50 border border-teal-100 rounded-xl mt-3">
-                        <p className="text-[10px] font-black text-teal-800 uppercase tracking-widest mb-2">Asistencia sin cobro (empleado / cortesía)</p>
+                        <p className="text-[10px] font-black text-teal-800 uppercase tracking-widest mb-2">Asistencia sin cobro (empleado / cortes?a)</p>
                         <p className="text-[10px] text-slate-600 mb-3">Costo a liquidar $0; cuenta en el registro. No aplica con beca.</p>
                         <div className="flex flex-wrap gap-2">
                           {[
                             { id: ATTENDANCE_SPECIAL.ninguno, label: 'Ninguno', Icon: null },
                             { id: ATTENDANCE_SPECIAL.empleado, label: 'Empleado', Icon: Briefcase },
-                            { id: ATTENDANCE_SPECIAL.cortesia, label: 'Cortesía', Icon: Gift },
+                            { id: ATTENDANCE_SPECIAL.cortesia, label: 'Cortes?a', Icon: Gift },
                           ].map(({ id, label, Icon }) => (
                             <button
                               key={id}
@@ -11798,44 +11814,44 @@ const App = () => {
                       </div>
                     )}
 
-                    {editRegistryModal.data.isServer === 'Sí' ? (
+                    {isSiValue(editRegistryModal.data.isServer) ? (
                       <div className="space-y-3 mt-3">
                         <div className="p-4 bg-amber-50/60 border border-amber-100 rounded-xl">
-                          <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-3">Información adicional de servidor (opcional)</p>
+                          <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-3">Informaci?n adicional de servidor (opcional)</p>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div className="space-y-1">
-                              <label className={labelClasses}>¿Es casado?</label>
-                              <select className={inputClasses} value={editRegistryModal.data.isMarried || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, isMarried: e.target.value, spouseName: e.target.value === 'Sí' ? (editRegistryModal.data.spouseName || '') : '' } })}>
-                                <option value="No">No</option><option value="Sí">Sí</option>
+                              <label className={labelClasses}>?Es casado?</label>
+                              <select className={inputClasses} value={editRegistryModal.data.isMarried || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, isMarried: e.target.value, spouseName: isSiValue(e.target.value) ? (editRegistryModal.data.spouseName || '') : '' } })}>
+                                <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                               </select>
                             </div>
-                            {editRegistryModal.data.isMarried === 'Sí' && (
+                            {isSiValue(editRegistryModal.data.isMarried) && (
                               <div className="space-y-1">
                                 <label className={labelClasses}>Nombre de pareja</label>
                                 <input className={inputClasses} value={editRegistryModal.data.spouseName || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, spouseName: e.target.value } })} />
                               </div>
                             )}
                             <div className="space-y-1">
-                              <label className={labelClasses}>¿Va con hijos?</label>
-                              <select className={inputClasses} value={editRegistryModal.data.goesWithChildren || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, goesWithChildren: e.target.value, childrenCount: e.target.value === 'Sí' ? (editRegistryModal.data.childrenCount ?? '') : '' } })}>
-                                <option value="No">No</option><option value="Sí">Sí</option>
+                              <label className={labelClasses}>?Va con hijos?</label>
+                              <select className={inputClasses} value={editRegistryModal.data.goesWithChildren || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, goesWithChildren: e.target.value, childrenCount: isSiValue(e.target.value) ? (editRegistryModal.data.childrenCount ?? '') : '' } })}>
+                                <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                               </select>
                             </div>
-                            {editRegistryModal.data.goesWithChildren === 'Sí' && (
+                            {isSiValue(editRegistryModal.data.goesWithChildren) && (
                               <div className="space-y-1">
-                                <label className={labelClasses}>¿Cuántos?</label>
-                                <input type="number" min="1" className={inputClasses} placeholder="Número" value={editRegistryModal.data.childrenCount || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, childrenCount: e.target.value } })} />
+                                <label className={labelClasses}>?Cu?ntos?</label>
+                                <input type="number" min="1" className={inputClasses} placeholder="N?mero" value={editRegistryModal.data.childrenCount || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, childrenCount: e.target.value } })} />
                               </div>
                             )}
                             <div className="space-y-1">
-                              <label className={labelClasses}>¿Han servido en otro campa?</label>
-                              <select className={inputClasses} value={editRegistryModal.data.servedOtherCampa || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, servedOtherCampa: e.target.value, servedAreas: e.target.value === 'Sí' ? (editRegistryModal.data.servedAreas || '') : '' } })}>
-                                <option value="No">No</option><option value="Sí">Sí</option>
+                              <label className={labelClasses}>?Han servido en otro campa?</label>
+                              <select className={inputClasses} value={editRegistryModal.data.servedOtherCampa || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, servedOtherCampa: e.target.value, servedAreas: isSiValue(e.target.value) ? (editRegistryModal.data.servedAreas || '') : '' } })}>
+                                <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                               </select>
                             </div>
-                            {editRegistryModal.data.servedOtherCampa === 'Sí' && (
+                            {isSiValue(editRegistryModal.data.servedOtherCampa) && (
                               <div className="space-y-1">
-                                <label className={labelClasses}>¿En qué áreas?</label>
+                                <label className={labelClasses}>?En qu? ?reas?</label>
                                 {(() => {
                                   const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
                                   const { selected, otroText } = parsePreferredServeArea(editRegistryModal.data.servedAreas || '', opts);
@@ -11862,7 +11878,7 @@ const App = () => {
                                                   {opt}
                                                 </label>
                                                 {opt === 'Otro' && selected.has('Otro') && (
-                                                  <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm" value={otroText} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, servedAreas: formatPreferredServeArea(selected, e.target.value) } })} onClick={e => e.stopPropagation()} />
+                                                  <input type="text" placeholder="?Cu?l?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm" value={otroText} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, servedAreas: formatPreferredServeArea(selected, e.target.value) } })} onClick={e => e.stopPropagation()} />
                                                 )}
                                               </div>
                                             ))}
@@ -11875,7 +11891,7 @@ const App = () => {
                               </div>
                             )}
                             <div className="space-y-1 sm:col-span-2">
-                              <label className={labelClasses}>¿En qué área les gustaría servir?</label>
+                              <label className={labelClasses}>?En qu? ?rea les gustar?a servir?</label>
                               {(() => {
                                 const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
                                 const { selected, otroText } = parsePreferredServeArea(editRegistryModal.data.preferredServeArea || '', opts);
@@ -11903,7 +11919,7 @@ const App = () => {
                                                 {opt}
                                               </label>
                                               {opt === 'Otro' && selected.has('Otro') && (
-                                                <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm" value={otroText} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, preferredServeArea: formatPreferredServeArea(selected, e.target.value) } })} onClick={e => e.stopPropagation()} />
+                                                <input type="text" placeholder="?Cu?l?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm" value={otroText} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, preferredServeArea: formatPreferredServeArea(selected, e.target.value) } })} onClick={e => e.stopPropagation()} />
                                               )}
                                             </div>
                                           ))}
@@ -11915,14 +11931,14 @@ const App = () => {
                               })()}
                             </div>
                             <div className="space-y-1">
-                              <label className={labelClasses}>¿Sirven en sus congres?</label>
-                              <select className={inputClasses} value={editRegistryModal.data.servesInCongress || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, servesInCongress: e.target.value, congressServeArea: e.target.value === 'Sí' ? (editRegistryModal.data.congressServeArea || '') : '' } })}>
-                                <option value="No">No</option><option value="Sí">Sí</option>
+                              <label className={labelClasses}>?Sirven en sus congres?</label>
+                              <select className={inputClasses} value={editRegistryModal.data.servesInCongress || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, servesInCongress: e.target.value, congressServeArea: isSiValue(e.target.value) ? (editRegistryModal.data.congressServeArea || '') : '' } })}>
+                                <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                               </select>
                             </div>
-                            {editRegistryModal.data.servesInCongress === 'Sí' && (
+                            {isSiValue(editRegistryModal.data.servesInCongress) && (
                               <div className="space-y-1">
-                                <label className={labelClasses}>¿En qué área?</label>
+                                <label className={labelClasses}>?En qu? ?rea?</label>
                                 <input className={inputClasses} value={editRegistryModal.data.congressServeArea || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, congressServeArea: e.target.value } })} />
                               </div>
                             )}
@@ -11931,10 +11947,10 @@ const App = () => {
                       </div>
                     ) : (
                       <div className="space-y-1 mt-3">
-                        <label className={labelClasses}>Asignación de Campista</label>
+                        <label className={labelClasses}>Asignaci?n de Campista</label>
                         <select className={inputClasses} value={editRegistryModal.data.campAssignment} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, campAssignment: e.target.value } })}>
                           <option value="Teens">Teens (Menores de 18)</option>
-                          <option value="Jóvenes">Jóvenes (Mayores de 18)</option>
+                          <option value="J?venes">J?venes (Mayores de 18)</option>
                         </select>
                       </div>
                     )}
@@ -11958,21 +11974,21 @@ const App = () => {
                     : resolveRegisteredCost(ed, currentPricing);
                   return (
                     <div className="mb-4 p-3 rounded-xl bg-amber-50/80 border border-amber-100 space-y-2">
-                      <p className="text-[10px] font-black text-amber-800 uppercase tracking-wider">Campañas de descuento</p>
+                      <p className="text-[10px] font-black text-amber-800 uppercase tracking-wider">Campa?as de descuento</p>
                       <p className="text-[11px] text-slate-700">
-                        <strong>Campaña guardada en el registro:</strong>{' '}
+                        <strong>Campa?a guardada en el registro:</strong>{' '}
                         {ed.discountCampaignConcept || 'Ninguna'}
                         {ed.discountCampaignId ? <span className="text-slate-500"> (id {ed.discountCampaignId})</span> : null}
                       </p>
                       <p className="text-[11px] text-slate-700">
-                        <strong>Costo de lista del evento</strong> (sin campaña, según este perfil):{' '}
+                        <strong>Costo de lista del evento</strong> (sin campa?a, seg?n este perfil):{' '}
                         <strong>${listBaseEd.toLocaleString('es-MX')}</strong>.
                         {' '}<strong>Costo fijado actual</strong> (base del registro; con beca parcial lo que liquida el participante es este costo menos el monto becado):{' '}
                         <strong>${liqPreview.toLocaleString('es-MX')}</strong>
                         {ed.discountCampaignConcept ? (
-                          <span className="text-amber-900/90"> — coherente con campaña «{ed.discountCampaignConcept}» si aplica.</span>
+                          <span className="text-amber-900/90"> ? coherente con campa?a ?{ed.discountCampaignConcept}? si aplica.</span>
                         ) : (
-                          <span className="text-slate-500"> — sin campaña aplicada en datos.</span>
+                          <span className="text-slate-500"> ? sin campa?a aplicada en datos.</span>
                         )}
                       </p>
                       {activeForEd.length > 0 ? (
@@ -11980,18 +11996,18 @@ const App = () => {
                           <li className="font-black text-amber-800 list-none -ml-0 mb-0.5">Vigentes hoy para este perfil</li>
                           {activeForEd.map((c) => (
                             <li key={`ed-act-${c.id}`}>
-                              {c.concept} · {c.startDate} → {c.endDate} · liquidar ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')} · {discountCampaignAppliesToLabel(c)}
+                              {c.concept} ? {c.startDate} ? {c.endDate} ? liquidar ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')} ? {discountCampaignAppliesToLabel(c)}
                             </li>
                           ))}
                         </ul>
                       ) : (
                         <p className="text-[10px] text-amber-800/90">
-                          Ninguna campaña en <strong>vigencia hoy</strong> para este perfil. Aun así puedes aplicar o quitar una campaña con el selector (incluye fechas pasadas/futuras).
+                          Ninguna campa?a en <strong>vigencia hoy</strong> para este perfil. Aun as? puedes aplicar o quitar una campa?a con el selector (incluye fechas pasadas/futuras).
                         </p>
                       )}
                       {manualOpts.length > 0 && hasAdminRights && (
                         <div className="space-y-1 pt-1 border-t border-amber-200/80">
-                          <label className={labelClasses}>Al guardar: aplicar o quitar campaña</label>
+                          <label className={labelClasses}>Al guardar: aplicar o quitar campa?a</label>
                           <select
                             className={inputClasses}
                             value={ed.editApplyCampaignId || ''}
@@ -12007,8 +12023,8 @@ const App = () => {
                               setEditRegistryModal({ ...editRegistryModal, data: next });
                             }}
                           >
-                            <option value="">No cambiar campaña ni costo por este control</option>
-                            <option value="__clear__">Quitar campaña (costo = lista del evento para este perfil)</option>
+                            <option value="">No cambiar campa?a ni costo por este control</option>
+                            <option value="__clear__">Quitar campa?a (costo = lista del evento para este perfil)</option>
                             {manualOpts.map((c) => {
                               const noDates = !discountCampaignHasDateRange(c);
                               const vig = !noDates && isDiscountCampaignVigenteOnDate(c, todayIsoEd);
@@ -12019,19 +12035,19 @@ const App = () => {
                                   : ' (fuera de vigencia; se puede aplicar al guardar)';
                               return (
                                 <option key={`ed-manual-${c.id}`} value={String(c.id)}>
-                                  Aplicar «{c.concept || 'Campaña'}» — ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')}
+                                  Aplicar ?{c.concept || 'Campa?a'}? ? ${Math.max(0, Number(c.finalAmount) || 0).toLocaleString('es-MX')}
                                   {suffix}
                                 </option>
                               );
                             })}
                           </select>
                           <p className="text-[10px] text-slate-600">
-                            Si eliges una campaña, el campo de costo se ajusta al monto a liquidar de esa campaña. Puedes editarlo después a mano. Si ya pagó de más tras bajar el costo, al guardar puede quedar devolución pendiente.
+                            Si eliges una campa?a, el campo de costo se ajusta al monto a liquidar de esa campa?a. Puedes editarlo despu?s a mano. Si ya pag? de m?s tras bajar el costo, al guardar puede quedar devoluci?n pendiente.
                           </p>
                         </div>
                       )}
                       {manualOpts.length > 0 && !hasAdminRights && (
-                        <p className="text-[10px] text-slate-500 pt-1 border-t border-amber-200/80">Solo administrador puede aplicar o quitar campañas y el costo fijado.</p>
+                        <p className="text-[10px] text-slate-500 pt-1 border-t border-amber-200/80">Solo administrador puede aplicar o quitar campa?as y el costo fijado.</p>
                       )}
                     </div>
                   );
@@ -12068,11 +12084,11 @@ const App = () => {
       {pricingModal.isOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
           <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-2xl animate-in zoom-in-95 duration-200">
-            <h3 className="text-xl font-black text-slate-800 mb-2 flex items-center gap-2"><Settings2 className="text-indigo-600" /> Configuración de Precios</h3>
-            <p className="text-sm text-slate-500 mb-6">Elige si el precio será fijo o si cambiará automáticamente según la fecha de registro.</p>
+            <h3 className="text-xl font-black text-slate-800 mb-2 flex items-center gap-2"><Settings2 className="text-indigo-600" /> Configuraci?n de Precios</h3>
+            <p className="text-sm text-slate-500 mb-6">Elige si el precio ser? fijo o si cambiar? autom?ticamente seg?n la fecha de registro.</p>
             <div className="flex gap-4 mb-6">
               <button onClick={() => setPricingForm({ ...pricingForm, type: 'fixed' })} className={`flex-1 py-3 rounded-xl font-bold text-sm border-2 transition-all ${pricingForm.type === 'fixed' ? 'border-indigo-600 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-500'}`}>Precio Fijo</button>
-              <button onClick={() => setPricingForm({ ...pricingForm, type: 'dynamic' })} className={`flex-1 py-3 rounded-xl font-bold text-sm border-2 transition-all ${pricingForm.type === 'dynamic' ? 'border-indigo-600 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-500'}`}>Por Fechas (Dinámico)</button>
+              <button onClick={() => setPricingForm({ ...pricingForm, type: 'dynamic' })} className={`flex-1 py-3 rounded-xl font-bold text-sm border-2 transition-all ${pricingForm.type === 'dynamic' ? 'border-indigo-600 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-500'}`}>Por Fechas (Din?mico)</button>
             </div>
             {pricingForm.type === 'fixed' ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 p-6 rounded-2xl border border-slate-200">
@@ -12090,7 +12106,7 @@ const App = () => {
                       <button onClick={() => { const newPhases = pricingForm.phases.filter((_, i) => i !== index); setPricingForm({ ...pricingForm, phases: newPhases }); }} className="p-2 mb-0.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={18} /></button>
                     </div>
                   ))}
-                  <button onClick={() => setPricingForm({ ...pricingForm, phases: [...pricingForm.phases, { id: Date.now(), dateUntil: '', globalCost: 0, serverCost: 0 }] })} className="w-full py-3 border-2 border-dashed border-indigo-300 text-indigo-500 rounded-xl font-bold text-sm hover:bg-indigo-100 transition-colors flex items-center justify-center gap-2"><Plus size={16} /> Añadir Fase</button>
+                  <button onClick={() => setPricingForm({ ...pricingForm, phases: [...pricingForm.phases, { id: Date.now(), dateUntil: '', globalCost: 0, serverCost: 0 }] })} className="w-full py-3 border-2 border-dashed border-indigo-300 text-indigo-500 rounded-xl font-bold text-sm hover:bg-indigo-100 transition-colors flex items-center justify-center gap-2"><Plus size={16} /> A?adir Fase</button>
                 </div>
                 <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 mt-4">
                   <p className="text-xs font-bold text-slate-600 mb-3">Precio Final (Cuando pasen todas las fechas anteriores):</p>
@@ -12102,9 +12118,9 @@ const App = () => {
               </div>
             )}
             <div className={`mt-5 p-4 rounded-2xl border space-y-3 ${pricingForm.type === 'fixed' ? 'border-indigo-200 bg-indigo-50/50' : 'border-amber-200 bg-amber-50/40'}`}>
-              <p className={`text-xs font-black uppercase tracking-wider ${pricingForm.type === 'fixed' ? 'text-indigo-800' : 'text-amber-800'}`}>Campañas de descuento</p>
+              <p className={`text-xs font-black uppercase tracking-wider ${pricingForm.type === 'fixed' ? 'text-indigo-800' : 'text-amber-800'}`}>Campa?as de descuento</p>
               <p className={`text-[11px] ${pricingForm.type === 'fixed' ? 'text-indigo-700' : 'text-amber-700'}`}>
-                Define concepto y monto a liquidar. <strong>Inicio y fin son opcionales:</strong> con ambas fechas, la campaña puede aplicarse sola cuando esté vigente; sin fechas completas, solo al elegirla en el alta (pago) o al editar un registro.
+                Define concepto y monto a liquidar. <strong>Inicio y fin son opcionales:</strong> con ambas fechas, la campa?a puede aplicarse sola cuando est? vigente; sin fechas completas, solo al elegirla en el alta (pago) o al editar un registro.
               </p>
               <div className="space-y-2 max-h-56 overflow-y-auto">
                 {(pricingForm.campaigns || []).map((c, idx) => (
@@ -12138,7 +12154,7 @@ const App = () => {
                 onClick={() => setPricingForm({ ...pricingForm, campaigns: [...(pricingForm.campaigns || []), { id: Date.now(), concept: '', appliesTo: 'all', finalAmount: 0, startDate: '', endDate: '', enabled: true }] })}
                 className={`w-full py-2 border border-dashed rounded-xl font-bold text-xs transition-colors ${pricingForm.type === 'fixed' ? 'border-indigo-300 text-indigo-700 hover:bg-indigo-100' : 'border-amber-300 text-amber-700 hover:bg-amber-100'}`}
               >
-                + Añadir campaña
+                + A?adir campa?a
               </button>
             </div>
             <div className="flex gap-4 pt-6 mt-6 border-t border-slate-100">
@@ -12180,18 +12196,18 @@ const App = () => {
       {serveAreaOptionsModal.isOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
           <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-xl animate-in zoom-in-95 duration-200">
-            <h3 className="text-xl font-black text-slate-800 mb-2 flex items-center gap-2"><Users className="text-amber-600" /> Opciones: ¿En qué área les gustaría servir?</h3>
-            <p className="text-sm text-slate-500 mb-4">Agrega o quita opciones. Debe incluirse &quot;Otro&quot; para la opción personalizada.</p>
+            <h3 className="text-xl font-black text-slate-800 mb-2 flex items-center gap-2"><Users className="text-amber-600" /> Opciones: ?En qu? ?rea les gustar?a servir?</h3>
+            <p className="text-sm text-slate-500 mb-4">Agrega o quita opciones. Debe incluirse &quot;Otro&quot; para la opci?n personalizada.</p>
             <div className="space-y-2 max-h-72 overflow-auto">
               {serveAreaOptionsForm.map((opt, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  <input type="text" className={inputClasses + ' flex-1'} value={opt} onChange={e => setServeAreaOptionsForm(prev => prev.map((o, j) => j === i ? e.target.value : o))} placeholder="Nombre de opción" />
+                  <input type="text" className={inputClasses + ' flex-1'} value={opt} onChange={e => setServeAreaOptionsForm(prev => prev.map((o, j) => j === i ? e.target.value : o))} placeholder="Nombre de opci?n" />
                   <button type="button" onClick={() => setServeAreaOptionsForm(prev => prev.filter((_, j) => j !== i))} className="p-2 text-red-500 hover:bg-red-50 rounded-lg" title="Quitar"><Trash2 size={18} /></button>
                 </div>
               ))}
             </div>
             <button type="button" onClick={() => setServeAreaOptionsForm(prev => [...prev, ''])} className="mt-3 text-sm font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-2">
-              <Plus size={16} /> Agregar opción
+              <Plus size={16} /> Agregar opci?n
             </button>
             <div className="flex gap-4 pt-6 mt-6 border-t border-slate-100">
               <button onClick={() => setServeAreaOptionsModal({ isOpen: false })} className={btnSecondary}>Cancelar</button>
@@ -12204,18 +12220,18 @@ const App = () => {
       {allergyOptionsModal.isOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
           <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-xl animate-in zoom-in-95 duration-200">
-            <h3 className="text-xl font-black text-slate-800 mb-2 flex items-center gap-2"><Activity className="text-orange-600" /> Categorías de alergias</h3>
-            <p className="text-sm text-slate-500 mb-4">Agrega o elimina categorías para seleccionar en el registro.</p>
+            <h3 className="text-xl font-black text-slate-800 mb-2 flex items-center gap-2"><Activity className="text-orange-600" /> Categor?as de alergias</h3>
+            <p className="text-sm text-slate-500 mb-4">Agrega o elimina categor?as para seleccionar en el registro.</p>
             <div className="space-y-2 max-h-72 overflow-auto">
               {allergyOptionsForm.map((opt, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  <input type="text" className={inputClasses + ' flex-1'} value={opt} onChange={e => setAllergyOptionsForm(prev => prev.map((o, j) => j === i ? e.target.value : o))} placeholder="Nombre de categoría" />
+                  <input type="text" className={inputClasses + ' flex-1'} value={opt} onChange={e => setAllergyOptionsForm(prev => prev.map((o, j) => j === i ? e.target.value : o))} placeholder="Nombre de categor?a" />
                   <button type="button" onClick={() => setAllergyOptionsForm(prev => prev.filter((_, j) => j !== i))} className="p-2 text-red-500 hover:bg-red-50 rounded-lg" title="Quitar"><Trash2 size={18} /></button>
                 </div>
               ))}
             </div>
             <button type="button" onClick={() => setAllergyOptionsForm(prev => [...prev, ''])} className="mt-3 text-sm font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-2">
-              <Plus size={16} /> Agregar categoría
+              <Plus size={16} /> Agregar categor?a
             </button>
             <div className="flex gap-4 pt-6 mt-6 border-t border-slate-100">
               <button onClick={() => setAllergyOptionsModal({ isOpen: false })} className={btnSecondary}>Cancelar</button>
@@ -12246,7 +12262,7 @@ const App = () => {
               </div>
             )}
             <h3 className="text-xl font-black text-slate-800 mb-2">
-              {registryConfirmModal.type === 'delete_donation' && 'Eliminar donación'}
+              {registryConfirmModal.type === 'delete_donation' && 'Eliminar donaci?n'}
               {registryConfirmModal.type === 'cancel_entry' && 'Dar de baja'}
               {registryConfirmModal.type === 'archive_waitlist' && 'Archivar lista de espera'}
               {registryConfirmModal.type === 'archive_roster' && 'Archivar registro'}
@@ -12255,30 +12271,30 @@ const App = () => {
             <p className="text-sm text-slate-500 mb-6">
               {registryConfirmModal.type === 'delete_donation' && (
                 <>
-                  ¿Eliminar la donación de{' '}
-                  <strong>${registryConfirmModal.donationAmount.toLocaleString('es-MX')}</strong>? Esta acción no se puede deshacer.
+                  ?Eliminar la donaci?n de{' '}
+                  <strong>${registryConfirmModal.donationAmount.toLocaleString('es-MX')}</strong>? Esta acci?n no se puede deshacer.
                 </>
               )}
               {registryConfirmModal.type === 'cancel_entry' && (
                 <>
-                  ¿Confirmas dar de baja a <strong>{registryConfirmModal.personName}</strong>? Dejará de contar en inscritos; si hubo pagos, puede quedar saldo pendiente de devolución.
+                  ?Confirmas dar de baja a <strong>{registryConfirmModal.personName}</strong>? Dejar? de contar en inscritos; si hubo pagos, puede quedar saldo pendiente de devoluci?n.
                 </>
               )}
               {registryConfirmModal.type === 'archive_roster' && (
                 <>
-                  ¿Archivar a <strong>{registryConfirmModal.personName}</strong>? El ID VNPM y los datos personales se conservan para precargar en otros eventos.
+                  ?Archivar a <strong>{registryConfirmModal.personName}</strong>? El ID VNPM y los datos personales se conservan para precargar en otros eventos.
                 </>
               )}
               {registryConfirmModal.type === 'archive_waitlist' && (
                 <>
-                  ¿Archivar a <strong>{registryConfirmModal.personName}</strong> de la lista de espera? Los datos siguen disponibles para precargar en otros eventos.
+                  ?Archivar a <strong>{registryConfirmModal.personName}</strong> de la lista de espera? Los datos siguen disponibles para precargar en otros eventos.
                 </>
               )}
               {registryConfirmModal.type === 'remove_pending_refund' && (
                 <>
-                  ¿Eliminar el saldo pendiente de devolución de <strong>{registryConfirmModal.personName}</strong> (
+                  ?Eliminar el saldo pendiente de devoluci?n de <strong>{registryConfirmModal.personName}</strong> (
                   <strong>${registryConfirmModal.refundAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</strong>
-                  )? Dejará de restarse en el balance neto de esta lista como si esa obligación ya no existiera. No se crea un registro visible en actividad; solo auditoría oculta.
+                  )? Dejar? de restarse en el balance neto de esta lista como si esa obligaci?n ya no existiera. No se crea un registro visible en actividad; solo auditor?a oculta.
                 </>
               )}
             </p>
@@ -12302,12 +12318,12 @@ const App = () => {
                 }`}
               >
                 {registryConfirmBusy
-                  ? '…'
+                  ? '?'
                   : registryConfirmModal.type === 'delete_donation' || registryConfirmModal.type === 'remove_pending_refund'
-                    ? 'Sí, eliminar'
+                    ? `${SI_LABEL}, eliminar`
                     : registryConfirmModal.type === 'cancel_entry'
-                      ? 'Sí, dar de baja'
-                      : 'Sí, archivar'}
+                      ? `${SI_LABEL}, dar de baja`
+                      : `${SI_LABEL}, archivar`}
               </button>
             </div>
           </div>
@@ -12337,7 +12353,7 @@ const App = () => {
 
               <div>
                 <div className="space-y-1">
-                  <label className={labelClasses}>Método</label>
+                  <label className={labelClasses}>M?todo</label>
                   <select
                     className={inputClasses}
                     value={paymentModal.paymentMethod}
@@ -12356,7 +12372,7 @@ const App = () => {
                     <input
                       className={inputClasses}
                       value={paymentModal.cardReference}
-                      placeholder="Ej. folio / transacción"
+                      placeholder="Ej. folio / transacci?n"
                       onChange={(e) => setPaymentModal({ ...paymentModal, cardReference: e.target.value })}
                     />
                   </div>
@@ -12377,11 +12393,11 @@ const App = () => {
           <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
             <h3 className="text-lg font-bold text-slate-800 mb-1">Cambiar tipo de abono</h3>
             <p className="text-sm text-slate-500 mb-5">
-              Movimiento de <strong className="text-slate-700">{paymentMethodEditModal.personName}</strong> · Monto {formatMoney(paymentMethodEditModal.amount || 0)}
+              Movimiento de <strong className="text-slate-700">{paymentMethodEditModal.personName}</strong> ? Monto {formatMoney(paymentMethodEditModal.amount || 0)}
             </p>
             <div className="space-y-4">
               <div className="space-y-1">
-                <label className={labelClasses}>Método</label>
+                <label className={labelClasses}>M?todo</label>
                 <select
                   className={inputClasses}
                   value={paymentMethodEditModal.paymentMethod}
@@ -12403,7 +12419,7 @@ const App = () => {
                   <input
                     className={inputClasses}
                     value={paymentMethodEditModal.cardReference}
-                    placeholder="Ej. folio / transacción"
+                    placeholder="Ej. folio / transacci?n"
                     onChange={(e) => setPaymentMethodEditModal((prev) => ({ ...prev, cardReference: e.target.value }))}
                   />
                 </div>
@@ -12427,14 +12443,14 @@ const App = () => {
             <p className="text-sm text-slate-500 mb-1">Mensaje para <strong className="text-slate-700">{whatsAppModal.personName}</strong>.</p>
             {whatsAppModal.pendingNotificationMarkKey ? (
               <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 mb-3">
-                Último movimiento financiero en cola (registro, abono, promoción desde espera o baja). Al abrir WhatsApp se marca como enviado. Si cambias el texto, deja de marcarse solo.
+                ?ltimo movimiento financiero en cola (registro, abono, promoci?n desde espera o baja). Al abrir WhatsApp se marca como enviado. Si cambias el texto, deja de marcarse solo.
               </p>
             ) : (
-              <p className="text-[11px] text-slate-400 mb-3">Sin avisos en cola: mensaje genérico de saldo. Tras registro, abono o promoción, aquí se precarga el texto del aviso pendiente más reciente.</p>
+              <p className="text-[11px] text-slate-400 mb-3">Sin avisos en cola: mensaje gen?rico de saldo. Tras registro, abono o promoci?n, aqu? se precarga el texto del aviso pendiente m?s reciente.</p>
             )}
             <div className="space-y-4">
               <div className="space-y-1">
-                <label className={labelClasses}>Teléfono (WhatsApp)</label>
+                <label className={labelClasses}>Tel?fono (WhatsApp)</label>
                 <input
                   type="text"
                   className={inputClasses}
@@ -12501,7 +12517,7 @@ const App = () => {
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-md animate-in zoom-in-95 duration-200">
             <div className="flex justify-between items-start mb-6">
-              <div><h3 className="text-xl font-black text-slate-800 mb-1 flex items-center gap-2"><ListPlus size={24} className="text-indigo-600" /> Campos Personalizados</h3><p className="text-sm text-slate-500">Añade o elimina preguntas extra para este evento.</p></div>
+              <div><h3 className="text-xl font-black text-slate-800 mb-1 flex items-center gap-2"><ListPlus size={24} className="text-indigo-600" /> Campos Personalizados</h3><p className="text-sm text-slate-500">A?ade o elimina preguntas extra para este evento.</p></div>
               <button onClick={() => setCustomFieldsModal({ isOpen: false })} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
             </div>
             <div className="space-y-4 mb-6 max-h-60 overflow-y-auto">
@@ -12515,7 +12531,7 @@ const App = () => {
               ) : <p className="text-center text-sm italic text-slate-400 py-4">No hay campos extra configurados.</p>}
             </div>
             <div className="space-y-2 pt-4 border-t border-slate-100">
-              <label className={labelClasses}>Añadir Nuevo Campo</label>
+              <label className={labelClasses}>A?adir Nuevo Campo</label>
               <div className="flex gap-2">
                 <input type="text" className={inputClasses} placeholder="Ej. Talla de playera" value={newCustomField} onChange={e => setNewCustomField(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddCustomField()} />
                 <button onClick={handleAddCustomField} disabled={!newCustomField.trim()} className={btnPrimary}><Plus size={18} /></button>
@@ -12532,7 +12548,7 @@ const App = () => {
             <div className="flex justify-between items-start mb-6">
               <div>
                 <h3 className="text-xl font-black text-slate-800 mb-1 flex items-center gap-2">
-                  <Receipt size={24} className="text-green-600" /> Registrar Donación
+                  <Receipt size={24} className="text-green-600" /> Registrar Donaci?n
                 </h3>
                 <p className="text-sm text-slate-500">Suma una cantidad al total recaudado.</p>
               </div>
@@ -12558,7 +12574,7 @@ const App = () => {
                 <input
                   type="text"
                   className={inputClasses}
-                  placeholder="Ej. Juan Pérez"
+                  placeholder="Ej. Juan P?rez"
                   value={donationModal.donorName}
                   onChange={e => setDonationModal({ ...donationModal, donorName: e.target.value })}
                   onKeyDown={e => e.key === 'Enter' && handleAddDonation()}
@@ -12588,7 +12604,7 @@ const App = () => {
                   {(() => {
                     const eventDonations = donations.filter(d => d.eventId === currentEvent?.id);
                     const total = eventDonations.reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
-                    return `${eventDonations.length} donación${eventDonations.length !== 1 ? 'es' : ''} · Total: ${formatMoney(total)}`;
+                    return `${eventDonations.length} donaci?n${eventDonations.length !== 1 ? 'es' : ''} ? Total: ${formatMoney(total)}`;
                   })()}
                 </p>
               </div>
@@ -12607,14 +12623,14 @@ const App = () => {
                         <p className="font-bold text-slate-800 text-sm">{formatMoney(don.amount)}</p>
                         <p className="text-xs text-slate-500 truncate">
                           {don.donorName ? don.donorName : <span className="italic">Sin nombre</span>}
-                          {' · '}{don.createdBy} · {don.createdAt ? new Date(don.createdAt).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
+                          {' ? '}{don.createdBy} ? {don.createdAt ? new Date(don.createdAt).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
                         </p>
                       </div>
                       {hasAdminRights && (
                         <button
                           onClick={() => openDeleteDonationConfirm(don)}
                           className="text-red-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors ml-2 flex-shrink-0"
-                          title="Eliminar donación"
+                          title="Eliminar donaci?n"
                         >
                           <Trash2 size={16} />
                         </button>
@@ -12627,7 +12643,7 @@ const App = () => {
               <button onClick={() => setDonationsListOpen(false)} className={`${btnSecondary} flex-1`}>Cerrar</button>
               {hasAdminRights && (
                 <button onClick={() => { setDonationsListOpen(false); setDonationModal({ isOpen: true, amount: '', donorName: '' }); }} className={`${btnPrimary} flex-1`}>
-                  <Plus size={18} /> Nueva Donación
+                  <Plus size={18} /> Nueva Donaci?n
                 </button>
               )}
             </div>
@@ -12647,8 +12663,8 @@ const App = () => {
             </div>
             <p className="text-xs text-slate-500 mb-4">
               {isSuperUser
-                ? 'SuperUsuario: la hora se interpreta según la zona horaria de este equipo.'
-                : 'Tu cuenta tiene permiso para corregir fechas. La hora se interpreta según la zona horaria de este equipo.'}
+                ? 'SuperUsuario: la hora se interpreta seg?n la zona horaria de este equipo.'
+                : 'Tu cuenta tiene permiso para corregir fechas. La hora se interpreta seg?n la zona horaria de este equipo.'}
             </p>
             <label className="text-xs font-bold text-slate-500 mb-1 block">Fecha y hora</label>
             <input
@@ -12741,13 +12757,13 @@ const App = () => {
       {isAddLocModalOpen && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200">
-            <h3 className="text-lg font-bold text-slate-800 mb-1">Añadir Nueva Sede</h3>
-            <p className="text-sm text-slate-500 mb-6">Ingresa el nombre de la nueva ubicación para este evento.</p>
+            <h3 className="text-lg font-bold text-slate-800 mb-1">A?adir Nueva Sede</h3>
+            <p className="text-sm text-slate-500 mb-6">Ingresa el nombre de la nueva ubicaci?n para este evento.</p>
             <div className="space-y-4">
-              <input type="text" autoFocus className={inputClasses} placeholder="Ej. Querétaro" value={newLocationName} onChange={e => setNewLocationName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddLocation()} />
+              <input type="text" autoFocus className={inputClasses} placeholder="Ej. Quer?taro" value={newLocationName} onChange={e => setNewLocationName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddLocation()} />
               <div className="flex gap-3 pt-2">
                 <button onClick={() => { setIsAddLocModalOpen(false); setNewLocationName(''); }} className={btnSecondary}>Cancelar</button>
-                <button onClick={handleAddLocation} disabled={!newLocationName.trim()} className={btnPrimary}><Plus size={18} /> Añadir</button>
+                <button onClick={handleAddLocation} disabled={!newLocationName.trim()} className={btnPrimary}><Plus size={18} /> A?adir</button>
               </div>
             </div>
           </div>

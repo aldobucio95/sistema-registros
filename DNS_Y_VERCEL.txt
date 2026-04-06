@@ -1,0 +1,6 @@
+Retirar Vercel y apuntar el dominio a Firebase Hosting
+
+1) En Vercel: eliminar el proyecto o desconectar el repositorio Git para que no siga desplegando.
+2) DNS: en tu proveedor de dominio, sustituir los registros que apuntaban a Vercel por los que indica Firebase Hosting (Consola Firebase > Hosting > Dominios personalizados). Suele ser un registro A o CNAME según lo que pida el asistente.
+3) Actualizar enlaces guardados (favoritos, documentación interna, QR) para que usen la URL de Firebase Hosting o tu dominio ya conectado.
+4) Opcional: revocar integraciones OAuth de Vercel con GitHub si ya no las usas.
