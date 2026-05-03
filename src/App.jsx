@@ -77,20 +77,20 @@ const CHART_COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#0
 /** Campaña de descuento aplica al perfil servidor/campista del registro. */
 const campaignMatchesPersonProfile = (c, personLike) => {
   const isServerAmbos = isSiValue(personLike?.isServer) && personLike?.serverAssignment === 'Ambos';
-  const appliesTo = cé.appliesTo || 'all';
+  const appliesTo = c?.appliesTo || 'all';
   if (appliesTo === 'server_ambos') return isServerAmbos;
   if (appliesTo === 'general') return !isServerAmbos;
   return true;
 };
 
 const isDiscountCampaignVigenteOnDate = (c, dayIso) => {
-  if (!cé.startDate || !cé.endDate || !dayIso) return false;
+  if (!c?.startDate || !c?.endDate || !dayIso) return false;
   return c.startDate <= dayIso && dayIso <= c.endDate;
 };
 
 /** Inicio y fin definidos ? puede activarse sola por calendario (vigencia). Si falta alguna, solo manual (alta/edición). */
 const discountCampaignHasDateRange = (c) =>
-  !!(cé.startDate && String(c.startDate).trim() && cé.endDate && String(c.endDate).trim());
+  !!(c?.startDate && String(c.startDate).trim() && c?.endDate && String(c.endDate).trim());
 
 const isValidDiscountCampaignRow = (c) =>
   !!(
@@ -106,7 +106,7 @@ const getValidDiscountCampaignsForPerson = (eventLike, personLike) => {
 };
 
 const discountCampaignAppliesToLabel = (c) => {
-  const a = cé.appliesTo || 'all';
+  const a = c?.appliesTo || 'all';
   if (a === 'server_ambos') return 'Solo servidor (asignación Ambos)';
   if (a === 'general') return 'Campistas y servidores no-Ambos';
   return 'Todos los perfiles';
@@ -162,7 +162,7 @@ const formatPreferredServeArea = (selected, otroText) => {
   if (selected.has('Otro')) arr.push(otroText ? `Otro: ${otroText}` : 'Otro');
   return arr.join(', ');
 };
-// Horarios por defecto (24h). ¿Segundo? de 11 a 13; ¿Tercero? de 13 a 17.
+// Horarios por defecto (24h). ?Segundo? de 11 a 13; ?Tercero? de 13 a 17.
 const DEFAULT_SERVICE_SLOTS = {
   Primero: { start: '07:00', end: '11:00' },
   Segundo: { start: '11:00', end: '13:00' },
@@ -185,7 +185,7 @@ const SI = 'Si';
 /** Texto mostrado en pantalla para la opción afirmativa. */
 const SI_LABEL = 'S\u00ed';
 
-/** Compara beca/servidor/bautizo/etc.; acepta "Si", "Sí" y datos legacy corruptos. */
+/** Compara beca/servidor/bautizo/etc.; acepta "Si", "S?" y datos legacy. */
 const isSiValue = (v) => {
   const s = String(v ?? '').trim();
   if (s === SI || s === SI_LABEL) return true;
@@ -205,7 +205,7 @@ const EMPTY_ENTRY = {
   attendanceSpecialType: ATTENDANCE_SPECIAL.ninguno,
   hasAllergy: 'No', allergyCategory: '', allergyDetails: '', hasDisease: 'No', diseaseDetails: '', diseaseMedication: '',
   hasDisability: 'No', disabilityDetails: '', isScholarship: 'No',
-  /** 'total' | 'partial' — solo aplica si isScholarship es Sí (formulario nuevo registro). */
+  /** 'total' | 'partial' - solo aplica si isScholarship es Sí (formulario nuevo registro). */
   scholarshipType: 'total',
   /** Beca parcial: monto cubierto por la beca (cantidad becada); a liquidar = costo de lista actual menos este monto. */
   scholarshipPartialAmount: '',
@@ -466,7 +466,7 @@ const participantIsActiveInEvent = (p) => !participantIsArchived(p);
 
 const buildArchivedProfileSnapshot = (person) => {
   const isServerRaw = String(person?.isServer || 'No');
-  const isServerYes = ['sí', 'si', 'yes', 'true'].includes(isServerRaw.toLowerCase());
+  const isServerYes = ['s?', 'si', 'yes', 'true'].includes(isServerRaw.toLowerCase());
   const serverAssignmentRaw = String(person?.serverAssignment || '').trim();
   const campAssignmentRaw = String(person?.campAssignment || '').trim();
   const serverAssignmentResolved = isServerYes
@@ -620,7 +620,7 @@ const normalizeIdText = (txt) =>
     .replace(/[\u0300-\u036f]/g, '')
     // ?/? no se separan en NFD; unificar a N para el algoritmo (solo A?Z en el ID).
     .replace(/\u00f1/gi, 'n')
-    // ? ? SS al pasar a mayúsculas
+    // ? ? SS al pasar a may?sculas
     .replace(/?/g, 'ss')
     .toUpperCase();
 
@@ -971,7 +971,7 @@ const App = () => {
 
   const getPricing = useCallback((event) => {
     if (!event) return { global: 0, server: 0 };
-    if (event.pricingType === 'dynamic' && event.dynamicPricesí.length > 0) {
+    if (event.pricingType === 'dynamic' && event.dynamicPrices?.length > 0) {
       const today = new Date().toISOString().split('T')[0];
       const sorted = [...event.dynamicPrices].sort((a, b) => a.dateUntil.localeCompare(b.dateUntil));
       for (const tier of sorted) {
@@ -1301,7 +1301,7 @@ const App = () => {
     const slots = globalConfig?.serviceSlots || DEFAULT_SERVICE_SLOTS;
     const nowMin = now.getHours() * 60 + now.getMinutes();
     for (const service of SERVICE_OPTIONS) {
-      const slot = slotsí.[service];
+      const slot = slots?.[service];
       const start = parseHHMM(slot?.start);
       const end = parseHHMM(slot?.end);
       if (start == null || end == null) continue;
@@ -2003,7 +2003,7 @@ const App = () => {
         const code = err?.code || '';
         setFirestoreUsersError(
           code === 'permission-denied'
-            ? 'Firestore rechazó la lectura (permiso denegado). Despliega las reglas: firebase deploy (o al menos firestore:rules) y espera un minuto.'
+            ? 'Firestore rechaz? la lectura (permiso denegado). Despliega las reglas: firebase deploy (o al menos firestore:rules) y espera un minuto.'
             : 'No se pudo cargar la lista de usuarios. Revisa conexión, que Firestore está activo y que el proyecto sea registros-vnpm.'
         );
         setUsers([]);
@@ -2112,12 +2112,12 @@ const App = () => {
   }, [currentUser?.id, activeTab, visibleLocations, data, waitlistData, cancelledData]);
 
   const isLocOpen = useCallback((loc) => {
-    return currentEvent ? currentEvent.regStatusí.[loc] !== false : false;
+    return currentEvent ? currentEvent.regStatus?.[loc] !== false : false;
   }, [currentEvent]);
 
   const getLocationCap = useCallback((loc) => {
     if (!currentEvent) return 0;
-    return Number(currentEvent.locationCapsí.[loc] || 0);
+    return Number(currentEvent.locationCaps?.[loc] || 0);
   }, [currentEvent]);
 
   const getActiveCountByLocation = useCallback((loc) => {
@@ -2145,7 +2145,7 @@ const App = () => {
       timestamp: new Date().toLocaleString('es-MX'),
       username, action, details, revertInfo,
       ...(globalConfig?.isDebugMode ? { isDebug: true, debugSessionId: globalConfig.debugSessionId } : {}),
-      ...(logOptionsí.isHidden ? { isHidden: true } : {}),
+      ...(logOptions?.isHidden ? { isHidden: true } : {}),
     };
     await setDoc(getDocRef('app_logs', String(newLogId)), newLog);
   }, [currentUser, currentEvent, globalConfig]);
@@ -2183,7 +2183,7 @@ const App = () => {
         if (others > 0) {
           await signOut(auth);
           setLoginError(
-            'Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» allí, o espera unos segundos e intenta de nuevo.'
+            'Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» all?, o espera unos segundos e intenta de nuevo.'
           );
           return;
         }
@@ -2721,10 +2721,10 @@ const App = () => {
     const skippedBackup = logs.filter((log) => now - extractLogMillis(log) <= thirtyDaysMs && log.revertInfo?.isBackup).length;
     if (logsToDelete.length > 0) {
       logsToDelete.forEach(async (log) => await deleteDoc(getDocRef('app_logs', String(log.id))));
-      addLog('Limpieza de Logs', `El SuperUsuario eliminó ${logsToDelete.length} registros recientes (< 30 días).`, null, { id: 'Global', name: 'Sistema' });
+      addLog('Limpieza de Logs', `El SuperUsuario elimin? ${logsToDelete.length} registros recientes (< 30 días).`, null, { id: 'Global', name: 'Sistema' });
       showToast(
         skippedBackup > 0
-          ? `Se eliminaron ${logsToDelete.length} registros recientes. ${skippedBackup} log(s) de copia automática no se eliminan.`
+          ? `Se eliminaron ${logsToDelete.length} registros recientes. ${skippedBackup} log(s) de copia autom?tica no se eliminan.`
           : `Se eliminaron ${logsToDelete.length} registros recientes.`
       );
     } else {
@@ -2761,7 +2761,7 @@ const App = () => {
       try {
         const backupSnap = await getDoc(getDocRef('app_backups', log.revertInfo.backupId));
         if (!backupSnap.exists()) {
-          showToast("Error: No se encontró la información de la copia de seguridad.");
+          showToast("Error: No se encontr? la información de la copia de seguridad.");
           setRestoreModal({ isOpen: false, log: null, type: 'single' });
           return;
         }
@@ -2896,7 +2896,7 @@ const App = () => {
         const others = await countOtherActiveSessions(user.id, tabSessionId);
         if (others > 0) {
           await signOut(auth);
-          setLoginError('Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» allí, o espera unos segundos e intenta de nuevo.');
+          setLoginError('Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» all?, o espera unos segundos e intenta de nuevo.');
           loginInProgressRef.current = false;
           setLoginBusy(false);
           return;
@@ -2921,7 +2921,7 @@ const App = () => {
       });
       setLoginForm({ username: '', password: '' });
       setShowLoginPassword(false);
-      addLog('Inicio de Sesión', `El usuario ${user.username} inició sesión.`, user.username, { id: 'Global', name: 'Sistema' });
+      addLog('Inicio de Sesión', `El usuario ${user.username} inici? sesión.`, user.username, { id: 'Global', name: 'Sistema' });
       await updateDoc(getDocRef('app_users', String(user.id)), { isOnline: true });
     } catch (err) {
       console.error(err);
@@ -2937,7 +2937,7 @@ const App = () => {
     if (currentUser) {
       const activeTime = Date.now() - (currentUser.loginTime || Date.now());
       const formattedTime = formatDuration(activeTime);
-      addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerró sesión manualmente. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
+      addLog('Cierre de Sesión', `El usuario ${currentUser.username} cerr? sesión manualmente. (Tiempo activo: ${formattedTime})`, currentUser.username, { id: 'Global', name: 'Sistema' });
       await removeCurrentUserSession(currentUser);
     }
     await signOut(auth).catch(() => {});
@@ -2970,7 +2970,7 @@ const App = () => {
           await updateDoc(getDocRef('app_data', 'config'), { lastBackupDate: today });
           addLog('Sistema', `Copia de seguridad automática diaria (${today}) generada exitosamente.`, 'Sistema', { id: 'Global', name: 'Sistema' }, { isBackup: true, backupId: today });
         } catch (e) {
-          console.error("Backup automatico falló", e);
+          console.error("Backup automatico fall?", e);
         }
       }
     };
@@ -3145,7 +3145,7 @@ const App = () => {
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {})
     };
     await setDoc(getDocRef('app_events', newEvt.id), newEvt);
-    addLog('Gestión de Eventos', `Creó un nuevo evento (${newEvt.eventType}): ${newEvt.name} con base de $${newEvt.globalCost}`, null, newEvt, { collectionName: 'app_events', docId: newEvt.id, action: 'create', previousData: null });
+    addLog('Gestión de Eventos', `Cre? un nuevo evento (${newEvt.eventType}): ${newEvt.name} con base de $${newEvt.globalCost}`, null, newEvt, { collectionName: 'app_events', docId: newEvt.id, action: 'create', previousData: null });
     setIsAddEventModalOpen(false);
     setNewEventData({ name: '', type: 'Campa', date: '', baseCost: '' });
   };
@@ -3158,7 +3158,7 @@ const App = () => {
       if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
 
       await updateDoc(getDocRef('app_events', ev.id), payload);
-      addLog('Gestión de Eventos', `Renombró evento: "${ev.name}" -> "${renameModal.name.trim()}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
+      addLog('Gestión de Eventos', `Renombr? evento: "${ev.name}" -> "${renameModal.name.trim()}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
       showToast("Nombre del evento actualizado.");
     }
     setRenameModal({ isOpen: false, id: null, name: '' });
@@ -3290,7 +3290,7 @@ const App = () => {
     const donation = donations.find(d => d.id === donationId);
     if (!donation) return;
     await deleteDoc(getDocRef('app_donations', donationId));
-    addLog('Donación', `Eliminó donación de $${(donation.amount || 0).toLocaleString()}${donation.donorName ? ` (Donador: ${donation.donorName})` : ''}`);
+    addLog('Donación', `Elimin? donación de $${(donation.amount || 0).toLocaleString()}${donation.donorName ? ` (Donador: ${donation.donorName})` : ''}`);
     showToast('Donación eliminada.');
   };
 
@@ -3324,7 +3324,7 @@ const App = () => {
     const exp = expenses.find(e => e.id === expenseId);
     if (!exp) return;
     await deleteDoc(getDocRef('app_expenses', expenseId));
-    addLog('Gastos', 'Movimiento en lista de gastos: eliminación de ítem (auditoría sin detalle).');
+    addLog('Gastos', 'Movimiento en lista de gastos: eliminación de ?tem (auditoría sin detalle).');
     showToast('Gasto eliminado.');
   };
 
@@ -3393,7 +3393,7 @@ const App = () => {
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido'
     });
-    addLog('Gastos', 'Movimiento en lista de gastos: edición de ítem (auditoría sin concepto ni cantidades).');
+    addLog('Gastos', 'Movimiento en lista de gastos: edición de ?tem (auditoría sin concepto ni cantidades).');
     setExpenseEditModal({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' });
     showToast('Gasto actualizado.');
   };
@@ -3602,7 +3602,7 @@ const App = () => {
       });
     }
 
-    if (changes.length > 0) addLog('Gestión de Usuarios', `Editó al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
+    if (changes.length > 0) addLog('Gestión de Usuarios', `Edit? al usuario ${originalUser.username}. Cambios: ${changes.join(', ')}`);
 
     setEditingUser({ isOpen: false, id: null, username: '', currentPasswordInput: '', newPassword: '', confirmPassword: '', role: 'Editor', canViewFinances: false, canViewHiddenDonations: false, canViewExpenses: false, restrictedEventId: '', restrictedLocation: '', allowedEventIds: [], allowedLocations: [], preferredLandingTab: 'Summary', hideMyExpenseConcepts: true, canEditRegistryDates: false });
     showToast("Usuario actualizado.");
@@ -3618,7 +3618,7 @@ const App = () => {
     }
 
     await deleteDoc(getDocRef('app_users', String(id)));
-    addLog('Gestión de Usuarios', `Eliminó al usuario: ${username}`);
+    addLog('Gestión de Usuarios', `Elimin? al usuario: ${username}`);
     showToast("Usuario eliminado.");
   };
 
@@ -3715,7 +3715,7 @@ const App = () => {
       `Tu ID único es: ${person?.vnpPersonId || 'N/A'}`,
       abonoLine,
       isLiquidado ? 'Estado: LIQUIDADO.' : `Saldo pendiente: $${pendingText}.`,
-      ...(isLiquidado && eventDateText ? [`¿Nos vemos el ${eventDateText}!`] : []),
+      ...(isLiquidado && eventDateText ? [`?Nos vemos el ${eventDateText}!`] : []),
       'Gracias.'
     ].join('\n');
   }, [currentEvent?.name, currentEvent?.date]);
@@ -3817,7 +3817,7 @@ const App = () => {
       await deleteDoc(getDocRef('app_events', id));
       addLog(
         'Gestión de Eventos',
-        `Eliminó el evento: ${deleteEventModal.name}. Se archivaron ${toArchive.length} registro(s) antes de borrarlo.`,
+        `Elimin? el evento: ${deleteEventModal.name}. Se archivaron ${toArchive.length} registro(s) antes de borrarlo.`,
         null,
         evToDelete || { name: deleteEventModal.name },
         { collectionName: 'app_events', docId: id, action: 'delete', previousData: evToDelete }
@@ -3846,11 +3846,11 @@ const App = () => {
       let promoLine;
       if (isBecado && person.scholarshipType === 'partial') {
         const becado = Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX');
-        promoLine = `Se aprobó tu beca parcial. La beca cubre $${becado} de tu costo de lista; debes liquidar ${formatMoney(target)} (puedes pagarlo en cualquier momento). Abono ya registrado: ${formatMoney(paid)}. Saliste de la lista de espera y ya quedaste inscrito en el evento.`;
+        promoLine = `Se aprob? tu beca parcial. La beca cubre $${becado} de tu costo de lista; debes liquidar ${formatMoney(target)} (puedes pagarlo en cualquier momento). Abono ya registrado: ${formatMoney(paid)}. Saliste de la lista de espera y ya quedaste inscrito en el evento.`;
       } else if (isBecado) {
-        promoLine = 'Se aprobó tu beca total. Saliste de la lista de espera y ya quedaste inscrito en el evento.';
+        promoLine = 'Se aprob? tu beca total. Saliste de la lista de espera y ya quedaste inscrito en el evento.';
       } else {
-        promoLine = 'Saliste de la lista de espera: tu registro quedó confirmado como inscrito en el evento.';
+        promoLine = 'Saliste de la lista de espera: tu registro qued? confirmado como inscrito en el evento.';
       }
 
       const debtLine =
@@ -3868,7 +3868,7 @@ const App = () => {
         `Tu ID único es: ${person?.vnpPersonId || 'N/A'}`,
         debtLine,
       ];
-      if (debt <= 0 && eventDateText) lines.push(`¿Nos vemos el ${eventDateText}!`);
+      if (debt <= 0 && eventDateText) lines.push(`?Nos vemos el ${eventDateText}!`);
       lines.push('Gracias.');
       return lines.join('\n');
     },
@@ -4204,7 +4204,7 @@ const App = () => {
     if (!currentEvent) return;
     const updated = (currentEvent.customFields || []).filter(f => f !== field);
     await updateEventConfig({ customFields: updated });
-    addLog('Campos Extra', `Eliminó el campo "${field}" del evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+    addLog('Campos Extra', `Elimin? el campo "${field}" del evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
   };
 
   const handleAddEntry = async (loc) => {
@@ -4344,7 +4344,7 @@ const App = () => {
     const isLiquidado = personData.isScholarship === 'No' && initialPaidGross >= getLiquidationTarget(personData);
     addLog(
       'Nuevo Registro',
-      `Inscribió a ${newEntry.name} en la sede ${loc}.${paymentService ? ` (Servicio: ${paymentService})` : ''} (Pago inicial: $${initialPaidGross} ${paymentMethod === 'Tarjeta' ? `(Tarjeta, Neto: $${initialPaidNet})` : '(Efectivo)'} )${isLiquidado ? ' [LIQUIDADO]' : ''}`,
+      `Inscribi? a ${newEntry.name} en la sede ${loc}.${paymentService ? ` (Servicio: ${paymentService})` : ''} (Pago inicial: $${initialPaidGross} ${paymentMethod === 'Tarjeta' ? `(Tarjeta, Neto: $${initialPaidNet})` : '(Efectivo)'} )${isLiquidado ? ' [LIQUIDADO]' : ''}`,
       null,
       null,
       { collectionName: 'app_participants', docId: newPersonId, action: 'create', previousData: null }
@@ -4539,7 +4539,7 @@ const App = () => {
       (waitlistData[loc] || []).find((p) => String(p.id) === String(editedPerson.id)) ||
       (cancelledData[loc] || []).find((p) => String(p.id) === String(editedPerson.id));
     if (!originalPerson) {
-      showToast('No se encontró el registro a actualizar.');
+      showToast('No se encontr? el registro a actualizar.');
       return;
     }
     const changes = [];
@@ -4558,7 +4558,7 @@ const App = () => {
       { key: 'canSwim', label: 'Nado' }, { key: 'age', label: 'Edad' },
       { key: 'travelFrom', label: 'Sale de' }, { key: 'travelTo', label: 'Regresa a' },
       { key: 'isMarried', label: 'Es casado' }, { key: 'spouseName', label: 'Nombre de pareja' },
-      { key: 'goesWithChildren', label: 'Va con hijos' }, { key: 'childrenCount', label: 'Cant. hijos' }, { key: 'servedOtherCampa', label: 'Sirvió en otro campa' },
+      { key: 'goesWithChildren', label: 'Va con hijos' }, { key: 'childrenCount', label: 'Cant. hijos' }, { key: 'servedOtherCampa', label: 'Sirvi? en otro campa' },
       { key: 'servedAreas', label: 'áreas previas' }, { key: 'preferredServeArea', label: 'área deseada' },
       { key: 'servesInCongress', label: 'Sirve en congreso' }, { key: 'congressServeArea', label: 'área en congreso' },
       { key: 'hasAllergy', label: 'Alergia' }, { key: 'allergyCategory', label: 'Categoría Alergia' }, { key: 'allergyDetails', label: 'Detalle Alergia' },
@@ -4771,7 +4771,7 @@ const App = () => {
     });
     addLog(
       'Eliminación de Registro',
-      `Archivó el registro de ${person.name} en la sede ${loc}. El ID VNPM y los datos personales permanecen en Firebase para precargar en otros eventos.`,
+      `Archiv? el registro de ${person.name} en la sede ${loc}. El ID VNPM y los datos personales permanecen en Firebase para precargar en otros eventos.`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
@@ -4789,7 +4789,7 @@ const App = () => {
     });
     addLog(
       'Lista de Espera',
-      `Archivó a ${person.name} (lista de espera, sede ${loc}). Los datos personales siguen disponibles para precargar en otros eventos.`,
+      `Archiv? a ${person.name} (lista de espera, sede ${loc}). Los datos personales siguen disponibles para precargar en otros eventos.`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
@@ -5012,13 +5012,13 @@ const App = () => {
     await updateDoc(getDocRef('app_participants', String(personId)), payload);
     addLog(
       'Gastos',
-      `SuperUsuario eliminó saldo pendiente de devolución (lista de gastos). Monto quitado: $${pendingAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}. Participante doc: ${personId}. Evento: ${currentEvent?.name || currentEvent?.id || '?'}.`,
+      `SuperUsuario elimin? saldo pendiente de devolución (lista de gastos). Monto quitado: $${pendingAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}. Participante doc: ${personId}. Evento: ${currentEvent?.name || currentEvent?.id || '?'}.`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
       { isHidden: true }
     );
-    showToast('Saldo eliminado de la lista. El balance neto se actualizó.');
+    showToast('Saldo eliminado de la lista. El balance neto se actualiz?.');
   };
 
   const openRemovePendingRefundConfirm = (p) => {
@@ -5090,7 +5090,7 @@ const App = () => {
         : '';
     addLog(
       'Lista de Espera',
-      `Promovió a ${person.name} de lista de espera a inscritos en la sede ${loc}.${promBeca}`,
+      `Promovi? a ${person.name} de lista de espera a inscritos en la sede ${loc}.${promBeca}`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
@@ -5109,7 +5109,7 @@ const App = () => {
     }
     const newStatus = !isLocOpen(loc);
     await updateEventConfig({ regStatus: { ...currentEvent.regStatus, [loc]: newStatus } });
-    addLog('Cambio de Estado', `${newStatus ? 'Abrió' : 'Cerró'} las inscripciones en la sede ${loc}.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
+    addLog('Cambio de Estado', `${newStatus ? 'Abri?' : 'Cerr?'} las inscripciones en la sede ${loc}.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
   };
 
   const toggleRow = (id) => {
@@ -5195,7 +5195,7 @@ const App = () => {
     await updateDoc(getDocRef('app_participants', String(person.id)), payload);
     addLog(
       'Abono Financiero',
-      `Registró un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${paymentModal.currentPaid} -> $${newPaidGross})${isLiquidado ? ' [LIQUIDADO]' : ''}`,
+      `Registr? un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${paymentModal.currentPaid} -> $${newPaidGross})${isLiquidado ? ' [LIQUIDADO]' : ''}`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
@@ -5245,7 +5245,7 @@ const App = () => {
     await updateDoc(getDocRef('app_participants', String(person.id)), payload);
     addLog(
       'Comentarios',
-      `Agregó comentario para ${person.name} en la sede ${loc}: "${draft}"`,
+      `Agreg? comentario para ${person.name} en la sede ${loc}: "${draft}"`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
@@ -5311,7 +5311,7 @@ const App = () => {
       return;
     }
     if (paymentMethodEditModal.paymentId != null && String(row.id) !== String(paymentMethodEditModal.paymentId)) {
-      showToast('El historial cambió; vuelve a abrir el editor.');
+      showToast('El historial cambi?; vuelve a abrir el editor.');
       closePaymentMethodEditModal();
       return;
     }
@@ -5483,7 +5483,7 @@ const App = () => {
         const campaignById = selectedCampaignId ? findDiscountCampaignById(currentEvent, selectedCampaignId) : null;
         const campaignByConcept = !campaignById && selectedCampaignConcept && Array.isArray(currentEvent?.discountCampaigns)
           ? currentEvent.discountCampaigns.find(c =>
-            String(cé.concept || '').trim() === selectedCampaignConcept &&
+            String(c?.concept || '').trim() === selectedCampaignConcept &&
             campaignMatchesPersonProfile(c, person)
           ) || null
           : null;
@@ -5513,7 +5513,7 @@ const App = () => {
         await updateDoc(getDocRef('app_participants', String(personId)), regPayload);
         addLog(
           'Sistema',
-          `${dateEditActor} ajustó la fecha de registro de ${person.name || 'participante'} (sede ${locLabel})${historyChanged ? ' y la marca de tiempo del pago inicial vinculado' : ''}.`,
+          `${dateEditActor} ajust? la fecha de registro de ${person.name || 'participante'} (sede ${locLabel})${historyChanged ? ' y la marca de tiempo del pago inicial vinculado' : ''}.`,
           null,
           null,
           { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
@@ -5528,7 +5528,7 @@ const App = () => {
         }
         const row = hist[idx];
         if (superDateEditModal.paymentId != null && String(row.id) !== String(superDateEditModal.paymentId)) {
-          showToast('El historial cambió; vuelve a abrir el editor.');
+          showToast('El historial cambi?; vuelve a abrir el editor.');
           return;
         }
         if (row.kind === 'comment') {
@@ -5565,7 +5565,7 @@ const App = () => {
           const campaignById = selectedCampaignId ? findDiscountCampaignById(currentEvent, selectedCampaignId) : null;
           const campaignByConcept = !campaignById && selectedCampaignConcept && Array.isArray(currentEvent?.discountCampaigns)
             ? currentEvent.discountCampaigns.find(c =>
-              String(cé.concept || '').trim() === selectedCampaignConcept &&
+              String(c?.concept || '').trim() === selectedCampaignConcept &&
               campaignMatchesPersonProfile(c, person)
             ) || null
             : null;
@@ -5594,7 +5594,7 @@ const App = () => {
         await updateDoc(getDocRef('app_participants', String(personId)), payload);
         addLog(
           'Sistema',
-          `${dateEditActor} ajustó la fecha de un movimiento en el historial de pagos de ${person.name || 'participante'} (sede ${locLabel}).`,
+          `${dateEditActor} ajust? la fecha de un movimiento en el historial de pagos de ${person.name || 'participante'} (sede ${locLabel}).`,
           null,
           null,
           { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
@@ -5843,7 +5843,7 @@ const App = () => {
                       />
                       <span className="font-bold text-slate-800">{u.username}</span>
                       {currentUser.id === u.id && (
-                        <span className="text-[10px] text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full font-black">Tú</span>
+                        <span className="text-[10px] text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full font-black">T?</span>
                       )}
                     </div>
                   </td>
@@ -6008,7 +6008,7 @@ const App = () => {
           : `Se eliminaron ${deletedCount} logs. En depuración, se protegieron ${blockedCount} log(s) recientes (< 30 días).`
       );
     } else if (protectedBackupCount > 0) {
-      showToast(`Se eliminaron ${deletedCount} logs. No se eliminaron ${protectedBackupCount} registro(s) de copia automática (restauración disponible).`);
+      showToast(`Se eliminaron ${deletedCount} logs. No se eliminaron ${protectedBackupCount} registro(s) de copia autom?tica (restauración disponible).`);
     } else {
       showToast(`Se eliminaron ${deletedCount} logs.`);
     }
@@ -6192,7 +6192,7 @@ const App = () => {
                   className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-all active:scale-95"
                   title="Restaurar la Última copia guardada en Firestore (independiente del listado de logs)"
                 >
-                  <Database size={14} /> Última copia automática
+                  <Database size={14} /> Última copia autom?tica
                 </button>
               )}
               {hasAdminRights && selectedLogs.size === 0 && <button onClick={() => setRestoreModal({ isOpen: true, type: 'cleanOld', log: null })} className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 rounded-lg transition-all active:scale-95"><Trash2 size={14} /> Limpiar &gt; 30 días</button>}
@@ -6228,7 +6228,7 @@ const App = () => {
                           checked={selectedLogs.has(log.id)}
                           onChange={() => toggleLogSelection(log.id)}
                           className="accent-indigo-600 w-4 h-4 rounded cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                          title={log.revertInfo?.isBackup ? 'No se puede borrar: referencia de la Última copia automática' : undefined}
+                          title={log.revertInfo?.isBackup ? 'No se puede borrar: referencia de la Última copia autom?tica' : undefined}
                         />
                       </td>
                     )}
@@ -6238,7 +6238,7 @@ const App = () => {
                     <td className="px-6 py-4">
                       <span className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${log.isDebug ? 'bg-orange-100 text-orange-700' : log.isHidden ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}>
                         {log.action}
-                        {log.isDebug && <span className="text-red-500 ml-1 font-black">(DEPURACIÓN)</span>}
+                        {log.isDebug && <span className="text-red-500 ml-1 font-black">(DEPURACI?N)</span>}
                         {log.isHidden && <span className="text-purple-600 ml-1 font-black">(OCULTO)</span>}
                       </span>
                     </td>
@@ -6575,7 +6575,7 @@ const App = () => {
                                   const payload = { date: newVal };
                                   if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
                                   await updateDoc(getDocRef('app_events', ev.id), payload);
-                                  addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
+                                  addLog('Gestión de Eventos', `Cambi? fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
                                 }
                               }}
                               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer"
@@ -6874,7 +6874,7 @@ const App = () => {
                   ? `ATENCIÓN: Estás a punto de restaurar la base de datos a la versión del: ${restoreModal.log?.revertInfo?.backupId}. Esto sobrescribirá todos los participantes y eventos actuales. ¿Deseas continuar?`
                   : restoreModal.type === 'cleanOld'
                   ? `¿Estás seguro de eliminar todos los registros de actividad con más de 30 días de antigüedad? Esta acción no se puede deshacer.`
-                  : `ATENCIÓN SUPERUSUARIO: ¿Estás seguro de eliminar todos los registros RECIENTES (menos de 30 días)? Esta acción es irreversible.`}
+                  : `ATENCI?N SUPERUSUARIO: ¿Estás seguro de eliminar todos los registros RECIENTES (menos de 30 días)? Esta acción es irreversible.`}
               </p>
               <div className="flex gap-3">
                 <button onClick={() => setRestoreModal({ isOpen: false, log: null, type: 'single' })} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-colors text-sm">Cancelar</button>
@@ -7443,7 +7443,7 @@ const App = () => {
                               <th className="px-4 py-2.5">Servicio</th>
                               <th className="px-4 py-2.5">Método</th>
                               <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                              <th className="px-4 py-2.5">Registró</th>
+                              <th className="px-4 py-2.5">Registr?</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-50">
@@ -7535,7 +7535,7 @@ const App = () => {
                               <th className="px-4 py-2.5">Sede</th>
                               <th className="px-4 py-2.5">Método</th>
                               <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                              <th className="px-4 py-2.5">Registró</th>
+                              <th className="px-4 py-2.5">Registr?</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-50">
@@ -7625,7 +7625,7 @@ const App = () => {
                               {cut.isSunday && <th className="px-4 py-2.5">Servicio</th>}
                               <th className="px-4 py-2.5">Método</th>
                               <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                              <th className="px-4 py-2.5">Registró</th>
+                              <th className="px-4 py-2.5">Registr?</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-50">
@@ -7713,7 +7713,7 @@ const App = () => {
                               <th className="px-4 py-2.5">Sede</th>
                               <th className="px-4 py-2.5">Método</th>
                               <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                              <th className="px-4 py-2.5">Registró</th>
+                              <th className="px-4 py-2.5">Registr?</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-50">
@@ -7788,7 +7788,7 @@ const App = () => {
                         <th className="px-4 py-2.5">Método</th>
                         <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
                         {!cashCutGross && cashCutTotalsView === 'tarjeta' && <th className="px-4 py-2.5 text-right">Comisión</th>}
-                        <th className="px-4 py-2.5">Registró</th>
+                        <th className="px-4 py-2.5">Registr?</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
@@ -7916,7 +7916,7 @@ const App = () => {
                 <span className="text-xs font-black text-slate-800 block">Ocultar mis conceptos para otros</span>
                 <span className="text-[10px] text-slate-500 font-semibold leading-snug block mt-1">
                   {hideMyExpenseConceptsChecked
-                    ? 'Por defecto está activada: los gastos que registraste muestran ¿Oculto? a otros; t? y el SuperUsuario veis el concepto. Desmarca para que todos vean tus nombres de concepto.'
+                    ? 'Por defecto está activada: los gastos que registraste muestran ?Oculto? a otros; t? y el SuperUsuario veis el concepto. Desmarca para que todos vean tus nombres de concepto.'
                     : 'Has desactivado la opción: los conceptos de los gastos que registres serán visibles para quien tenga acceso a esta lista. Vuelve a marcar para ocultarlos a otros.'}
                 </span>
               </span>
@@ -8215,10 +8215,10 @@ const App = () => {
     const rosterListForModal = summaryRosterModal.type === 'scholarship' ? rosterScholarship : rosterRegulars;
 
     // Sección 1: filtros y gráficas por Método/Servicio (Neto o Bruto)
-    const efectivoNetTotal = summary.paymentMethodTotalsí.efectivo?.net ?? 0;
-    const tarjetaNetTotal = summary.paymentMethodTotalsí.tarjeta?.net ?? 0;
-    const efectivoGrossTotal = summary.paymentMethodTotalsí.efectivo?.gross ?? 0;
-    const tarjetaGrossTotal = summary.paymentMethodTotalsí.tarjeta?.gross ?? 0;
+    const efectivoNetTotal = summary.paymentMethodTotals?.efectivo?.net ?? 0;
+    const tarjetaNetTotal = summary.paymentMethodTotals?.tarjeta?.net ?? 0;
+    const efectivoGrossTotal = summary.paymentMethodTotals?.efectivo?.gross ?? 0;
+    const tarjetaGrossTotal = summary.paymentMethodTotals?.tarjeta?.gross ?? 0;
     const efectivoModeTotal = showGrossWithoutCommission ? efectivoGrossTotal : efectivoNetTotal;
     const tarjetaModeTotal = showGrossWithoutCommission ? tarjetaGrossTotal : tarjetaNetTotal;
     const efectivoNetSelected = filterPaymentMethod.efectivo ? efectivoModeTotal : 0;
@@ -8335,7 +8335,7 @@ const App = () => {
                     { key: 'chartAges', label: 'Gráfica: Asignación', show: isCampa },
                     { key: 'chartBaptism', label: 'Gráfica: Bautizos', show: isCampa },
                     { key: 'chartAttendanceSpecial', label: 'Gráfica: Empleado / Cortesía', show: isCampa },
-                    { key: 'chartCustom', label: 'Gráfica: Campos Extra', show: isGeneral && currentEvent?.customFieldsí.length > 0 },
+                    { key: 'chartCustom', label: 'Gráfica: Campos Extra', show: isGeneral && currentEvent?.customFields?.length > 0 },
                     { key: 'tableDetails', label: 'Tabla de Desglose General' },
                   ]
                     .filter(item => item.show !== false)
@@ -8600,7 +8600,7 @@ const App = () => {
             {cupoSedeOpen && <div className="px-5 pb-5 border-t border-slate-100">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
               {(currentEvent?.locations || []).map((loc) => {
-                const currentCap = Number(tempLocationCapsí.[loc] ?? currentEvent?.locationCapsí.[loc] ?? 0);
+                const currentCap = Number(tempLocationCaps?.[loc] ?? currentEvent?.locationCaps?.[loc] ?? 0);
                 const activeCount = (data[loc] || []).length;
                 return (
                   <div key={`cap-${loc}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -8613,8 +8613,8 @@ const App = () => {
                         value={currentCap}
                         onChange={(e) => setTempLocationCaps(prev => ({ ...prev, [loc]: Math.max(0, parseInt(e.target.value || '0', 10) || 0) }))}
                         onBlur={async () => {
-                          const prevCap = Number(currentEvent?.locationCapsí.[loc] || 0);
-                          const nextCap = Number(tempLocationCapsí.[loc] ?? 0);
+                          const prevCap = Number(currentEvent?.locationCaps?.[loc] || 0);
+                          const nextCap = Number(tempLocationCaps?.[loc] ?? 0);
                           if (prevCap === nextCap) return;
                           const updatedCaps = { ...(currentEvent?.locationCaps || {}), [loc]: nextCap };
                           await updateEventConfig({ locationCaps: updatedCaps });
@@ -8630,7 +8630,7 @@ const App = () => {
                 );
               })}
             </div>
-            <p className="text-[10px] text-slate-400 font-bold mt-3">Usa 0 para cupo ilimitado. Al llenarse, ¿Registrar? envía automáticamente a lista de espera.</p>
+            <p className="text-[10px] text-slate-400 font-bold mt-3">Usa 0 para cupo ilimitado. Al llenarse, ?Registrar? env?a automáticamente a lista de espera.</p>
 
             <div className="mt-5 border-t border-slate-100 pt-4">
               <h4 className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Cupo vs Espera por Sede</h4>
@@ -8648,7 +8648,7 @@ const App = () => {
                   <tbody className="divide-y divide-slate-50">
                     {(currentEvent?.locations || []).map((loc) => {
                       const activeCount = (data[loc] || []).length;
-                      const cap = Number(tempLocationCapsí.[loc] ?? currentEvent?.locationCapsí.[loc] ?? 0);
+                      const cap = Number(tempLocationCaps?.[loc] ?? currentEvent?.locationCaps?.[loc] ?? 0);
                       const waitCount = (waitlistData[loc] || []).length;
                       const isFull = cap > 0 && activeCount >= cap;
                       return (
@@ -8948,11 +8948,11 @@ const App = () => {
             const locations = currentEvent?.locations || [];
             const departures = locations.map((loc) => ({
               loc,
-              value: locations.reduce((sum, to) => sum + (summary.travelStatsí.[loc]?.[to] || 0), 0),
+              value: locations.reduce((sum, to) => sum + (summary.travelStats?.[loc]?.[to] || 0), 0),
             }));
             const returns = locations.map((loc) => ({
               loc,
-              value: locations.reduce((sum, from) => sum + (summary.travelStatsí.[from]?.[loc] || 0), 0),
+              value: locations.reduce((sum, from) => sum + (summary.travelStats?.[from]?.[loc] || 0), 0),
             }));
             const depTotal = departures.reduce((s, x) => s + x.value, 0);
             const retTotal = returns.reduce((s, x) => s + x.value, 0);
@@ -9015,7 +9015,7 @@ const App = () => {
     );
   };
 
-  /** Columna ¿Participante? compartida: mismas etiquetas que en registro por sede (incl. lista de espera en vista global). */
+  /** Columna ?Participante? compartida: mismas etiquetas que en registro por sede (incl. lista de espera en vista global). */
   const renderRegistrationParticipantColumn = (person) => {
     const isBecado = isCampa && isSiValue(person.isScholarship);
     const isWaitlist = (person?.status || 'active') === 'waitlist';
@@ -9355,7 +9355,7 @@ const App = () => {
                       </select>
                     </div>
                     <div className="space-y-1">
-                      <label className={labelClasses}>¿Sabe nadar?</label>
+                      <label className={labelClasses}>?Sabe nadar?</label>
                       <button type="button" onClick={() => setNewEntry({ ...newEntry, canSwim: isSiValue(newEntry.canSwim) ? 'No' : SI })} className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all border ${isSiValue(newEntry.canSwim) ? 'bg-blue-500 text-white border-blue-400' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}>{formatSiNo(newEntry.canSwim)}</button>
                     </div>
                   </div>
@@ -9366,7 +9366,7 @@ const App = () => {
                         <button
                           type="button"
                           onClick={() => {
-                            setAllergyOptionsForm(globalConfig?.allergyOptionsí.length ? [...globalConfig.allergyOptions] : [...DEFAULT_ALLERGY_OPTIONS]);
+                            setAllergyOptionsForm(globalConfig?.allergyOptions?.length ? [...globalConfig.allergyOptions] : [...DEFAULT_ALLERGY_OPTIONS]);
                             setAllergyOptionsModal({ isOpen: true });
                           }}
                           className="text-[10px] font-bold text-orange-600 hover:text-orange-700 flex items-center gap-1"
@@ -9381,7 +9381,7 @@ const App = () => {
                         <>
                           <select className="flex-1 min-w-[150px] p-2.5 bg-slate-50 border border-orange-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-orange-500" value={newEntry.allergyCategory || ''} onChange={e => setNewEntry({ ...newEntry, allergyCategory: e.target.value })}>
                             <option value="">Categoría (opcional)</option>
-                            {(globalConfig?.allergyOptionsí.length ? globalConfig.allergyOptions : DEFAULT_ALLERGY_OPTIONS).map((opt) => <option key={`allergy-opt-${opt}`} value={opt}>{opt}</option>)}
+                            {(globalConfig?.allergyOptions?.length ? globalConfig.allergyOptions : DEFAULT_ALLERGY_OPTIONS).map((opt) => <option key={`allergy-opt-${opt}`} value={opt}>{opt}</option>)}
                           </select>
                           <input placeholder="Detalle (opcional si eliges categoría)" className={`flex-1 min-w-[180px] p-2.5 bg-slate-50 border border-orange-300 rounded-lg text-sm ${getRequiredFieldClass(!(newEntry.allergyDetails || '').trim() && !(newEntry.allergyCategory || '').trim())}`} value={newEntry.allergyDetails} onChange={e => setNewEntry({ ...newEntry, allergyDetails: e.target.value })} />
                         </>
@@ -9417,7 +9417,7 @@ const App = () => {
                 <div className="flex items-center justify-between mb-3 pb-1.5 border-b border-slate-200">
                   <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em]">4 ? Tipo de asistencia</h4>
                   {hasAdminRights && (
-                    <button type="button" onClick={() => { setServeAreaOptionsForm(globalConfig?.serveAreaOptionsí.length ? [...globalConfig.serveAreaOptions] : [...DEFAULT_SERVE_AREA_OPTIONS]); setServeAreaOptionsModal({ isOpen: true }); }} className="text-[10px] font-bold text-amber-600 hover:text-amber-700 flex items-center gap-1">
+                    <button type="button" onClick={() => { setServeAreaOptionsForm(globalConfig?.serveAreaOptions?.length ? [...globalConfig.serveAreaOptions] : [...DEFAULT_SERVE_AREA_OPTIONS]); setServeAreaOptionsModal({ isOpen: true }); }} className="text-[10px] font-bold text-amber-600 hover:text-amber-700 flex items-center gap-1">
                       <Settings2 size={12} /> áreas para servir
                     </button>
                   )}
@@ -9608,7 +9608,7 @@ const App = () => {
                     <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-2">Información adicional de servidor (opcional)</p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div className="space-y-1">
-                        <label className={labelClasses}>¿Es casado?</label>
+                        <label className={labelClasses}>?Es casado?</label>
                         <select className={inputClasses} value={newEntry.isMarried || 'No'} onChange={e => setNewEntry({ ...newEntry, isMarried: e.target.value, spouseName: isSiValue(e.target.value) ? newEntry.spouseName : '' })}>
                           <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                         </select>
@@ -9620,28 +9620,28 @@ const App = () => {
                         </div>
                       )}
                       <div className="space-y-1">
-                        <label className={labelClasses}>¿Va con hijosí</label>
+                        <label className={labelClasses}>?Va con hijos?</label>
                         <select className={inputClasses} value={newEntry.goesWithChildren || 'No'} onChange={e => setNewEntry({ ...newEntry, goesWithChildren: e.target.value, childrenCount: isSiValue(e.target.value) ? newEntry.childrenCount : '' })}>
                           <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                         </select>
                       </div>
                       {isSiValue(newEntry.goesWithChildren) && (
                         <div className="space-y-1">
-                          <label className={labelClasses}>¿Cuántosí</label>
+                          <label className={labelClasses}>¿Cuántos?</label>
                           <input type="number" min="1" className={inputClasses} placeholder="Número" value={newEntry.childrenCount || ''} onChange={e => setNewEntry({ ...newEntry, childrenCount: e.target.value })} />
                         </div>
                       )}
                       <div className="space-y-1">
-                        <label className={labelClasses}>¿Han servido en otro campa</label>
+                        <label className={labelClasses}>?Han servido en otro campa?</label>
                         <select className={inputClasses} value={newEntry.servedOtherCampa || 'No'} onChange={e => setNewEntry({ ...newEntry, servedOtherCampa: e.target.value, servedAreas: isSiValue(e.target.value) ? newEntry.servedAreas : '' })}>
                           <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                         </select>
                       </div>
                       {isSiValue(newEntry.servedOtherCampa) && (
                         <div className="space-y-1">
-                          <label className={labelClasses}>¿En qué áreasí</label>
+                          <label className={labelClasses}>¿En qué áreas?</label>
                           {(() => {
-                            const opts = (globalConfig?.serveAreaOptionsí.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
+                            const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
                             const { selected, otroText } = parsePreferredServeArea(newEntry.servedAreas, opts);
                             const isOpen = openServedAreasLoc === loc;
                             const toggle = (opt) => {
@@ -9682,7 +9682,7 @@ const App = () => {
                       <div className="space-y-1 sm:col-span-2">
                         <label className={labelClasses}>¿En qué área les gustaría servir?</label>
                         {(() => {
-                          const opts = (globalConfig?.serveAreaOptionsí.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
+                          const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
                           const { selected, otroText } = parsePreferredServeArea(newEntry.preferredServeArea, opts);
                           const isOpen = openPreferredServeLoc === loc;
                           const toggle = (opt) => {
@@ -9721,7 +9721,7 @@ const App = () => {
                         })()}
                       </div>
                       <div className="space-y-1">
-                        <label className={labelClasses}>¿Sirven en sus congresó</label>
+                        <label className={labelClasses}>?Sirven en sus congres?</label>
                         <select className={inputClasses} value={newEntry.servesInCongress || 'No'} onChange={e => setNewEntry({ ...newEntry, servesInCongress: e.target.value, congressServeArea: isSiValue(e.target.value) ? newEntry.congressServeArea : '' })}>
                           <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                         </select>
@@ -11156,7 +11156,7 @@ const App = () => {
                 <th className="px-3 py-3">Asignación</th>
                 <th className="px-3 py-3">Casado / Pareja</th>
                 <th className="px-3 py-3">Hijos</th>
-                <th className="px-3 py-3">Sirvió en otro campa</th>
+                <th className="px-3 py-3">Sirvi? en otro campa</th>
                 <th className="px-3 py-3">áreas previas</th>
                 <th className="px-3 py-3">área deseada</th>
                 <th className="px-3 py-3">Sirve en congreso</th>
@@ -11172,8 +11172,8 @@ const App = () => {
                   <td className="px-3 py-2 text-slate-600">{p.travelFrom || p.location || '?'}</td>
                   <td className="px-3 py-2 text-slate-600">{p.travelTo || p.location || '?'}</td>
                   <td className="px-3 py-2 text-slate-600">{p.serverAssignment || '?'}</td>
-                  <td className="px-3 py-2 text-slate-600">{isSiValue(p.isMarried) ? `Sí${p.spouseName ? ` (${p.spouseName})` : ''}` : 'No'}</td>
-                  <td className="px-3 py-2 text-slate-600">{isSiValue(p.goesWithChildren) ? `Sí${(p.childrenCount && String(p.childrenCount).trim()) ? ` (${p.childrenCount})` : ''}` : 'No'}</td>
+                  <td className="px-3 py-2 text-slate-600">{isSiValue(p.isMarried) ? `S?${p.spouseName ? ` (${p.spouseName})` : ''}` : 'No'}</td>
+                  <td className="px-3 py-2 text-slate-600">{isSiValue(p.goesWithChildren) ? `S?${(p.childrenCount && String(p.childrenCount).trim()) ? ` (${p.childrenCount})` : ''}` : 'No'}</td>
                   <td className="px-3 py-2 text-slate-600">{p.servedOtherCampa || 'No'}</td>
                   <td className="px-3 py-2 text-slate-600">{p.servedAreas || '?'}</td>
                   <td className="px-3 py-2 text-slate-600">{p.preferredServeArea || '?'}</td>
@@ -11203,7 +11203,7 @@ const App = () => {
         </div>
       )}
 
-      {/* Overlay del Menú Móvil */}
+      {/* Overlay del Menú M?vil */}
       {isMobileMenuOpen && (
          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-30 lg:hidden transition-opacity duration-300" onClick={() => setIsMobileMenuOpen(false)} />
       )}
@@ -11325,7 +11325,7 @@ const App = () => {
           <div className="flex items-center gap-3 flex-1 min-w-0 mr-4">
 
             {/* Botón Hamburguesa para Móviles */}
-            <button onClick={() => setIsMobileMenuOpen(true)} className="lg:hidden p-2 bg-slate-100 text-slate-600 hover:text-indigo-600 hover:bg-slate-200 rounded-xl transition-colors flex-shrink-0" title="Abrir Menú">
+            <button onClick={() => setIsMobileMenuOpen(true)} className="lg:hidden p-2 bg-slate-100 text-slate-600 hover:text-indigo-600 hover:bg-slate-200 rounded-xl transition-colors flex-shrink-0" title="Abrir Men?">
               <Menu size={20} />
             </button>
 
@@ -11358,7 +11358,7 @@ const App = () => {
                 </button>
               )}
 
-              {/* BOTÓN EXPORTAR EXCEL */}
+              {/* BOT?N EXPORTAR EXCEL */}
               <button onClick={handleExportExcel} disabled={isExporting} className="flex items-center gap-1 md:gap-2 px-2 py-1.5 md:px-3 rounded-full text-[10px] md:text-xs font-bold text-green-700 bg-green-100 hover:bg-green-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Exportar Todo a Excel">
                 {isExporting ? <span className="animate-spin">?</span> : <FileSpreadsheet size={14} />}
                 <span className="hidden sm:inline">{isExporting ? 'Generando...' : 'Exportar Excel'}</span>
@@ -11596,7 +11596,7 @@ const App = () => {
                         <>
                           <select className="flex-1 min-w-[150px] p-2.5 bg-white border border-orange-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-xs font-semibold" value={editRegistryModal.data.allergyCategory || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, allergyCategory: e.target.value } })}>
                             <option value="">Categoría (opcional)</option>
-                            {(globalConfig?.allergyOptionsí.length ? globalConfig.allergyOptions : DEFAULT_ALLERGY_OPTIONS).map((opt) => <option key={`edit-allergy-opt-${opt}`} value={opt}>{opt}</option>)}
+                            {(globalConfig?.allergyOptions?.length ? globalConfig.allergyOptions : DEFAULT_ALLERGY_OPTIONS).map((opt) => <option key={`edit-allergy-opt-${opt}`} value={opt}>{opt}</option>)}
                           </select>
                           <input placeholder="Detalle (opcional si eliges categoría)" className={`flex-1 min-w-[180px] p-2.5 bg-white border border-orange-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500 text-xs font-semibold ${getRequiredFieldClass(!(editRegistryModal.data.allergyDetails || '').trim() && !(editRegistryModal.data.allergyCategory || '').trim())}`} value={editRegistryModal.data.allergyDetails} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, allergyDetails: e.target.value } })} />
                         </>
@@ -11620,8 +11620,8 @@ const App = () => {
                         </select>
                       </div>
                       <div className="flex-1 space-y-1">
-                        <label className={labelClasses}>¿Sabe nadar?</label>
-                        <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, canSwim: isSiValue(editRegistryModal.data.canSwim) ? 'No' : SI } })} className={`w-full py-3 rounded-xl text-sm font-bold border transition-all flex items-center justify-center gap-2 ${isSiValue(editRegistryModal.data.canSwim) ? 'bg-blue-600 text-white border-blue-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Droplets size={16} /> ¿Sabe nadar?: {formatSiNo(editRegistryModal.data.canSwim)}</button>
+                        <label className={labelClasses}>?Sabe nadar?</label>
+                        <button type="button" onClick={() => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, canSwim: isSiValue(editRegistryModal.data.canSwim) ? 'No' : SI } })} className={`w-full py-3 rounded-xl text-sm font-bold border transition-all flex items-center justify-center gap-2 ${isSiValue(editRegistryModal.data.canSwim) ? 'bg-blue-600 text-white border-blue-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`}><Droplets size={16} /> ?Sabe nadar?: {formatSiNo(editRegistryModal.data.canSwim)}</button>
                       </div>
                     </div>
                   </div>
@@ -11820,7 +11820,7 @@ const App = () => {
                           <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-3">Información adicional de servidor (opcional)</p>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div className="space-y-1">
-                              <label className={labelClasses}>¿Es casado?</label>
+                              <label className={labelClasses}>?Es casado?</label>
                               <select className={inputClasses} value={editRegistryModal.data.isMarried || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, isMarried: e.target.value, spouseName: isSiValue(e.target.value) ? (editRegistryModal.data.spouseName || '') : '' } })}>
                                 <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                               </select>
@@ -11832,28 +11832,28 @@ const App = () => {
                               </div>
                             )}
                             <div className="space-y-1">
-                              <label className={labelClasses}>¿Va con hijosí</label>
+                              <label className={labelClasses}>?Va con hijos?</label>
                               <select className={inputClasses} value={editRegistryModal.data.goesWithChildren || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, goesWithChildren: e.target.value, childrenCount: isSiValue(e.target.value) ? (editRegistryModal.data.childrenCount ?? '') : '' } })}>
                                 <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                               </select>
                             </div>
                             {isSiValue(editRegistryModal.data.goesWithChildren) && (
                               <div className="space-y-1">
-                                <label className={labelClasses}>¿Cuántosí</label>
+                                <label className={labelClasses}>¿Cuántos?</label>
                                 <input type="number" min="1" className={inputClasses} placeholder="Número" value={editRegistryModal.data.childrenCount || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, childrenCount: e.target.value } })} />
                               </div>
                             )}
                             <div className="space-y-1">
-                              <label className={labelClasses}>¿Han servido en otro campa</label>
+                              <label className={labelClasses}>?Han servido en otro campa?</label>
                               <select className={inputClasses} value={editRegistryModal.data.servedOtherCampa || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, servedOtherCampa: e.target.value, servedAreas: isSiValue(e.target.value) ? (editRegistryModal.data.servedAreas || '') : '' } })}>
                                 <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                               </select>
                             </div>
                             {isSiValue(editRegistryModal.data.servedOtherCampa) && (
                               <div className="space-y-1">
-                                <label className={labelClasses}>¿En qué áreasí</label>
+                                <label className={labelClasses}>¿En qué áreas?</label>
                                 {(() => {
-                                  const opts = (globalConfig?.serveAreaOptionsí.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
+                                  const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
                                   const { selected, otroText } = parsePreferredServeArea(editRegistryModal.data.servedAreas || '', opts);
                                   const toggle = (opt) => {
                                     const next = new Set(selected);
@@ -11893,7 +11893,7 @@ const App = () => {
                             <div className="space-y-1 sm:col-span-2">
                               <label className={labelClasses}>¿En qué área les gustaría servir?</label>
                               {(() => {
-                                const opts = (globalConfig?.serveAreaOptionsí.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
+                                const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
                                 const { selected, otroText } = parsePreferredServeArea(editRegistryModal.data.preferredServeArea || '', opts);
                                 const toggle = (opt) => {
                                   const next = new Set(selected);
@@ -11931,7 +11931,7 @@ const App = () => {
                               })()}
                             </div>
                             <div className="space-y-1">
-                              <label className={labelClasses}>¿Sirven en sus congresó</label>
+                              <label className={labelClasses}>?Sirven en sus congres?</label>
                               <select className={inputClasses} value={editRegistryModal.data.servesInCongress || 'No'} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, servesInCongress: e.target.value, congressServeArea: isSiValue(e.target.value) ? (editRegistryModal.data.congressServeArea || '') : '' } })}>
                                 <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                               </select>
@@ -12002,7 +12002,7 @@ const App = () => {
                         </ul>
                       ) : (
                         <p className="text-[10px] text-amber-800/90">
-                          Ninguna campaña en <strong>vigencia hoy</strong> para este perfil. Aun así puedes aplicar o quitar una campaña con el selector (incluye fechas pasadas/futuras).
+                          Ninguna campaña en <strong>vigencia hoy</strong> para este perfil. Aun as? puedes aplicar o quitar una campaña con el selector (incluye fechas pasadas/futuras).
                         </p>
                       )}
                       {manualOpts.length > 0 && hasAdminRights && (
@@ -12517,7 +12517,7 @@ const App = () => {
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-md animate-in zoom-in-95 duration-200">
             <div className="flex justify-between items-start mb-6">
-              <div><h3 className="text-xl font-black text-slate-800 mb-1 flex items-center gap-2"><ListPlus size={24} className="text-indigo-600" /> Campos Personalizados</h3><p className="text-sm text-slate-500">Añade o elimina preguntas extra para este evento.</p></div>
+              <div><h3 className="text-xl font-black text-slate-800 mb-1 flex items-center gap-2"><ListPlus size={24} className="text-indigo-600" /> Campos Personalizados</h3><p className="text-sm text-slate-500">A?ade o elimina preguntas extra para este evento.</p></div>
               <button onClick={() => setCustomFieldsModal({ isOpen: false })} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
             </div>
             <div className="space-y-4 mb-6 max-h-60 overflow-y-auto">
