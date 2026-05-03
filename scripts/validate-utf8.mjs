@@ -9,6 +9,22 @@ const ROOT = process.cwd();
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', '.firebase']);
 const EXT = new Set(['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.css', '.html', '.json', '.md', '.svg', '.txt']);
 const ROOT_FILES = new Set(['index.html', 'vite.config.js', 'vite.config.ts', 'eslint.config.js', 'postcss.config.js', 'tailwind.config.js']);
+const MOJIBAKE_PATTERNS = [
+  /J\?venes/,
+  /Cami\?n/,
+  /Contrase\?a/,
+  /Tel\?fono/,
+  /Configuraci\?n/,
+  /Gesti\?n/,
+  /M\?TRICAS/,
+  /ASIGNACI\?N/,
+  /G\?NERO/,
+  /Ni\?os/,
+  /Sesi\?n/,
+  /Donaci\?n/,
+  /Restauraci\?n/,
+  /aplicaci\?n/,
+];
 
 async function walk(dir, out = []) {
   let entries;
@@ -55,6 +71,12 @@ async function main() {
     if (text.includes('\uFFFD')) {
       console.error(`U+FFFD (replacement char) in ${relative(ROOT, abs)} — file was likely saved with wrong encoding.`);
       failed = true;
+    }
+    for (const pattern of MOJIBAKE_PATTERNS) {
+      if (pattern.test(text)) {
+        console.error(`Likely mojibake (${pattern}) in ${relative(ROOT, abs)} — check Spanish accented text.`);
+        failed = true;
+      }
     }
   }
 
