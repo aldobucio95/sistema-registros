@@ -118,7 +118,7 @@ const findDiscountCampaignById = (eventLike, id) => {
   return all.find((x) => String(x.id) === String(id)) || null;
 };
 
-/** Segmento Teens / J?venes donde contabilizar el bautizo (evento). Null si no aplica o falta dato (ej. Ambos sin elegir). */
+/** Segmento Teens / Jóvenes donde contabilizar el bautizo (evento). Null si no aplica o falta dato (ej. Ambos sin elegir). */
 const getBaptismAccountingSegment = (personLike) => {
   if (!isSiValue(personLike?.willBeBaptized)) return null;
   const isServer = isSiValue(personLike?.isServer);
@@ -126,15 +126,15 @@ const getBaptismAccountingSegment = (personLike) => {
     const sa = String(personLike?.serverAssignment || '').trim();
     if (sa === 'Ambos') {
       const bs = String(personLike?.baptismSegment || '').trim();
-      return bs === 'Teens' || bs === 'J?venes' ? bs : null;
+      return bs === 'Teens' || bs === 'Jóvenes' ? bs : null;
     }
-    if (sa === 'Teens' || sa === 'J?venes') return sa;
+    if (sa === 'Teens' || sa === 'Jóvenes') return sa;
     return null;
   }
   const camp = String(personLike?.campAssignment || '').trim();
-  if (camp === 'Teens' || camp === 'J?venes') return camp;
+  if (camp === 'Teens' || camp === 'Jóvenes') return camp;
   const ageNum = parseInt(personLike?.age, 10) || 0;
-  return ageNum < 18 ? 'Teens' : 'J?venes';
+  return ageNum < 18 ? 'Teens' : 'Jóvenes';
 };
 
 const PAYMENT_METHODS = ['Efectivo', 'Tarjeta'];
@@ -197,6 +197,30 @@ const isSiValue = (v) => {
 /** Texto de UI para un campo Si/No (muestra SI_LABEL o "No"). */
 const formatSiNo = (v) => (isSiValue(v) ? SI_LABEL : 'No');
 
+const JOVENES_SEGMENT = 'Jóvenes';
+const LEGACY_CORRUPT_JOVENES_SEGMENT = 'J?venes';
+const BUS_TRANSPORT = 'Camión';
+const LEGACY_CORRUPT_BUS_TRANSPORT = 'Cami?n';
+
+const normalizeCampaSegment = (value) => {
+  const s = String(value ?? '').trim();
+  return s === LEGACY_CORRUPT_JOVENES_SEGMENT ? JOVENES_SEGMENT : s;
+};
+
+const normalizeTransportType = (value) => {
+  const s = String(value ?? '').trim();
+  return s === LEGACY_CORRUPT_BUS_TRANSPORT ? BUS_TRANSPORT : s;
+};
+
+const normalizeParticipantRecord = (person) => {
+  const normalized = { ...person };
+  if (normalized.serverAssignment != null) normalized.serverAssignment = normalizeCampaSegment(normalized.serverAssignment);
+  if (normalized.campAssignment != null) normalized.campAssignment = normalizeCampaSegment(normalized.campAssignment);
+  if (normalized.baptismSegment != null) normalized.baptismSegment = normalizeCampaSegment(normalized.baptismSegment);
+  if (normalized.transportType != null && normalized.transportType !== '') normalized.transportType = normalizeTransportType(normalized.transportType);
+  return normalized;
+};
+
 const EMPTY_ENTRY = {
   name: '', phone: '', age: '', birthDate: '', bloodType: 'O+', gender: '',
   responsivaStatus: '',
@@ -211,12 +235,12 @@ const EMPTY_ENTRY = {
   scholarshipPartialAmount: '',
   isServer: 'No',
   serverAssignment: '', campAssignment: '', customData: {}, paymentHistory: [],
-  /** Campamentos: se bautiza en el evento; conteo por Teens / J?venes (servidor Ambos elige baptismSegment). */
+  /** Campamentos: se bautiza en el evento; conteo por Teens / Jóvenes (servidor Ambos elige baptismSegment). */
   willBeBaptized: 'No',
   baptismSegment: '',
   llegaEnCarro: false,
   regresaEnCarro: false,
-  transportType: 'Cami?n',
+  transportType: BUS_TRANSPORT,
   isMarried: 'No', spouseName: '', goesWithChildren: 'No', childrenCount: '', servedOtherCampa: 'No',
   servedAreas: '', preferredServeArea: '', servesInCongress: 'No', congressServeArea: '',
   travelFrom: '', travelTo: '',
@@ -398,13 +422,13 @@ const resolveLlegaEnCarro = (personLike) => {
   if (typeof personLike?.llegaEnCarro === 'boolean') return personLike.llegaEnCarro;
   if (isSiValue(personLike?.llegaEnCarro)) return true;
   if (personLike?.llegaEnCarro === 'No') return false;
-  return (personLike?.transportType || 'Cami?n') === 'Carro';
+  return (personLike?.transportType || BUS_TRANSPORT) === 'Carro';
 };
 const resolveRegresaEnCarro = (personLike) => {
   if (typeof personLike?.regresaEnCarro === 'boolean') return personLike.regresaEnCarro;
   if (isSiValue(personLike?.regresaEnCarro)) return true;
   if (personLike?.regresaEnCarro === 'No') return false;
-  return (personLike?.transportType || 'Cami?n') === 'Carro';
+  return (personLike?.transportType || BUS_TRANSPORT) === 'Carro';
 };
 const resolveTransportSummary = (personLike) => {
   const llegaCarro = resolveLlegaEnCarro(personLike);
@@ -1411,7 +1435,7 @@ const App = () => {
           diseaseMedication: src.diseaseMedication || '',
           hasDisability: src.hasDisability || 'No',
           disabilityDetails: src.disabilityDetails || '',
-          transportType: src.transportType || 'Cami?n',
+          transportType: src.transportType || BUS_TRANSPORT,
           isMarried: src.isMarried || 'No',
           spouseName: src.spouseName || '',
           goesWithChildren: src.goesWithChildren || 'No',
@@ -2018,7 +2042,7 @@ const App = () => {
     }, console.error);
 
     const unsubParticipants = onSnapshot(getColRef('app_participants'), (snap) => {
-      setAllParticipants(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setAllParticipants(snap.docs.map(d => normalizeParticipantRecord({ id: d.id, ...d.data() })));
     }, console.error);
 
     const unsubDonations = onSnapshot(getColRef('app_donations'), (snap) => {
@@ -2347,15 +2371,15 @@ const App = () => {
           if (currentEvent.eventType === 'Campa' && !participantIsCancelled(person)) {
             if (isSiValue(person.isServer)) {
               if (person.serverAssignment === 'Teens') totalMinors++;
-              else if (person.serverAssignment === 'J?venes') totalAdults++;
+              else if (person.serverAssignment === 'Jóvenes') totalAdults++;
               else if (person.serverAssignment === 'Ambos') { totalMinors++; totalAdults++; totalServersBoth++; }
             } else {
-              const assignment = person.campAssignment || (ageNum < 18 ? 'Teens' : 'J?venes');
+              const assignment = person.campAssignment || (ageNum < 18 ? 'Teens' : 'Jóvenes');
               if (assignment === 'Teens') totalMinors++; else totalAdults++;
             }
             const bSeg = getBaptismAccountingSegment(person);
             if (bSeg === 'Teens') baptismsTeens++;
-            else if (bSeg === 'J?venes') baptismsJovenes++;
+            else if (bSeg === 'Jóvenes') baptismsJovenes++;
             if (person.attendanceSpecialType === 'empleado') totalAttendanceEmpleado++;
             else if (person.attendanceSpecialType === 'cortesia') totalAttendanceCortesia++;
           }
@@ -2542,7 +2566,7 @@ const App = () => {
       wsGeneralData.push(["M?TRICAS: RANGOS DE EDAD"]);
       wsGeneralData.push(["Ni?os (< 13)", summary.ageBrackets.kids]);
       wsGeneralData.push(["Adolescentes (13-17)", summary.ageBrackets.teens]);
-      wsGeneralData.push(["J?venes (18-25)", summary.ageBrackets.youngAdults]);
+      wsGeneralData.push(["Jóvenes (18-25)", summary.ageBrackets.youngAdults]);
       wsGeneralData.push(["Adultos (26-40)", summary.ageBrackets.adults]);
       wsGeneralData.push(["Mayores (41+)", summary.ageBrackets.seniors]);
       wsGeneralData.push([]);
@@ -2550,13 +2574,13 @@ const App = () => {
       if (isCampa) {
         wsGeneralData.push(["M?TRICAS: ASIGNACI?N / SERVIDORES"]);
         wsGeneralData.push(["Campistas / Servidores Asignados a Teens", summary.totalMinors]);
-        wsGeneralData.push(["Campistas / Servidores Asignados a J?venes", summary.totalAdults]);
+        wsGeneralData.push(["Campistas / Servidores Asignados a Jóvenes", summary.totalAdults]);
         wsGeneralData.push(["Servidores que apoyan en Ambos", summary.totalServersBoth]);
         wsGeneralData.push([]);
         wsGeneralData.push(["M?TRICAS: BAUTIZOS (conteo por segmento del evento)"]);
-        wsGeneralData.push(["Total bautizos (Teens + J?venes)", summary.baptismsTeens + summary.baptismsJovenes]);
+        wsGeneralData.push(["Total bautizos (Teens + Jóvenes)", summary.baptismsTeens + summary.baptismsJovenes]);
         wsGeneralData.push(["Bautizos contados en Teens", summary.baptismsTeens]);
-        wsGeneralData.push(["Bautizos contados en J?venes", summary.baptismsJovenes]);
+        wsGeneralData.push(["Bautizos contados en Jóvenes", summary.baptismsJovenes]);
         wsGeneralData.push([]);
 
         wsGeneralData.push(["M?TRICAS: SALUD"]);
@@ -2736,6 +2760,34 @@ const App = () => {
     }
   };
 
+  const getValidatedBackupRowsById = (collectionName, backupRows) => {
+    if (!Array.isArray(backupRows)) {
+      throw new Error(`Backup invalido para ${collectionName}`);
+    }
+
+    const backupById = new Map(
+      backupRows
+        .filter((row) => row?.id != null && row.id !== '')
+        .map((row) => [String(row.id), row])
+    );
+    if (backupById.size !== backupRows.length) {
+      throw new Error(`Backup con IDs invalidos para ${collectionName}`);
+    }
+    return backupById;
+  };
+
+  const upsertBackupCollection = async (collectionName, backupById) => {
+    await Promise.all(
+      [...backupById.entries()].map(([id, row]) => setDoc(getDocRef(collectionName, id), row))
+    );
+  };
+
+  const deleteRowsMissingFromBackup = async (collectionName, currentRows, backupById) => {
+    const backupIds = new Set(backupById.keys());
+    const rowsToDelete = currentRows.filter((row) => !backupIds.has(String(row.id)));
+    await Promise.all(rowsToDelete.map((row) => deleteDoc(getDocRef(collectionName, String(row.id)))));
+  };
+
   const confirmRestore = async () => {
     const { log, type } = restoreModal;
 
@@ -2766,14 +2818,13 @@ const App = () => {
           return;
         }
         const backupData = backupSnap.data();
+        const participantBackupById = getValidatedBackupRowsById('app_participants', backupData.participants);
+        const eventBackupById = getValidatedBackupRowsById('app_events', backupData.events);
 
-        // Limpiar registros actuales
-        await Promise.all(allParticipants.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
-        await Promise.all(events.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
-
-        // Insertar registros de backup
-        await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
-        await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+        await upsertBackupCollection('app_participants', participantBackupById);
+        await upsertBackupCollection('app_events', eventBackupById);
+        await deleteRowsMissingFromBackup('app_participants', allParticipants, participantBackupById);
+        await deleteRowsMissingFromBackup('app_events', events, eventBackupById);
 
         addLog('Restauraci?n de Sistema', `El SuperUsuario restaur? el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
         showToast("Sistema restaurado con ?xito desde copia de seguridad.");
@@ -3638,7 +3689,7 @@ const App = () => {
         entry.serverAssignment === 'Ambos'
       ) {
         const bs = String(entry.baptismSegment || '').trim();
-        if (bs !== 'Teens' && bs !== 'J?venes') return false;
+        if (bs !== 'Teens' && bs !== 'Jóvenes') return false;
       }
       if (isSiValue(entry.isScholarship)) {
         if (entry.scholarshipType === 'partial') {
@@ -3978,7 +4029,7 @@ const App = () => {
         processedData = processedData.filter((p) => {
           const seg = getBaptismAccountingSegment(p);
           if (filterBaptism === 'teens') return seg === 'Teens';
-          if (filterBaptism === 'jovenes') return seg === 'J?venes';
+          if (filterBaptism === 'jovenes') return seg === 'Jóvenes';
           if (filterBaptism === 'no') return !isSiValue(p.willBeBaptized);
           return true;
         });
@@ -3989,7 +4040,7 @@ const App = () => {
       if (isSiValue(filterServer)) processedData = processedData.filter((p) => isSiValue(p.isServer));
       else if (filterServer === 'No') processedData = processedData.filter((p) => !isSiValue(p.isServer));
       else if (filterServer === 'Teens') processedData = processedData.filter((p) => isSiValue(p.isServer) && p.serverAssignment === 'Teens');
-      else if (filterServer === 'J?venes') processedData = processedData.filter((p) => isSiValue(p.isServer) && p.serverAssignment === 'J?venes');
+      else if (filterServer === 'Jóvenes') processedData = processedData.filter((p) => isSiValue(p.isServer) && p.serverAssignment === 'Jóvenes');
       else if (filterServer === 'Ambos') processedData = processedData.filter((p) => isSiValue(p.isServer) && p.serverAssignment === 'Ambos');
       if (filterMedical === 'allergy') processedData = processedData.filter((p) => isSiValue(p.hasAllergy));
       else if (filterMedical === 'disease') processedData = processedData.filter((p) => isSiValue(p.hasDisease));
@@ -4278,8 +4329,8 @@ const App = () => {
       : (matchedCampaign ? Math.max(0, Number(matchedCampaign.finalAmount) || 0) : baseRegisteredCost);
     const { selectedDiscountCampaignId: _newSelCamp, ...newEntryCore } = newEntry;
 
-    const initialCampAssignment = currentEvent.eventType === 'Campa' && !isSiValue(newEntry.isServer) 
-      ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'J?venes') 
+    const initialCampAssignment = currentEvent.eventType === 'Campa' && !isSiValue(newEntry.isServer)
+      ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'Jóvenes')
       : '';
 
     const finalVnpPersonId = candidateVnpId;
@@ -4404,7 +4455,7 @@ const App = () => {
       return;
     }
     const initialCampAssignment = currentEvent.eventType === 'Campa' && !isSiValue(newEntry.isServer)
-      ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'J?venes')
+      ? (parseInt(newEntry.age) < 18 ? 'Teens' : 'Jóvenes')
       : '';
 
     const baseRegisteredCost = (isSiValue(newEntry.isServer) && newEntry.serverAssignment === 'Ambos') ? currentPricing.server : currentPricing.global;
@@ -4554,7 +4605,7 @@ const App = () => {
       { key: 'responsivaStatus', label: 'Responsiva' },
       { key: 'isServer', label: 'Servidor' },
       { key: 'serverAssignment', label: 'Asignaci?n' }, { key: 'campAssignment', label: 'Asig. Campista' },
-      { key: 'willBeBaptized', label: 'Bautizo' }, { key: 'baptismSegment', label: 'Bautizo (Teens/J?venes)' },
+      { key: 'willBeBaptized', label: 'Bautizo' }, { key: 'baptismSegment', label: 'Bautizo (Teens/Jóvenes)' },
       { key: 'canSwim', label: 'Nado' }, { key: 'age', label: 'Edad' },
       { key: 'travelFrom', label: 'Sale de' }, { key: 'travelTo', label: 'Regresa a' },
       { key: 'isMarried', label: 'Es casado' }, { key: 'spouseName', label: 'Nombre de pareja' },
@@ -4719,8 +4770,8 @@ const App = () => {
         payload.baptismSegment = '';
       } else {
         const bs = String(editedPerson.baptismSegment || '').trim();
-        if (bs !== 'Teens' && bs !== 'J?venes') {
-          showToast('Si marca bautizo y el servidor es Ambos, elija si el conteo va en Teens o J?venes.');
+        if (bs !== 'Teens' && bs !== 'Jóvenes') {
+          showToast('Si marca bautizo y el servidor es Ambos, elija si el conteo va en Teens o Jóvenes.');
           return;
         }
         payload.baptismSegment = bs;
@@ -6638,7 +6689,7 @@ const App = () => {
               <div className="space-y-4">
                 <div className="space-y-1">
                   <label className={labelClasses}>T?tulo del Evento</label>
-                  <input type="text" autoFocus className={inputClasses} placeholder="Ej. Campamento J?venes 2027" value={newEventData.name} onChange={e => setNewEventData({ ...newEventData, name: e.target.value })} />
+                  <input type="text" autoFocus className={inputClasses} placeholder="Ej. Campamento Jóvenes 2027" value={newEventData.name} onChange={e => setNewEventData({ ...newEventData, name: e.target.value })} />
                 </div>
                 <div className="space-y-1">
                   <label className={labelClasses}>Costo Base ($) Inicial</label>
@@ -8759,7 +8810,7 @@ const App = () => {
               <div className="space-y-4 w-full mt-2 max-h-64 overflow-y-auto pr-2">
                 <ProgressBar label="Ni?os (< 13)" value={summary.ageBrackets.kids} max={totalRegs} colorClass="text-cyan-600" bgClass="bg-cyan-500" />
                 <ProgressBar label="Adolescentes (13 - 17)" value={summary.ageBrackets.teens} max={totalRegs} colorClass="text-blue-600" bgClass="bg-blue-500" />
-                <ProgressBar label="J?venes (18 - 25)" value={summary.ageBrackets.youngAdults} max={totalRegs} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
+                <ProgressBar label="Jóvenes (18 - 25)" value={summary.ageBrackets.youngAdults} max={totalRegs} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
                 <ProgressBar label="Adultos (26 - 40)" value={summary.ageBrackets.adults} max={totalRegs} colorClass="text-purple-600" bgClass="bg-purple-500" />
                 <ProgressBar label="Mayores (41+)" value={summary.ageBrackets.seniors} max={totalRegs} colorClass="text-pink-600" bgClass="bg-pink-500" />
               </div>
@@ -8796,7 +8847,7 @@ const App = () => {
                   <div className="space-y-5 w-full mt-2">
                     <ProgressBar label="Total Servidores" value={summary.totalServers} max={totalRegs} colorClass="text-amber-600" bgClass="bg-amber-500" />
                     <ProgressBar label="Teens" value={allParticipants.filter(p => p.eventId === currentEvent?.id && participantIsActiveInEvent(p) && isSiValue(p.isServer) && p.serverAssignment === 'Teens').length} max={summary.totalServers} colorClass="text-indigo-600" bgClass="bg-indigo-400" />
-                    <ProgressBar label="J?venes" value={allParticipants.filter(p => p.eventId === currentEvent?.id && participantIsActiveInEvent(p) && isSiValue(p.isServer) && p.serverAssignment === 'J?venes').length} max={summary.totalServers} colorClass="text-blue-600" bgClass="bg-blue-400" />
+                    <ProgressBar label="Jóvenes" value={allParticipants.filter(p => p.eventId === currentEvent?.id && participantIsActiveInEvent(p) && isSiValue(p.isServer) && p.serverAssignment === 'Jóvenes').length} max={summary.totalServers} colorClass="text-blue-600" bgClass="bg-blue-400" />
                     <ProgressBar label="Ambos" value={summary.totalServersBoth} max={summary.totalServers} colorClass="text-amber-600" bgClass="bg-amber-400" />
                   </div>
                 </div>
@@ -8805,10 +8856,10 @@ const App = () => {
               {viewPrefs.chartAges && (
                 <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
                   <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Users className="text-indigo-500" size={20} /> Asignaci?n a Eventos</h3>
-                  <p className="text-xs text-slate-400 mb-6">Teens (&lt;18) vs J?venes (18+)</p>
+                  <p className="text-xs text-slate-400 mb-6">Teens (&lt;18) vs Jóvenes (18+)</p>
                   <div className="space-y-5 w-full mt-2">
                     <ProgressBar label="Teens (<18)" value={summary.totalMinors} max={summary.totalMinors + summary.totalAdults} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
-                    <ProgressBar label="J?venes (18+)" value={summary.totalAdults} max={summary.totalMinors + summary.totalAdults} colorClass="text-blue-500" bgClass="bg-blue-400" />
+                    <ProgressBar label="Jóvenes (18+)" value={summary.totalAdults} max={summary.totalMinors + summary.totalAdults} colorClass="text-blue-500" bgClass="bg-blue-400" />
                     {summary.totalServersBoth > 0 && (
                       <div className="pt-4 mt-2 border-t border-slate-100">
                         <div className="flex justify-between text-xs font-bold"><span className="text-amber-600 uppercase tracking-wider">Servidores en Ambos</span><span className="text-amber-600 font-black">{summary.totalServersBoth}</span></div>
@@ -8821,11 +8872,11 @@ const App = () => {
               {viewPrefs.chartBaptism && (
                 <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
                   <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Church className="text-sky-600" size={20} /> Bautizos</h3>
-                  <p className="text-xs text-slate-400 mb-6">Conteo por segmento del evento (Teens / J?venes). Servidor Ambos define d?nde cuenta.</p>
+                  <p className="text-xs text-slate-400 mb-6">Conteo por segmento del evento (Teens / Jóvenes). Servidor Ambos define d?nde cuenta.</p>
                   <div className="space-y-5 w-full mt-2">
                     <ProgressBar label="Total" value={summary.baptismsTeens + summary.baptismsJovenes} max={Math.max(summary.globalStats.all.count, 1)} colorClass="text-sky-700" bgClass="bg-sky-500" />
                     <ProgressBar label="En Teens" value={summary.baptismsTeens} max={Math.max(summary.baptismsTeens + summary.baptismsJovenes, 1)} colorClass="text-indigo-600" bgClass="bg-indigo-500" />
-                    <ProgressBar label="En J?venes" value={summary.baptismsJovenes} max={Math.max(summary.baptismsTeens + summary.baptismsJovenes, 1)} colorClass="text-blue-600" bgClass="bg-blue-500" />
+                    <ProgressBar label="En Jóvenes" value={summary.baptismsJovenes} max={Math.max(summary.baptismsTeens + summary.baptismsJovenes, 1)} colorClass="text-blue-600" bgClass="bg-blue-500" />
                   </div>
                 </div>
               )}
@@ -9077,12 +9128,12 @@ const App = () => {
           {isSiValue(person.isServer) ? (
             <span className="bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}</span>
           ) : (
-            isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'J?venes')}</span>
+            isCampa && <span className="bg-indigo-100 text-indigo-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1"><Users size={10} /> {person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes')}</span>
           )}
           {isCampa && isSiValue(person.willBeBaptized) && (() => {
             const seg = getBaptismAccountingSegment(person);
             return (
-              <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border ${seg ? 'bg-sky-100 text-sky-800 border-sky-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`} title={seg ? `Conteo en ${seg}` : 'Servidor Ambos: elige Teens o J?venes en editar'}>
+              <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border ${seg ? 'bg-sky-100 text-sky-800 border-sky-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`} title={seg ? `Conteo en ${seg}` : 'Servidor Ambos: elige Teens o Jóvenes en editar'}>
                 <Church size={10} /> Bautizo{seg ? ` ? ${seg}` : ' ? incompleto'}
               </span>
             );
@@ -9513,7 +9564,7 @@ const App = () => {
                           });
                         }}>
                           <option value="Teens">Teens</option>
-                          <option value="J?venes">J?venes</option>
+                          <option value="Jóvenes">Jóvenes</option>
                           <option value="Ambos">Ambos</option>
                         </select>
                       </div>
@@ -9540,7 +9591,7 @@ const App = () => {
                     </div>
                     {isSiValue(newEntry.willBeBaptized) && !isSiValue(newEntry.isServer) && (
                       <p className="text-[9px] text-slate-500 leading-snug">
-                        Conteo en <strong>{parseInt(newEntry.age, 10) < 18 ? 'Teens' : 'J?venes'}</strong> seg?n edad al guardar (campista).
+                        Conteo en <strong>{parseInt(newEntry.age, 10) < 18 ? 'Teens' : 'Jóvenes'}</strong> seg?n edad al guardar (campista).
                       </p>
                     )}
                     {isSiValue(newEntry.willBeBaptized) && isSiValue(newEntry.isServer) && newEntry.serverAssignment === 'Ambos' && (
@@ -9553,7 +9604,7 @@ const App = () => {
                         >
                           <option value="">Selecciona?</option>
                           <option value="Teens">Teens</option>
-                          <option value="J?venes">J?venes</option>
+                          <option value="Jóvenes">Jóvenes</option>
                         </select>
                       </div>
                     )}
@@ -10056,7 +10107,7 @@ const App = () => {
                   <>
                     <div>
                       <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asignaci?n</p>
-                      {['all', 'Teens', 'J?venes', 'Ambos'].map((op) => (
+                      {['all', 'Teens', 'Jóvenes', 'Ambos'].map((op) => (
                         <label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
                           <input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterAssignment === op} onChange={() => setFilterAssignment(filterAssignment === op ? 'all' : op)} />
                           {op === 'all' ? 'Todas' : op}
@@ -10175,7 +10226,7 @@ const App = () => {
                       {[
                         { id: 'all', label: 'Todos' },
                         { id: 'teens', label: 'Si se bautiza en Teens' },
-                        { id: 'jovenes', label: 'Si se bautiza en J?venes' },
+                        { id: 'jovenes', label: 'Si se bautiza en Jóvenes' },
                         { id: 'no', label: 'No se bautiza' },
                       ].map((op) => (
                         <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
@@ -10196,7 +10247,7 @@ const App = () => {
                         { id: SI, label: 'Servidores' },
                         { id: 'No', label: 'Camperos' },
                         { id: 'Teens', label: 'Asig. Teens' },
-                        { id: 'J?venes', label: 'Asig. J?venes' },
+                        { id: 'Jóvenes', label: 'Asig. Jóvenes' },
                         { id: 'Ambos', label: 'Asig. Ambos' },
                       ].map((op) => (
                         <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
@@ -10361,7 +10412,7 @@ const App = () => {
                                     travelFrom: person.travelFrom || person.location || loc,
                                     travelTo: person.travelTo || person.location || loc,
                                     registeredCost: listPrice,
-                                    campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'J?venes'),
+                                    campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes'),
                                     willBeBaptized: isSiValue(person.willBeBaptized) ? SI : 'No',
                                     baptismSegment: person.baptismSegment || '',
                                     scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
@@ -10687,7 +10738,7 @@ const App = () => {
                                   travelFrom: person.travelFrom || person.location || loc,
                                   travelTo: person.travelTo || person.location || loc,
                                   registeredCost: listPrice,
-                                  campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'J?venes'),
+                                  campAssignment: person.campAssignment || (parseInt(person.age) < 18 ? 'Teens' : 'Jóvenes'),
                                   willBeBaptized: isSiValue(person.willBeBaptized) ? SI : 'No',
                                   baptismSegment: person.baptismSegment || '',
                                   scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
@@ -10798,7 +10849,7 @@ const App = () => {
                                       travelFrom: person.travelFrom || person.location || loc,
                                       travelTo: person.travelTo || person.location || loc,
                                       registeredCost: listPrice,
-                                      campAssignment: person.campAssignment || (parseInt(person.age, 10) < 18 ? 'Teens' : 'J?venes'),
+                                      campAssignment: person.campAssignment || (parseInt(person.age, 10) < 18 ? 'Teens' : 'Jóvenes'),
                                       willBeBaptized: isSiValue(person.willBeBaptized) ? SI : 'No',
                                       baptismSegment: person.baptismSegment || '',
                                       scholarshipType: person.scholarshipType === 'partial' ? 'partial' : 'total',
@@ -10962,7 +11013,7 @@ const App = () => {
                   </div>
                   {isCampa && (
                     <>
-                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asignaci?n</p>{['all', 'Teens', 'J?venes', 'Ambos'].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterAssignment === op} onChange={() => setFilterAssignment(filterAssignment === op ? 'all' : op)} />{op === 'all' ? 'Todas' : op}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Asignaci?n</p>{['all', 'Teens', 'Jóvenes', 'Ambos'].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterAssignment === op} onChange={() => setFilterAssignment(filterAssignment === op ? 'all' : op)} />{op === 'all' ? 'Todas' : op}</label>))}</div>
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Beca</p>{[{ id: 'all', label: 'Todos' }, { id: 'No', label: 'No' }, { id: 'partial', label: 'Parcial' }, { id: 'total', label: 'Total' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterScholarship === op.id} onChange={() => setFilterScholarship(filterScholarship === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">G?nero</p>{['all', ...GENDERS].map((op) => (<label key={op} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterGender === op} onChange={() => setFilterGender(filterGender === op ? 'all' : op)} />{op === 'all' ? 'Todos' : op}</label>))}</div>
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Transporte</p>{[{ id: 'all', label: 'Todos' }, { id: 'go-bus', label: 'Llega en cami?n' }, { id: 'return-bus', label: 'Regresa en cami?n' }, { id: 'go-car', label: 'Llega en carro' }, { id: 'return-car', label: 'Regresa en carro' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterTransport === op.id} onChange={() => setFilterTransport(filterTransport === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
@@ -10975,7 +11026,7 @@ const App = () => {
                       <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Bautizo</p>{[
                         { id: 'all', label: 'Todos' },
                         { id: 'teens', label: 'Si se bautiza en Teens' },
-                        { id: 'jovenes', label: 'Si se bautiza en J?venes' },
+                        { id: 'jovenes', label: 'Si se bautiza en Jóvenes' },
                         { id: 'no', label: 'No se bautiza' },
                       ].map((op) => (
                         <label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer">
@@ -10983,7 +11034,7 @@ const App = () => {
                           {op.label}
                         </label>
                       ))}</div>
-                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Servidor</p>{[{ id: 'all', label: 'Todos' }, { id: SI, label: 'Servidores' }, { id: 'No', label: 'Camperos' }, { id: 'Teens', label: 'Asig. Teens' }, { id: 'J?venes', label: 'Asig. J?venes' }, { id: 'Ambos', label: 'Asig. Ambos' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterServer === op.id} onChange={() => setFilterServer(filterServer === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
+                      <div><p className="text-[10px] font-black text-slate-500 uppercase mb-1">Servidor</p>{[{ id: 'all', label: 'Todos' }, { id: SI, label: 'Servidores' }, { id: 'No', label: 'Camperos' }, { id: 'Teens', label: 'Asig. Teens' }, { id: 'Jóvenes', label: 'Asig. Jóvenes' }, { id: 'Ambos', label: 'Asig. Ambos' }].map((op) => (<label key={op.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 py-1 cursor-pointer"><input type="checkbox" className="h-4 w-4 rounded accent-indigo-600" checked={filterServer === op.id} onChange={() => setFilterServer(filterServer === op.id ? 'all' : op.id)} />{op.label}</label>))}</div>
                     </>
                   )}
                   <div className="pt-2 border-t border-slate-100">
@@ -11140,7 +11191,7 @@ const App = () => {
             <select className={inputClasses} value={serverPageAssignmentFilter} onChange={(e) => setServerPageAssignmentFilter(e.target.value)}>
               <option value="all">Asignaci?n: Todas</option>
               <option value="Teens">Teens</option>
-              <option value="J?venes">J?venes</option>
+              <option value="Jóvenes">Jóvenes</option>
               <option value="Ambos">Ambos</option>
             </select>
           </div>
@@ -11741,7 +11792,7 @@ const App = () => {
                               });
                             }}>
                               <option value="Teens">Teens</option>
-                              <option value="J?venes">J?venes</option>
+                              <option value="Jóvenes">Jóvenes</option>
                               <option value="Ambos">Ambos</option>
                             </select>
                           </div>
@@ -11750,7 +11801,7 @@ const App = () => {
                       <div className="space-y-2 min-w-0">
                         {isSiValue(editRegistryModal.data.willBeBaptized) && !isSiValue(editRegistryModal.data.isServer) && (
                           <p className="text-[10px] text-slate-600">
-                            Conteo del bautizo en <strong>{editRegistryModal.data.campAssignment || (parseInt(editRegistryModal.data.age, 10) < 18 ? 'Teens' : 'J?venes')}</strong> (campista, seg?n asignaci?n o edad).
+                            Conteo del bautizo en <strong>{editRegistryModal.data.campAssignment || (parseInt(editRegistryModal.data.age, 10) < 18 ? 'Teens' : 'Jóvenes')}</strong> (campista, seg?n asignaci?n o edad).
                           </p>
                         )}
                         {isSiValue(editRegistryModal.data.willBeBaptized) && isSiValue(editRegistryModal.data.isServer) && editRegistryModal.data.serverAssignment === 'Ambos' && (
@@ -11763,7 +11814,7 @@ const App = () => {
                             >
                               <option value="">Selecciona?</option>
                               <option value="Teens">Teens</option>
-                              <option value="J?venes">J?venes</option>
+                              <option value="Jóvenes">Jóvenes</option>
                             </select>
                           </div>
                         )}
@@ -11950,7 +12001,7 @@ const App = () => {
                         <label className={labelClasses}>Asignaci?n de Campista</label>
                         <select className={inputClasses} value={editRegistryModal.data.campAssignment} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, campAssignment: e.target.value } })}>
                           <option value="Teens">Teens (Menores de 18)</option>
-                          <option value="J?venes">J?venes (Mayores de 18)</option>
+                          <option value="Jóvenes">Jóvenes (Mayores de 18)</option>
                         </select>
                       </div>
                     )}
