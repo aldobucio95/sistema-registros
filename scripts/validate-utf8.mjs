@@ -9,6 +9,20 @@ const ROOT = process.cwd();
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', '.firebase']);
 const EXT = new Set(['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.css', '.html', '.json', '.md', '.svg', '.txt']);
 const ROOT_FILES = new Set(['index.html', 'vite.config.js', 'vite.config.ts', 'eslint.config.js', 'postcss.config.js', 'tailwind.config.js']);
+const MOJIBAKE_TOKENS = [
+  'J?venes',
+  'j?venes',
+  'Cami?n',
+  'cami?n',
+  'M?todo',
+  'm?todo',
+  'Secci?n',
+  'secci?n',
+  'opci?n',
+  'campa?a',
+  'sesi?n',
+  'tel?fono',
+];
 
 async function walk(dir, out = []) {
   let entries;
@@ -55,6 +69,12 @@ async function main() {
     if (text.includes('\uFFFD')) {
       console.error(`U+FFFD (replacement char) in ${relative(ROOT, abs)} — file was likely saved with wrong encoding.`);
       failed = true;
+    }
+    for (const token of MOJIBAKE_TOKENS) {
+      if (text.includes(token)) {
+        console.error(`Possible mojibake token "${token}" in ${relative(ROOT, abs)} — accented Spanish text was likely saved with lossy encoding.`);
+        failed = true;
+      }
     }
   }
 
