@@ -618,13 +618,13 @@ const normalizeIdText = (txt) =>
   String(txt || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    // ?/? no se separan en NFD; unificar a N para el algoritmo (solo A?Z en el ID).
+    // ñ/Ñ no se separan en NFD; unificar a N para el algoritmo (solo A-Z en el ID).
     .replace(/\u00f1/gi, 'n')
-    // ? ? SS al pasar a may?sculas
-    .replace(/?/g, 'ss')
+    // ß -> SS al pasar a mayúsculas.
+    .replace(/ß/g, 'ss')
     .toUpperCase();
 
-/** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A?Z0?9). */
+/** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A-Z0-9). */
 const canonicalizeVnpPersonId = (raw) => {
   const t = String(raw || '').trim();
   if (!t) return '';
