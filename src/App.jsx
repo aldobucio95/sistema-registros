@@ -2447,7 +2447,7 @@ const App = () => {
       ageBrackets, bloodTypeStats, customFieldsStats, locationStats, globalStats,
       paymentMethodTotals, paymentServiceTotals, travelStats
     };
-  }, [data, cancelledData, currentEvent, currentPricing, resolveRegisteredCost, getLiquidationTarget]);
+  }, [data, cancelledData, currentEvent, getLiquidationTarget]);
 
   // EXPORT TO EXCEL FEATURE
   const handleExportExcel = async () => {
