@@ -620,8 +620,8 @@ const normalizeIdText = (txt) =>
     .replace(/[\u0300-\u036f]/g, '')
     // ?/? no se separan en NFD; unificar a N para el algoritmo (solo A?Z en el ID).
     .replace(/\u00f1/gi, 'n')
-    // ? ? SS al pasar a may?sculas
-    .replace(/?/g, 'ss')
+    // Sharp S is not decomposed by NFD; normalize it before uppercasing.
+    .replace(/\u00df/g, 'ss')
     .toUpperCase();
 
 /** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A?Z0?9). */
@@ -2151,28 +2151,9 @@ const App = () => {
   }, [currentUser, currentEvent, globalConfig]);
 
   useEffect(() => {
-    if (!fbUser?.uid || !fbUser.email) return;
-    const pending = users.find(
-      (u) =>
-        !u.authUid &&
-        (u.authEmail === fbUser.email || usernameToAuthEmail(u.username) === fbUser.email)
-    );
-    if (!pending) return;
-    updateDoc(getDocRef('app_users', String(pending.id)), {
-      authUid: fbUser.uid,
-      authEmail: fbUser.email,
-    }).catch(console.error);
-  }, [fbUser, users]);
-
-  useEffect(() => {
     if (!fbUser || currentUser || loginInProgressRef.current) return;
     if (!usersAuthReady) return;
-    const profile =
-      users.find((u) => String(u.authUid) === String(fbUser.uid)) ||
-      users.find(
-        (u) => String(u.authEmail || '').toLowerCase() === String(fbUser.email || '').toLowerCase()
-      ) ||
-      users.find((u) => usernameToAuthEmail(u.username) === fbUser.email);
+    const profile = users.find((u) => String(u.authUid || '') === String(fbUser.uid));
     if (!profile) return;
     let cancelled = false;
     (async () => {
@@ -2228,12 +2209,7 @@ const App = () => {
       setLoginError(firestoreUsersError);
       return;
     }
-    const profile =
-      users.find((u) => String(u.authUid) === String(fbUser.uid)) ||
-      users.find(
-        (u) => String(u.authEmail || '').toLowerCase() === String(fbUser.email || '').toLowerCase()
-      ) ||
-      users.find((u) => usernameToAuthEmail(u.username) === fbUser.email);
+    const profile = users.find((u) => String(u.authUid || '') === String(fbUser.uid));
     if (profile) return;
     signOut(auth).catch(() => {});
     setLoginError('Tu cuenta no tiene perfil en la aplicaci?n. Contacta al administrador.');
@@ -2371,7 +2347,6 @@ const App = () => {
           const paidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGross;
           const isBecado = isSiValue(person.isScholarship);
           const isCancelled = participantIsCancelled(person);
-          const baseCost = resolveRegisteredCost(person, currentPricing);
           const liqTarget = getLiquidationTarget(person);
 
           if (!isCancelled) {
@@ -2438,7 +2413,7 @@ const App = () => {
           travelStats[fromLoc][toLoc] = (travelStats[fromLoc][toLoc] || 0) + 1;
         });
 
-        stats.all.pending = stats.regular.pending;
+        stats.all.pending = stats.regular.pending + stats.scholarship.pending;
         stats.all.expected = stats.regular.expected + stats.scholarship.expected;
 
         globalStats.all.count += stats.all.count;
@@ -2472,7 +2447,7 @@ const App = () => {
       ageBrackets, bloodTypeStats, customFieldsStats, locationStats, globalStats,
       paymentMethodTotals, paymentServiceTotals, travelStats
     };
-  }, [data, cancelledData, currentEvent, currentPricing, resolveRegisteredCost, getLiquidationTarget]);
+  }, [data, cancelledData, currentEvent, getLiquidationTarget]);
 
   // EXPORT TO EXCEL FEATURE
   const handleExportExcel = async () => {
@@ -2883,13 +2858,30 @@ const App = () => {
         return;
       }
       let user = { id: docSnap.id, ...docSnap.data() };
+      const signedInUid = auth.currentUser?.uid;
+      if (!signedInUid) {
+        await signOut(auth);
+        setLoginError('Sesion de acceso invalida. Intenta de nuevo.');
+        return;
+      }
+      if (user.authUid && String(user.authUid) !== String(signedInUid)) {
+        await signOut(auth);
+        setLoginError('La cuenta de acceso no coincide con el perfil de la aplicacion. Contacta al administrador.');
+        return;
+      }
       if (!user.authUid) {
+        const legacyPassword = typeof user.password === 'string' ? user.password : '';
+        if (!legacyPassword || legacyPassword !== loginForm.password) {
+          await signOut(auth);
+          setLoginError('Este perfil aun no esta vinculado a tu cuenta de acceso. Contacta al administrador.');
+          return;
+        }
         await updateDoc(getDocRef('app_users', docSnap.id), {
-          authUid: auth.currentUser.uid,
+          authUid: signedInUid,
           authEmail: resolvedEmail,
           password: deleteField(),
         });
-        user = { ...user, authUid: auth.currentUser.uid, authEmail: resolvedEmail };
+        user = { ...user, authUid: signedInUid, authEmail: resolvedEmail };
         delete user.password;
       }
       if (user.role !== 'SuperUsuario') {
@@ -10218,8 +10210,6 @@ const App = () => {
                       setFilterPaymentType('all');
                       setFilterTravelFrom('all');
                       setFilterTravelTo('all');
-                      setFilterPastorChild('all');
-                      setFilterWithoutPay('all');
                       setFilterFirstTimeId('all');
                       setFilterPendingRefund('all');
                       setFilterAssignment('all');
@@ -10332,7 +10322,6 @@ const App = () => {
                   const isBecado = isCampa && isSiValue(person.isScholarship);
                   const listPrice = resolveRegisteredCost(person, currentPricing);
                   const liquidationTarget = getLiquidationTarget(person);
-                  const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
                   const payHistory = person.paymentHistory || [];
 
                   return (
@@ -10997,8 +10986,6 @@ const App = () => {
                         setFilterPaymentType('all');
                         setFilterTravelFrom('all');
                         setFilterTravelTo('all');
-                        setFilterPastorChild('all');
-                        setFilterWithoutPay('all');
                         setFilterFirstTimeId('all');
                         setFilterPendingRefund('all');
                         setFilterAssignment('all');
