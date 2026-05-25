@@ -2414,7 +2414,7 @@ const App = () => {
           travelStats[fromLoc][toLoc] = (travelStats[fromLoc][toLoc] || 0) + 1;
         });
 
-        stats.all.pending = stats.regular.pending;
+        stats.all.pending = stats.regular.pending + stats.scholarship.pending;
         stats.all.expected = stats.regular.expected + stats.scholarship.expected;
 
         globalStats.all.count += stats.all.count;
