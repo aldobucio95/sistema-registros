@@ -2151,28 +2151,9 @@ const App = () => {
   }, [currentUser, currentEvent, globalConfig]);
 
   useEffect(() => {
-    if (!fbUser?.uid || !fbUser.email) return;
-    const pending = users.find(
-      (u) =>
-        !u.authUid &&
-        (u.authEmail === fbUser.email || usernameToAuthEmail(u.username) === fbUser.email)
-    );
-    if (!pending) return;
-    updateDoc(getDocRef('app_users', String(pending.id)), {
-      authUid: fbUser.uid,
-      authEmail: fbUser.email,
-    }).catch(console.error);
-  }, [fbUser, users]);
-
-  useEffect(() => {
     if (!fbUser || currentUser || loginInProgressRef.current) return;
     if (!usersAuthReady) return;
-    const profile =
-      users.find((u) => String(u.authUid) === String(fbUser.uid)) ||
-      users.find(
-        (u) => String(u.authEmail || '').toLowerCase() === String(fbUser.email || '').toLowerCase()
-      ) ||
-      users.find((u) => usernameToAuthEmail(u.username) === fbUser.email);
+    const profile = users.find((u) => String(u.authUid || '') === String(fbUser.uid));
     if (!profile) return;
     let cancelled = false;
     (async () => {
@@ -2228,12 +2209,7 @@ const App = () => {
       setLoginError(firestoreUsersError);
       return;
     }
-    const profile =
-      users.find((u) => String(u.authUid) === String(fbUser.uid)) ||
-      users.find(
-        (u) => String(u.authEmail || '').toLowerCase() === String(fbUser.email || '').toLowerCase()
-      ) ||
-      users.find((u) => usernameToAuthEmail(u.username) === fbUser.email);
+    const profile = users.find((u) => String(u.authUid || '') === String(fbUser.uid));
     if (profile) return;
     signOut(auth).catch(() => {});
     setLoginError('Tu cuenta no tiene perfil en la aplicaci?n. Contacta al administrador.');
@@ -2883,13 +2859,30 @@ const App = () => {
         return;
       }
       let user = { id: docSnap.id, ...docSnap.data() };
+      const signedInUid = auth.currentUser?.uid;
+      if (!signedInUid) {
+        await signOut(auth);
+        setLoginError('Sesion de acceso invalida. Intenta de nuevo.');
+        return;
+      }
+      if (user.authUid && String(user.authUid) !== String(signedInUid)) {
+        await signOut(auth);
+        setLoginError('La cuenta de acceso no coincide con el perfil de la aplicacion. Contacta al administrador.');
+        return;
+      }
       if (!user.authUid) {
+        const legacyPassword = typeof user.password === 'string' ? user.password : '';
+        if (!legacyPassword || legacyPassword !== loginForm.password) {
+          await signOut(auth);
+          setLoginError('Este perfil aun no esta vinculado a tu cuenta de acceso. Contacta al administrador.');
+          return;
+        }
         await updateDoc(getDocRef('app_users', docSnap.id), {
-          authUid: auth.currentUser.uid,
+          authUid: signedInUid,
           authEmail: resolvedEmail,
           password: deleteField(),
         });
-        user = { ...user, authUid: auth.currentUser.uid, authEmail: resolvedEmail };
+        user = { ...user, authUid: signedInUid, authEmail: resolvedEmail };
         delete user.password;
       }
       if (user.role !== 'SuperUsuario') {
