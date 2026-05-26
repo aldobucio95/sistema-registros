@@ -24,7 +24,7 @@ import {
   reauthenticateWithCredential,
   updatePassword,
 } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs, runTransaction, writeBatch } from 'firebase/firestore';
 
 const auth = getAuth(app);
 const secondaryAuth = getAuth(secondaryApp);
@@ -33,6 +33,14 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 const getColRef = (colName) => collection(db, 'artifacts', appId, 'public', 'data', colName);
 const getDocRef = (colName, docId) => doc(db, 'artifacts', appId, 'public', 'data', colName, docId);
+
+const commitFirestoreOpsInChunks = async (ops, chunkSize = 450) => {
+  for (let i = 0; i < ops.length; i += chunkSize) {
+    const batch = writeBatch(db);
+    ops.slice(i, i + chunkSize).forEach((applyOp) => applyOp(batch));
+    await batch.commit();
+  }
+};
 
 /** Ventana para considerar una sesi?n ?activa? (debe ser > intervalo de heartbeat). */
 const SESSION_TTL_MS = 45000;
@@ -1114,7 +1122,7 @@ const App = () => {
   const [newCustomField, setNewCustomField] = useState("");
 
   const [newEntry, setNewEntry] = useState(EMPTY_ENTRY);
-  const [editRegistryModal, setEditRegistryModal] = useState({ isOpen: false, loc: '', data: null });
+  const [editRegistryModal, setEditRegistryModal] = useState({ isOpen: false, loc: '', data: null, originalData: null });
   const [pricingModal, setPricingModal] = useState({ isOpen: false });
   const [pricingForm, setPricingForm] = useState({ type: 'fixed', globalCost: 0, serverCost: 0, phases: [], campaigns: [] });
   const [customFieldsModal, setCustomFieldsModal] = useState({ isOpen: false });
@@ -2766,14 +2774,36 @@ const App = () => {
           return;
         }
         const backupData = backupSnap.data();
+        const backupParticipants = backupData?.participants;
+        const backupEvents = backupData?.events;
+        if (!Array.isArray(backupParticipants) || !Array.isArray(backupEvents)) {
+          showToast("Error: la copia de seguridad est? incompleta o da?ada; no se modificaron los registros actuales.");
+          setRestoreModal({ isOpen: false, log: null, type: 'single' });
+          return;
+        }
+        const hasInvalidBackupDoc = [...backupParticipants, ...backupEvents].some((item) => item == null || item.id == null || String(item.id).trim() === '');
+        if (hasInvalidBackupDoc) {
+          showToast("Error: la copia de seguridad contiene registros sin ID; no se modificaron los registros actuales.");
+          setRestoreModal({ isOpen: false, log: null, type: 'single' });
+          return;
+        }
 
-        // Limpiar registros actuales
-        await Promise.all(allParticipants.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
-        await Promise.all(events.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
+        const backupParticipantIds = new Set(backupParticipants.map((p) => String(p.id)));
+        const backupEventIds = new Set(backupEvents.map((e) => String(e.id)));
 
-        // Insertar registros de backup
-        await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
-        await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+        // Escribir primero la copia validada evita dejar la base vac?a si un backup est? da?ado.
+        await commitFirestoreOpsInChunks([
+          ...backupParticipants.map((p) => (batch) => batch.set(getDocRef('app_participants', String(p.id)), p)),
+          ...backupEvents.map((e) => (batch) => batch.set(getDocRef('app_events', String(e.id)), e)),
+        ]);
+        await commitFirestoreOpsInChunks([
+          ...allParticipants
+            .filter((p) => !backupParticipantIds.has(String(p.id)))
+            .map((p) => (batch) => batch.delete(getDocRef('app_participants', String(p.id)))),
+          ...events
+            .filter((e) => !backupEventIds.has(String(e.id)))
+            .map((e) => (batch) => batch.delete(getDocRef('app_events', String(e.id)))),
+        ]);
 
         addLog('Restauraci?n de Sistema', `El SuperUsuario restaur? el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
         showToast("Sistema restaurado con ?xito desde copia de seguridad.");
@@ -4519,7 +4549,7 @@ const App = () => {
 
   const handleUpdateEntry = async (e) => {
     e.preventDefault();
-    const { loc, data: editedPerson } = editRegistryModal;
+    const { loc, data: editedPerson, originalData: openedPerson } = editRegistryModal;
     if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
       showToast("No tienes permisos para editar en esta sede/evento.");
       return;
@@ -4534,12 +4564,21 @@ const App = () => {
       return;
     }
 
-    const originalPerson =
+    const localOriginalPerson =
       (data[loc] || []).find((p) => String(p.id) === String(editedPerson.id)) ||
       (waitlistData[loc] || []).find((p) => String(p.id) === String(editedPerson.id)) ||
       (cancelledData[loc] || []).find((p) => String(p.id) === String(editedPerson.id));
+    const participantRef = getDocRef('app_participants', String(editedPerson.id));
+    const liveSnap = await getDoc(participantRef);
+    const originalPerson = liveSnap.exists()
+      ? { id: liveSnap.id, ...liveSnap.data() }
+      : localOriginalPerson;
     if (!originalPerson) {
       showToast('No se encontr? el registro a actualizar.');
+      return;
+    }
+    if (participantIsCancelled(originalPerson)) {
+      showToast('Este registro fue dado de baja mientras estaba abierto. Actualiza la vista antes de editarlo.');
       return;
     }
     const changes = [];
@@ -4575,10 +4614,12 @@ const App = () => {
 
     const originalPaid = parseFloat(originalPerson.paid || 0);
     const newPaid = parseFloat(editedPerson.paid || 0);
-    let updatedHistory = editedPerson.paymentHistory || [];
+    const openedPaid = parseFloat((openedPerson || editedPerson).paid || 0);
+    const adminChangedPaid = hasAdminRights && Math.abs(newPaid - openedPaid) > 1e-6;
+    let updatedHistory = originalPerson.paymentHistory || [];
     let finalRegisteredCost = resolveRegisteredCost(editedPerson, currentPricing);
 
-    if (hasAdminRights && newPaid !== originalPaid) {
+    if (adminChangedPaid) {
       const adjustmentMethod = originalPerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
       const adjustmentService = SERVICE_OPTIONS.includes(originalPerson.paymentService) ? originalPerson.paymentService : NO_SERVICE_LABEL;
       const commissionRate = getCardCommissionRate();
@@ -4619,7 +4660,7 @@ const App = () => {
     };
 
     // Mantener consistencia de paidNet cuando admin modifica el total ?paid?
-    if (hasAdminRights && newPaid !== originalPaid) {
+    if (adminChangedPaid) {
       const originalPaidNet = Number.isFinite(parseFloat(originalPerson.paidNet || 0)) ? parseFloat(originalPerson.paidNet || 0) : originalPaid;
       const adjustmentMethod = originalPerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
       const commissionRate = getCardCommissionRate();
@@ -4627,7 +4668,17 @@ const App = () => {
       const commission = adjustmentMethod === 'Tarjeta' ? grossDelta * commissionRate : 0;
       const netDelta = adjustmentMethod === 'Tarjeta' ? (grossDelta - commission) : grossDelta;
       payload.paidNet = originalPaidNet + netDelta;
+    } else {
+      payload.paid = originalPerson.paid ?? 0;
+      payload.paidNet = originalPerson.paidNet ?? payload.paid;
+      payload.paymentHistory = Array.isArray(originalPerson.paymentHistory) ? originalPerson.paymentHistory : [];
+      payload.paymentMethod = originalPerson.paymentMethod || 'Efectivo';
+      payload.paymentService = originalPerson.paymentService || '';
+      payload.cardReference = originalPerson.cardReference || '';
     }
+    payload.whatsAppFinanceNotifications = Array.isArray(originalPerson.whatsAppFinanceNotifications)
+      ? originalPerson.whatsAppFinanceNotifications
+      : [];
 
     if (globalConfig?.isDebugMode) {
       payload._isDebug = true;
@@ -4748,12 +4799,100 @@ const App = () => {
       payload.refundAsDonation = originalPerson.refundAsDonation ?? false;
     }
 
-    await setDoc(getDocRef('app_participants', String(editedPerson.id)), payload);
+    let savedPayload = payload;
+    let logPreviousPerson = originalPerson;
+    try {
+      await runTransaction(db, async (transaction) => {
+        const txSnap = await transaction.get(participantRef);
+        if (!txSnap.exists()) {
+          const err = new Error('participant-not-found');
+          err.code = 'participant-not-found';
+          throw err;
+        }
+        const livePerson = { id: txSnap.id, ...txSnap.data() };
+        if (participantIsCancelled(livePerson)) {
+          const err = new Error('participant-cancelled');
+          err.code = 'participant-cancelled';
+          throw err;
+        }
+
+        const txPayload = { ...payload };
+        const livePaid = parseFloat(livePerson.paid || 0) || 0;
+
+        if (adminChangedPaid) {
+          const livePaidNet = Number.isFinite(parseFloat(livePerson.paidNet || 0)) ? parseFloat(livePerson.paidNet || 0) : livePaid;
+          const adjustmentMethod = livePerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+          const adjustmentService = SERVICE_OPTIONS.includes(livePerson.paymentService) ? livePerson.paymentService : NO_SERVICE_LABEL;
+          const commissionRate = getCardCommissionRate();
+          const grossDelta = newPaid - livePaid;
+          const commission = adjustmentMethod === 'Tarjeta' ? grossDelta * commissionRate : 0;
+          const netDelta = adjustmentMethod === 'Tarjeta' ? (grossDelta - commission) : grossDelta;
+          const adjInstant = new Date();
+
+          txPayload.paid = newPaid;
+          txPayload.paidNet = livePaidNet + netDelta;
+          txPayload.paymentHistory = [
+            ...(Array.isArray(livePerson.paymentHistory) ? livePerson.paymentHistory : []),
+            {
+              id: Date.now(),
+              date: adjInstant.toLocaleString('es-MX'),
+              recordedAt: adjInstant.toISOString(),
+              amount: grossDelta,
+              netAmount: netDelta,
+              method: adjustmentMethod,
+              service: adjustmentService,
+              reference: '',
+              commission,
+              registeredBy: currentUser?.username,
+              isManualAdjustment: true,
+            },
+          ];
+          txPayload.paymentMethod = livePerson.paymentMethod || 'Efectivo';
+          txPayload.paymentService = livePerson.paymentService || '';
+          txPayload.cardReference = livePerson.cardReference || '';
+        } else {
+          txPayload.paid = livePerson.paid ?? 0;
+          txPayload.paidNet = livePerson.paidNet ?? txPayload.paid;
+          txPayload.paymentHistory = Array.isArray(livePerson.paymentHistory) ? livePerson.paymentHistory : [];
+          txPayload.paymentMethod = livePerson.paymentMethod || 'Efectivo';
+          txPayload.paymentService = livePerson.paymentService || '';
+          txPayload.cardReference = livePerson.cardReference || '';
+        }
+
+        txPayload.whatsAppFinanceNotifications = Array.isArray(livePerson.whatsAppFinanceNotifications)
+          ? livePerson.whatsAppFinanceNotifications
+          : [];
+        const mergedTxForRefund = { ...livePerson, ...txPayload };
+        const txRefundDiff = Math.max(0, (parseFloat(mergedTxForRefund.paid || 0) || 0) - (Number(getLiquidationTarget(mergedTxForRefund)) || 0));
+        txPayload.refundPendingAmount = txRefundDiff;
+        txPayload.refundPendingReason = txRefundDiff > 0 ? 'campaign_discount' : '';
+
+        if ((livePerson.status || 'active') === 'waitlist') {
+          txPayload.status = 'waitlist';
+          if (livePerson.waitlistCreatedAt != null) txPayload.waitlistCreatedAt = livePerson.waitlistCreatedAt;
+          if (isSiValue(editedPerson.isScholarship)) txPayload.scholarshipPendingApproval = true;
+        }
+
+        transaction.update(participantRef, txPayload);
+        savedPayload = txPayload;
+        logPreviousPerson = livePerson;
+      });
+    } catch (err) {
+      console.error(err);
+      if (err?.code === 'participant-not-found') {
+        showToast('No se encontr? el registro a actualizar.');
+      } else if (err?.code === 'participant-cancelled') {
+        showToast('Este registro fue dado de baja mientras estaba abierto. Actualiza la vista antes de editarlo.');
+      } else {
+        showToast('No se pudo actualizar el registro. Revisa conexi?n o permisos.');
+      }
+      return;
+    }
 
     if (changes.length > 0) {
-      const mergedForLiq = { ...editedPerson, ...payload };
+      const mergedForLiq = { ...editedPerson, ...savedPayload };
       const isLiquidado = parseFloat(mergedForLiq.paid) >= getLiquidationTarget(mergedForLiq);
-      addLog('Actualizaci?n de Registro', `Modific? datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: originalPerson });
+      addLog('Actualizaci?n de Registro', `Modific? datos de ${logPreviousPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: logPreviousPerson });
     }
     setEditRegistryModal({ isOpen: false, loc: '', data: null }); setEditPreferredServeDropdownOpen(false); setEditServedAreasDropdownOpen(false);
     showToast("Registro actualizado.");
@@ -5128,77 +5267,114 @@ const App = () => {
     if (!paymentModal.amount) return;
     const addedAmount = parseFloat(paymentModal.amount) || 0;
     if (addedAmount < 0) { setPaymentModal(prev => ({ ...prev, error: 'El abono no puede ser negativo.' })); return; }
-    const baseCost = paymentModal.baseCost;
-    if (paymentModal.currentPaid + addedAmount > baseCost) {
-      setPaymentModal(prev => ({ ...prev, error: `El abono supera el costo total. M?ximo a abonar: $${baseCost - paymentModal.currentPaid}` }));
-      return;
-    }
     const paymentMethod = paymentModal.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
     const paymentService = getAutoPaymentService(new Date());
     const commissionRate = getCardCommissionRate();
     const commission = paymentMethod === 'Tarjeta' ? (addedAmount * commissionRate) : 0;
     const netAmount = paymentMethod === 'Tarjeta' ? (addedAmount - commission) : addedAmount;
+    const participantRef = getDocRef('app_participants', String(paymentModal.id));
+    let committedPerson = null;
+    let committedNewPaidGross = 0;
+    let committedBaseCost = 0;
+    let committedIsLiquidado = false;
+    let committedPaymentRecord = null;
 
-    const abonoInstant = new Date();
-    const newPaymentRecord = {
-      id: Date.now(),
-      date: abonoInstant.toLocaleString('es-MX'),
-      recordedAt: abonoInstant.toISOString(),
-      amount: addedAmount, // bruto
-      netAmount,
-      method: paymentMethod,
-      service: paymentService,
-      reference: paymentMethod === 'Tarjeta' ? (paymentModal.cardReference || '').trim() : '',
-      commission,
-      registeredBy: currentUser?.username
-    };
-    const person = allParticipants.find((p) => String(p.id) === String(paymentModal.id));
-    if (!person) {
-      setPaymentModal(prev => ({ ...prev, error: 'Registro no encontrado.' }));
+    try {
+      await runTransaction(db, async (transaction) => {
+        const snap = await transaction.get(participantRef);
+        if (!snap.exists()) {
+          const err = new Error('abono-person-not-found');
+          err.code = 'abono-person-not-found';
+          throw err;
+        }
+        const person = { id: snap.id, ...snap.data() };
+        if (participantIsCancelled(person)) {
+          const err = new Error('abono-person-cancelled');
+          err.code = 'abono-person-cancelled';
+          throw err;
+        }
+
+        const baseCost = Number(getLiquidationTarget(person)) || 0;
+        const paidGrossNow = parseFloat(person.paid || 0) || 0;
+        if (paidGrossNow + addedAmount > baseCost) {
+          const err = new Error('abono-exceeds-balance');
+          err.code = 'abono-exceeds-balance';
+          err.maxAmount = Math.max(baseCost - paidGrossNow, 0);
+          throw err;
+        }
+
+        const paidNetNow = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGrossNow;
+        const newPaidGross = paidGrossNow + addedAmount;
+        const newPaidNet = paidNetNow + netAmount;
+        const isLiquidado = newPaidGross >= baseCost;
+        const abonoInstant = new Date();
+        const newPaymentRecord = {
+          id: Date.now(),
+          date: abonoInstant.toLocaleString('es-MX'),
+          recordedAt: abonoInstant.toISOString(),
+          amount: addedAmount, // bruto
+          netAmount,
+          method: paymentMethod,
+          service: paymentService,
+          reference: paymentMethod === 'Tarjeta' ? (paymentModal.cardReference || '').trim() : '',
+          commission,
+          registeredBy: currentUser?.username
+        };
+        const pendingAfterAbono = Math.max(baseCost - newPaidGross, 0);
+        const abonoCreatedAt = Date.now();
+        const abonoNotification = {
+          id: `wa-abn-${abonoCreatedAt}`,
+          kind: 'abono',
+          amount: addedAmount,
+          pendingAmount: pendingAfterAbono,
+          isLiquidado,
+          createdAt: abonoCreatedAt,
+          sent: false,
+          sentAt: null,
+          message: buildFinanceWhatsAppMessage(person, paymentModal.loc, addedAmount, pendingAfterAbono, isLiquidado, 'abono', abonoCreatedAt)
+        };
+        const payload = {
+          paid: newPaidGross,
+          paidNet: newPaidNet,
+          paymentHistory: [...(Array.isArray(person.paymentHistory) ? person.paymentHistory : []), newPaymentRecord],
+          whatsAppFinanceNotifications: [
+            ...(Array.isArray(person.whatsAppFinanceNotifications) ? person.whatsAppFinanceNotifications : []),
+            abonoNotification,
+          ],
+        };
+        if (globalConfig?.isDebugMode) {
+          payload._isDebug = true;
+          payload._debugSessionId = globalConfig.debugSessionId;
+        }
+
+        transaction.update(participantRef, payload);
+        committedPerson = person;
+        committedNewPaidGross = newPaidGross;
+        committedBaseCost = baseCost;
+        committedIsLiquidado = isLiquidado;
+        committedPaymentRecord = newPaymentRecord;
+      });
+    } catch (err) {
+      console.error(err);
+      if (err?.code === 'abono-person-not-found') {
+        setPaymentModal(prev => ({ ...prev, error: 'Registro no encontrado.' }));
+      } else if (err?.code === 'abono-person-cancelled') {
+        setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' });
+        showToast('No puedes abonar a un registro dado de baja.');
+      } else if (err?.code === 'abono-exceeds-balance') {
+        setPaymentModal(prev => ({ ...prev, error: `El abono supera el costo total. M?ximo a abonar: $${err.maxAmount}` }));
+      } else {
+        setPaymentModal(prev => ({ ...prev, error: 'No se pudo procesar el abono. Revisa conexi?n o permisos.' }));
+      }
       return;
     }
-    if (participantIsCancelled(person)) {
-      setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' });
-      showToast('No puedes abonar a un registro dado de baja.');
-      return;
-    }
-    const paidGrossNow = parseFloat(person.paid || 0);
-    const paidNetNow = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGrossNow;
-    const newPaidGross = paidGrossNow + addedAmount;
-    const newPaidNet = paidNetNow + netAmount;
-    const isLiquidado = newPaidGross >= baseCost;
 
-    const payload = {
-      paid: newPaidGross,
-      paidNet: newPaidNet,
-      paymentHistory: [...(person.paymentHistory || []), newPaymentRecord]
-    };
-    const pendingAfterAbono = Math.max((Number(baseCost) || 0) - newPaidGross, 0);
-    const abonoCreatedAt = Date.now();
-    const abonoNotification = {
-      id: `wa-abn-${abonoCreatedAt}`,
-      kind: 'abono',
-      amount: addedAmount,
-      pendingAmount: pendingAfterAbono,
-      isLiquidado,
-      createdAt: abonoCreatedAt,
-      sent: false,
-      sentAt: null,
-      message: buildFinanceWhatsAppMessage(person, paymentModal.loc, addedAmount, pendingAfterAbono, isLiquidado, 'abono', abonoCreatedAt)
-    };
-    payload.whatsAppFinanceNotifications = [...(person.whatsAppFinanceNotifications || []), abonoNotification];
-    if (globalConfig?.isDebugMode) {
-      payload._isDebug = true;
-      payload._debugSessionId = globalConfig.debugSessionId;
-    }
-
-    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
     addLog(
       'Abono Financiero',
-      `Registr? un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${paymentModal.currentPaid} -> $${newPaidGross})${isLiquidado ? ' [LIQUIDADO]' : ''}`,
+      `Registr? un abono de $${addedAmount} (${paymentMethod}${committedPaymentRecord?.reference ? `, Ref: ${committedPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${Math.max(committedNewPaidGross - addedAmount, 0)} -> $${committedNewPaidGross}; meta $${committedBaseCost})${committedIsLiquidado ? ' [LIQUIDADO]' : ''}`,
       null,
       null,
-      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
+      { collectionName: 'app_participants', docId: String(committedPerson.id), action: 'update', previousData: committedPerson }
     );
     setPaymentModal({
       isOpen: false,
@@ -10355,6 +10531,7 @@ const App = () => {
                                 <button onClick={() => setEditRegistryModal({
                                   isOpen: true,
                                   loc,
+                                  originalData: person,
                                   data: {
                                     ...person,
                                     location: person.location || loc,
@@ -10681,6 +10858,7 @@ const App = () => {
                               onClick={() => setEditRegistryModal({
                                 isOpen: true,
                                 loc,
+                                originalData: person,
                                 data: {
                                   ...person,
                                   location: person.location || loc,
