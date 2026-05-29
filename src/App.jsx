@@ -24,7 +24,7 @@ import {
   reauthenticateWithCredential,
   updatePassword,
 } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs, runTransaction } from 'firebase/firestore';
 
 const auth = getAuth(app);
 const secondaryAuth = getAuth(secondaryApp);
@@ -4748,12 +4748,82 @@ const App = () => {
       payload.refundAsDonation = originalPerson.refundAsDonation ?? false;
     }
 
-    await setDoc(getDocRef('app_participants', String(editedPerson.id)), payload);
+    const participantRef = getDocRef('app_participants', String(editedPerson.id));
+    const paidWasEdited = hasAdminRights && newPaid !== originalPaid;
+    let livePersonForLog = originalPerson;
+    try {
+      await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(participantRef);
+        if (!liveSnap.exists()) throw new Error('participant-not-found');
+        const livePerson = { id: liveSnap.id, ...liveSnap.data() };
+        livePersonForLog = livePerson;
+        const finalPayload = { ...payload };
+        const liveHistory = Array.isArray(livePerson.paymentHistory) ? livePerson.paymentHistory : [];
+        const livePaid = parseFloat(livePerson.paid || 0);
+
+        if (paidWasEdited) {
+          const adjustmentMethod = livePerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+          const adjustmentService = SERVICE_OPTIONS.includes(livePerson.paymentService) ? livePerson.paymentService : NO_SERVICE_LABEL;
+          const commissionRate = getCardCommissionRate();
+          const grossDelta = newPaid - livePaid;
+          const commission = adjustmentMethod === 'Tarjeta' ? grossDelta * commissionRate : 0;
+          const netDelta = adjustmentMethod === 'Tarjeta' ? (grossDelta - commission) : grossDelta;
+          const livePaidNet = Number.isFinite(parseFloat(livePerson.paidNet || 0)) ? parseFloat(livePerson.paidNet || 0) : livePaid;
+          const adjustmentInstant = new Date();
+          finalPayload.paymentHistory = grossDelta === 0
+            ? liveHistory
+            : [...liveHistory, {
+                id: Date.now(),
+                date: adjustmentInstant.toLocaleString('es-MX'),
+                recordedAt: adjustmentInstant.toISOString(),
+                amount: grossDelta,
+                netAmount: netDelta,
+                method: adjustmentMethod,
+                service: adjustmentService,
+                reference: '',
+                commission,
+                registeredBy: currentUser?.username,
+                isManualAdjustment: true
+              }];
+          finalPayload.paidNet = livePaidNet + netDelta;
+        } else {
+          finalPayload.paid = livePerson.paid ?? finalPayload.paid;
+          finalPayload.paymentHistory = liveHistory;
+          if (Object.prototype.hasOwnProperty.call(livePerson, 'paidNet')) {
+            finalPayload.paidNet = livePerson.paidNet;
+          }
+        }
+
+        if (Object.prototype.hasOwnProperty.call(livePerson, 'whatsAppFinanceNotifications')) {
+          finalPayload.whatsAppFinanceNotifications = livePerson.whatsAppFinanceNotifications;
+        }
+
+        const mergedForRefundLive = { ...livePerson, ...finalPayload };
+        const refundDiffLive = Math.max(0, (parseFloat(mergedForRefundLive.paid || 0) || 0) - (Number(getLiquidationTarget(mergedForRefundLive)) || 0));
+        finalPayload.refundPendingAmount = refundDiffLive;
+        finalPayload.refundPendingReason = refundDiffLive > 0 ? 'campaign_discount' : '';
+        if (participantIsCancelled(livePerson)) {
+          finalPayload.status = PARTICIPANT_STATUS_CANCELLED;
+          finalPayload.cancelledAt = livePerson.cancelledAt ?? finalPayload.cancelledAt;
+          finalPayload.cancelledFromLocation = livePerson.cancelledFromLocation || finalPayload.cancelledFromLocation || loc;
+          finalPayload.refundPendingAmount = livePerson.refundPendingAmount ?? 0;
+          finalPayload.refundAsDonation = livePerson.refundAsDonation ?? false;
+        }
+
+        transaction.update(participantRef, finalPayload);
+      });
+    } catch (err) {
+      if (err?.message === 'participant-not-found') {
+        showToast('No se encontr? el registro a actualizar.');
+        return;
+      }
+      throw err;
+    }
 
     if (changes.length > 0) {
       const mergedForLiq = { ...editedPerson, ...payload };
       const isLiquidado = parseFloat(mergedForLiq.paid) >= getLiquidationTarget(mergedForLiq);
-      addLog('Actualizaci?n de Registro', `Modific? datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: originalPerson });
+      addLog('Actualizaci?n de Registro', `Modific? datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: livePersonForLog });
     }
     setEditRegistryModal({ isOpen: false, loc: '', data: null }); setEditPreferredServeDropdownOpen(false); setEditServedAreasDropdownOpen(false);
     showToast("Registro actualizado.");
