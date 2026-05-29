@@ -2765,14 +2765,26 @@ const App = () => {
           return;
         }
         const backupData = backupSnap.data();
+        const backupParticipants = Array.isArray(backupData.participants) ? backupData.participants : null;
+        const backupEvents = Array.isArray(backupData.events) ? backupData.events : null;
+        if (!backupParticipants || !backupEvents) {
+          throw new Error('invalid-backup-payload');
+        }
+        if (backupParticipants.some((p) => p?.id == null) || backupEvents.some((e) => e?.id == null)) {
+          throw new Error('invalid-backup-payload');
+        }
 
-        // Limpiar registros actuales
-        await Promise.all(allParticipants.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
-        await Promise.all(events.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
+        const backupParticipantIds = new Set(backupParticipants.map((p) => String(p.id)));
+        const backupEventIds = new Set(backupEvents.map((e) => String(e.id)));
 
-        // Insertar registros de backup
-        await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
-        await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+        // Write the backup first. If a write fails, current records are not deleted.
+        await Promise.all(backupParticipants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
+        await Promise.all(backupEvents.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+
+        const participantsToDelete = allParticipants.filter((p) => !backupParticipantIds.has(String(p.id)));
+        const eventsToDelete = events.filter((e) => !backupEventIds.has(String(e.id)));
+        await Promise.all(participantsToDelete.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
+        await Promise.all(eventsToDelete.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
 
         addLog('Restauraci?n de Sistema', `El SuperUsuario restaur? el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
         showToast("Sistema restaurado con ?xito desde copia de seguridad.");
