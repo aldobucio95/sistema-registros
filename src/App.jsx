@@ -24,7 +24,7 @@ import {
   reauthenticateWithCredential,
   updatePassword,
 } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs, runTransaction } from 'firebase/firestore';
 
 const auth = getAuth(app);
 const secondaryAuth = getAuth(secondaryApp);
@@ -620,8 +620,8 @@ const normalizeIdText = (txt) =>
     .replace(/[\u0300-\u036f]/g, '')
     // ?/? no se separan en NFD; unificar a N para el algoritmo (solo A?Z en el ID).
     .replace(/\u00f1/gi, 'n')
-    // ? ? SS al pasar a may?sculas
-    .replace(/?/g, 'ss')
+    // German sharp-s is not decomposed by NFD; normalize it before uppercasing.
+    .replace(/[\u00df\u1e9e]/g, 'ss')
     .toUpperCase();
 
 /** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A?Z0?9). */
@@ -2371,7 +2371,6 @@ const App = () => {
           const paidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGross;
           const isBecado = isSiValue(person.isScholarship);
           const isCancelled = participantIsCancelled(person);
-          const baseCost = resolveRegisteredCost(person, currentPricing);
           const liqTarget = getLiquidationTarget(person);
 
           if (!isCancelled) {
@@ -2472,7 +2471,7 @@ const App = () => {
       ageBrackets, bloodTypeStats, customFieldsStats, locationStats, globalStats,
       paymentMethodTotals, paymentServiceTotals, travelStats
     };
-  }, [data, cancelledData, currentEvent, currentPricing, resolveRegisteredCost, getLiquidationTarget]);
+  }, [data, cancelledData, currentEvent, getLiquidationTarget]);
 
   // EXPORT TO EXCEL FEATURE
   const handleExportExcel = async () => {
@@ -2766,14 +2765,26 @@ const App = () => {
           return;
         }
         const backupData = backupSnap.data();
+        const backupParticipants = Array.isArray(backupData.participants) ? backupData.participants : null;
+        const backupEvents = Array.isArray(backupData.events) ? backupData.events : null;
+        if (!backupParticipants || !backupEvents) {
+          throw new Error('invalid-backup-payload');
+        }
+        if (backupParticipants.some((p) => p?.id == null) || backupEvents.some((e) => e?.id == null)) {
+          throw new Error('invalid-backup-payload');
+        }
 
-        // Limpiar registros actuales
-        await Promise.all(allParticipants.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
-        await Promise.all(events.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
+        const backupParticipantIds = new Set(backupParticipants.map((p) => String(p.id)));
+        const backupEventIds = new Set(backupEvents.map((e) => String(e.id)));
 
-        // Insertar registros de backup
-        await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
-        await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+        // Write the backup first. If a write fails, current records are not deleted.
+        await Promise.all(backupParticipants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
+        await Promise.all(backupEvents.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+
+        const participantsToDelete = allParticipants.filter((p) => !backupParticipantIds.has(String(p.id)));
+        const eventsToDelete = events.filter((e) => !backupEventIds.has(String(e.id)));
+        await Promise.all(participantsToDelete.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
+        await Promise.all(eventsToDelete.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
 
         addLog('Restauraci?n de Sistema', `El SuperUsuario restaur? el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
         showToast("Sistema restaurado con ?xito desde copia de seguridad.");
@@ -4748,12 +4759,82 @@ const App = () => {
       payload.refundAsDonation = originalPerson.refundAsDonation ?? false;
     }
 
-    await setDoc(getDocRef('app_participants', String(editedPerson.id)), payload);
+    const participantRef = getDocRef('app_participants', String(editedPerson.id));
+    const paidWasEdited = hasAdminRights && newPaid !== originalPaid;
+    let livePersonForLog = originalPerson;
+    try {
+      await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(participantRef);
+        if (!liveSnap.exists()) throw new Error('participant-not-found');
+        const livePerson = { id: liveSnap.id, ...liveSnap.data() };
+        livePersonForLog = livePerson;
+        const finalPayload = { ...payload };
+        const liveHistory = Array.isArray(livePerson.paymentHistory) ? livePerson.paymentHistory : [];
+        const livePaid = parseFloat(livePerson.paid || 0);
+
+        if (paidWasEdited) {
+          const adjustmentMethod = livePerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+          const adjustmentService = SERVICE_OPTIONS.includes(livePerson.paymentService) ? livePerson.paymentService : NO_SERVICE_LABEL;
+          const commissionRate = getCardCommissionRate();
+          const grossDelta = newPaid - livePaid;
+          const commission = adjustmentMethod === 'Tarjeta' ? grossDelta * commissionRate : 0;
+          const netDelta = adjustmentMethod === 'Tarjeta' ? (grossDelta - commission) : grossDelta;
+          const livePaidNet = Number.isFinite(parseFloat(livePerson.paidNet || 0)) ? parseFloat(livePerson.paidNet || 0) : livePaid;
+          const adjustmentInstant = new Date();
+          finalPayload.paymentHistory = grossDelta === 0
+            ? liveHistory
+            : [...liveHistory, {
+                id: Date.now(),
+                date: adjustmentInstant.toLocaleString('es-MX'),
+                recordedAt: adjustmentInstant.toISOString(),
+                amount: grossDelta,
+                netAmount: netDelta,
+                method: adjustmentMethod,
+                service: adjustmentService,
+                reference: '',
+                commission,
+                registeredBy: currentUser?.username,
+                isManualAdjustment: true
+              }];
+          finalPayload.paidNet = livePaidNet + netDelta;
+        } else {
+          finalPayload.paid = livePerson.paid ?? finalPayload.paid;
+          finalPayload.paymentHistory = liveHistory;
+          if (Object.prototype.hasOwnProperty.call(livePerson, 'paidNet')) {
+            finalPayload.paidNet = livePerson.paidNet;
+          }
+        }
+
+        if (Object.prototype.hasOwnProperty.call(livePerson, 'whatsAppFinanceNotifications')) {
+          finalPayload.whatsAppFinanceNotifications = livePerson.whatsAppFinanceNotifications;
+        }
+
+        const mergedForRefundLive = { ...livePerson, ...finalPayload };
+        const refundDiffLive = Math.max(0, (parseFloat(mergedForRefundLive.paid || 0) || 0) - (Number(getLiquidationTarget(mergedForRefundLive)) || 0));
+        finalPayload.refundPendingAmount = refundDiffLive;
+        finalPayload.refundPendingReason = refundDiffLive > 0 ? 'campaign_discount' : '';
+        if (participantIsCancelled(livePerson)) {
+          finalPayload.status = PARTICIPANT_STATUS_CANCELLED;
+          finalPayload.cancelledAt = livePerson.cancelledAt ?? finalPayload.cancelledAt;
+          finalPayload.cancelledFromLocation = livePerson.cancelledFromLocation || finalPayload.cancelledFromLocation || loc;
+          finalPayload.refundPendingAmount = livePerson.refundPendingAmount ?? 0;
+          finalPayload.refundAsDonation = livePerson.refundAsDonation ?? false;
+        }
+
+        transaction.update(participantRef, finalPayload);
+      });
+    } catch (err) {
+      if (err?.message === 'participant-not-found') {
+        showToast('No se encontr? el registro a actualizar.');
+        return;
+      }
+      throw err;
+    }
 
     if (changes.length > 0) {
       const mergedForLiq = { ...editedPerson, ...payload };
       const isLiquidado = parseFloat(mergedForLiq.paid) >= getLiquidationTarget(mergedForLiq);
-      addLog('Actualizaci?n de Registro', `Modific? datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: originalPerson });
+      addLog('Actualizaci?n de Registro', `Modific? datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: livePersonForLog });
     }
     setEditRegistryModal({ isOpen: false, loc: '', data: null }); setEditPreferredServeDropdownOpen(false); setEditServedAreasDropdownOpen(false);
     showToast("Registro actualizado.");
@@ -10218,8 +10299,6 @@ const App = () => {
                       setFilterPaymentType('all');
                       setFilterTravelFrom('all');
                       setFilterTravelTo('all');
-                      setFilterPastorChild('all');
-                      setFilterWithoutPay('all');
                       setFilterFirstTimeId('all');
                       setFilterPendingRefund('all');
                       setFilterAssignment('all');
@@ -10332,7 +10411,6 @@ const App = () => {
                   const isBecado = isCampa && isSiValue(person.isScholarship);
                   const listPrice = resolveRegisteredCost(person, currentPricing);
                   const liquidationTarget = getLiquidationTarget(person);
-                  const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
                   const payHistory = person.paymentHistory || [];
 
                   return (
@@ -10997,8 +11075,6 @@ const App = () => {
                         setFilterPaymentType('all');
                         setFilterTravelFrom('all');
                         setFilterTravelTo('all');
-                        setFilterPastorChild('all');
-                        setFilterWithoutPay('all');
                         setFilterFirstTimeId('all');
                         setFilterPendingRefund('all');
                         setFilterAssignment('all');
