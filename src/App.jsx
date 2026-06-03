@@ -24,7 +24,11 @@ import {
   reauthenticateWithCredential,
   updatePassword,
 } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs, runTransaction } from 'firebase/firestore';
+import {
+  buildAbonoTransactionPayload,
+  buildParticipantEditTransactionPayload,
+} from './participantFinance.js';
 
 const auth = getAuth(app);
 const secondaryAuth = getAuth(secondaryApp);
@@ -621,7 +625,7 @@ const normalizeIdText = (txt) =>
     // ?/? no se separan en NFD; unificar a N para el algoritmo (solo A?Z en el ID).
     .replace(/\u00f1/gi, 'n')
     // ? ? SS al pasar a may?sculas
-    .replace(/?/g, 'ss')
+    .replace(/\u00df/g, 'ss')
     .toUpperCase();
 
 /** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A?Z0?9). */
@@ -2371,7 +2375,6 @@ const App = () => {
           const paidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGross;
           const isBecado = isSiValue(person.isScholarship);
           const isCancelled = participantIsCancelled(person);
-          const baseCost = resolveRegisteredCost(person, currentPricing);
           const liqTarget = getLiquidationTarget(person);
 
           if (!isCancelled) {
@@ -2766,14 +2769,31 @@ const App = () => {
           return;
         }
         const backupData = backupSnap.data();
+        const backupParticipants = Array.isArray(backupData.participants) ? backupData.participants : null;
+        const backupEvents = Array.isArray(backupData.events) ? backupData.events : null;
+        if (
+          !backupParticipants ||
+          !backupEvents ||
+          backupParticipants.some((p) => !p || p.id == null) ||
+          backupEvents.some((ev) => !ev || ev.id == null)
+        ) {
+          showToast("Error: La copia de seguridad no tiene un formato v?lido. No se modificaron los datos actuales.");
+          setRestoreModal({ isOpen: false, log: null, type: 'single' });
+          return;
+        }
 
-        // Limpiar registros actuales
-        await Promise.all(allParticipants.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
-        await Promise.all(events.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
+        const participantBackupIds = new Set(backupParticipants.map((p) => String(p.id)));
+        const eventBackupIds = new Set(backupEvents.map((ev) => String(ev.id)));
 
-        // Insertar registros de backup
-        await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
-        await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+        // Primero escribir la copia completa; solo luego se eliminan docs que no existen en el backup.
+        await Promise.all(backupParticipants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
+        await Promise.all(backupEvents.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+        await Promise.all(allParticipants
+          .filter(p => !participantBackupIds.has(String(p.id)))
+          .map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
+        await Promise.all(events
+          .filter(e => !eventBackupIds.has(String(e.id)))
+          .map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
 
         addLog('Restauraci?n de Sistema', `El SuperUsuario restaur? el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
         showToast("Sistema restaurado con ?xito desde copia de seguridad.");
@@ -4575,19 +4595,25 @@ const App = () => {
 
     const originalPaid = parseFloat(originalPerson.paid || 0);
     const newPaid = parseFloat(editedPerson.paid || 0);
+    const adminAdjustedPaid = hasAdminRights && newPaid !== originalPaid;
     let updatedHistory = editedPerson.paymentHistory || [];
     let finalRegisteredCost = resolveRegisteredCost(editedPerson, currentPricing);
+    let manualPaymentAdjustment = null;
+    let manualPaymentNetDelta = 0;
+    let manualPaymentGrossDelta = 0;
 
-    if (hasAdminRights && newPaid !== originalPaid) {
+    if (adminAdjustedPaid) {
       const adjustmentMethod = originalPerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
       const adjustmentService = SERVICE_OPTIONS.includes(originalPerson.paymentService) ? originalPerson.paymentService : NO_SERVICE_LABEL;
       const commissionRate = getCardCommissionRate();
       const grossDelta = newPaid - originalPaid;
       const commission = adjustmentMethod === 'Tarjeta' ? grossDelta * commissionRate : 0;
       const netDelta = adjustmentMethod === 'Tarjeta' ? (grossDelta - commission) : grossDelta;
+      manualPaymentGrossDelta = grossDelta;
+      manualPaymentNetDelta = netDelta;
 
       const adjInstant = new Date();
-      updatedHistory = [...updatedHistory, {
+      manualPaymentAdjustment = {
         id: Date.now(),
         date: adjInstant.toLocaleString('es-MX'),
         recordedAt: adjInstant.toISOString(),
@@ -4599,7 +4625,8 @@ const App = () => {
         commission,
         registeredBy: currentUser?.username,
         isManualAdjustment: true
-      }];
+      };
+      updatedHistory = [...updatedHistory, manualPaymentAdjustment];
     }
 
     if (originalPerson.isServer !== editedPerson.isServer || originalPerson.serverAssignment !== editedPerson.serverAssignment) {
@@ -4619,7 +4646,7 @@ const App = () => {
     };
 
     // Mantener consistencia de paidNet cuando admin modifica el total ?paid?
-    if (hasAdminRights && newPaid !== originalPaid) {
+    if (adminAdjustedPaid) {
       const originalPaidNet = Number.isFinite(parseFloat(originalPerson.paidNet || 0)) ? parseFloat(originalPerson.paidNet || 0) : originalPaid;
       const adjustmentMethod = originalPerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
       const commissionRate = getCardCommissionRate();
@@ -4748,12 +4775,44 @@ const App = () => {
       payload.refundAsDonation = originalPerson.refundAsDonation ?? false;
     }
 
-    await setDoc(getDocRef('app_participants', String(editedPerson.id)), payload);
+    const participantRef = getDocRef('app_participants', String(editedPerson.id));
+    let saveResult;
+    try {
+      saveResult = await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(participantRef);
+        if (!liveSnap.exists()) {
+          throw new Error('participant-not-found');
+        }
+        const livePerson = { id: String(editedPerson.id), ...liveSnap.data() };
+        const { nextPayload, mergedData } = buildParticipantEditTransactionPayload({
+          basePayload: payload,
+          livePerson,
+          adminAdjustedPaid,
+          manualPaymentAdjustment,
+          manualPaymentGrossDelta,
+          manualPaymentNetDelta,
+          isCancelled: participantIsCancelled,
+          getLiquidationTarget,
+        });
+
+        transaction.update(participantRef, nextPayload);
+        return {
+          previousData: livePerson,
+          mergedData,
+        };
+      });
+    } catch (err) {
+      if (err?.message === 'participant-not-found') {
+        showToast('No se encontr? el registro a actualizar.');
+        return;
+      }
+      throw err;
+    }
 
     if (changes.length > 0) {
-      const mergedForLiq = { ...editedPerson, ...payload };
+      const mergedForLiq = saveResult?.mergedData || { ...editedPerson, ...payload };
       const isLiquidado = parseFloat(mergedForLiq.paid) >= getLiquidationTarget(mergedForLiq);
-      addLog('Actualizaci?n de Registro', `Modific? datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: originalPerson });
+      addLog('Actualizaci?n de Registro', `Modific? datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: saveResult?.previousData || originalPerson });
     }
     setEditRegistryModal({ isOpen: false, loc: '', data: null }); setEditPreferredServeDropdownOpen(false); setEditServedAreasDropdownOpen(false);
     showToast("Registro actualizado.");
@@ -5128,11 +5187,6 @@ const App = () => {
     if (!paymentModal.amount) return;
     const addedAmount = parseFloat(paymentModal.amount) || 0;
     if (addedAmount < 0) { setPaymentModal(prev => ({ ...prev, error: 'El abono no puede ser negativo.' })); return; }
-    const baseCost = paymentModal.baseCost;
-    if (paymentModal.currentPaid + addedAmount > baseCost) {
-      setPaymentModal(prev => ({ ...prev, error: `El abono supera el costo total. M?ximo a abonar: $${baseCost - paymentModal.currentPaid}` }));
-      return;
-    }
     const paymentMethod = paymentModal.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
     const paymentService = getAutoPaymentService(new Date());
     const commissionRate = getCardCommissionRate();
@@ -5152,50 +5206,67 @@ const App = () => {
       commission,
       registeredBy: currentUser?.username
     };
-    const person = allParticipants.find((p) => String(p.id) === String(paymentModal.id));
-    if (!person) {
-      setPaymentModal(prev => ({ ...prev, error: 'Registro no encontrado.' }));
-      return;
-    }
-    if (participantIsCancelled(person)) {
-      setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' });
-      showToast('No puedes abonar a un registro dado de baja.');
-      return;
-    }
-    const paidGrossNow = parseFloat(person.paid || 0);
-    const paidNetNow = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGrossNow;
-    const newPaidGross = paidGrossNow + addedAmount;
-    const newPaidNet = paidNetNow + netAmount;
-    const isLiquidado = newPaidGross >= baseCost;
-
-    const payload = {
-      paid: newPaidGross,
-      paidNet: newPaidNet,
-      paymentHistory: [...(person.paymentHistory || []), newPaymentRecord]
-    };
-    const pendingAfterAbono = Math.max((Number(baseCost) || 0) - newPaidGross, 0);
     const abonoCreatedAt = Date.now();
-    const abonoNotification = {
-      id: `wa-abn-${abonoCreatedAt}`,
-      kind: 'abono',
-      amount: addedAmount,
-      pendingAmount: pendingAfterAbono,
-      isLiquidado,
-      createdAt: abonoCreatedAt,
-      sent: false,
-      sentAt: null,
-      message: buildFinanceWhatsAppMessage(person, paymentModal.loc, addedAmount, pendingAfterAbono, isLiquidado, 'abono', abonoCreatedAt)
-    };
-    payload.whatsAppFinanceNotifications = [...(person.whatsAppFinanceNotifications || []), abonoNotification];
-    if (globalConfig?.isDebugMode) {
-      payload._isDebug = true;
-      payload._debugSessionId = globalConfig.debugSessionId;
+    let paymentResult;
+    try {
+      paymentResult = await runTransaction(db, async (transaction) => {
+        const participantRef = getDocRef('app_participants', String(paymentModal.id));
+        const liveSnap = await transaction.get(participantRef);
+        if (!liveSnap.exists()) throw new Error('participant-not-found');
+        const person = { id: String(paymentModal.id), ...liveSnap.data() };
+        if (participantIsCancelled(person)) throw new Error('participant-cancelled');
+
+        const result = buildAbonoTransactionPayload({
+          person,
+          addedAmount,
+          netAmount,
+          newPaymentRecord,
+          paymentLoc: paymentModal.loc,
+          abonoCreatedAt,
+          buildFinanceWhatsAppMessage,
+          getLiquidationTarget,
+          fallbackBaseCost: paymentModal.baseCost,
+          debugExtras: globalConfig?.isDebugMode
+            ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId }
+            : {},
+        });
+
+        if (!result.ok && result.error === 'payment-over-total') {
+          const err = new Error('payment-over-total');
+          err.maxAmount = result.maxAmount;
+          throw err;
+        }
+        if (!result.ok) throw new Error(result.error || 'payment-error');
+
+        transaction.update(participantRef, result.payload);
+        return {
+          person,
+          previousPaidGross: result.previousPaidGross,
+          newPaidGross: result.newPaidGross,
+          isLiquidado: result.isLiquidado,
+        };
+      });
+    } catch (err) {
+      if (err?.message === 'participant-not-found') {
+        setPaymentModal(prev => ({ ...prev, error: 'Registro no encontrado.' }));
+        return;
+      }
+      if (err?.message === 'participant-cancelled') {
+        setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' });
+        showToast('No puedes abonar a un registro dado de baja.');
+        return;
+      }
+      if (err?.message === 'payment-over-total') {
+        setPaymentModal(prev => ({ ...prev, error: `El abono supera el costo total. M?ximo a abonar: $${err.maxAmount ?? 0}` }));
+        return;
+      }
+      throw err;
     }
 
-    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
+    const person = paymentResult.person;
     addLog(
       'Abono Financiero',
-      `Registr? un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${paymentModal.currentPaid} -> $${newPaidGross})${isLiquidado ? ' [LIQUIDADO]' : ''}`,
+      `Registr? un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${paymentResult.previousPaidGross} -> $${paymentResult.newPaidGross})${paymentResult.isLiquidado ? ' [LIQUIDADO]' : ''}`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
@@ -10218,8 +10289,6 @@ const App = () => {
                       setFilterPaymentType('all');
                       setFilterTravelFrom('all');
                       setFilterTravelTo('all');
-                      setFilterPastorChild('all');
-                      setFilterWithoutPay('all');
                       setFilterFirstTimeId('all');
                       setFilterPendingRefund('all');
                       setFilterAssignment('all');
@@ -10332,7 +10401,6 @@ const App = () => {
                   const isBecado = isCampa && isSiValue(person.isScholarship);
                   const listPrice = resolveRegisteredCost(person, currentPricing);
                   const liquidationTarget = getLiquidationTarget(person);
-                  const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
                   const payHistory = person.paymentHistory || [];
 
                   return (
@@ -10997,8 +11065,6 @@ const App = () => {
                         setFilterPaymentType('all');
                         setFilterTravelFrom('all');
                         setFilterTravelTo('all');
-                        setFilterPastorChild('all');
-                        setFilterWithoutPay('all');
                         setFilterFirstTimeId('all');
                         setFilterPendingRefund('all');
                         setFilterAssignment('all');
