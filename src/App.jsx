@@ -24,7 +24,14 @@ import {
   reauthenticateWithCredential,
   updatePassword,
 } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs, runTransaction, writeBatch } from 'firebase/firestore';
+import {
+  buildAbonoUpdate,
+  buildManualPaidAdjustmentUpdate,
+  buildPaymentHistoryAppendUpdate,
+  stripLiveParticipantFinanceFields,
+  validateBackupRestorePayload,
+} from './participantFinance.js';
 
 const auth = getAuth(app);
 const secondaryAuth = getAuth(secondaryApp);
@@ -33,6 +40,15 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 const getColRef = (colName) => collection(db, 'artifacts', appId, 'public', 'data', colName);
 const getDocRef = (colName, docId) => doc(db, 'artifacts', appId, 'public', 'data', colName, docId);
+
+const commitBatchedFirestoreWrites = async (operations) => {
+  const chunkSize = 450;
+  for (let i = 0; i < operations.length; i += chunkSize) {
+    const batch = writeBatch(db);
+    operations.slice(i, i + chunkSize).forEach((applyOperation) => applyOperation(batch));
+    await batch.commit();
+  }
+};
 
 /** Ventana para considerar una sesi?n ?activa? (debe ser > intervalo de heartbeat). */
 const SESSION_TTL_MS = 45000;
@@ -2758,6 +2774,11 @@ const App = () => {
     } else if (type === 'cleanRecent') {
       handleCleanRecentLogs();
     } else if (type === 'backup') {
+      if (!isSuperUser) {
+        showToast("Solo el SuperUsuario puede restaurar copias de seguridad.");
+        setRestoreModal({ isOpen: false, log: null, type: 'single' });
+        return;
+      }
       try {
         const backupSnap = await getDoc(getDocRef('app_backups', log.revertInfo.backupId));
         if (!backupSnap.exists()) {
@@ -2766,14 +2787,39 @@ const App = () => {
           return;
         }
         const backupData = backupSnap.data();
+        const {
+          participants: backupParticipants,
+          events: backupEvents,
+          participantIds: backupParticipantIds,
+          eventIds: backupEventIds,
+        } = validateBackupRestorePayload(backupData);
 
-        // Limpiar registros actuales
-        await Promise.all(allParticipants.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
-        await Promise.all(events.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
+        await commitBatchedFirestoreWrites([
+          ...backupParticipants.map((p) => (batch) =>
+            batch.set(getDocRef('app_participants', String(p.id)), p)
+          ),
+          ...backupEvents.map((e) => (batch) =>
+            batch.set(getDocRef('app_events', String(e.id)), e)
+          ),
+        ]);
 
-        // Insertar registros de backup
-        await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
-        await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+        const [liveParticipantsSnap, liveEventsSnap] = await Promise.all([
+          getDocs(getColRef('app_participants')),
+          getDocs(getColRef('app_events')),
+        ]);
+
+        const deleteOperations = [];
+        liveParticipantsSnap.forEach((participantDoc) => {
+          if (!backupParticipantIds.has(String(participantDoc.id))) {
+            deleteOperations.push((batch) => batch.delete(participantDoc.ref));
+          }
+        });
+        liveEventsSnap.forEach((eventDoc) => {
+          if (!backupEventIds.has(String(eventDoc.id))) {
+            deleteOperations.push((batch) => batch.delete(eventDoc.ref));
+          }
+        });
+        await commitBatchedFirestoreWrites(deleteOperations);
 
         addLog('Restauraci?n de Sistema', `El SuperUsuario restaur? el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
         showToast("Sistema restaurado con ?xito desde copia de seguridad.");
@@ -4575,7 +4621,9 @@ const App = () => {
 
     const originalPaid = parseFloat(originalPerson.paid || 0);
     const newPaid = parseFloat(editedPerson.paid || 0);
-    let updatedHistory = editedPerson.paymentHistory || [];
+    let manualPaidAdjustment = null;
+    let manualPaidGrossDelta = 0;
+    let manualPaidNetDelta = 0;
     let finalRegisteredCost = resolveRegisteredCost(editedPerson, currentPricing);
 
     if (hasAdminRights && newPaid !== originalPaid) {
@@ -4585,9 +4633,11 @@ const App = () => {
       const grossDelta = newPaid - originalPaid;
       const commission = adjustmentMethod === 'Tarjeta' ? grossDelta * commissionRate : 0;
       const netDelta = adjustmentMethod === 'Tarjeta' ? (grossDelta - commission) : grossDelta;
+      manualPaidGrossDelta = grossDelta;
+      manualPaidNetDelta = netDelta;
 
       const adjInstant = new Date();
-      updatedHistory = [...updatedHistory, {
+      manualPaidAdjustment = {
         id: Date.now(),
         date: adjInstant.toLocaleString('es-MX'),
         recordedAt: adjInstant.toISOString(),
@@ -4599,7 +4649,7 @@ const App = () => {
         commission,
         registeredBy: currentUser?.username,
         isManualAdjustment: true
-      }];
+      };
     }
 
     if (originalPerson.isServer !== editedPerson.isServer || originalPerson.serverAssignment !== editedPerson.serverAssignment) {
@@ -4614,20 +4664,8 @@ const App = () => {
       ...editedPerson,
       location: finalLocation,
       eventId: currentEvent.id,
-      paymentHistory: updatedHistory,
       registeredCost: finalRegisteredCost
     };
-
-    // Mantener consistencia de paidNet cuando admin modifica el total ?paid?
-    if (hasAdminRights && newPaid !== originalPaid) {
-      const originalPaidNet = Number.isFinite(parseFloat(originalPerson.paidNet || 0)) ? parseFloat(originalPerson.paidNet || 0) : originalPaid;
-      const adjustmentMethod = originalPerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-      const commissionRate = getCardCommissionRate();
-      const grossDelta = newPaid - originalPaid;
-      const commission = adjustmentMethod === 'Tarjeta' ? grossDelta * commissionRate : 0;
-      const netDelta = adjustmentMethod === 'Tarjeta' ? (grossDelta - commission) : grossDelta;
-      payload.paidNet = originalPaidNet + netDelta;
-    }
 
     if (globalConfig?.isDebugMode) {
       payload._isDebug = true;
@@ -4731,11 +4769,6 @@ const App = () => {
       payload.baptismSegment = '';
     }
 
-    const mergedForRefund = { ...editedPerson, ...payload };
-    const refundDiff = Math.max(0, (parseFloat(mergedForRefund.paid || 0) || 0) - (Number(getLiquidationTarget(mergedForRefund)) || 0));
-    payload.refundPendingAmount = refundDiff;
-    payload.refundPendingReason = refundDiff > 0 ? 'campaign_discount' : '';
-
     if ((originalPerson.status || 'active') === 'waitlist') {
       payload.status = 'waitlist';
       if (originalPerson.waitlistCreatedAt != null) payload.waitlistCreatedAt = originalPerson.waitlistCreatedAt;
@@ -4748,12 +4781,65 @@ const App = () => {
       payload.refundAsDonation = originalPerson.refundAsDonation ?? false;
     }
 
-    await setDoc(getDocRef('app_participants', String(editedPerson.id)), payload);
+    let previousDataForLog = originalPerson;
+    let mergedForLiq = { ...editedPerson, ...payload };
+    try {
+      const participantRef = getDocRef('app_participants', String(editedPerson.id));
+      await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(participantRef);
+        if (!liveSnap.exists()) {
+          throw new Error('participant-not-found');
+        }
+
+        const livePerson = { id: String(editedPerson.id), ...liveSnap.data() };
+        previousDataForLog = livePerson;
+        const transactionPayload = stripLiveParticipantFinanceFields(payload);
+
+        Object.assign(
+          transactionPayload,
+          buildManualPaidAdjustmentUpdate({
+            livePerson,
+            grossDelta: manualPaidGrossDelta,
+            netDelta: manualPaidNetDelta,
+            adjustmentRecord: manualPaidAdjustment,
+          })
+        );
+
+        if (participantIsCancelled(livePerson)) {
+          transactionPayload.status = PARTICIPANT_STATUS_CANCELLED;
+          if (livePerson.cancelledAt != null) transactionPayload.cancelledAt = livePerson.cancelledAt;
+          transactionPayload.cancelledFromLocation = livePerson.cancelledFromLocation || livePerson.location || loc;
+          transactionPayload.refundPendingAmount = livePerson.refundPendingAmount ?? 0;
+          transactionPayload.refundAsDonation = livePerson.refundAsDonation ?? false;
+        } else if ((livePerson.status || 'active') === 'waitlist') {
+          transactionPayload.status = 'waitlist';
+          if (livePerson.waitlistCreatedAt != null) transactionPayload.waitlistCreatedAt = livePerson.waitlistCreatedAt;
+          if (isSiValue(transactionPayload.isScholarship)) transactionPayload.scholarshipPendingApproval = true;
+        } else {
+          transactionPayload.status = livePerson.status || 'active';
+          transactionPayload.cancelledAt = deleteField();
+          transactionPayload.cancelledFromLocation = deleteField();
+          const livePaidAfter = Number.isFinite(parseFloat(transactionPayload.paid))
+            ? parseFloat(transactionPayload.paid)
+            : (parseFloat(livePerson.paid || 0) || 0);
+          const mergedForRefund = { ...livePerson, ...transactionPayload, paid: livePaidAfter };
+          const refundDiff = Math.max(0, livePaidAfter - (Number(getLiquidationTarget(mergedForRefund)) || 0));
+          transactionPayload.refundPendingAmount = refundDiff;
+          transactionPayload.refundPendingReason = refundDiff > 0 ? 'campaign_discount' : '';
+        }
+
+        mergedForLiq = { ...livePerson, ...transactionPayload };
+        transaction.update(participantRef, transactionPayload);
+      });
+    } catch (err) {
+      console.error(err);
+      showToast(err?.message === 'participant-not-found' ? 'El registro ya no existe.' : 'No se pudo actualizar el registro. Intenta de nuevo.');
+      return;
+    }
 
     if (changes.length > 0) {
-      const mergedForLiq = { ...editedPerson, ...payload };
       const isLiquidado = parseFloat(mergedForLiq.paid) >= getLiquidationTarget(mergedForLiq);
-      addLog('Actualizaci?n de Registro', `Modific? datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: originalPerson });
+      addLog('Actualizaci?n de Registro', `Modific? datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: previousDataForLog });
     }
     setEditRegistryModal({ isOpen: false, loc: '', data: null }); setEditPreferredServeDropdownOpen(false); setEditServedAreasDropdownOpen(false);
     showToast("Registro actualizado.");
@@ -5152,53 +5238,89 @@ const App = () => {
       commission,
       registeredBy: currentUser?.username
     };
-    const person = allParticipants.find((p) => String(p.id) === String(paymentModal.id));
-    if (!person) {
+
+    if (!paymentModal.id) {
       setPaymentModal(prev => ({ ...prev, error: 'Registro no encontrado.' }));
       return;
     }
-    if (participantIsCancelled(person)) {
-      setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' });
-      showToast('No puedes abonar a un registro dado de baja.');
+    const abonoCreatedAt = Date.now();
+    let abonoResult = null;
+    let maxLiveAbono = 0;
+    try {
+      const participantRef = getDocRef('app_participants', String(paymentModal.id));
+      await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(participantRef);
+        if (!liveSnap.exists()) {
+          throw new Error('participant-not-found');
+        }
+
+        const person = { id: String(paymentModal.id), ...liveSnap.data() };
+        if (participantIsCancelled(person)) {
+          throw new Error('participant-cancelled');
+        }
+
+        const liveBaseCost = getLiquidationTarget(person);
+        const paidGrossNow = parseFloat(person.paid || 0) || 0;
+        maxLiveAbono = Math.max(0, (Number(liveBaseCost) || 0) - paidGrossNow);
+        if (paidGrossNow + addedAmount > liveBaseCost) {
+          throw new Error('abono-exceeds-total');
+        }
+
+        const newPaidGross = paidGrossNow + addedAmount;
+        const pendingAfterAbono = Math.max((Number(liveBaseCost) || 0) - newPaidGross, 0);
+        const isLiquidado = newPaidGross >= liveBaseCost;
+        const abonoNotification = {
+          id: `wa-abn-${abonoCreatedAt}`,
+          kind: 'abono',
+          amount: addedAmount,
+          pendingAmount: pendingAfterAbono,
+          isLiquidado,
+          createdAt: abonoCreatedAt,
+          sent: false,
+          sentAt: null,
+          message: buildFinanceWhatsAppMessage(person, paymentModal.loc, addedAmount, pendingAfterAbono, isLiquidado, 'abono', abonoCreatedAt)
+        };
+        const payload = buildAbonoUpdate({
+          livePerson: person,
+          addedAmount,
+          netAmount,
+          paymentRecord: newPaymentRecord,
+          notification: abonoNotification,
+        });
+        if (globalConfig?.isDebugMode) {
+          payload._isDebug = true;
+          payload._debugSessionId = globalConfig.debugSessionId;
+        }
+
+        transaction.update(participantRef, payload);
+        abonoResult = {
+          person,
+          previousPaid: paidGrossNow,
+          newPaidGross,
+          isLiquidado,
+        };
+      });
+    } catch (err) {
+      console.error(err);
+      if (err?.message === 'participant-not-found') {
+        setPaymentModal(prev => ({ ...prev, error: 'Registro no encontrado.' }));
+      } else if (err?.message === 'participant-cancelled') {
+        setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' });
+        showToast('No puedes abonar a un registro dado de baja.');
+      } else if (err?.message === 'abono-exceeds-total') {
+        setPaymentModal(prev => ({ ...prev, error: `El abono supera el costo total. M?ximo a abonar: $${maxLiveAbono}` }));
+      } else {
+        setPaymentModal(prev => ({ ...prev, error: 'No se pudo registrar el abono. Intenta de nuevo.' }));
+      }
       return;
     }
-    const paidGrossNow = parseFloat(person.paid || 0);
-    const paidNetNow = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGrossNow;
-    const newPaidGross = paidGrossNow + addedAmount;
-    const newPaidNet = paidNetNow + netAmount;
-    const isLiquidado = newPaidGross >= baseCost;
 
-    const payload = {
-      paid: newPaidGross,
-      paidNet: newPaidNet,
-      paymentHistory: [...(person.paymentHistory || []), newPaymentRecord]
-    };
-    const pendingAfterAbono = Math.max((Number(baseCost) || 0) - newPaidGross, 0);
-    const abonoCreatedAt = Date.now();
-    const abonoNotification = {
-      id: `wa-abn-${abonoCreatedAt}`,
-      kind: 'abono',
-      amount: addedAmount,
-      pendingAmount: pendingAfterAbono,
-      isLiquidado,
-      createdAt: abonoCreatedAt,
-      sent: false,
-      sentAt: null,
-      message: buildFinanceWhatsAppMessage(person, paymentModal.loc, addedAmount, pendingAfterAbono, isLiquidado, 'abono', abonoCreatedAt)
-    };
-    payload.whatsAppFinanceNotifications = [...(person.whatsAppFinanceNotifications || []), abonoNotification];
-    if (globalConfig?.isDebugMode) {
-      payload._isDebug = true;
-      payload._debugSessionId = globalConfig.debugSessionId;
-    }
-
-    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
     addLog(
       'Abono Financiero',
-      `Registr? un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${paymentModal.currentPaid} -> $${newPaidGross})${isLiquidado ? ' [LIQUIDADO]' : ''}`,
+      `Registr? un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${abonoResult.previousPaid} -> $${abonoResult.newPaidGross})${abonoResult.isLiquidado ? ' [LIQUIDADO]' : ''}`,
       null,
       null,
-      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
+      { collectionName: 'app_participants', docId: String(abonoResult.person.id), action: 'update', previousData: abonoResult.person }
     );
     setPaymentModal({
       isOpen: false,
@@ -5229,7 +5351,6 @@ const App = () => {
       return;
     }
 
-    const prevHistory = person.paymentHistory || [];
     const commentInstant = new Date();
     const newHistoryItem = {
       id: Date.now(),
@@ -5240,15 +5361,33 @@ const App = () => {
       registeredBy: currentUser?.username
     };
 
-    const payload = { paymentHistory: [...prevHistory, newHistoryItem] };
+    let previousDataForLog = person;
+    try {
+      const participantRef = getDocRef('app_participants', String(person.id));
+      await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(participantRef);
+        if (!liveSnap.exists()) {
+          throw new Error('participant-not-found');
+        }
+        const livePerson = { id: String(person.id), ...liveSnap.data() };
+        previousDataForLog = livePerson;
+        transaction.update(
+          participantRef,
+          buildPaymentHistoryAppendUpdate({ livePerson, historyItem: newHistoryItem })
+        );
+      });
+    } catch (err) {
+      console.error(err);
+      showToast(err?.message === 'participant-not-found' ? 'El registro ya no existe.' : 'No se pudo guardar el comentario. Intenta de nuevo.');
+      return;
+    }
 
-    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
     addLog(
       'Comentarios',
       `Agreg? comentario para ${person.name} en la sede ${loc}: "${draft}"`,
       null,
       null,
-      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
+      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: previousDataForLog }
     );
 
     setCommentDrafts(prev => ({ ...prev, [String(person.id)]: '' }));
@@ -5297,70 +5436,87 @@ const App = () => {
       closePaymentMethodEditModal();
       return;
     }
-    const idx = paymentMethodEditModal.paymentIndex;
-    const hist = [...(person.paymentHistory || [])];
-    if (idx == null || idx < 0 || idx >= hist.length) {
-      showToast('Movimiento no encontrado.');
-      closePaymentMethodEditModal();
-      return;
-    }
-    const row = hist[idx];
-    if (!row || row.kind === 'comment') {
-      showToast('Ese movimiento no admite cambio de m?todo.');
-      closePaymentMethodEditModal();
-      return;
-    }
-    if (paymentMethodEditModal.paymentId != null && String(row.id) !== String(paymentMethodEditModal.paymentId)) {
-      showToast('El historial cambi?; vuelve a abrir el editor.');
-      closePaymentMethodEditModal();
-      return;
-    }
-
     const newMethod = paymentMethodEditModal.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-    const amount = Number(row.amount) || 0;
-    const commissionRate = getCardCommissionRate();
-    const oldMethod = row.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
-    const oldNet =
-      Number.isFinite(parseFloat(row.netAmount))
-        ? parseFloat(row.netAmount)
-        : (oldMethod === 'Tarjeta' ? (amount - (amount * commissionRate)) : amount);
-    const newCommission = newMethod === 'Tarjeta' ? (amount * commissionRate) : 0;
-    const newNet = newMethod === 'Tarjeta' ? (amount - newCommission) : amount;
     const nextReference = newMethod === 'Tarjeta' ? String(paymentMethodEditModal.cardReference || '').trim() : '';
 
-    if (
-      newMethod === oldMethod &&
-      String(nextReference || '') === String(row.reference || '')
-    ) {
-      showToast('No hubo cambios en el tipo de abono.');
+    let paymentEditResult = null;
+    try {
+      const participantRef = getDocRef('app_participants', String(person.id));
+      await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(participantRef);
+        if (!liveSnap.exists()) {
+          throw new Error('participant-not-found');
+        }
+        const livePerson = { id: String(person.id), ...liveSnap.data() };
+        const hist = [...(Array.isArray(livePerson.paymentHistory) ? livePerson.paymentHistory : [])];
+        const idx = paymentMethodEditModal.paymentId != null
+          ? hist.findIndex((item) => String(item?.id) === String(paymentMethodEditModal.paymentId))
+          : paymentMethodEditModal.paymentIndex;
+        if (idx == null || idx < 0 || idx >= hist.length) {
+          throw new Error('history-changed');
+        }
+        const row = hist[idx];
+        if (!row || row.kind === 'comment') {
+          throw new Error('history-row-invalid');
+        }
+
+        const amount = Number(row.amount) || 0;
+        const commissionRate = getCardCommissionRate();
+        const oldMethod = row.method || (livePerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
+        const oldNet =
+          Number.isFinite(parseFloat(row.netAmount))
+            ? parseFloat(row.netAmount)
+            : (oldMethod === 'Tarjeta' ? (amount - (amount * commissionRate)) : amount);
+        const newCommission = newMethod === 'Tarjeta' ? (amount * commissionRate) : 0;
+        const newNet = newMethod === 'Tarjeta' ? (amount - newCommission) : amount;
+
+        if (
+          newMethod === oldMethod &&
+          String(nextReference || '') === String(row.reference || '')
+        ) {
+          throw new Error('no-payment-method-change');
+        }
+
+        hist[idx] = {
+          ...row,
+          method: newMethod,
+          netAmount: newNet,
+          commission: newCommission,
+          reference: nextReference,
+        };
+
+        const originalPaidGross = parseFloat(livePerson.paid || 0) || 0;
+        const originalPaidNet = Number.isFinite(parseFloat(livePerson.paidNet || 0)) ? parseFloat(livePerson.paidNet || 0) : originalPaidGross;
+        const payload = {
+          paymentHistory: hist,
+          paidNet: originalPaidNet + (newNet - oldNet),
+          ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+        };
+
+        transaction.update(participantRef, payload);
+        paymentEditResult = { livePerson, oldMethod };
+      });
+    } catch (err) {
+      console.error(err);
+      if (err?.message === 'no-payment-method-change') {
+        showToast('No hubo cambios en el tipo de abono.');
+      } else if (err?.message === 'participant-not-found') {
+        showToast('Participante no encontrado.');
+      } else if (err?.message === 'history-row-invalid') {
+        showToast('Ese movimiento no admite cambio de m?todo.');
+      } else {
+        showToast('El historial cambi?; vuelve a abrir el editor.');
+      }
       closePaymentMethodEditModal();
       return;
     }
 
-    hist[idx] = {
-      ...row,
-      method: newMethod,
-      netAmount: newNet,
-      commission: newCommission,
-      reference: nextReference,
-    };
-
-    const originalPaidGross = parseFloat(person.paid || 0) || 0;
-    const originalPaidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : originalPaidGross;
-    const nextPaidNet = originalPaidNet + (newNet - oldNet);
-    const payload = {
-      paymentHistory: hist,
-      paidNet: nextPaidNet,
-      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
-    };
-
-    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
     addLog(
       'Finanzas',
-      `Actualiz? tipo de abono en historial para ${person.name} (${paymentMethodEditModal.loc || person.location || '?'}): ${oldMethod} -> ${newMethod}${nextReference ? ` (Ref: ${nextReference})` : ''}.`,
+      `Actualiz? tipo de abono en historial para ${person.name} (${paymentMethodEditModal.loc || person.location || '?'}): ${paymentEditResult.oldMethod} -> ${newMethod}${nextReference ? ` (Ref: ${nextReference})` : ''}.`,
       null,
       null,
-      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
+      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: paymentEditResult.livePerson }
     );
     closePaymentMethodEditModal();
     showToast('Tipo de abono actualizado.');
@@ -5437,136 +5593,66 @@ const App = () => {
     const dateEditActor = isSuperUser ? 'SuperUsuario' : (currentUser?.username || 'Usuario');
     try {
       if (superDateEditModal.mode === 'registration') {
-        const oldRegIso = person.registeredAt;
-        const oldRegMs = parseFlexibleInstantMs(oldRegIso);
-        const hist = [...(person.paymentHistory || [])];
         const dNew = new Date(iso);
         const dateStrNew = dNew.toLocaleString('es-MX');
         const serviceForNewInstant = getAutoPaymentService(dNew);
-        const firstPayIdx = hist.findIndex((r) => r && r.kind !== 'comment');
+        const newAnchorMs = dNew.getTime();
         let historyChanged = false;
-        for (let i = 0; i < hist.length; i += 1) {
-          const row = hist[i];
-          if (!row || row.kind === 'comment') continue;
-          let tiedToRegistration = false;
-          if (oldRegIso && row.recordedAt) {
-            if (String(row.recordedAt).trim() === String(oldRegIso).trim()) {
-              tiedToRegistration = true;
-            } else {
-              const rowMsFromRec = parseFlexibleInstantMs(row.recordedAt);
-              if (oldRegMs != null && rowMsFromRec != null && rowMsFromRec === oldRegMs) {
+        let previousDataForLog = person;
+
+        await runTransaction(db, async (transaction) => {
+          const participantRef = getDocRef('app_participants', String(personId));
+          const liveSnap = await transaction.get(participantRef);
+          if (!liveSnap.exists()) {
+            throw new Error('participant-not-found');
+          }
+
+          const livePerson = { id: String(personId), ...liveSnap.data() };
+          previousDataForLog = livePerson;
+          const oldRegIso = livePerson.registeredAt;
+          const oldRegMs = parseFlexibleInstantMs(oldRegIso);
+          const hist = [...(Array.isArray(livePerson.paymentHistory) ? livePerson.paymentHistory : [])];
+          const firstPayIdx = hist.findIndex((r) => r && r.kind !== 'comment');
+          historyChanged = false;
+          for (let i = 0; i < hist.length; i += 1) {
+            const row = hist[i];
+            if (!row || row.kind === 'comment') continue;
+            let tiedToRegistration = false;
+            if (oldRegIso && row.recordedAt) {
+              if (String(row.recordedAt).trim() === String(oldRegIso).trim()) {
+                tiedToRegistration = true;
+              } else {
+                const rowMsFromRec = parseFlexibleInstantMs(row.recordedAt);
+                if (oldRegMs != null && rowMsFromRec != null && rowMsFromRec === oldRegMs) {
+                  tiedToRegistration = true;
+                }
+              }
+            }
+            if (!tiedToRegistration && firstPayIdx === i && oldRegMs != null) {
+              const rowMs = getPaymentRowInstantMsPreferRecorded(row);
+              if (rowMs != null && Math.abs(rowMs - oldRegMs) <= 5000) {
                 tiedToRegistration = true;
               }
             }
-          }
-          if (!tiedToRegistration && firstPayIdx === i && oldRegMs != null) {
-            const rowMs = getPaymentRowInstantMsPreferRecorded(row);
-            if (rowMs != null && Math.abs(rowMs - oldRegMs) <= 5000) {
-              tiedToRegistration = true;
+            if (tiedToRegistration) {
+              hist[i] = { ...row, recordedAt: iso, date: dateStrNew, service: serviceForNewInstant };
+              historyChanged = true;
             }
           }
-          if (tiedToRegistration) {
-            hist[i] = { ...row, recordedAt: iso, date: dateStrNew, service: serviceForNewInstant };
-            historyChanged = true;
-          }
-        }
 
-        // Requerimiento: al editar manualmente la fecha, el costo a pagar debe reflejar la fecha nueva,
-        // considerando tanto el precio din?mico como la vigencia de campa?as de descuento.
-        const newAnchorMs = dNew.getTime();
-        const isoDate = new Date(newAnchorMs).toISOString().split('T')[0];
-        const pricingForNewDate = getPricingForDate(currentEvent, newAnchorMs);
-        const baseNew = getPersonCost(person, pricingForNewDate);
+          // Requerimiento: al editar manualmente la fecha, el costo a pagar debe reflejar la fecha nueva,
+          // considerando tanto el precio din?mico como la vigencia de campa?as de descuento.
+          const isoDate = new Date(newAnchorMs).toISOString().split('T')[0];
+          const pricingForNewDate = getPricingForDate(currentEvent, newAnchorMs);
+          const baseNew = getPersonCost(livePerson, pricingForNewDate);
 
-        const selectedCampaignId = String(person.discountCampaignId || '').trim();
-        const selectedCampaignConcept = String(person.discountCampaignConcept || '').trim();
-        const campaignById = selectedCampaignId ? findDiscountCampaignById(currentEvent, selectedCampaignId) : null;
-        const campaignByConcept = !campaignById && selectedCampaignConcept && Array.isArray(currentEvent?.discountCampaigns)
-          ? currentEvent.discountCampaigns.find(c =>
-            String(c?.concept || '').trim() === selectedCampaignConcept &&
-            campaignMatchesPersonProfile(c, person)
-          ) || null
-          : null;
-        const selectedCampaign = campaignById || campaignByConcept;
-
-        const hasDiscountSelection = selectedCampaignId !== '' || selectedCampaignConcept !== '';
-        const campaignAppliesOnNewDate =
-          selectedCampaign &&
-          campaignMatchesPersonProfile(selectedCampaign, person) &&
-          (!discountCampaignHasDateRange(selectedCampaign) || isDiscountCampaignVigenteOnDate(selectedCampaign, isoDate));
-
-        let nextRegisteredCost = baseNew;
-        if (hasDiscountSelection) {
-          // Si la campa?a no aplica por vigencia/fechas, se revierte al costo base del evento para esa fecha.
-          nextRegisteredCost = campaignAppliesOnNewDate
-            ? Math.max(0, Number(selectedCampaign?.finalAmount) || 0)
-            : baseNew;
-        }
-
-        const regPayload = {
-          registeredAt: iso,
-          paymentService: serviceForNewInstant,
-          registeredCost: nextRegisteredCost,
-          ...debugExtras
-        };
-        if (historyChanged) regPayload.paymentHistory = hist;
-        await updateDoc(getDocRef('app_participants', String(personId)), regPayload);
-        addLog(
-          'Sistema',
-          `${dateEditActor} ajust? la fecha de registro de ${person.name || 'participante'} (sede ${locLabel})${historyChanged ? ' y la marca de tiempo del pago inicial vinculado' : ''}.`,
-          null,
-          null,
-          { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
-          { isHidden: true }
-        );
-      } else if (superDateEditModal.mode === 'payment') {
-        const idx = superDateEditModal.paymentIndex;
-        const hist = [...(person.paymentHistory || [])];
-        if (idx == null || idx < 0 || idx >= hist.length) {
-          showToast('Movimiento no encontrado.');
-          return;
-        }
-        const row = hist[idx];
-        if (superDateEditModal.paymentId != null && String(row.id) !== String(superDateEditModal.paymentId)) {
-          showToast('El historial cambi?; vuelve a abrir el editor.');
-          return;
-        }
-        if (row.kind === 'comment') {
-          showToast('Este movimiento no admite cambio de fecha aqu?.');
-          return;
-        }
-        const d = new Date(iso);
-        const serviceForPayment = getAutoPaymentService(d);
-        hist[idx] = { ...row, recordedAt: iso, date: d.toLocaleString('es-MX'), service: serviceForPayment };
-
-        // Si el pago editado estaba "anclado" al registro (o no exist?a registeredAt y es el primer pago),
-        // entonces el costo final (precio din?mico) debe recalcularse usando esta nueva fecha.
-        const firstPayIdx = hist.findIndex((r) => r && r.kind !== 'comment');
-        const oldRegIso = person.registeredAt;
-        const oldRegMs = parseFlexibleInstantMs(oldRegIso);
-        const rowOldMs = parseFlexibleInstantMs(row.recordedAt) ?? (typeof row.id === 'number' && Number.isFinite(row.id) ? row.id : null);
-
-        const isTiedToRegistration =
-          (oldRegIso && row.recordedAt && String(row.recordedAt).trim() === String(oldRegIso).trim()) ||
-          (oldRegMs != null && rowOldMs != null && Math.abs(oldRegMs - rowOldMs) <= 5000) ||
-          (!oldRegIso && idx === firstPayIdx);
-
-        let nextRegisteredCost = null;
-        if (isTiedToRegistration) {
-          // Requerimiento: al editar manualmente la fecha del pago anclado al registro,
-          // el costo a pagar debe reflejar la fecha nueva, incluyendo vigencia de campa?as.
-          const anchorNewMs = d.getTime();
-          const isoDate = new Date(anchorNewMs).toISOString().split('T')[0];
-          const pricingForNewDate = getPricingForDate(currentEvent, anchorNewMs);
-          const baseNew = getPersonCost(person, pricingForNewDate);
-
-          const selectedCampaignId = String(person.discountCampaignId || '').trim();
-          const selectedCampaignConcept = String(person.discountCampaignConcept || '').trim();
+          const selectedCampaignId = String(livePerson.discountCampaignId || '').trim();
+          const selectedCampaignConcept = String(livePerson.discountCampaignConcept || '').trim();
           const campaignById = selectedCampaignId ? findDiscountCampaignById(currentEvent, selectedCampaignId) : null;
           const campaignByConcept = !campaignById && selectedCampaignConcept && Array.isArray(currentEvent?.discountCampaigns)
             ? currentEvent.discountCampaigns.find(c =>
               String(c?.concept || '').trim() === selectedCampaignConcept &&
-              campaignMatchesPersonProfile(c, person)
+              campaignMatchesPersonProfile(c, livePerson)
             ) || null
             : null;
           const selectedCampaign = campaignById || campaignByConcept;
@@ -5574,30 +5660,120 @@ const App = () => {
           const hasDiscountSelection = selectedCampaignId !== '' || selectedCampaignConcept !== '';
           const campaignAppliesOnNewDate =
             selectedCampaign &&
-            campaignMatchesPersonProfile(selectedCampaign, person) &&
+            campaignMatchesPersonProfile(selectedCampaign, livePerson) &&
             (!discountCampaignHasDateRange(selectedCampaign) || isDiscountCampaignVigenteOnDate(selectedCampaign, isoDate));
 
-          nextRegisteredCost = baseNew;
+          let nextRegisteredCost = baseNew;
           if (hasDiscountSelection) {
+            // Si la campa?a no aplica por vigencia/fechas, se revierte al costo base del evento para esa fecha.
             nextRegisteredCost = campaignAppliesOnNewDate
               ? Math.max(0, Number(selectedCampaign?.finalAmount) || 0)
               : baseNew;
           }
-        }
 
-        const payload = {
-          paymentHistory: hist,
-          ...(isTiedToRegistration ? { registeredAt: iso } : {}),
-          ...(nextRegisteredCost != null ? { registeredCost: nextRegisteredCost } : {}),
-          ...debugExtras,
-        };
-        await updateDoc(getDocRef('app_participants', String(personId)), payload);
+          const regPayload = {
+            registeredAt: iso,
+            paymentService: serviceForNewInstant,
+            registeredCost: nextRegisteredCost,
+            ...debugExtras
+          };
+          if (historyChanged) regPayload.paymentHistory = hist;
+          transaction.update(participantRef, regPayload);
+        });
+        addLog(
+          'Sistema',
+          `${dateEditActor} ajust? la fecha de registro de ${person.name || 'participante'} (sede ${locLabel})${historyChanged ? ' y la marca de tiempo del pago inicial vinculado' : ''}.`,
+          null,
+          null,
+          { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: previousDataForLog },
+          { isHidden: true }
+        );
+      } else if (superDateEditModal.mode === 'payment') {
+        const d = new Date(iso);
+        const serviceForPayment = getAutoPaymentService(d);
+        let previousDataForLog = person;
+        await runTransaction(db, async (transaction) => {
+          const participantRef = getDocRef('app_participants', String(personId));
+          const liveSnap = await transaction.get(participantRef);
+          if (!liveSnap.exists()) {
+            throw new Error('participant-not-found');
+          }
+
+          const livePerson = { id: String(personId), ...liveSnap.data() };
+          previousDataForLog = livePerson;
+          const hist = [...(Array.isArray(livePerson.paymentHistory) ? livePerson.paymentHistory : [])];
+          const idx = superDateEditModal.paymentId != null
+            ? hist.findIndex((item) => String(item?.id) === String(superDateEditModal.paymentId))
+            : superDateEditModal.paymentIndex;
+          if (idx == null || idx < 0 || idx >= hist.length) {
+            throw new Error('history-changed');
+          }
+          const row = hist[idx];
+          if (!row || row.kind === 'comment') {
+            throw new Error('history-row-invalid');
+          }
+          hist[idx] = { ...row, recordedAt: iso, date: d.toLocaleString('es-MX'), service: serviceForPayment };
+
+          // Si el pago editado estaba "anclado" al registro (o no exist?a registeredAt y es el primer pago),
+          // entonces el costo final (precio din?mico) debe recalcularse usando esta nueva fecha.
+          const firstPayIdx = hist.findIndex((r) => r && r.kind !== 'comment');
+          const oldRegIso = livePerson.registeredAt;
+          const oldRegMs = parseFlexibleInstantMs(oldRegIso);
+          const rowOldMs = parseFlexibleInstantMs(row.recordedAt) ?? (typeof row.id === 'number' && Number.isFinite(row.id) ? row.id : null);
+
+          const isTiedToRegistration =
+            (oldRegIso && row.recordedAt && String(row.recordedAt).trim() === String(oldRegIso).trim()) ||
+            (oldRegMs != null && rowOldMs != null && Math.abs(oldRegMs - rowOldMs) <= 5000) ||
+            (!oldRegIso && idx === firstPayIdx);
+
+          let nextRegisteredCost = null;
+          if (isTiedToRegistration) {
+            // Requerimiento: al editar manualmente la fecha del pago anclado al registro,
+            // el costo a pagar debe reflejar la fecha nueva, incluyendo vigencia de campa?as.
+            const anchorNewMs = d.getTime();
+            const isoDate = new Date(anchorNewMs).toISOString().split('T')[0];
+            const pricingForNewDate = getPricingForDate(currentEvent, anchorNewMs);
+            const baseNew = getPersonCost(livePerson, pricingForNewDate);
+
+            const selectedCampaignId = String(livePerson.discountCampaignId || '').trim();
+            const selectedCampaignConcept = String(livePerson.discountCampaignConcept || '').trim();
+            const campaignById = selectedCampaignId ? findDiscountCampaignById(currentEvent, selectedCampaignId) : null;
+            const campaignByConcept = !campaignById && selectedCampaignConcept && Array.isArray(currentEvent?.discountCampaigns)
+              ? currentEvent.discountCampaigns.find(c =>
+                String(c?.concept || '').trim() === selectedCampaignConcept &&
+                campaignMatchesPersonProfile(c, livePerson)
+              ) || null
+              : null;
+            const selectedCampaign = campaignById || campaignByConcept;
+
+            const hasDiscountSelection = selectedCampaignId !== '' || selectedCampaignConcept !== '';
+            const campaignAppliesOnNewDate =
+              selectedCampaign &&
+              campaignMatchesPersonProfile(selectedCampaign, livePerson) &&
+              (!discountCampaignHasDateRange(selectedCampaign) || isDiscountCampaignVigenteOnDate(selectedCampaign, isoDate));
+
+            nextRegisteredCost = baseNew;
+            if (hasDiscountSelection) {
+              nextRegisteredCost = campaignAppliesOnNewDate
+                ? Math.max(0, Number(selectedCampaign?.finalAmount) || 0)
+                : baseNew;
+            }
+          }
+
+          const payload = {
+            paymentHistory: hist,
+            ...(isTiedToRegistration ? { registeredAt: iso } : {}),
+            ...(nextRegisteredCost != null ? { registeredCost: nextRegisteredCost } : {}),
+            ...debugExtras,
+          };
+          transaction.update(participantRef, payload);
+        });
         addLog(
           'Sistema',
           `${dateEditActor} ajust? la fecha de un movimiento en el historial de pagos de ${person.name || 'participante'} (sede ${locLabel}).`,
           null,
           null,
-          { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person },
+          { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: previousDataForLog },
           { isHidden: true }
         );
       } else {

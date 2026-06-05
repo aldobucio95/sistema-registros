@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "check:utf8": "node scripts/validate-utf8.mjs",
+    "test:finance": "node scripts/test-participant-finance.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
