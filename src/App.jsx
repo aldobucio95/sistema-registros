@@ -24,7 +24,7 @@ import {
   reauthenticateWithCredential,
   updatePassword,
 } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs, writeBatch } from 'firebase/firestore';
 
 const auth = getAuth(app);
 const secondaryAuth = getAuth(secondaryApp);
@@ -33,6 +33,21 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 const getColRef = (colName) => collection(db, 'artifacts', appId, 'public', 'data', colName);
 const getDocRef = (colName, docId) => doc(db, 'artifacts', appId, 'public', 'data', colName, docId);
+const FIRESTORE_BATCH_LIMIT = 450;
+
+const commitFirestoreBatchOps = async (ops) => {
+  for (let i = 0; i < ops.length; i += FIRESTORE_BATCH_LIMIT) {
+    const batch = writeBatch(db);
+    ops.slice(i, i + FIRESTORE_BATCH_LIMIT).forEach((op) => {
+      if (op.type === 'delete') {
+        batch.delete(op.ref);
+      } else {
+        batch.set(op.ref, op.data);
+      }
+    });
+    await batch.commit();
+  }
+};
 
 /** Ventana para considerar una sesi?n ?activa? (debe ser > intervalo de heartbeat). */
 const SESSION_TTL_MS = 45000;
@@ -621,7 +636,7 @@ const normalizeIdText = (txt) =>
     // ?/? no se separan en NFD; unificar a N para el algoritmo (solo A?Z en el ID).
     .replace(/\u00f1/gi, 'n')
     // ? ? SS al pasar a may?sculas
-    .replace(/?/g, 'ss')
+    .replace(/\u00df/g, 'ss')
     .toUpperCase();
 
 /** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A?Z0?9). */
@@ -2371,7 +2386,6 @@ const App = () => {
           const paidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGross;
           const isBecado = isSiValue(person.isScholarship);
           const isCancelled = participantIsCancelled(person);
-          const baseCost = resolveRegisteredCost(person, currentPricing);
           const liqTarget = getLiquidationTarget(person);
 
           if (!isCancelled) {
@@ -2766,16 +2780,48 @@ const App = () => {
           return;
         }
         const backupData = backupSnap.data();
+        const backupParticipants = Array.isArray(backupData?.participants) ? backupData.participants : null;
+        const backupEvents = Array.isArray(backupData?.events) ? backupData.events : null;
+        const hasInvalidBackupRecord =
+          !backupParticipants ||
+          !backupEvents ||
+          backupParticipants.some((p) => !p || p.id === undefined || p.id === null || String(p.id).trim() === '') ||
+          backupEvents.some((e) => !e || e.id === undefined || e.id === null || String(e.id).trim() === '');
 
-        // Limpiar registros actuales
-        await Promise.all(allParticipants.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
-        await Promise.all(events.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
+        if (hasInvalidBackupRecord) {
+          showToast("Copia invalida: no se modifico la base de datos actual.");
+          setRestoreModal({ isOpen: false, log: null, type: 'single' });
+          return;
+        }
 
-        // Insertar registros de backup
-        await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
-        await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+        const safetyBackupId = `pre_restore_${Date.now()}`;
+        await setDoc(getDocRef('app_backups', safetyBackupId), {
+          date: new Date().toISOString(),
+          sourceBackupId: log.revertInfo.backupId,
+          participants: allParticipants,
+          events,
+          users: users.map((u) => ({ ...u, password: '***' })),
+        });
 
-        addLog('Restauraci?n de Sistema', `El SuperUsuario restaur? el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
+        const backupParticipantIds = new Set(backupParticipants.map((p) => String(p.id)));
+        const backupEventIds = new Set(backupEvents.map((e) => String(e.id)));
+        const restoreOps = [
+          ...backupParticipants.map((p) => ({ type: 'set', ref: getDocRef('app_participants', String(p.id)), data: p })),
+          ...backupEvents.map((e) => ({ type: 'set', ref: getDocRef('app_events', String(e.id)), data: e })),
+        ];
+        await commitFirestoreBatchOps(restoreOps);
+
+        const staleOps = [
+          ...allParticipants
+            .filter((p) => !backupParticipantIds.has(String(p.id)))
+            .map((p) => ({ type: 'delete', ref: getDocRef('app_participants', String(p.id)) })),
+          ...events
+            .filter((e) => !backupEventIds.has(String(e.id)))
+            .map((e) => ({ type: 'delete', ref: getDocRef('app_events', String(e.id)) })),
+        ];
+        await commitFirestoreBatchOps(staleOps);
+
+        addLog('Restauraci?n de Sistema', `El SuperUsuario restaur? el sistema desde la copia de seguridad del ${backupData.date}. Copia previa: ${safetyBackupId}.`, null, { id: 'Global', name: 'Sistema' });
         showToast("Sistema restaurado con ?xito desde copia de seguridad.");
       } catch (err) {
         console.error(err);
@@ -4900,6 +4946,10 @@ const App = () => {
   };
 
   const removeWaitlistEntry = (loc, id) => {
+    if (currentUser?.role === 'Lector') {
+      showToast("Solo editores y administradores pueden modificar lista de espera.");
+      return;
+    }
     if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
       showToast("No tienes permisos para modificar lista de espera en esta sede/evento.");
       return;
@@ -5042,6 +5092,10 @@ const App = () => {
   };
 
   const promoteWaitlistEntry = async (loc, id) => {
+    if (currentUser?.role === 'Lector') {
+      showToast("Solo editores y administradores pueden promover lista de espera.");
+      return;
+    }
     if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
       showToast("No tienes permisos para promover en esta sede/evento.");
       return;
@@ -10218,8 +10272,6 @@ const App = () => {
                       setFilterPaymentType('all');
                       setFilterTravelFrom('all');
                       setFilterTravelTo('all');
-                      setFilterPastorChild('all');
-                      setFilterWithoutPay('all');
                       setFilterFirstTimeId('all');
                       setFilterPendingRefund('all');
                       setFilterAssignment('all');
@@ -10332,7 +10384,6 @@ const App = () => {
                   const isBecado = isCampa && isSiValue(person.isScholarship);
                   const listPrice = resolveRegisteredCost(person, currentPricing);
                   const liquidationTarget = getLiquidationTarget(person);
-                  const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
                   const payHistory = person.paymentHistory || [];
 
                   return (
@@ -10715,8 +10766,12 @@ const App = () => {
                               <MessageCircle size={17} />
                             </button>
                           )}
-                          <button onClick={() => promoteWaitlistEntry(loc, person.id)} className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors" title="Promover a inscritos"><CheckCircle2 size={17} /></button>
-                          <button onClick={() => removeWaitlistEntry(loc, person.id)} className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Archivar de la lista (datos e ID VNPM siguen para precargar)"><Trash2 size={17} /></button>
+                          {currentUser?.role !== 'Lector' && (
+                            <>
+                              <button onClick={() => promoteWaitlistEntry(loc, person.id)} className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors" title="Promover a inscritos"><CheckCircle2 size={17} /></button>
+                              <button onClick={() => removeWaitlistEntry(loc, person.id)} className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Archivar de la lista (datos e ID VNPM siguen para precargar)"><Trash2 size={17} /></button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -10997,8 +11052,6 @@ const App = () => {
                         setFilterPaymentType('all');
                         setFilterTravelFrom('all');
                         setFilterTravelTo('all');
-                        setFilterPastorChild('all');
-                        setFilterWithoutPay('all');
                         setFilterFirstTimeId('all');
                         setFilterPendingRefund('all');
                         setFilterAssignment('all');
