@@ -12,6 +12,7 @@ import {
 /* global __app_id, __initial_auth_token */
 
 import { app, secondaryApp, usernameToAuthEmail, loginIdentifierToAuthEmail, AUTH_EMAIL_DOMAIN, buildUsernameCandidates } from './firebaseConfig.js';
+import { buildParticipantUpdatePreservingLiveFinance, validateBackupSnapshot } from './participantFinance.js';
 import {
   getAuth,
   signInWithCustomToken,
@@ -24,7 +25,7 @@ import {
   reauthenticateWithCredential,
   updatePassword,
 } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs, runTransaction } from 'firebase/firestore';
 
 const auth = getAuth(app);
 const secondaryAuth = getAuth(secondaryApp);
@@ -620,8 +621,8 @@ const normalizeIdText = (txt) =>
     .replace(/[\u0300-\u036f]/g, '')
     // ?/? no se separan en NFD; unificar a N para el algoritmo (solo A?Z en el ID).
     .replace(/\u00f1/gi, 'n')
-    // ? ? SS al pasar a may?sculas
-    .replace(/?/g, 'ss')
+    // German sharp-s does not decompose in NFD; normalize it before uppercasing.
+    .replace(/\u00df/g, 'ss')
     .toUpperCase();
 
 /** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A?Z0?9). */
@@ -2371,7 +2372,6 @@ const App = () => {
           const paidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGross;
           const isBecado = isSiValue(person.isScholarship);
           const isCancelled = participantIsCancelled(person);
-          const baseCost = resolveRegisteredCost(person, currentPricing);
           const liqTarget = getLiquidationTarget(person);
 
           if (!isCancelled) {
@@ -2758,6 +2758,11 @@ const App = () => {
     } else if (type === 'cleanRecent') {
       handleCleanRecentLogs();
     } else if (type === 'backup') {
+      if (!isSuperUser) {
+        showToast("Permisos insuficientes. Solo SuperUsuario puede restaurar copias de seguridad.");
+        setRestoreModal({ isOpen: false, log: null, type: 'single' });
+        return;
+      }
       try {
         const backupSnap = await getDoc(getDocRef('app_backups', log.revertInfo.backupId));
         if (!backupSnap.exists()) {
@@ -2766,14 +2771,30 @@ const App = () => {
           return;
         }
         const backupData = backupSnap.data();
+        const backupValidation = validateBackupSnapshot(backupData);
+        if (!backupValidation.ok) {
+          showToast(`Error: ${backupValidation.reason}`);
+          setRestoreModal({ isOpen: false, log: null, type: 'single' });
+          return;
+        }
 
-        // Limpiar registros actuales
-        await Promise.all(allParticipants.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
-        await Promise.all(events.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
+        const backupParticipantIds = new Set(backupValidation.participants.map(p => String(p.id)));
+        const backupEventIds = new Set(backupValidation.events.map(e => String(e.id)));
 
-        // Insertar registros de backup
-        await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
-        await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+        // Escribir primero la copia validada; solo despues borrar documentos que no pertenecen al respaldo.
+        await Promise.all(backupValidation.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
+        await Promise.all(backupValidation.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+
+        await Promise.all(
+          allParticipants
+            .filter(p => !backupParticipantIds.has(String(p.id)))
+            .map(p => deleteDoc(getDocRef('app_participants', String(p.id))))
+        );
+        await Promise.all(
+          events
+            .filter(e => !backupEventIds.has(String(e.id)))
+            .map(e => deleteDoc(getDocRef('app_events', String(e.id))))
+        );
 
         addLog('Restauraci?n de Sistema', `El SuperUsuario restaur? el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
         showToast("Sistema restaurado con ?xito desde copia de seguridad.");
@@ -4070,12 +4091,17 @@ const App = () => {
     const now = Date.now();
     let failed = 0;
     for (const { person, markKeys } of byPerson.values()) {
-      const notifications = [...(person.whatsAppFinanceNotifications || [])];
-      const updated = notifications.map((n) =>
-        markKeys.has(getWhatsAppNotificationMarkKey(n)) ? { ...n, sent: true, sentAt: now } : n
-      );
       try {
-        await updateDoc(getDocRef('app_participants', String(person.id)), { whatsAppFinanceNotifications: updated });
+        const ref = getDocRef('app_participants', String(person.id));
+        await runTransaction(db, async (transaction) => {
+          const liveSnap = await transaction.get(ref);
+          if (!liveSnap.exists()) throw new Error('participant-not-found');
+          const notifications = [...(liveSnap.data()?.whatsAppFinanceNotifications || [])];
+          const updated = notifications.map((n) =>
+            markKeys.has(getWhatsAppNotificationMarkKey(n)) ? { ...n, sent: true, sentAt: now } : n
+          );
+          transaction.update(ref, { whatsAppFinanceNotifications: updated });
+        });
       } catch {
         failed += 1;
       }
@@ -4128,15 +4154,16 @@ const App = () => {
     if (personId && pendingNotificationMarkKey && messageUnchangedFromQueue) {
       try {
         const ref = getDocRef('app_participants', String(personId));
-        const snap = await getDoc(ref);
-        if (snap.exists()) {
+        await runTransaction(db, async (transaction) => {
+          const snap = await transaction.get(ref);
+          if (!snap.exists()) return;
           const arr = snap.data()?.whatsAppFinanceNotifications || [];
           const now = Date.now();
           const next = arr.map((n) =>
             getWhatsAppNotificationMarkKey(n) === pendingNotificationMarkKey ? { ...n, sent: true, sentAt: now } : n
           );
-          await updateDoc(ref, { whatsAppFinanceNotifications: next });
-        }
+          transaction.update(ref, { whatsAppFinanceNotifications: next });
+        });
       } catch {
         showToast('WhatsApp abierto; no se pudo marcar el aviso como enviado en el servidor.');
       }
@@ -4577,6 +4604,9 @@ const App = () => {
     const newPaid = parseFloat(editedPerson.paid || 0);
     let updatedHistory = editedPerson.paymentHistory || [];
     let finalRegisteredCost = resolveRegisteredCost(editedPerson, currentPricing);
+    let manualPaymentAdjustment = null;
+    let manualPaidGrossDelta = 0;
+    let manualPaidNetDelta = 0;
 
     if (hasAdminRights && newPaid !== originalPaid) {
       const adjustmentMethod = originalPerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
@@ -4585,9 +4615,11 @@ const App = () => {
       const grossDelta = newPaid - originalPaid;
       const commission = adjustmentMethod === 'Tarjeta' ? grossDelta * commissionRate : 0;
       const netDelta = adjustmentMethod === 'Tarjeta' ? (grossDelta - commission) : grossDelta;
+      manualPaidGrossDelta = grossDelta;
+      manualPaidNetDelta = netDelta;
 
       const adjInstant = new Date();
-      updatedHistory = [...updatedHistory, {
+      manualPaymentAdjustment = {
         id: Date.now(),
         date: adjInstant.toLocaleString('es-MX'),
         recordedAt: adjInstant.toISOString(),
@@ -4599,7 +4631,8 @@ const App = () => {
         commission,
         registeredBy: currentUser?.username,
         isManualAdjustment: true
-      }];
+      };
+      updatedHistory = [...updatedHistory, manualPaymentAdjustment];
     }
 
     if (originalPerson.isServer !== editedPerson.isServer || originalPerson.serverAssignment !== editedPerson.serverAssignment) {
@@ -4748,10 +4781,29 @@ const App = () => {
       payload.refundAsDonation = originalPerson.refundAsDonation ?? false;
     }
 
-    await setDoc(getDocRef('app_participants', String(editedPerson.id)), payload);
+    let savedPayload = payload;
+    try {
+      const ref = getDocRef('app_participants', String(editedPerson.id));
+      await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(ref);
+        if (!liveSnap.exists()) throw new Error('participant-not-found');
+        const liveData = liveSnap.data();
+        const safePayload = buildParticipantUpdatePreservingLiveFinance(payload, liveData, {
+          manualPaymentAdjustment,
+          paidGrossDelta: manualPaidGrossDelta,
+          paidNetDelta: manualPaidNetDelta,
+        });
+        transaction.update(ref, safePayload);
+        savedPayload = safePayload;
+      });
+    } catch (err) {
+      console.error(err);
+      showToast('No se pudo actualizar el registro. Recarga e intenta de nuevo para evitar sobrescribir pagos recientes.');
+      return;
+    }
 
     if (changes.length > 0) {
-      const mergedForLiq = { ...editedPerson, ...payload };
+      const mergedForLiq = { ...editedPerson, ...savedPayload };
       const isLiquidado = parseFloat(mergedForLiq.paid) >= getLiquidationTarget(mergedForLiq);
       addLog('Actualizaci?n de Registro', `Modific? datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: originalPerson });
     }
@@ -4801,44 +4853,59 @@ const App = () => {
     const person = (data[loc] || []).find((p) => String(p.id) === String(id));
     if (!person || participantIsCancelled(person)) return;
     const cancelledAt = Date.now();
-    const refundPendingAmount = Math.max(0, parseFloat(person.paid || 0) || 0);
-    const existingNotifications = Array.isArray(person.whatsAppFinanceNotifications) ? [...person.whatsAppFinanceNotifications] : [];
-    const latestUnsentIdx = existingNotifications
-      .map((n, idx) => ({ n, idx }))
-      .filter(({ n }) => n && !n.sent)
-      .sort((a, b) => Number(b.n.createdAt || 0) - Number(a.n.createdAt || 0))[0]?.idx;
-    const bajaNotification = {
-      id: `wa-bja-cancel-${cancelledAt}`,
-      kind: 'baja',
-      amount: 0,
-      pendingAmount: 0,
-      isLiquidado: false,
-      createdAt: cancelledAt,
-      sent: false,
-      sentAt: null,
-      message: buildArchiveWhatsAppMessage(person, loc, false, cancelledAt),
-    };
-    if (Number.isInteger(latestUnsentIdx)) {
-      existingNotifications[latestUnsentIdx] = { ...existingNotifications[latestUnsentIdx], ...bajaNotification, id: existingNotifications[latestUnsentIdx].id || bajaNotification.id };
-    } else {
-      existingNotifications.push(bajaNotification);
+    let cancelResult = null;
+    try {
+      const ref = getDocRef('app_participants', String(id));
+      await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(ref);
+        if (!liveSnap.exists()) throw new Error('participant-not-found');
+        const livePerson = { id, ...liveSnap.data() };
+        if (participantIsCancelled(livePerson)) throw new Error('participant-cancelled');
+        const refundPendingAmount = Math.max(0, parseFloat(livePerson.paid || 0) || 0);
+        const existingNotifications = Array.isArray(livePerson.whatsAppFinanceNotifications) ? [...livePerson.whatsAppFinanceNotifications] : [];
+        const latestUnsentIdx = existingNotifications
+          .map((n, idx) => ({ n, idx }))
+          .filter(({ n }) => n && !n.sent)
+          .sort((a, b) => Number(b.n.createdAt || 0) - Number(a.n.createdAt || 0))[0]?.idx;
+        const bajaNotification = {
+          id: `wa-bja-cancel-${cancelledAt}`,
+          kind: 'baja',
+          amount: 0,
+          pendingAmount: 0,
+          isLiquidado: false,
+          createdAt: cancelledAt,
+          sent: false,
+          sentAt: null,
+          message: buildArchiveWhatsAppMessage(livePerson, loc, false, cancelledAt),
+        };
+        if (Number.isInteger(latestUnsentIdx)) {
+          existingNotifications[latestUnsentIdx] = { ...existingNotifications[latestUnsentIdx], ...bajaNotification, id: existingNotifications[latestUnsentIdx].id || bajaNotification.id };
+        } else {
+          existingNotifications.push(bajaNotification);
+        }
+        const payload = {
+          status: PARTICIPANT_STATUS_CANCELLED,
+          cancelledAt,
+          cancelledFromLocation: loc,
+          refundPendingAmount,
+          refundAsDonation: false,
+          whatsAppFinanceNotifications: existingNotifications,
+          ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+        };
+        transaction.update(ref, payload);
+        cancelResult = { livePerson, refundPendingAmount };
+      });
+    } catch (err) {
+      console.error(err);
+      showToast('No se pudo dar de baja el registro. Recarga e intenta de nuevo.');
+      return;
     }
-    const payload = {
-      status: PARTICIPANT_STATUS_CANCELLED,
-      cancelledAt,
-      cancelledFromLocation: loc,
-      refundPendingAmount,
-      refundAsDonation: false,
-      whatsAppFinanceNotifications: existingNotifications,
-      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
-    };
-    await updateDoc(getDocRef('app_participants', String(id)), payload);
     addLog(
       'Baja de Registro',
-      `Dio de baja a ${person.name} en ${loc}.${refundPendingAmount > 0 ? ` Pendiente de devoluci?n: $${refundPendingAmount}.` : ''}`,
+      `Dio de baja a ${person.name} en ${loc}.${(cancelResult?.refundPendingAmount || 0) > 0 ? ` Pendiente de devoluci?n: $${cancelResult.refundPendingAmount}.` : ''}`,
       null,
       null,
-      { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: person }
+      { collectionName: 'app_participants', docId: String(id), action: 'update', previousData: cancelResult?.livePerson || person }
     );
     showToast('Registro dado de baja. Ya no cuenta en inscritos/becados/servidores.');
   };
@@ -5082,7 +5149,22 @@ const App = () => {
       payload._isDebug = true;
       payload._debugSessionId = globalConfig.debugSessionId;
     }
-    await updateDoc(getDocRef('app_participants', String(id)), payload);
+    try {
+      const ref = getDocRef('app_participants', String(id));
+      await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(ref);
+        if (!liveSnap.exists()) throw new Error('participant-not-found');
+        const livePerson = liveSnap.data();
+        transaction.update(ref, {
+          ...payload,
+          whatsAppFinanceNotifications: [...(livePerson.whatsAppFinanceNotifications || []), promoteNotification],
+        });
+      });
+    } catch (err) {
+      console.error(err);
+      showToast('No se pudo promover el registro. Recarga e intenta de nuevo.');
+      return;
+    }
 
     const promBeca =
       isSiValue(person.isScholarship)
@@ -5157,48 +5239,76 @@ const App = () => {
       setPaymentModal(prev => ({ ...prev, error: 'Registro no encontrado.' }));
       return;
     }
-    if (participantIsCancelled(person)) {
-      setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' });
-      showToast('No puedes abonar a un registro dado de baja.');
+    const abonoCreatedAt = Date.now();
+    let abonoResult = null;
+    try {
+      const ref = getDocRef('app_participants', String(person.id));
+      await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(ref);
+        if (!liveSnap.exists()) throw new Error('participant-not-found');
+        const livePerson = { id: person.id, ...liveSnap.data() };
+        if (participantIsCancelled(livePerson)) throw new Error('participant-cancelled');
+        if (!hasEventAccess(livePerson.eventId) || !hasLocationAccess(livePerson.location || paymentModal.loc)) {
+          throw new Error('participant-access-changed');
+        }
+
+        const liveBaseCost = getLiquidationTarget(livePerson);
+        const paidGrossNow = parseFloat(livePerson.paid || 0);
+        const paidNetNow = Number.isFinite(parseFloat(livePerson.paidNet || 0)) ? parseFloat(livePerson.paidNet || 0) : paidGrossNow;
+        if (paidGrossNow + addedAmount > liveBaseCost) {
+          throw new Error(`payment-exceeds:${Math.max(liveBaseCost - paidGrossNow, 0)}`);
+        }
+        const newPaidGross = paidGrossNow + addedAmount;
+        const newPaidNet = paidNetNow + netAmount;
+        const isLiquidado = newPaidGross >= liveBaseCost;
+        const pendingAfterAbono = Math.max((Number(liveBaseCost) || 0) - newPaidGross, 0);
+        const abonoNotification = {
+          id: `wa-abn-${abonoCreatedAt}`,
+          kind: 'abono',
+          amount: addedAmount,
+          pendingAmount: pendingAfterAbono,
+          isLiquidado,
+          createdAt: abonoCreatedAt,
+          sent: false,
+          sentAt: null,
+          message: buildFinanceWhatsAppMessage(livePerson, livePerson.location || paymentModal.loc, addedAmount, pendingAfterAbono, isLiquidado, 'abono', abonoCreatedAt)
+        };
+        const payload = {
+          paid: newPaidGross,
+          paidNet: newPaidNet,
+          paymentHistory: [...(livePerson.paymentHistory || []), newPaymentRecord],
+          whatsAppFinanceNotifications: [...(livePerson.whatsAppFinanceNotifications || []), abonoNotification],
+          ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+        };
+        transaction.update(ref, payload);
+        abonoResult = {
+          livePerson,
+          paidGrossNow,
+          newPaidGross,
+          isLiquidado,
+          paymentService,
+        };
+      });
+    } catch (err) {
+      console.error(err);
+      if (String(err?.message || '').startsWith('payment-exceeds:')) {
+        const maxAmount = Number(String(err.message).split(':')[1]) || 0;
+        setPaymentModal(prev => ({ ...prev, error: `El abono supera el costo total. M?ximo a abonar: $${maxAmount}` }));
+      } else if (err?.message === 'participant-cancelled') {
+        setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' });
+        showToast('No puedes abonar a un registro dado de baja.');
+      } else {
+        setPaymentModal(prev => ({ ...prev, error: 'No se pudo registrar el abono. Recarga e intenta de nuevo.' }));
+      }
       return;
     }
-    const paidGrossNow = parseFloat(person.paid || 0);
-    const paidNetNow = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGrossNow;
-    const newPaidGross = paidGrossNow + addedAmount;
-    const newPaidNet = paidNetNow + netAmount;
-    const isLiquidado = newPaidGross >= baseCost;
 
-    const payload = {
-      paid: newPaidGross,
-      paidNet: newPaidNet,
-      paymentHistory: [...(person.paymentHistory || []), newPaymentRecord]
-    };
-    const pendingAfterAbono = Math.max((Number(baseCost) || 0) - newPaidGross, 0);
-    const abonoCreatedAt = Date.now();
-    const abonoNotification = {
-      id: `wa-abn-${abonoCreatedAt}`,
-      kind: 'abono',
-      amount: addedAmount,
-      pendingAmount: pendingAfterAbono,
-      isLiquidado,
-      createdAt: abonoCreatedAt,
-      sent: false,
-      sentAt: null,
-      message: buildFinanceWhatsAppMessage(person, paymentModal.loc, addedAmount, pendingAfterAbono, isLiquidado, 'abono', abonoCreatedAt)
-    };
-    payload.whatsAppFinanceNotifications = [...(person.whatsAppFinanceNotifications || []), abonoNotification];
-    if (globalConfig?.isDebugMode) {
-      payload._isDebug = true;
-      payload._debugSessionId = globalConfig.debugSessionId;
-    }
-
-    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
     addLog(
       'Abono Financiero',
-      `Registr? un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${paymentModal.currentPaid} -> $${newPaidGross})${isLiquidado ? ' [LIQUIDADO]' : ''}`,
+      `Registr? un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${abonoResult?.paymentService ? ` (Servicio: ${abonoResult.paymentService})` : ''}. (Pagado: $${abonoResult?.paidGrossNow ?? paymentModal.currentPaid} -> $${abonoResult?.newPaidGross ?? ''})${abonoResult?.isLiquidado ? ' [LIQUIDADO]' : ''}`,
       null,
       null,
-      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
+      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: abonoResult?.livePerson || person }
     );
     setPaymentModal({
       isOpen: false,
@@ -5229,7 +5339,6 @@ const App = () => {
       return;
     }
 
-    const prevHistory = person.paymentHistory || [];
     const commentInstant = new Date();
     const newHistoryItem = {
       id: Date.now(),
@@ -5240,9 +5349,26 @@ const App = () => {
       registeredBy: currentUser?.username
     };
 
-    const payload = { paymentHistory: [...prevHistory, newHistoryItem] };
-
-    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
+    try {
+      const ref = getDocRef('app_participants', String(person.id));
+      await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(ref);
+        if (!liveSnap.exists()) throw new Error('participant-not-found');
+        const livePerson = { id: person.id, ...liveSnap.data() };
+        if (!hasEventAccess(livePerson.eventId) || !hasLocationAccess(livePerson.location || loc)) {
+          throw new Error('participant-access-changed');
+        }
+        const prevHistory = livePerson.paymentHistory || [];
+        transaction.update(ref, {
+          paymentHistory: [...prevHistory, newHistoryItem],
+          ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+        });
+      });
+    } catch (err) {
+      console.error(err);
+      showToast('No se pudo guardar el comentario. Recarga e intenta de nuevo.');
+      return;
+    }
     addLog(
       'Comentarios',
       `Agreg? comentario para ${person.name} en la sede ${loc}: "${draft}"`,
@@ -5298,69 +5424,72 @@ const App = () => {
       return;
     }
     const idx = paymentMethodEditModal.paymentIndex;
-    const hist = [...(person.paymentHistory || [])];
-    if (idx == null || idx < 0 || idx >= hist.length) {
-      showToast('Movimiento no encontrado.');
-      closePaymentMethodEditModal();
-      return;
-    }
-    const row = hist[idx];
-    if (!row || row.kind === 'comment') {
-      showToast('Ese movimiento no admite cambio de m?todo.');
-      closePaymentMethodEditModal();
-      return;
-    }
-    if (paymentMethodEditModal.paymentId != null && String(row.id) !== String(paymentMethodEditModal.paymentId)) {
-      showToast('El historial cambi?; vuelve a abrir el editor.');
-      closePaymentMethodEditModal();
-      return;
-    }
-
     const newMethod = paymentMethodEditModal.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-    const amount = Number(row.amount) || 0;
-    const commissionRate = getCardCommissionRate();
-    const oldMethod = row.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
-    const oldNet =
-      Number.isFinite(parseFloat(row.netAmount))
-        ? parseFloat(row.netAmount)
-        : (oldMethod === 'Tarjeta' ? (amount - (amount * commissionRate)) : amount);
-    const newCommission = newMethod === 'Tarjeta' ? (amount * commissionRate) : 0;
-    const newNet = newMethod === 'Tarjeta' ? (amount - newCommission) : amount;
-    const nextReference = newMethod === 'Tarjeta' ? String(paymentMethodEditModal.cardReference || '').trim() : '';
+    let paymentEditResult = null;
+    try {
+      const ref = getDocRef('app_participants', String(person.id));
+      await runTransaction(db, async (transaction) => {
+        const liveSnap = await transaction.get(ref);
+        if (!liveSnap.exists()) throw new Error('participant-not-found');
+        const livePerson = { id: person.id, ...liveSnap.data() };
+        const hist = [...(livePerson.paymentHistory || [])];
+        if (idx == null || idx < 0 || idx >= hist.length) throw new Error('payment-row-missing');
+        const row = hist[idx];
+        if (!row || row.kind === 'comment') throw new Error('payment-row-not-editable');
+        if (paymentMethodEditModal.paymentId != null && String(row.id) !== String(paymentMethodEditModal.paymentId)) {
+          throw new Error('payment-history-changed');
+        }
 
-    if (
-      newMethod === oldMethod &&
-      String(nextReference || '') === String(row.reference || '')
-    ) {
-      showToast('No hubo cambios en el tipo de abono.');
+        const amount = Number(row.amount) || 0;
+        const commissionRate = getCardCommissionRate();
+        const oldMethod = row.method || (livePerson.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
+        const oldNet =
+          Number.isFinite(parseFloat(row.netAmount))
+            ? parseFloat(row.netAmount)
+            : (oldMethod === 'Tarjeta' ? (amount - (amount * commissionRate)) : amount);
+        const newCommission = newMethod === 'Tarjeta' ? (amount * commissionRate) : 0;
+        const newNet = newMethod === 'Tarjeta' ? (amount - newCommission) : amount;
+        const nextReference = newMethod === 'Tarjeta' ? String(paymentMethodEditModal.cardReference || '').trim() : '';
+
+        if (
+          newMethod === oldMethod &&
+          String(nextReference || '') === String(row.reference || '')
+        ) {
+          throw new Error('payment-no-change');
+        }
+
+        hist[idx] = {
+          ...row,
+          method: newMethod,
+          netAmount: newNet,
+          commission: newCommission,
+          reference: nextReference,
+        };
+
+        const originalPaidGross = parseFloat(livePerson.paid || 0) || 0;
+        const originalPaidNet = Number.isFinite(parseFloat(livePerson.paidNet || 0)) ? parseFloat(livePerson.paidNet || 0) : originalPaidGross;
+        const nextPaidNet = originalPaidNet + (newNet - oldNet);
+        transaction.update(ref, {
+          paymentHistory: hist,
+          paidNet: nextPaidNet,
+          ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+        });
+        paymentEditResult = { oldMethod, newMethod, nextReference, livePerson };
+      });
+    } catch (err) {
+      console.error(err);
+      if (err?.message === 'payment-no-change') showToast('No hubo cambios en el tipo de abono.');
+      else if (err?.message === 'payment-history-changed') showToast('El historial cambi?; vuelve a abrir el editor.');
+      else showToast('No se pudo actualizar el tipo de abono. Recarga e intenta de nuevo.');
       closePaymentMethodEditModal();
       return;
     }
-
-    hist[idx] = {
-      ...row,
-      method: newMethod,
-      netAmount: newNet,
-      commission: newCommission,
-      reference: nextReference,
-    };
-
-    const originalPaidGross = parseFloat(person.paid || 0) || 0;
-    const originalPaidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : originalPaidGross;
-    const nextPaidNet = originalPaidNet + (newNet - oldNet);
-    const payload = {
-      paymentHistory: hist,
-      paidNet: nextPaidNet,
-      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
-    };
-
-    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
     addLog(
       'Finanzas',
-      `Actualiz? tipo de abono en historial para ${person.name} (${paymentMethodEditModal.loc || person.location || '?'}): ${oldMethod} -> ${newMethod}${nextReference ? ` (Ref: ${nextReference})` : ''}.`,
+      `Actualiz? tipo de abono en historial para ${person.name} (${paymentMethodEditModal.loc || person.location || '?'}): ${paymentEditResult?.oldMethod || '?'} -> ${paymentEditResult?.newMethod || newMethod}${paymentEditResult?.nextReference ? ` (Ref: ${paymentEditResult.nextReference})` : ''}.`,
       null,
       null,
-      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
+      { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: paymentEditResult?.livePerson || person }
     );
     closePaymentMethodEditModal();
     showToast('Tipo de abono actualizado.');
@@ -5509,8 +5638,41 @@ const App = () => {
           registeredCost: nextRegisteredCost,
           ...debugExtras
         };
-        if (historyChanged) regPayload.paymentHistory = hist;
-        await updateDoc(getDocRef('app_participants', String(personId)), regPayload);
+        const ref = getDocRef('app_participants', String(personId));
+        await runTransaction(db, async (transaction) => {
+          const liveSnap = await transaction.get(ref);
+          if (!liveSnap.exists()) throw new Error('participant-not-found');
+          const txPayload = { ...regPayload };
+          if (historyChanged) {
+            const livePerson = liveSnap.data();
+            const liveHist = [...(livePerson.paymentHistory || [])];
+            const liveFirstPayIdx = liveHist.findIndex((r) => r && r.kind !== 'comment');
+            txPayload.paymentHistory = liveHist.map((row, i) => {
+              if (!row || row.kind === 'comment') return row;
+              let tiedToRegistration = false;
+              if (oldRegIso && row.recordedAt) {
+                if (String(row.recordedAt).trim() === String(oldRegIso).trim()) {
+                  tiedToRegistration = true;
+                } else {
+                  const rowMsFromRec = parseFlexibleInstantMs(row.recordedAt);
+                  if (oldRegMs != null && rowMsFromRec != null && rowMsFromRec === oldRegMs) {
+                    tiedToRegistration = true;
+                  }
+                }
+              }
+              if (!tiedToRegistration && liveFirstPayIdx === i && oldRegMs != null) {
+                const rowMs = getPaymentRowInstantMsPreferRecorded(row);
+                if (rowMs != null && Math.abs(rowMs - oldRegMs) <= 5000) {
+                  tiedToRegistration = true;
+                }
+              }
+              return tiedToRegistration
+                ? { ...row, recordedAt: iso, date: dateStrNew, service: serviceForNewInstant }
+                : row;
+            });
+          }
+          transaction.update(ref, txPayload);
+        });
         addLog(
           'Sistema',
           `${dateEditActor} ajust? la fecha de registro de ${person.name || 'participante'} (sede ${locLabel})${historyChanged ? ' y la marca de tiempo del pago inicial vinculado' : ''}.`,
@@ -5591,7 +5753,24 @@ const App = () => {
           ...(nextRegisteredCost != null ? { registeredCost: nextRegisteredCost } : {}),
           ...debugExtras,
         };
-        await updateDoc(getDocRef('app_participants', String(personId)), payload);
+        const ref = getDocRef('app_participants', String(personId));
+        await runTransaction(db, async (transaction) => {
+          const liveSnap = await transaction.get(ref);
+          if (!liveSnap.exists()) throw new Error('participant-not-found');
+          const livePerson = liveSnap.data();
+          const liveHist = [...(livePerson.paymentHistory || [])];
+          if (idx == null || idx < 0 || idx >= liveHist.length) throw new Error('payment-row-missing');
+          const liveRow = liveHist[idx];
+          if (superDateEditModal.paymentId != null && String(liveRow.id) !== String(superDateEditModal.paymentId)) {
+            throw new Error('payment-history-changed');
+          }
+          if (liveRow.kind === 'comment') throw new Error('payment-row-not-editable');
+          liveHist[idx] = { ...liveRow, recordedAt: iso, date: d.toLocaleString('es-MX'), service: serviceForPayment };
+          transaction.update(ref, {
+            ...payload,
+            paymentHistory: liveHist,
+          });
+        });
         addLog(
           'Sistema',
           `${dateEditActor} ajust? la fecha de un movimiento en el historial de pagos de ${person.name || 'participante'} (sede ${locLabel}).`,
@@ -10218,8 +10397,6 @@ const App = () => {
                       setFilterPaymentType('all');
                       setFilterTravelFrom('all');
                       setFilterTravelTo('all');
-                      setFilterPastorChild('all');
-                      setFilterWithoutPay('all');
                       setFilterFirstTimeId('all');
                       setFilterPendingRefund('all');
                       setFilterAssignment('all');
@@ -10332,7 +10509,6 @@ const App = () => {
                   const isBecado = isCampa && isSiValue(person.isScholarship);
                   const listPrice = resolveRegisteredCost(person, currentPricing);
                   const liquidationTarget = getLiquidationTarget(person);
-                  const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
                   const payHistory = person.paymentHistory || [];
 
                   return (
@@ -10997,8 +11173,6 @@ const App = () => {
                         setFilterPaymentType('all');
                         setFilterTravelFrom('all');
                         setFilterTravelTo('all');
-                        setFilterPastorChild('all');
-                        setFilterWithoutPay('all');
                         setFilterFirstTimeId('all');
                         setFilterPendingRefund('all');
                         setFilterAssignment('all');
