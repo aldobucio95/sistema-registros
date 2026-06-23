@@ -2150,6 +2150,16 @@ const App = () => {
     await setDoc(getDocRef('app_logs', String(newLogId)), newLog);
   }, [currentUser, currentEvent, globalConfig]);
 
+  const syncAuthAccessProfile = useCallback(async (profile) => {
+    if (!auth.currentUser?.uid || !profile?.id) return;
+    await setDoc(getDocRef('app_user_access', auth.currentUser.uid), {
+      uid: auth.currentUser.uid,
+      userId: String(profile.id),
+      authEmail: auth.currentUser.email || profile.authEmail || usernameToAuthEmail(profile.username),
+      updatedAt: Date.now(),
+    });
+  }, []);
+
   useEffect(() => {
     if (!fbUser?.uid || !fbUser.email) return;
     const pending = users.find(
@@ -2177,6 +2187,7 @@ const App = () => {
     let cancelled = false;
     (async () => {
       const tabSessionId = getTabSessionId();
+      await syncAuthAccessProfile(profile);
       if (profile.role !== 'SuperUsuario') {
         const others = await countOtherActiveSessions(profile.id, tabSessionId);
         if (cancelled) return;
@@ -2219,7 +2230,7 @@ const App = () => {
     return () => {
       cancelled = true;
     };
-  }, [fbUser, currentUser, users, usersAuthReady, addLog, getUserAllowedEventIds, getUserAllowedLocations]);
+  }, [fbUser, currentUser, users, usersAuthReady, addLog, getUserAllowedEventIds, getUserAllowedLocations, syncAuthAccessProfile]);
 
   useEffect(() => {
     if (!fbUser || !usersAuthReady || loginInProgressRef.current || currentUser) return;
@@ -2892,6 +2903,7 @@ const App = () => {
         user = { ...user, authUid: auth.currentUser.uid, authEmail: resolvedEmail };
         delete user.password;
       }
+      await syncAuthAccessProfile(user);
       if (user.role !== 'SuperUsuario') {
         const others = await countOtherActiveSessions(user.id, tabSessionId);
         if (others > 0) {
@@ -3460,8 +3472,19 @@ const App = () => {
 
     try {
       await setDoc(getDocRef('app_users', newId), userToSave);
+      await setDoc(getDocRef('app_user_access', cred.user.uid), {
+        uid: cred.user.uid,
+        userId: newId,
+        authEmail,
+        updatedAt: Date.now(),
+      });
     } catch (err) {
       console.error(err);
+      try {
+        await deleteDoc(getDocRef('app_users', newId));
+      } catch (profileDelErr) {
+        console.error(profileDelErr);
+      }
       try {
         await deleteUser(cred.user);
       } catch (delErr) {

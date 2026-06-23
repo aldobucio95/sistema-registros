@@ -2,8 +2,319 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /artifacts/{appId}/public/data/{collection}/{docId} {
-      allow read, write: if request.auth != null;
+    match /artifacts/{appId}/public/data {
+      function isSignedIn() {
+        return request.auth != null;
+      }
+
+      function userPath(userId) {
+        return /databases/$(database)/documents/artifacts/$(appId)/public/data/app_users/$(userId);
+      }
+
+      function accessPath() {
+        return /databases/$(database)/documents/artifacts/$(appId)/public/data/app_user_access/$(request.auth.uid);
+      }
+
+      function accessDoc() {
+        return get(accessPath()).data;
+      }
+
+      function currentUserId() {
+        return accessDoc().userId;
+      }
+
+      function currentUserData() {
+        return get(userPath(currentUserId())).data;
+      }
+
+      function userMatchesUidOrEmail(userId, uid, email) {
+        return exists(userPath(userId)) &&
+          (
+            (
+              'authUid' in get(userPath(userId)).data &&
+              get(userPath(userId)).data.authUid == uid
+            ) ||
+            (
+              email is string &&
+              'authEmail' in get(userPath(userId)).data &&
+              get(userPath(userId)).data.authEmail == email
+            )
+          );
+      }
+
+      function userMatchesCurrentAuth(userId) {
+        return userMatchesUidOrEmail(userId, request.auth.uid, request.auth.token.email);
+      }
+
+      function isKnownUser() {
+        return isSignedIn() &&
+          exists(accessPath()) &&
+          accessDoc().uid == request.auth.uid &&
+          accessDoc().userId is string &&
+          userMatchesCurrentAuth(currentUserId());
+      }
+
+      function hasRole(roles) {
+        return isKnownUser() && currentUserData().role in roles;
+      }
+
+      function isSuperUser() {
+        return hasRole(['SuperUsuario']);
+      }
+
+      function isAdmin() {
+        return hasRole(['Administrador']);
+      }
+
+      function hasAdminRights() {
+        return hasRole(['Administrador', 'SuperUsuario']);
+      }
+
+      function canEditCoreData() {
+        return hasRole(['Editor', 'Administrador', 'SuperUsuario']);
+      }
+
+      function canAccessExpenses() {
+        return isSuperUser() ||
+          (hasAdminRights() &&
+            'canViewExpenses' in currentUserData() &&
+            currentUserData().canViewExpenses == true);
+      }
+
+      function validAccessDataForUid(uid) {
+        return isSignedIn() &&
+          request.resource.data.keys().hasOnly(['uid', 'userId', 'authEmail', 'updatedAt']) &&
+          request.resource.data.uid == uid &&
+          request.resource.data.userId is string &&
+          request.resource.data.userId.size() > 0 &&
+          request.resource.data.userId.size() <= 128 &&
+          userMatchesUidOrEmail(
+            request.resource.data.userId,
+            uid,
+            request.resource.data.authEmail
+          );
+      }
+
+      function canWriteAccessDoc(uid) {
+        return isSignedIn() && (
+          (
+            uid == request.auth.uid &&
+            validAccessDataForUid(uid) &&
+            request.resource.data.authEmail == request.auth.token.email
+          ) ||
+          (hasAdminRights() && validAccessDataForUid(uid))
+        );
+      }
+
+      function isSelfUserDoc(userId) {
+        return isKnownUser() && currentUserId() == userId;
+      }
+
+      function isSelfProfileUpdate(userId) {
+        return isSelfUserDoc(userId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'isOnline',
+            'hideMyExpenseConcepts',
+            'username',
+            'password'
+          ]);
+      }
+
+      function isLegacyAuthLink(userId) {
+        return isSignedIn() &&
+          userMatchesCurrentAuth(userId) &&
+          !('authUid' in resource.data) &&
+          request.resource.data.authUid == request.auth.uid &&
+          request.resource.data.authEmail == request.auth.token.email &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'authUid',
+            'authEmail',
+            'password'
+          ]);
+      }
+
+      function adminCanCreateUser() {
+        return isSuperUser() ||
+          (isAdmin() && request.resource.data.role != 'SuperUsuario');
+      }
+
+      function adminCanUpdateUser() {
+        return isSuperUser() ||
+          (
+            isAdmin() &&
+            resource.data.role != 'SuperUsuario' &&
+            request.resource.data.role != 'SuperUsuario' &&
+            !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+              'canViewFinances',
+              'canViewHiddenDonations',
+              'canViewExpenses',
+              'allowedEventIds',
+              'allowedLocations',
+              'restrictedEventId',
+              'restrictedLocation',
+              'canEditRegistryDates'
+            ])
+          );
+      }
+
+      function adminCanDeleteUser() {
+        return isSuperUser() ||
+          (isAdmin() && resource.data.role != 'SuperUsuario');
+      }
+
+      function hasNoEventRestriction() {
+        return (
+          !('allowedEventIds' in currentUserData()) ||
+          !(currentUserData().allowedEventIds is list) ||
+          currentUserData().allowedEventIds.size() == 0
+        ) && (
+          !('restrictedEventId' in currentUserData()) ||
+          currentUserData().restrictedEventId == ''
+        );
+      }
+
+      function canUseEvent(eventId) {
+        return hasAdminRights() ||
+          (
+            eventId is string &&
+            (
+              hasNoEventRestriction() ||
+              (
+                'allowedEventIds' in currentUserData() &&
+                currentUserData().allowedEventIds is list &&
+                eventId in currentUserData().allowedEventIds
+              ) ||
+              (
+                'restrictedEventId' in currentUserData() &&
+                currentUserData().restrictedEventId == eventId
+              )
+            )
+          );
+      }
+
+      function hasNoLocationRestriction() {
+        return (
+          !('allowedLocations' in currentUserData()) ||
+          !(currentUserData().allowedLocations is list) ||
+          currentUserData().allowedLocations.size() == 0
+        ) && (
+          !('restrictedLocation' in currentUserData()) ||
+          currentUserData().restrictedLocation == ''
+        );
+      }
+
+      function canUseLocation(location) {
+        return hasAdminRights() ||
+          (
+            location is string &&
+            (
+              hasNoLocationRestriction() ||
+              (
+                'allowedLocations' in currentUserData() &&
+                currentUserData().allowedLocations is list &&
+                location in currentUserData().allowedLocations
+              ) ||
+              (
+                'restrictedLocation' in currentUserData() &&
+                currentUserData().restrictedLocation == location
+              )
+            )
+          );
+      }
+
+      function canWriteScopedEventLocationDoc(data) {
+        return canEditCoreData() &&
+          canUseEvent(data.eventId) &&
+          canUseLocation(data.location);
+      }
+
+      function canWriteArchivedProfileDoc(data) {
+        return canEditCoreData() &&
+          canUseEvent(data.eventId) &&
+          canUseLocation(data.archivedFromLocation);
+      }
+
+      function canWriteSessionFor(userId) {
+        return isKnownUser() && currentUserId() == userId;
+      }
+
+      match /app_user_access/{uid} {
+        allow read: if isSignedIn() && (uid == request.auth.uid || hasAdminRights());
+        allow create, update: if canWriteAccessDoc(uid);
+        allow delete: if hasAdminRights();
+      }
+
+      match /app_users/{userId} {
+        allow read: if isSignedIn();
+        allow create: if adminCanCreateUser();
+        allow update: if adminCanUpdateUser() ||
+          isSelfProfileUpdate(userId) ||
+          isLegacyAuthLink(userId);
+        allow delete: if adminCanDeleteUser();
+      }
+
+      match /app_sessions/{sessionId} {
+        allow read: if hasAdminRights() ||
+          (isSignedIn() && canWriteSessionFor(resource.data.userId));
+        allow create: if isSignedIn() &&
+          canWriteSessionFor(request.resource.data.userId);
+        allow update: if isSignedIn() &&
+          canWriteSessionFor(resource.data.userId) &&
+          request.resource.data.userId == resource.data.userId;
+        allow delete: if hasAdminRights() ||
+          (isSignedIn() && canWriteSessionFor(resource.data.userId));
+      }
+
+      match /app_data/{docId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && docId == 'config';
+        allow update, delete: if hasAdminRights();
+      }
+
+      match /app_events/{eventId} {
+        allow read: if isSignedIn();
+        allow create: if hasAdminRights() ||
+          (isSignedIn() && eventId in ['evt_campa', 'evt_alducin']);
+        allow update, delete: if hasAdminRights();
+      }
+
+      match /app_participants/{participantId} {
+        allow read: if isSignedIn();
+        allow create: if canWriteScopedEventLocationDoc(request.resource.data);
+        allow update: if canWriteScopedEventLocationDoc(resource.data) &&
+          canWriteScopedEventLocationDoc(request.resource.data);
+        allow delete: if hasAdminRights();
+      }
+
+      match /app_archived_profiles/{profileId} {
+        allow read: if isSignedIn();
+        allow create, update: if canWriteArchivedProfileDoc(request.resource.data);
+        allow delete: if hasAdminRights();
+      }
+
+      match /app_donations/{donationId} {
+        allow read: if isSignedIn();
+        allow write: if hasAdminRights();
+      }
+
+      match /app_expenses/{expenseId} {
+        allow read: if isSignedIn();
+        allow write: if canAccessExpenses();
+      }
+
+      match /app_backups/{backupId} {
+        allow read, write: if hasAdminRights();
+      }
+
+      match /app_logs/{logId} {
+        allow read: if isSignedIn();
+        allow create: if isKnownUser();
+        allow update, delete: if hasAdminRights();
+      }
+
+      match /{document=**} {
+        allow read, write: if false;
+      }
     }
   }
 }
