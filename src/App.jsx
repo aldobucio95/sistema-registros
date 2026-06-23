@@ -621,7 +621,7 @@ const normalizeIdText = (txt) =>
     // ?/? no se separan en NFD; unificar a N para el algoritmo (solo A?Z en el ID).
     .replace(/\u00f1/gi, 'n')
     // ? ? SS al pasar a may?sculas
-    .replace(/?/g, 'ss')
+    .replace(/\u00df/g, 'ss')
     .toUpperCase();
 
 /** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A?Z0?9). */
@@ -2150,6 +2150,16 @@ const App = () => {
     await setDoc(getDocRef('app_logs', String(newLogId)), newLog);
   }, [currentUser, currentEvent, globalConfig]);
 
+  const syncAuthAccessProfile = useCallback(async (profile) => {
+    if (!auth.currentUser?.uid || !profile?.id) return;
+    await setDoc(getDocRef('app_user_access', auth.currentUser.uid), {
+      uid: auth.currentUser.uid,
+      userId: String(profile.id),
+      authEmail: auth.currentUser.email || profile.authEmail || usernameToAuthEmail(profile.username),
+      updatedAt: Date.now(),
+    });
+  }, []);
+
   useEffect(() => {
     if (!fbUser?.uid || !fbUser.email) return;
     const pending = users.find(
@@ -2177,6 +2187,7 @@ const App = () => {
     let cancelled = false;
     (async () => {
       const tabSessionId = getTabSessionId();
+      await syncAuthAccessProfile(profile);
       if (profile.role !== 'SuperUsuario') {
         const others = await countOtherActiveSessions(profile.id, tabSessionId);
         if (cancelled) return;
@@ -2219,7 +2230,7 @@ const App = () => {
     return () => {
       cancelled = true;
     };
-  }, [fbUser, currentUser, users, usersAuthReady, addLog, getUserAllowedEventIds, getUserAllowedLocations]);
+  }, [fbUser, currentUser, users, usersAuthReady, addLog, getUserAllowedEventIds, getUserAllowedLocations, syncAuthAccessProfile]);
 
   useEffect(() => {
     if (!fbUser || !usersAuthReady || loginInProgressRef.current || currentUser) return;
@@ -2371,7 +2382,6 @@ const App = () => {
           const paidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGross;
           const isBecado = isSiValue(person.isScholarship);
           const isCancelled = participantIsCancelled(person);
-          const baseCost = resolveRegisteredCost(person, currentPricing);
           const liqTarget = getLiquidationTarget(person);
 
           if (!isCancelled) {
@@ -2892,6 +2902,7 @@ const App = () => {
         user = { ...user, authUid: auth.currentUser.uid, authEmail: resolvedEmail };
         delete user.password;
       }
+      await syncAuthAccessProfile(user);
       if (user.role !== 'SuperUsuario') {
         const others = await countOtherActiveSessions(user.id, tabSessionId);
         if (others > 0) {
@@ -3460,8 +3471,19 @@ const App = () => {
 
     try {
       await setDoc(getDocRef('app_users', newId), userToSave);
+      await setDoc(getDocRef('app_user_access', cred.user.uid), {
+        uid: cred.user.uid,
+        userId: newId,
+        authEmail,
+        updatedAt: Date.now(),
+      });
     } catch (err) {
       console.error(err);
+      try {
+        await deleteDoc(getDocRef('app_users', newId));
+      } catch (profileDelErr) {
+        console.error(profileDelErr);
+      }
       try {
         await deleteUser(cred.user);
       } catch (delErr) {
@@ -10218,8 +10240,6 @@ const App = () => {
                       setFilterPaymentType('all');
                       setFilterTravelFrom('all');
                       setFilterTravelTo('all');
-                      setFilterPastorChild('all');
-                      setFilterWithoutPay('all');
                       setFilterFirstTimeId('all');
                       setFilterPendingRefund('all');
                       setFilterAssignment('all');
@@ -10332,7 +10352,6 @@ const App = () => {
                   const isBecado = isCampa && isSiValue(person.isScholarship);
                   const listPrice = resolveRegisteredCost(person, currentPricing);
                   const liquidationTarget = getLiquidationTarget(person);
-                  const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
                   const payHistory = person.paymentHistory || [];
 
                   return (
@@ -10997,8 +11016,6 @@ const App = () => {
                         setFilterPaymentType('all');
                         setFilterTravelFrom('all');
                         setFilterTravelTo('all');
-                        setFilterPastorChild('all');
-                        setFilterWithoutPay('all');
                         setFilterFirstTimeId('all');
                         setFilterPendingRefund('all');
                         setFilterAssignment('all');
