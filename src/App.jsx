@@ -11,7 +11,7 @@ import {
 
 /* global __app_id, __initial_auth_token */
 
-import { app, secondaryApp, usernameToAuthEmail, loginIdentifierToAuthEmail, AUTH_EMAIL_DOMAIN, buildUsernameCandidates } from './firebaseConfig.js';
+import { app, secondaryApp, usernameToAuthEmail, loginIdentifierToAuthEmail, AUTH_EMAIL_DOMAIN } from './firebaseConfig.js';
 import {
   getAuth,
   signInWithCustomToken,
@@ -33,6 +33,31 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 const getColRef = (colName) => collection(db, 'artifacts', appId, 'public', 'data', colName);
 const getDocRef = (colName, docId) => doc(db, 'artifacts', appId, 'public', 'data', colName, docId);
+
+const buildUserAccessPayload = (profile, authUser) => ({
+  userId: String(profile.id),
+  authUid: authUser.uid,
+  authEmail: authUser.email || profile.authEmail || '',
+  username: profile.username || '',
+  role: profile.role || '',
+  updatedAt: Date.now(),
+});
+
+const ensureUserAccessMapping = async (profile, authUser) => {
+  if (!profile?.id || !authUser?.uid) return;
+  await setDoc(getDocRef('app_user_access', authUser.uid), buildUserAccessPayload(profile, authUser));
+};
+
+const fetchProfileForAuthUser = async (authUser) => {
+  if (!authUser?.uid) return null;
+  let qSnap = await getDocs(query(getColRef('app_users'), where('authUid', '==', authUser.uid)));
+  if (!qSnap.empty) return qSnap.docs[0];
+
+  const email = String(authUser.email || '').toLowerCase();
+  if (!email) return null;
+  qSnap = await getDocs(query(getColRef('app_users'), where('authEmail', '==', email)));
+  return qSnap.empty ? null : qSnap.docs[0];
+};
 
 /** Ventana para considerar una sesi?n ?activa? (debe ser > intervalo de heartbeat). */
 const SESSION_TTL_MS = 45000;
@@ -620,8 +645,8 @@ const normalizeIdText = (txt) =>
     .replace(/[\u0300-\u036f]/g, '')
     // ?/? no se separan en NFD; unificar a N para el algoritmo (solo A?Z en el ID).
     .replace(/\u00f1/gi, 'n')
-    // ? ? SS al pasar a may?sculas
-    .replace(/?/g, 'ss')
+    // Sharp-s becomes SS when uppercased; normalize it explicitly first.
+    .replace(/\u00df/g, 'ss')
     .toUpperCase();
 
 /** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A?Z0?9). */
@@ -812,7 +837,7 @@ const App = () => {
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [usersAuthReady, setUsersAuthReady] = useState(false);
-  const [firestoreUsersError, setFirestoreUsersError] = useState(null);
+  const [, setFirestoreUsersError] = useState(null);
   const [loginBusy, setLoginBusy] = useState(false);
   const loginInProgressRef = useRef(false);
   const rosterSectionsPrefsLoadedRef = useRef('');
@@ -1946,7 +1971,7 @@ const App = () => {
   }, [fbUser]);
 
   useEffect(() => {
-    if (!fbUser) return;
+    if (!currentUser?.id) return;
     const unsubConfig = onSnapshot(getDocRef('app_data', 'config'), (docSnap) => {
       if (docSnap.exists()) {
         setGlobalLocations(docSnap.data().locations || defaultLocations);
@@ -2030,7 +2055,7 @@ const App = () => {
     }, console.error);
 
     return () => { unsubConfig(); unsubEvents(); unsubUsers(); unsubLogs(); unsubParticipants(); unsubDonations(); unsubExpenses(); };
-  }, [fbUser]);
+  }, [currentUser?.id]);
 
   const data = useMemo(() => {
     if (!currentEvent) return {};
@@ -2151,31 +2176,37 @@ const App = () => {
   }, [currentUser, currentEvent, globalConfig]);
 
   useEffect(() => {
-    if (!fbUser?.uid || !fbUser.email) return;
-    const pending = users.find(
-      (u) =>
-        !u.authUid &&
-        (u.authEmail === fbUser.email || usernameToAuthEmail(u.username) === fbUser.email)
-    );
-    if (!pending) return;
-    updateDoc(getDocRef('app_users', String(pending.id)), {
-      authUid: fbUser.uid,
-      authEmail: fbUser.email,
-    }).catch(console.error);
-  }, [fbUser, users]);
-
-  useEffect(() => {
     if (!fbUser || currentUser || loginInProgressRef.current) return;
-    if (!usersAuthReady) return;
-    const profile =
-      users.find((u) => String(u.authUid) === String(fbUser.uid)) ||
-      users.find(
-        (u) => String(u.authEmail || '').toLowerCase() === String(fbUser.email || '').toLowerCase()
-      ) ||
-      users.find((u) => usernameToAuthEmail(u.username) === fbUser.email);
-    if (!profile) return;
     let cancelled = false;
     (async () => {
+      let docSnap = null;
+      try {
+        docSnap = await fetchProfileForAuthUser(fbUser);
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) {
+          await signOut(auth).catch(() => {});
+          setLoginError('No se pudo validar tu perfil de acceso. Revisa conexi?n o permisos.');
+        }
+        return;
+      }
+      if (cancelled) return;
+      if (!docSnap) {
+        await signOut(auth).catch(() => {});
+        setLoginError('Tu cuenta no tiene perfil en la aplicaci?n. Contacta al administrador.');
+        return;
+      }
+      let profile = { id: docSnap.id, ...docSnap.data() };
+      if (!profile.authUid) {
+        await updateDoc(getDocRef('app_users', docSnap.id), {
+          authUid: fbUser.uid,
+          authEmail: fbUser.email,
+          password: deleteField(),
+        });
+        profile = { ...profile, authUid: fbUser.uid, authEmail: fbUser.email };
+        delete profile.password;
+      }
+      await ensureUserAccessMapping(profile, fbUser);
       const tabSessionId = getTabSessionId();
       if (profile.role !== 'SuperUsuario') {
         const others = await countOtherActiveSessions(profile.id, tabSessionId);
@@ -2219,25 +2250,7 @@ const App = () => {
     return () => {
       cancelled = true;
     };
-  }, [fbUser, currentUser, users, usersAuthReady, addLog, getUserAllowedEventIds, getUserAllowedLocations]);
-
-  useEffect(() => {
-    if (!fbUser || !usersAuthReady || loginInProgressRef.current || currentUser) return;
-    if (firestoreUsersError) {
-      signOut(auth).catch(() => {});
-      setLoginError(firestoreUsersError);
-      return;
-    }
-    const profile =
-      users.find((u) => String(u.authUid) === String(fbUser.uid)) ||
-      users.find(
-        (u) => String(u.authEmail || '').toLowerCase() === String(fbUser.email || '').toLowerCase()
-      ) ||
-      users.find((u) => usernameToAuthEmail(u.username) === fbUser.email);
-    if (profile) return;
-    signOut(auth).catch(() => {});
-    setLoginError('Tu cuenta no tiene perfil en la aplicaci?n. Contacta al administrador.');
-  }, [fbUser, usersAuthReady, users, currentUser, firestoreUsersError]);
+  }, [fbUser, currentUser, addLog, getUserAllowedEventIds, getUserAllowedLocations]);
 
   const handleSavePanelNavConfig = useCallback(async () => {
     if (!isSuperUser) return;
@@ -2371,7 +2384,6 @@ const App = () => {
           const paidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGross;
           const isBecado = isSiValue(person.isScholarship);
           const isCancelled = participantIsCancelled(person);
-          const baseCost = resolveRegisteredCost(person, currentPricing);
           const liqTarget = getLiquidationTarget(person);
 
           if (!isCancelled) {
@@ -2851,30 +2863,7 @@ const App = () => {
     const resolvedEmail = auth.currentUser?.email || email;
     const tabSessionId = getTabSessionId();
     try {
-      let docSnap = null;
-      let qSnap = await getDocs(query(getColRef('app_users'), where('authUid', '==', auth.currentUser.uid)));
-      if (!qSnap.empty) docSnap = qSnap.docs[0];
-      if (!docSnap) {
-        qSnap = await getDocs(query(getColRef('app_users'), where('authEmail', '==', resolvedEmail)));
-        if (!qSnap.empty) docSnap = qSnap.docs[0];
-      }
-      if (!docSnap) {
-        const nameHint = trimUser.includes('@') ? trimUser.split('@')[0] : trimUser;
-        const variants = buildUsernameCandidates(nameHint);
-        if (variants.length) {
-          qSnap = await getDocs(query(getColRef('app_users'), where('username', 'in', variants)));
-          if (!qSnap.empty) docSnap = qSnap.docs[0];
-        }
-      }
-      if (!docSnap) {
-        const all = await getDocs(getColRef('app_users'));
-        const nameHint = trimUser.includes('@') ? trimUser.split('@')[0] : trimUser;
-        const lower = nameHint.toLowerCase();
-        docSnap = all.docs.find((d) => {
-          const u = d.data()?.username;
-          return u != null && String(u).trim().toLowerCase() === lower;
-        }) || null;
-      }
+      const docSnap = await fetchProfileForAuthUser(auth.currentUser);
       if (!docSnap) {
         await signOut(auth);
         setLoginError('Tu cuenta no tiene perfil en la aplicaci?n. Contacta al administrador.');
@@ -2892,6 +2881,7 @@ const App = () => {
         user = { ...user, authUid: auth.currentUser.uid, authEmail: resolvedEmail };
         delete user.password;
       }
+      await ensureUserAccessMapping(user, auth.currentUser);
       if (user.role !== 'SuperUsuario') {
         const others = await countOtherActiveSessions(user.id, tabSessionId);
         if (others > 0) {
@@ -3460,15 +3450,18 @@ const App = () => {
 
     try {
       await setDoc(getDocRef('app_users', newId), userToSave);
+      await setDoc(getDocRef('app_user_access', cred.user.uid), buildUserAccessPayload(userToSave, cred.user));
     } catch (err) {
       console.error(err);
+      await deleteDoc(getDocRef('app_user_access', cred.user.uid)).catch(() => {});
+      await deleteDoc(getDocRef('app_users', newId)).catch(() => {});
       try {
         await deleteUser(cred.user);
       } catch (delErr) {
         console.error(delErr);
       }
       await signOut(secondaryAuth).catch(() => {});
-      showToast('No se pudo guardar el perfil en la base de datos. La cuenta de acceso se ha revertido.');
+      showToast('No se pudo guardar el perfil de acceso en la base de datos. La cuenta se ha revertido.');
       return;
     }
     await signOut(secondaryAuth).catch(() => {});
@@ -3583,6 +3576,23 @@ const App = () => {
       hideMyExpenseConcepts: newHideMyExpenseConcepts,
       canEditRegistryDates: newCanEditRegistryDates
     });
+
+    if (originalUser.authUid) {
+      await setDoc(
+        getDocRef('app_user_access', String(originalUser.authUid)),
+        buildUserAccessPayload(
+          {
+            ...originalUser,
+            id: editingUser.id,
+            username: targetUsername,
+            role: nextRole,
+            authUid: originalUser.authUid,
+            authEmail: originalUser.authEmail,
+          },
+          { uid: originalUser.authUid, email: originalUser.authEmail }
+        )
+      );
+    }
     
     if (currentUser.id === editingUser.id) {
       setCurrentUser({
@@ -3618,6 +3628,9 @@ const App = () => {
     }
 
     await deleteDoc(getDocRef('app_users', String(id)));
+    if (userToDelete?.authUid) {
+      await deleteDoc(getDocRef('app_user_access', String(userToDelete.authUid))).catch(console.error);
+    }
     addLog('Gesti?n de Usuarios', `Elimin? al usuario: ${username}`);
     showToast("Usuario eliminado.");
   };
@@ -10218,8 +10231,6 @@ const App = () => {
                       setFilterPaymentType('all');
                       setFilterTravelFrom('all');
                       setFilterTravelTo('all');
-                      setFilterPastorChild('all');
-                      setFilterWithoutPay('all');
                       setFilterFirstTimeId('all');
                       setFilterPendingRefund('all');
                       setFilterAssignment('all');
@@ -10332,7 +10343,6 @@ const App = () => {
                   const isBecado = isCampa && isSiValue(person.isScholarship);
                   const listPrice = resolveRegisteredCost(person, currentPricing);
                   const liquidationTarget = getLiquidationTarget(person);
-                  const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
                   const payHistory = person.paymentHistory || [];
 
                   return (
@@ -10997,8 +11007,6 @@ const App = () => {
                         setFilterPaymentType('all');
                         setFilterTravelFrom('all');
                         setFilterTravelTo('all');
-                        setFilterPastorChild('all');
-                        setFilterWithoutPay('all');
                         setFilterFirstTimeId('all');
                         setFilterPendingRefund('all');
                         setFilterAssignment('all');

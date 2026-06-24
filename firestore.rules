@@ -2,8 +2,199 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function profilePath(appId, userId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/app_users/$(userId);
+    }
+
+    function accessPath(appId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/app_user_access/$(request.auth.uid);
+    }
+
+    function hasAccessIndex(appId) {
+      return signedIn() && exists(accessPath(appId));
+    }
+
+    function accessUserId(appId) {
+      return get(accessPath(appId)).data.userId;
+    }
+
+    function hasSignedInProfile(appId) {
+      return hasAccessIndex(appId)
+        && exists(profilePath(appId, accessUserId(appId)))
+        && get(profilePath(appId, accessUserId(appId))).data.authUid == request.auth.uid;
+    }
+
+    function signedInProfile(appId) {
+      return get(profilePath(appId, accessUserId(appId))).data;
+    }
+
+    function signedInRole(appId) {
+      return signedInProfile(appId).role;
+    }
+
+    function isSuperUser(appId) {
+      return hasSignedInProfile(appId) && signedInRole(appId) == 'SuperUsuario';
+    }
+
+    function hasAdminRights(appId) {
+      return hasSignedInProfile(appId) && signedInRole(appId) in ['Administrador', 'SuperUsuario'];
+    }
+
+    function canWriteOperationalData(appId) {
+      return hasSignedInProfile(appId) && signedInRole(appId) in ['Editor', 'Administrador', 'SuperUsuario'];
+    }
+
+    function canWriteExpenses(appId) {
+      return hasSignedInProfile(appId)
+        && (signedInRole(appId) == 'SuperUsuario'
+          || (signedInRole(appId) == 'Administrador' && signedInProfile(appId).canViewExpenses == true));
+    }
+
+    function isOwnProfileDoc(appId) {
+      return signedIn()
+        && (resource.data.authUid == request.auth.uid
+          || (request.auth.token.email != null && resource.data.authEmail == request.auth.token.email));
+    }
+
+    function isUnlinkedProfile() {
+      return !resource.data.keys().hasAny(['authUid']) || resource.data.authUid == null || resource.data.authUid == '';
+    }
+
+    function isLegacyAuthLink() {
+      return signedIn()
+        && isUnlinkedProfile()
+        && request.auth.token.email != null
+        && resource.data.authEmail == request.auth.token.email
+        && request.resource.data.authUid == request.auth.uid
+        && request.resource.data.authEmail == request.auth.token.email
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authUid', 'authEmail', 'password']);
+    }
+
+    function isOwnProfileUpdate(appId, userId) {
+      return hasSignedInProfile(appId)
+        && accessUserId(appId) == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isOnline', 'hideMyExpenseConcepts']);
+    }
+
+    function adminCanWriteUser(appId) {
+      return isSuperUser(appId)
+        || (hasAdminRights(appId)
+          && resource.data.role != 'SuperUsuario'
+          && request.resource.data.role != 'SuperUsuario');
+    }
+
+    function adminCanCreateUser(appId) {
+      return isSuperUser(appId)
+        || (hasAdminRights(appId) && request.resource.data.role != 'SuperUsuario');
+    }
+
+    function adminCanDeleteUser(appId) {
+      return isSuperUser(appId)
+        || (hasAdminRights(appId) && resource.data.role != 'SuperUsuario');
+    }
+
+    function validOwnAccessPayload(appId, authUid) {
+      return signedIn()
+        && authUid == request.auth.uid
+        && request.resource.data.authUid == request.auth.uid
+        && request.resource.data.userId is string
+        && exists(profilePath(appId, request.resource.data.userId))
+        && get(profilePath(appId, request.resource.data.userId)).data.authUid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['userId', 'authUid', 'authEmail', 'username', 'role', 'updatedAt']);
+    }
+
+    function isOwnSessionCreate(appId) {
+      return hasSignedInProfile(appId)
+        && request.resource.data.userId == accessUserId(appId)
+        && request.resource.data.keys().hasAll(['userId', 'sessionId', 'username', 'lastHeartbeat', 'createdAt']);
+    }
+
+    function isOwnSessionUpdate(appId) {
+      return hasSignedInProfile(appId)
+        && resource.data.userId == accessUserId(appId)
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.sessionId == resource.data.sessionId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastHeartbeat']);
+    }
+
+    function isOwnSessionDelete(appId) {
+      return hasSignedInProfile(appId) && resource.data.userId == accessUserId(appId);
+    }
+
+    function isOwnLogCreate(appId) {
+      return hasSignedInProfile(appId)
+        && request.resource.data.username == signedInProfile(appId).username;
+    }
+
+    match /artifacts/{appId}/public/data/app_user_access/{authUid} {
+      allow read: if signedIn() && (authUid == request.auth.uid || hasAdminRights(appId));
+      allow create, update: if validOwnAccessPayload(appId, authUid) || hasAdminRights(appId);
+      allow delete: if hasAdminRights(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_users/{userId} {
+      allow read: if isOwnProfileDoc(appId) || hasSignedInProfile(appId);
+      allow create: if adminCanCreateUser(appId);
+      allow update: if isLegacyAuthLink()
+        || isOwnProfileUpdate(appId, userId)
+        || adminCanWriteUser(appId);
+      allow delete: if adminCanDeleteUser(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_sessions/{sessionId} {
+      allow read: if hasSignedInProfile(appId);
+      allow create: if isOwnSessionCreate(appId) || hasAdminRights(appId);
+      allow update: if isOwnSessionUpdate(appId) || hasAdminRights(appId);
+      allow delete: if isOwnSessionDelete(appId) || hasAdminRights(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_logs/{logId} {
+      allow read: if hasSignedInProfile(appId);
+      allow create: if isOwnLogCreate(appId) || hasAdminRights(appId);
+      allow update, delete: if isSuperUser(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_data/{docId} {
+      allow read: if hasSignedInProfile(appId);
+      allow write: if hasAdminRights(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_events/{eventId} {
+      allow read: if hasSignedInProfile(appId);
+      allow write: if hasAdminRights(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_participants/{participantId} {
+      allow read: if hasSignedInProfile(appId);
+      allow write: if canWriteOperationalData(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_participant_archive/{archiveId} {
+      allow read: if hasSignedInProfile(appId);
+      allow write: if canWriteOperationalData(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_donations/{donationId} {
+      allow read: if hasSignedInProfile(appId);
+      allow write: if hasAdminRights(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_expenses/{expenseId} {
+      allow read: if hasSignedInProfile(appId);
+      allow write: if canWriteExpenses(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_backups/{backupId} {
+      allow read, write: if hasAdminRights(appId);
+    }
+
     match /artifacts/{appId}/public/data/{collection}/{docId} {
-      allow read, write: if request.auth != null;
+      allow read: if hasSignedInProfile(appId);
+      allow write: if false;
     }
   }
 }
