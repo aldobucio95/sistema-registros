@@ -2,8 +2,144 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function accessPath(appId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/app_user_access/$(request.auth.uid);
+    }
+
+    function hasAccess(appId) {
+      return signedIn() && exists(accessPath(appId));
+    }
+
+    function accessData(appId) {
+      return get(accessPath(appId)).data;
+    }
+
+    function profilePath(appId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/app_users/$(accessData(appId).userId);
+    }
+
+    function hasProfile(appId) {
+      return hasAccess(appId) && exists(profilePath(appId));
+    }
+
+    function profile(appId) {
+      return get(profilePath(appId)).data;
+    }
+
+    function isAppUser(appId) {
+      return hasProfile(appId) && profile(appId).authUid == request.auth.uid;
+    }
+
+    function role(appId) {
+      return isAppUser(appId) ? profile(appId).role : '';
+    }
+
+    function isSuperUser(appId) {
+      return role(appId) == 'SuperUsuario';
+    }
+
+    function isAdmin(appId) {
+      return role(appId) in ['Administrador', 'SuperUsuario'];
+    }
+
+    function canWriteOperational(appId) {
+      return role(appId) in ['Editor', 'Administrador', 'SuperUsuario'];
+    }
+
+    function canAccessExpenses(appId) {
+      return isSuperUser(appId) || (isAdmin(appId) && profile(appId).canViewExpenses == true);
+    }
+
+    function isSelfAccessDoc(appId, uid) {
+      return signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['userId', 'authUid', 'authEmail', 'username', 'role', 'updatedAt'])
+        && request.resource.data.userId is string
+        && request.resource.data.authUid == request.auth.uid
+        && exists(/databases/$(database)/documents/artifacts/$(appId)/public/data/app_users/$(request.resource.data.userId))
+        && get(/databases/$(database)/documents/artifacts/$(appId)/public/data/app_users/$(request.resource.data.userId)).data.authUid == request.auth.uid;
+    }
+
+    function isSelfLegacyAuthLink(appId) {
+      return signedIn()
+        && resource.data.authEmail == request.auth.token.email
+        && request.resource.data.authUid == request.auth.uid
+        && request.resource.data.authEmail == request.auth.token.email
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authUid', 'authEmail', 'password']);
+    }
+
     match /artifacts/{appId}/public/data/{collection}/{docId} {
-      allow read, write: if request.auth != null;
+      allow read, write: if false;
+    }
+
+    match /artifacts/{appId}/public/data/app_user_access/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin(appId));
+      allow create, update: if isSelfAccessDoc(appId, uid) || isAdmin(appId);
+      allow delete: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_users/{docId} {
+      // Login needs to locate the app profile before app_user_access exists.
+      allow read: if signedIn();
+      allow create: if isAdmin(appId);
+      allow update: if isAdmin(appId) || isSelfLegacyAuthLink(appId);
+      allow delete: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_data/{docId} {
+      allow read: if isAppUser(appId);
+      allow create: if isAppUser(appId);
+      allow update, delete: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_events/{docId} {
+      allow read: if isAppUser(appId);
+      allow write: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_participants/{docId} {
+      allow read: if isAppUser(appId);
+      allow create, update: if canWriteOperational(appId);
+      allow delete: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_logs/{docId} {
+      allow read: if isAppUser(appId);
+      allow create: if isAppUser(appId);
+      allow update: if isAdmin(appId);
+      allow delete: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_sessions/{docId} {
+      allow read: if isSuperUser(appId) || (isAppUser(appId) && resource.data.userId == accessData(appId).userId);
+      allow create: if isAppUser(appId) && request.resource.data.userId == accessData(appId).userId;
+      allow update, delete: if isSuperUser(appId) || (isAppUser(appId) && resource.data.userId == accessData(appId).userId);
+    }
+
+    match /artifacts/{appId}/public/data/app_donations/{docId} {
+      allow read: if isAppUser(appId);
+      allow write: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_expenses/{docId} {
+      allow read: if isAppUser(appId);
+      allow write: if canAccessExpenses(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_backups/{docId} {
+      allow read: if isSuperUser(appId);
+      allow create: if isAdmin(appId);
+      allow update, delete: if isSuperUser(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_archived_profiles/{docId} {
+      allow read: if isAppUser(appId);
+      allow create, update: if canWriteOperational(appId);
+      allow delete: if isAdmin(appId);
     }
   }
 }
