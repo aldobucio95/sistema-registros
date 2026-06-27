@@ -24,7 +24,7 @@ import {
   reauthenticateWithCredential,
   updatePassword,
 } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, getDocs, runTransaction } from 'firebase/firestore';
 
 const auth = getAuth(app);
 const secondaryAuth = getAuth(secondaryApp);
@@ -33,6 +33,20 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 const getColRef = (colName) => collection(db, 'artifacts', appId, 'public', 'data', colName);
 const getDocRef = (colName, docId) => doc(db, 'artifacts', appId, 'public', 'data', colName, docId);
+
+const buildUserAccessDoc = (user) => ({
+  authUid: String(user.authUid || ''),
+  authEmail: String(user.authEmail || ''),
+  userId: String(user.id || ''),
+  username: String(user.username || ''),
+  role: user.role || 'Lector',
+  updatedAt: Date.now(),
+});
+
+const syncUserAccessDoc = async (user) => {
+  if (!user?.authUid || !user?.id) return;
+  await setDoc(getDocRef('app_user_access', String(user.authUid)), buildUserAccessDoc(user), { merge: true });
+};
 
 /** Ventana para considerar una sesi?n ?activa? (debe ser > intervalo de heartbeat). */
 const SESSION_TTL_MS = 45000;
@@ -620,8 +634,8 @@ const normalizeIdText = (txt) =>
     .replace(/[\u0300-\u036f]/g, '')
     // ?/? no se separan en NFD; unificar a N para el algoritmo (solo A?Z en el ID).
     .replace(/\u00f1/gi, 'n')
-    // ? ? SS al pasar a may?sculas
-    .replace(/?/g, 'ss')
+    // German sharp-s maps to SS when uppercased.
+    .replace(/\u00df/g, 'ss')
     .toUpperCase();
 
 /** Normaliza un ID VNPM guardado o pegado (quita acentos en el cuerpo y deja VNPM- + A?Z0?9). */
@@ -1947,6 +1961,35 @@ const App = () => {
 
   useEffect(() => {
     if (!fbUser) return;
+    const unsubUsers = onSnapshot(
+      getColRef('app_users'),
+      (snap) => {
+        setFirestoreUsersError(null);
+        setUsersAuthReady(true);
+        if (!snap.empty) {
+          setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        } else {
+          setUsers([]);
+        }
+      },
+      (err) => {
+        console.error(err);
+        const code = err?.code || '';
+        setFirestoreUsersError(
+          code === 'permission-denied'
+            ? 'Firestore rechaz? la lectura (permiso denegado). Despliega las reglas: firebase deploy (o al menos firestore:rules) y espera un minuto.'
+            : 'No se pudo cargar la lista de usuarios. Revisa conexi?n, que Firestore est? activo y que el proyecto sea registros-vnpm.'
+        );
+        setUsers([]);
+        setUsersAuthReady(true);
+      }
+    );
+
+    return () => { unsubUsers(); };
+  }, [fbUser]);
+
+  useEffect(() => {
+    if (!fbUser || !currentUser?.id) return;
     const unsubConfig = onSnapshot(getDocRef('app_data', 'config'), (docSnap) => {
       if (docSnap.exists()) {
         setGlobalLocations(docSnap.data().locations || defaultLocations);
@@ -1987,30 +2030,6 @@ const App = () => {
       }
     }, console.error);
 
-    const unsubUsers = onSnapshot(
-      getColRef('app_users'),
-      (snap) => {
-        setFirestoreUsersError(null);
-        setUsersAuthReady(true);
-        if (!snap.empty) {
-          setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-        } else {
-          setUsers([]);
-        }
-      },
-      (err) => {
-        console.error(err);
-        const code = err?.code || '';
-        setFirestoreUsersError(
-          code === 'permission-denied'
-            ? 'Firestore rechaz? la lectura (permiso denegado). Despliega las reglas: firebase deploy (o al menos firestore:rules) y espera un minuto.'
-            : 'No se pudo cargar la lista de usuarios. Revisa conexi?n, que Firestore est? activo y que el proyecto sea registros-vnpm.'
-        );
-        setUsers([]);
-        setUsersAuthReady(true);
-      }
-    );
-
     const unsubLogs = onSnapshot(getColRef('app_logs'), (snap) => {
       const logsList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       logsList.sort((a, b) => extractLogMillis(b) - extractLogMillis(a));
@@ -2029,8 +2048,8 @@ const App = () => {
       setExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     }, console.error);
 
-    return () => { unsubConfig(); unsubEvents(); unsubUsers(); unsubLogs(); unsubParticipants(); unsubDonations(); unsubExpenses(); };
-  }, [fbUser]);
+    return () => { unsubConfig(); unsubEvents(); unsubLogs(); unsubParticipants(); unsubDonations(); unsubExpenses(); };
+  }, [fbUser, currentUser?.id]);
 
   const data = useMemo(() => {
     if (!currentEvent) return {};
@@ -2158,10 +2177,14 @@ const App = () => {
         (u.authEmail === fbUser.email || usernameToAuthEmail(u.username) === fbUser.email)
     );
     if (!pending) return;
-    updateDoc(getDocRef('app_users', String(pending.id)), {
-      authUid: fbUser.uid,
-      authEmail: fbUser.email,
-    }).catch(console.error);
+    (async () => {
+      const linked = { ...pending, authUid: fbUser.uid, authEmail: fbUser.email };
+      await updateDoc(getDocRef('app_users', String(pending.id)), {
+        authUid: fbUser.uid,
+        authEmail: fbUser.email,
+      });
+      await syncUserAccessDoc(linked);
+    })().catch(console.error);
   }, [fbUser, users]);
 
   useEffect(() => {
@@ -2176,9 +2199,20 @@ const App = () => {
     if (!profile) return;
     let cancelled = false;
     (async () => {
+      let activeProfile = profile;
+      if (!activeProfile.authUid) {
+        activeProfile = { ...activeProfile, authUid: fbUser.uid, authEmail: fbUser.email };
+        await updateDoc(getDocRef('app_users', String(activeProfile.id)), {
+          authUid: fbUser.uid,
+          authEmail: fbUser.email,
+          password: deleteField(),
+        });
+      }
+      await syncUserAccessDoc(activeProfile);
+      if (cancelled) return;
       const tabSessionId = getTabSessionId();
-      if (profile.role !== 'SuperUsuario') {
-        const others = await countOtherActiveSessions(profile.id, tabSessionId);
+      if (activeProfile.role !== 'SuperUsuario') {
+        const others = await countOtherActiveSessions(activeProfile.id, tabSessionId);
         if (cancelled) return;
         if (others > 0) {
           await signOut(auth);
@@ -2188,33 +2222,33 @@ const App = () => {
           return;
         }
       }
-      await setDoc(getDocRef('app_sessions', sessionDocId(profile.id, tabSessionId)), {
-        userId: String(profile.id),
+      await setDoc(getDocRef('app_sessions', sessionDocId(activeProfile.id, tabSessionId)), {
+        userId: String(activeProfile.id),
         sessionId: tabSessionId,
-        username: profile.username,
+        username: activeProfile.username,
         lastHeartbeat: Date.now(),
         createdAt: Date.now(),
       });
       const loginTime = Date.now();
       const adminDefaultPref =
-        (profile.username || '').toLowerCase() === 'admin' && profile.role === 'Administrador'
+        (activeProfile.username || '').toLowerCase() === 'admin' && activeProfile.role === 'Administrador'
           ? 'Norte'
-          : profile.preferredLandingTab || 'Summary';
+          : activeProfile.preferredLandingTab || 'Summary';
       setCurrentUser({
-        ...profile,
+        ...activeProfile,
         tabSessionId,
         loginTime,
-        allowedEventIds: getUserAllowedEventIds(profile),
-        allowedLocations: getUserAllowedLocations(profile),
+        allowedEventIds: getUserAllowedEventIds(activeProfile),
+        allowedLocations: getUserAllowedLocations(activeProfile),
         preferredLandingTab: adminDefaultPref,
       });
       addLog(
         'Inicio de Sesi?n',
-        `El usuario ${profile.username} recuper? sesi?n.`,
-        profile.username,
+        `El usuario ${activeProfile.username} recuper? sesi?n.`,
+        activeProfile.username,
         { id: 'Global', name: 'Sistema' }
       );
-      await updateDoc(getDocRef('app_users', String(profile.id)), { isOnline: true });
+      await updateDoc(getDocRef('app_users', String(activeProfile.id)), { isOnline: true });
     })();
     return () => {
       cancelled = true;
@@ -2371,7 +2405,6 @@ const App = () => {
           const paidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGross;
           const isBecado = isSiValue(person.isScholarship);
           const isCancelled = participantIsCancelled(person);
-          const baseCost = resolveRegisteredCost(person, currentPricing);
           const liqTarget = getLiquidationTarget(person);
 
           if (!isCancelled) {
@@ -2758,6 +2791,11 @@ const App = () => {
     } else if (type === 'cleanRecent') {
       handleCleanRecentLogs();
     } else if (type === 'backup') {
+      if (!isSuperUser) {
+        showToast("Solo el SuperUsuario puede restaurar copias de seguridad.");
+        setRestoreModal({ isOpen: false, log: null, type: 'single' });
+        return;
+      }
       try {
         const backupSnap = await getDoc(getDocRef('app_backups', log.revertInfo.backupId));
         if (!backupSnap.exists()) {
@@ -2766,14 +2804,31 @@ const App = () => {
           return;
         }
         const backupData = backupSnap.data();
+        const backupParticipants = Array.isArray(backupData?.participants) ? backupData.participants : null;
+        const backupEvents = Array.isArray(backupData?.events) ? backupData.events : null;
+        if (!backupParticipants || !backupEvents) {
+          throw new Error('Backup payload missing participants/events arrays');
+        }
+        const backupParticipantIds = new Set();
+        const backupEventIds = new Set();
+        for (const p of backupParticipants) {
+          if (!p || p.id == null) throw new Error('Backup participant without id');
+          backupParticipantIds.add(String(p.id));
+        }
+        for (const e of backupEvents) {
+          if (!e || e.id == null) throw new Error('Backup event without id');
+          backupEventIds.add(String(e.id));
+        }
 
-        // Limpiar registros actuales
-        await Promise.all(allParticipants.map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
-        await Promise.all(events.map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
-
-        // Insertar registros de backup
-        await Promise.all(backupData.participants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
-        await Promise.all(backupData.events.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+        // Write backup docs first so a failed restore cannot leave the system empty.
+        await Promise.all(backupParticipants.map(p => setDoc(getDocRef('app_participants', String(p.id)), p)));
+        await Promise.all(backupEvents.map(e => setDoc(getDocRef('app_events', String(e.id)), e)));
+        await Promise.all(allParticipants
+          .filter(p => !backupParticipantIds.has(String(p.id)))
+          .map(p => deleteDoc(getDocRef('app_participants', String(p.id)))));
+        await Promise.all(events
+          .filter(e => !backupEventIds.has(String(e.id)))
+          .map(e => deleteDoc(getDocRef('app_events', String(e.id)))));
 
         addLog('Restauraci?n de Sistema', `El SuperUsuario restaur? el sistema desde la copia de seguridad del ${backupData.date}.`, null, { id: 'Global', name: 'Sistema' });
         showToast("Sistema restaurado con ?xito desde copia de seguridad.");
@@ -2892,6 +2947,7 @@ const App = () => {
         user = { ...user, authUid: auth.currentUser.uid, authEmail: resolvedEmail };
         delete user.password;
       }
+      await syncUserAccessDoc(user);
       if (user.role !== 'SuperUsuario') {
         const others = await countOtherActiveSessions(user.id, tabSessionId);
         if (others > 0) {
@@ -3460,8 +3516,14 @@ const App = () => {
 
     try {
       await setDoc(getDocRef('app_users', newId), userToSave);
+      await syncUserAccessDoc(userToSave);
     } catch (err) {
       console.error(err);
+      try {
+        await deleteDoc(getDocRef('app_users', newId));
+      } catch (profileDelErr) {
+        console.error(profileDelErr);
+      }
       try {
         await deleteUser(cred.user);
       } catch (delErr) {
@@ -3568,6 +3630,23 @@ const App = () => {
     if (prevAllowedLocations.slice().sort().join('|') !== newAllowedLocations.slice().sort().join('|')) changes.push(`Sedes permitidas (${prevAllowedLocations.length ? prevAllowedLocations.length : 'Todas'} -> ${newAllowedLocations.length ? newAllowedLocations.length : 'Todas'})`);
     if ((originalUser.preferredLandingTab || 'Summary') !== newPreferredLandingTab) changes.push(`Ventana inicial (${originalUser.preferredLandingTab || 'Summary'} -> ${newPreferredLandingTab})`);
     
+    const updatedUserAccess = {
+      ...originalUser,
+      id: String(editingUser.id),
+      username: targetUsername,
+      role: nextRole,
+      canViewFinances: newCanViewFinances,
+      canViewHiddenDonations: newCanViewHiddenDonations,
+      canViewExpenses: newCanViewExpenses,
+      allowedEventIds: newAllowedEventIds,
+      allowedLocations: newAllowedLocations,
+      preferredLandingTab: newPreferredLandingTab,
+      restrictedEventId: newRestrictedEventId,
+      restrictedLocation: newRestrictedLocation,
+      hideMyExpenseConcepts: newHideMyExpenseConcepts,
+      canEditRegistryDates: newCanEditRegistryDates
+    };
+
     await updateDoc(getDocRef('app_users', String(editingUser.id)), {
       username: targetUsername,
       password: deleteField(),
@@ -3583,6 +3662,7 @@ const App = () => {
       hideMyExpenseConcepts: newHideMyExpenseConcepts,
       canEditRegistryDates: newCanEditRegistryDates
     });
+    await syncUserAccessDoc(updatedUserAccess);
     
     if (currentUser.id === editingUser.id) {
       setCurrentUser({
@@ -3617,6 +3697,9 @@ const App = () => {
       showToast("Solo otro SuperUsuario puede eliminar a un SuperUsuario."); return;
     }
 
+    if (userToDelete?.authUid) {
+      await deleteDoc(getDocRef('app_user_access', String(userToDelete.authUid))).catch(() => {});
+    }
     await deleteDoc(getDocRef('app_users', String(id)));
     addLog('Gesti?n de Usuarios', `Elimin? al usuario: ${username}`);
     showToast("Usuario eliminado.");
@@ -5138,64 +5221,94 @@ const App = () => {
     const commissionRate = getCardCommissionRate();
     const commission = paymentMethod === 'Tarjeta' ? (addedAmount * commissionRate) : 0;
     const netAmount = paymentMethod === 'Tarjeta' ? (addedAmount - commission) : addedAmount;
-
-    const abonoInstant = new Date();
-    const newPaymentRecord = {
-      id: Date.now(),
-      date: abonoInstant.toLocaleString('es-MX'),
-      recordedAt: abonoInstant.toISOString(),
-      amount: addedAmount, // bruto
-      netAmount,
-      method: paymentMethod,
-      service: paymentService,
-      reference: paymentMethod === 'Tarjeta' ? (paymentModal.cardReference || '').trim() : '',
-      commission,
-      registeredBy: currentUser?.username
-    };
-    const person = allParticipants.find((p) => String(p.id) === String(paymentModal.id));
-    if (!person) {
-      setPaymentModal(prev => ({ ...prev, error: 'Registro no encontrado.' }));
-      return;
+    const participantId = String(paymentModal.id);
+    let txResult;
+    try {
+      txResult = await runTransaction(db, async (transaction) => {
+        const ref = getDocRef('app_participants', participantId);
+        const snap = await transaction.get(ref);
+        if (!snap.exists()) {
+          const err = new Error('participant-not-found');
+          err.code = 'participant-not-found';
+          throw err;
+        }
+        const person = { id: snap.id, ...snap.data() };
+        if (participantIsCancelled(person)) {
+          const err = new Error('participant-cancelled');
+          err.code = 'participant-cancelled';
+          throw err;
+        }
+        const liveBaseCost = Number(getLiquidationTarget(person)) || Number(baseCost) || 0;
+        const paidGrossNow = parseFloat(person.paid || 0) || 0;
+        if (paidGrossNow + addedAmount > liveBaseCost) {
+          const err = new Error('payment-exceeds-balance');
+          err.code = 'payment-exceeds-balance';
+          err.maxAmount = Math.max(liveBaseCost - paidGrossNow, 0);
+          throw err;
+        }
+        const paidNetNow = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGrossNow;
+        const newPaidGross = paidGrossNow + addedAmount;
+        const newPaidNet = paidNetNow + netAmount;
+        const isLiquidado = newPaidGross >= liveBaseCost;
+        const abonoInstant = new Date();
+        const abonoCreatedAt = Date.now();
+        const newPaymentRecord = {
+          id: abonoCreatedAt,
+          date: abonoInstant.toLocaleString('es-MX'),
+          recordedAt: abonoInstant.toISOString(),
+          amount: addedAmount, // bruto
+          netAmount,
+          method: paymentMethod,
+          service: paymentService,
+          reference: paymentMethod === 'Tarjeta' ? (paymentModal.cardReference || '').trim() : '',
+          commission,
+          registeredBy: currentUser?.username
+        };
+        const pendingAfterAbono = Math.max(liveBaseCost - newPaidGross, 0);
+        const abonoNotification = {
+          id: `wa-abn-${abonoCreatedAt}`,
+          kind: 'abono',
+          amount: addedAmount,
+          pendingAmount: pendingAfterAbono,
+          isLiquidado,
+          createdAt: abonoCreatedAt,
+          sent: false,
+          sentAt: null,
+          message: buildFinanceWhatsAppMessage(person, paymentModal.loc, addedAmount, pendingAfterAbono, isLiquidado, 'abono', abonoCreatedAt)
+        };
+        const payload = {
+          paid: newPaidGross,
+          paidNet: newPaidNet,
+          paymentHistory: [...(person.paymentHistory || []), newPaymentRecord],
+          whatsAppFinanceNotifications: [...(person.whatsAppFinanceNotifications || []), abonoNotification]
+        };
+        if (globalConfig?.isDebugMode) {
+          payload._isDebug = true;
+          payload._debugSessionId = globalConfig.debugSessionId;
+        }
+        transaction.update(ref, payload);
+        return { person, newPaidGross, isLiquidado, newPaymentRecord, paidGrossNow };
+      });
+    } catch (err) {
+      if (err?.code === 'participant-not-found') {
+        setPaymentModal(prev => ({ ...prev, error: 'Registro no encontrado.' }));
+        return;
+      }
+      if (err?.code === 'participant-cancelled') {
+        setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' });
+        showToast('No puedes abonar a un registro dado de baja.');
+        return;
+      }
+      if (err?.code === 'payment-exceeds-balance') {
+        setPaymentModal(prev => ({ ...prev, error: `El abono supera el costo total. M?ximo a abonar: $${err.maxAmount}` }));
+        return;
+      }
+      throw err;
     }
-    if (participantIsCancelled(person)) {
-      setPaymentModal({ isOpen: false, loc: '', id: null, personName: '', amount: '', currentPaid: 0, error: '', isScholarship: 'No', baseCost: 0, paymentMethod: 'Efectivo', paymentService: getAutoPaymentService(new Date()), cardReference: '' });
-      showToast('No puedes abonar a un registro dado de baja.');
-      return;
-    }
-    const paidGrossNow = parseFloat(person.paid || 0);
-    const paidNetNow = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : paidGrossNow;
-    const newPaidGross = paidGrossNow + addedAmount;
-    const newPaidNet = paidNetNow + netAmount;
-    const isLiquidado = newPaidGross >= baseCost;
-
-    const payload = {
-      paid: newPaidGross,
-      paidNet: newPaidNet,
-      paymentHistory: [...(person.paymentHistory || []), newPaymentRecord]
-    };
-    const pendingAfterAbono = Math.max((Number(baseCost) || 0) - newPaidGross, 0);
-    const abonoCreatedAt = Date.now();
-    const abonoNotification = {
-      id: `wa-abn-${abonoCreatedAt}`,
-      kind: 'abono',
-      amount: addedAmount,
-      pendingAmount: pendingAfterAbono,
-      isLiquidado,
-      createdAt: abonoCreatedAt,
-      sent: false,
-      sentAt: null,
-      message: buildFinanceWhatsAppMessage(person, paymentModal.loc, addedAmount, pendingAfterAbono, isLiquidado, 'abono', abonoCreatedAt)
-    };
-    payload.whatsAppFinanceNotifications = [...(person.whatsAppFinanceNotifications || []), abonoNotification];
-    if (globalConfig?.isDebugMode) {
-      payload._isDebug = true;
-      payload._debugSessionId = globalConfig.debugSessionId;
-    }
-
-    await updateDoc(getDocRef('app_participants', String(person.id)), payload);
+    const { person, newPaidGross, isLiquidado, newPaymentRecord, paidGrossNow } = txResult;
     addLog(
       'Abono Financiero',
-      `Registr? un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${paymentModal.currentPaid} -> $${newPaidGross})${isLiquidado ? ' [LIQUIDADO]' : ''}`,
+      `Registr? un abono de $${addedAmount} (${paymentMethod}${newPaymentRecord.reference ? `, Ref: ${newPaymentRecord.reference}` : ''}) para ${paymentModal.personName} en la sede ${paymentModal.loc}${paymentService ? ` (Servicio: ${paymentService})` : ''}. (Pagado: $${paidGrossNow} -> $${newPaidGross})${isLiquidado ? ' [LIQUIDADO]' : ''}`,
       null,
       null,
       { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
@@ -10218,8 +10331,6 @@ const App = () => {
                       setFilterPaymentType('all');
                       setFilterTravelFrom('all');
                       setFilterTravelTo('all');
-                      setFilterPastorChild('all');
-                      setFilterWithoutPay('all');
                       setFilterFirstTimeId('all');
                       setFilterPendingRefund('all');
                       setFilterAssignment('all');
@@ -10332,7 +10443,6 @@ const App = () => {
                   const isBecado = isCampa && isSiValue(person.isScholarship);
                   const listPrice = resolveRegisteredCost(person, currentPricing);
                   const liquidationTarget = getLiquidationTarget(person);
-                  const balance = Math.max(0, liquidationTarget - parseFloat(person.paid || 0));
                   const payHistory = person.paymentHistory || [];
 
                   return (
@@ -10997,8 +11107,6 @@ const App = () => {
                         setFilterPaymentType('all');
                         setFilterTravelFrom('all');
                         setFilterTravelTo('all');
-                        setFilterPastorChild('all');
-                        setFilterWithoutPay('all');
                         setFilterFirstTimeId('all');
                         setFilterPendingRefund('all');
                         setFilterAssignment('all');

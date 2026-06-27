@@ -2,8 +2,176 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function accessPath(appId, uid) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/app_user_access/$(uid);
+    }
+
+    function userPath(appId, userId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/app_users/$(userId);
+    }
+
+    function hasAccess(appId) {
+      return signedIn() && exists(accessPath(appId, request.auth.uid));
+    }
+
+    function access(appId) {
+      return get(accessPath(appId, request.auth.uid)).data;
+    }
+
+    function profile(appId) {
+      return get(userPath(appId, access(appId).userId)).data;
+    }
+
+    function isVerifiedUser(appId) {
+      return hasAccess(appId)
+        && exists(userPath(appId, access(appId).userId))
+        && profile(appId).authUid == request.auth.uid
+        && access(appId).userId == profile(appId).id;
+    }
+
+    function hasRole(appId, roles) {
+      return isVerifiedUser(appId) && profile(appId).role in roles;
+    }
+
+    function isAdmin(appId) {
+      return hasRole(appId, ['Administrador', 'SuperUsuario']);
+    }
+
+    function isSuperUser(appId) {
+      return hasRole(appId, ['SuperUsuario']);
+    }
+
+    function canWriteParticipants(appId) {
+      return hasRole(appId, ['Editor', 'Administrador', 'SuperUsuario']);
+    }
+
+    function hasEventAccess(appId, eventId) {
+      return isAdmin(appId)
+        || !(profile(appId).allowedEventIds is list)
+        || profile(appId).allowedEventIds.size() == 0
+        || eventId in profile(appId).allowedEventIds
+        || profile(appId).restrictedEventId == eventId;
+    }
+
+    function hasLocationAccess(appId, location) {
+      return isAdmin(appId)
+        || !(profile(appId).allowedLocations is list)
+        || profile(appId).allowedLocations.size() == 0
+        || location in profile(appId).allowedLocations
+        || profile(appId).restrictedLocation == location;
+    }
+
+    function canWriteParticipantDoc(appId, data) {
+      return canWriteParticipants(appId)
+        && hasEventAccess(appId, data.eventId)
+        && hasLocationAccess(appId, data.location);
+    }
+
+    function canWriteExpenses(appId) {
+      return isVerifiedUser(appId)
+        && (profile(appId).role == 'SuperUsuario' || profile(appId).canViewExpenses == true);
+    }
+
+    function requestedProfile(appId) {
+      return get(userPath(appId, request.resource.data.userId)).data;
+    }
+
+    function validSelfAccessWrite(appId, authUid) {
+      return signedIn()
+        && authUid == request.auth.uid
+        && request.resource.data.authUid == request.auth.uid
+        && request.resource.data.userId is string
+        && exists(userPath(appId, request.resource.data.userId))
+        && (
+          requestedProfile(appId).authUid == request.auth.uid
+          || (
+            request.auth.token.email != null
+            && requestedProfile(appId).authEmail == request.auth.token.email
+          )
+        )
+        && request.resource.data.role == requestedProfile(appId).role;
+    }
+
+    function validLegacySelfProfileLink(userId) {
+      return signedIn()
+        && userId == resource.data.id
+        && request.auth.token.email != null
+        && resource.data.authEmail == request.auth.token.email
+        && (!('authUid' in resource.data) || resource.data.authUid == null || resource.data.authUid == '')
+        && request.resource.data.authUid == request.auth.uid
+        && request.resource.data.authEmail == request.auth.token.email
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authUid', 'authEmail', 'password']);
+    }
+
+    function validSelfUserUpdate(appId, userId) {
+      return isVerifiedUser(appId)
+        && userId == profile(appId).id
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isOnline', 'hideMyExpenseConcepts']);
+    }
+
+    match /artifacts/{appId}/public/data/app_user_access/{authUid} {
+      allow read: if signedIn() && (authUid == request.auth.uid || isAdmin(appId));
+      allow create, update: if isAdmin(appId) || validSelfAccessWrite(appId, authUid);
+      allow delete: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_users/{userId} {
+      allow read: if signedIn();
+      allow create, delete: if isAdmin(appId);
+      allow update: if isAdmin(appId) || validLegacySelfProfileLink(userId) || validSelfUserUpdate(appId, userId);
+    }
+
+    match /artifacts/{appId}/public/data/app_data/{docId} {
+      allow read: if isVerifiedUser(appId);
+      allow write: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_events/{docId} {
+      allow read: if isVerifiedUser(appId);
+      allow write: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_participants/{docId} {
+      allow read: if isVerifiedUser(appId);
+      allow create: if canWriteParticipantDoc(appId, request.resource.data);
+      allow update: if canWriteParticipantDoc(appId, resource.data)
+        && canWriteParticipantDoc(appId, request.resource.data);
+      allow delete: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_donations/{docId} {
+      allow read: if isVerifiedUser(appId);
+      allow create, update: if isAdmin(appId);
+      allow delete: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_expenses/{docId} {
+      allow read: if isVerifiedUser(appId) && (canWriteExpenses(appId) || resource.data.createdByUserId == profile(appId).id);
+      allow write: if canWriteExpenses(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_backups/{docId} {
+      allow read, write: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_logs/{docId} {
+      allow read: if isVerifiedUser(appId);
+      allow create: if isVerifiedUser(appId);
+      allow update, delete: if isAdmin(appId);
+    }
+
+    match /artifacts/{appId}/public/data/app_sessions/{docId} {
+      allow read: if isAdmin(appId) || (isVerifiedUser(appId) && resource.data.userId == profile(appId).id);
+      allow create: if isVerifiedUser(appId) && request.resource.data.userId == profile(appId).id;
+      allow update, delete: if isAdmin(appId) || (isVerifiedUser(appId) && resource.data.userId == profile(appId).id);
+    }
+
     match /artifacts/{appId}/public/data/{collection}/{docId} {
-      allow read, write: if request.auth != null;
+      allow read, write: if false;
     }
   }
 }
