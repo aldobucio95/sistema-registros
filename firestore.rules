@@ -99,6 +99,8 @@ service cloud.firestore {
     function validLegacySelfProfileLink(userId) {
       return signedIn()
         && userId == resource.data.id
+        && request.auth.token.email != null
+        && resource.data.authEmail == request.auth.token.email
         && (!('authUid' in resource.data) || resource.data.authUid == null || resource.data.authUid == '')
         && request.resource.data.authUid == request.auth.uid
         && request.resource.data.authEmail == request.auth.token.email
