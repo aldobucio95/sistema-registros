@@ -497,6 +497,7 @@ import { buildLocationRosterTypeSummaryByStatus, getLocationRosterSectionCountsF
 import {
   buildGlobalRegistryPartySections,
   globalRegistryPartyRowsToPersons,
+  sortGlobalRegistryPartyRows,
 } from './globalRegistryPartyRows.js';
 import LocationRosterTypeSummary from './LocationRosterTypeSummary.jsx';
 import {
@@ -38972,21 +38973,27 @@ function resolveEventName(eventId) {
       cancelledParticipantsByLocation: cancelledData,
     });
     const activosTitularsInScope = locsInScope.flatMap((loc) => data[loc] || []);
-    const filterGlobalRegistrySectionRows = (rows, preserveOrder = true) =>
+    const grSortKey = String(globalRegistryListFilters.sortBy || 'registered-desc').trim();
+    const grSortDebt = (p) =>
+      getParticipantOutstandingGross(p, getLiquidationTarget, computeNetAmountByMethod);
+    const filterGlobalRegistrySectionRows = (rows, preserveOrder = false) =>
       filterParticipantRows(rows, preserveOrder, globalRegistryListFilters, {
         expandBautizosCompanions: false,
       });
-    const activosTitularsFiltered = filterGlobalRegistrySectionRows(activosTitularsInScope);
+    const activosTitularsFiltered = filterGlobalRegistrySectionRows(activosTitularsInScope, false);
     const waitlistSortedFiltered = (() => {
       const sorted = locsInScope.flatMap((loc) => getSortedWaitlistForLocation(loc));
       const filteredIdSet = new Set(
-        filterGlobalRegistrySectionRows(sorted).map((p) => String(p?.id || ''))
+        filterGlobalRegistrySectionRows(sorted, true).map((p) => String(p?.id || ''))
       );
       return sorted.filter((p) => filteredIdSet.has(String(p?.id || '')));
     })();
     const cancelledTitularsFiltered = filterGlobalRegistrySectionRows(
-      locsInScope.flatMap((loc) => cancelledData[loc] || [])
+      locsInScope.flatMap((loc) => cancelledData[loc] || []),
+      false
     );
+    const applyGlobalRegistryPartySort = (partyRows) =>
+      sortGlobalRegistryPartyRows(partyRows, grSortKey, { getDebt: grSortDebt });
     const partySections = buildGlobalRegistryPartySections({
       isBautizos,
       activeTitulars: activosTitularsFiltered,
@@ -38994,9 +39001,9 @@ function resolveEventName(eventId) {
       cancelledTitulars: cancelledTitularsFiltered,
       rosterForPlan: validSource,
     });
-    const activeRows = partySections.active;
-    const waitlistRows = partySections.waitlist;
-    const cancelledRows = partySections.cancelled;
+    const activeRows = applyGlobalRegistryPartySort(partySections.active);
+    const waitlistRows = applyGlobalRegistryPartySort(partySections.waitlist);
+    const cancelledRows = applyGlobalRegistryPartySort(partySections.cancelled);
     const validSourceParty = buildGlobalRegistryPartySections({
       isBautizos,
       activeTitulars: activosTitularsInScope,
@@ -39028,20 +39035,18 @@ function resolveEventName(eventId) {
         ? currentEvent.locations[0]
         : '');
 
-    const renderGlobalRegistryRowsBlock = (sectionPartyRows, { emptyMessage, emptyFilteredMessage, sectionKey }) => {
-      let sectionDisplayNum = 1;
-      return (
+    const renderGlobalRegistryRowsBlock = (sectionPartyRows, { emptyMessage, emptyFilteredMessage, sectionKey }) => (
       <>
         <div className={uiRosterMobile.list}>
           {sectionPartyRows.length === 0 ? (
             <p className="px-3 py-14 text-center text-slate-400 italic font-medium text-sm">{emptyMessage}</p>
           ) : (
-            sectionPartyRows.map((partyRow) => {
+            sectionPartyRows.map((partyRow, partyRowIndex) => {
               const person = partyRow.person;
               const isExpanded =
                 !partyRow.disableExpand && !person.__globalRegistryCompanionRow && expandedRows.has(person.id);
               const rowLoc = globalRegistryRowLoc(person);
-              const rowDisplayIndex = sectionDisplayNum++;
+              const rowDisplayIndex = partyRowIndex + 1;
               return renderRosterPersonMobileCard(person, rowLoc, {
                 key: `global-${sectionKey}-m-${partyRow.key}`,
                 displayIndex: rowDisplayIndex,
@@ -39077,12 +39082,12 @@ function resolveEventName(eventId) {
                   </td>
                 </tr>
               ) : (
-                sectionPartyRows.map((partyRow) => {
+                sectionPartyRows.map((partyRow, partyRowIndex) => {
                   const person = partyRow.person;
                   const isExpanded =
                     !partyRow.disableExpand && !person.__globalRegistryCompanionRow && expandedRows.has(person.id);
                   const rowLoc = globalRegistryRowLoc(person);
-                  const rowDisplayIndex = sectionDisplayNum++;
+                  const rowDisplayIndex = partyRowIndex + 1;
                   const columnOpts = {
                     displayIndex: rowDisplayIndex,
                     rosterLocation: rowLoc,
@@ -39129,8 +39134,7 @@ function resolveEventName(eventId) {
           </table>
         </div>
       </>
-      );
-    };
+    );
 
     return (
       <div className="p-6 space-y-6">

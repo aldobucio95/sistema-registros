@@ -3,6 +3,7 @@ import {
   buildGlobalRegistryPartyRowsFromTitulars,
   buildGlobalRegistryPartySections,
   globalRegistryPartyRowsToPersons,
+  sortGlobalRegistryPartyRows,
 } from '../globalRegistryPartyRows.js';
 
 describe('globalRegistryPartyRows', () => {
@@ -99,5 +100,24 @@ describe('globalRegistryPartyRows', () => {
     });
     expect(sections.waitlist).toHaveLength(1);
     expect(sections.waitlist[0].person.name).toBe('En Espera Virtual');
+  });
+
+  it('sortGlobalRegistryPartyRows keeps companion blocks under titular when sorting by name', () => {
+    const hostA = {
+      id: 'hA',
+      name: 'Zeta',
+      registeredAt: '2024-01-02',
+      bautizosCompanions: [{ id: 'cA', name: 'Hijo Zeta' }],
+    };
+    const hostB = {
+      id: 'hB',
+      name: 'Alpha',
+      registeredAt: '2024-01-01',
+      bautizosCompanions: [{ id: 'cB', name: 'Hijo Alpha' }],
+    };
+    const rows = buildGlobalRegistryPartyRowsFromTitulars([hostA, hostB], [hostA, hostB]);
+    const sorted = sortGlobalRegistryPartyRows(rows, 'name-asc');
+    const names = sorted.map((r) => r.person.name);
+    expect(names).toEqual(['Alpha', 'Hijo Alpha', 'Zeta', 'Hijo Zeta']);
   });
 });
