@@ -169,6 +169,7 @@ import {
   getBautizosAttendanceTypeLabel,
   resolveBautizosAttendanceChipKind,
   expandBautizosGlobalRegistryRows,
+  expandBautizosWaitlistRegistryRows,
   GLOBAL_REGISTRY_VIRTUAL_KIND,
   getBautizosCompanionsVisibleForRegistrant,
   buildBautizosExistingCompanionOptions,
@@ -9016,7 +9017,11 @@ function resolveEventName(eventId) {
 
   const getSortedWaitlistForLocation = useCallback((loc) => {
     const base = [...(waitlistData[loc] || [])];
-    return base.sort((a, b) => {
+    const virtual =
+      currentEvent?.eventType === 'Bautizos'
+        ? collectCompanionWaitlistVirtualRows(allParticipants, currentEvent, loc)
+        : [];
+    return [...base, ...virtual].sort((a, b) => {
       const ma = parseFlexibleInstantMs(a?.registeredAt);
       const mb = parseFlexibleInstantMs(b?.registeredAt);
       const fa = ma != null && Number.isFinite(ma) ? ma : Number(a.waitlistCreatedAt || 0);
@@ -9024,7 +9029,7 @@ function resolveEventName(eventId) {
       if (fa !== fb) return fa - fb;
       return String(a?.id ?? '').localeCompare(String(b?.id ?? ''), 'es');
     });
-  }, [waitlistData, currentEvent]);
+  }, [waitlistData, allParticipants, currentEvent]);
 
   const getSortedCancelledForLocation = useCallback((loc) => {
     return [...(cancelledData[loc] || [])].sort(compareParticipantsByRegisteredAtAsc);
@@ -27140,18 +27145,39 @@ function resolveEventName(eventId) {
   );
 
   const renderTransportPlanningPage = () => (
-    <TransportPlanningPage
-      currentEvent={currentEvent}
-      allParticipants={scopedEventParticipants}
-      visibleLocations={visibleLocations}
-      canEdit={currentUser?.role !== 'Lector'}
-      showToast={showToast}
-      getDocRef={getDocRef}
-      updateDoc={updateDoc}
-      addLog={addLog}
-      isCampa={currentEvent?.eventType === 'Campa'}
-      countAmbosDoubleInAllCounts={countAmbosDoubleInAllCounts}
-    />
+    <RosterSectionScrollWrap sectionId="transport-planning">
+      <Suspense fallback={<ScreenLoadingFallback title="Cargando transporte…" />}>
+        <TransportPlanningPageLazy
+          currentEvent={currentEvent}
+          allParticipants={scopedEventParticipants}
+          visibleLocations={visibleLocations}
+          applyGlobalRegistryLikeFilters={applyGlobalRegistryLikeFilters}
+          globalLocationFilters={globalLocationFilters}
+          renderGlobalRegistryListToolbar={renderGlobalRegistryListToolbar}
+          canEdit={userCanEditTransportPlanning(currentUser)}
+          canEditTransportOps={userCanEditTransportOperations(currentUser)}
+          transportOpsUserLabel={currentUser?.username || currentUser?.displayName || ''}
+          showToast={showToast}
+          getDocRef={getDocRef}
+          updateDoc={updateDoc}
+          addLog={addLog}
+          isCampa={currentEvent?.eventType === 'Campa'}
+          countAmbosDoubleInAllCounts={countAmbosDoubleInAllCounts}
+          customCarCatalog={globalConfig?.customCarCatalog}
+          transportUiPrefs={transportUiPrefs}
+          onTransportUiPrefsChange={onTransportUiPrefsChange}
+          canSendCarDataWhatsApp={userCanSendWhatsAppQuickAction(currentUser)}
+          titularHasPendingCarData={(titular) =>
+            titularHasPendingCarDataWhatsApp(titular, currentEvent, allParticipants)
+          }
+          onSendCarDataWhatsApp={openCarDataWhatsAppForTitular}
+          onBulkSendCarDataWhatsApp={() => runBulkCarDataWhatsAppForRoster(scopedEventParticipants)}
+          resolveParticipantById={(id) =>
+            (scopedEventParticipants || []).find((p) => String(p?.id) === String(id)) || null
+          }
+        />
+      </Suspense>
+    </RosterSectionScrollWrap>
   );
 
   const renderCashCutPage = () => {
@@ -27598,6 +27624,108 @@ function resolveEventName(eventId) {
       );
     };
 
+    const renderCashCutPaymentsBlock = (payments, { showService = true, dateMode = 'time' } = {}) => {
+      const sorted = [...payments].sort((a, b) => a._ts - b._ts);
+      const formatWhen = (d) =>
+        dateMode === 'datetime'
+          ? `${d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })} ${d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}`
+          : d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+      return (
+        <>
+          <div className={`${uiCashCutSedeService.paymentsList} md:hidden`}>
+            {sorted.map((p, i) => (
+              <div key={`${p.id}-m-${i}`} className={uiCashCutSedeService.paymentsListItem}>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate min-w-0 flex-1">
+                    {p._personName}
+                  </p>
+                  <p className="text-[11px] font-black text-slate-800 dark:text-slate-100 tabular-nums shrink-0 text-right">
+                    {formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}
+                    {cashCutGross && p.method === 'Tarjeta' && getPaymentCommission(p) > 0 ? (
+                      <span className="block text-[9px] font-semibold text-rose-500">
+                        Com.: {formatMoney(getPaymentCommission(p))}
+                      </span>
+                    ) : null}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                  <span className="text-[9px] font-mono text-slate-500">{formatWhen(p._date)}</span>
+                  <span className="text-slate-300">·</span>
+                  <span className="text-[9px] text-slate-500">{p._loc}</span>
+                  {showService ? (
+                    <span className="text-[9px] font-bold bg-green-50 text-green-700 px-1.5 py-0.5 rounded border border-green-100">
+                      {p.service || NO_SERVICE_LABEL}
+                    </span>
+                  ) : null}
+                  <span
+                    className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                      p.method === 'Tarjeta'
+                        ? 'bg-indigo-50 text-indigo-700 border-indigo-100'
+                        : 'bg-emerald-50 text-emerald-700 border-emerald-100'
+                    }`}
+                  >
+                    {p.method || 'Efectivo'}
+                  </span>
+                </div>
+                <p className="text-[9px] text-slate-400 mt-0.5">Registró: {p.registeredBy || '?'}</p>
+              </div>
+            ))}
+          </div>
+          <div className="hidden md:block mt-4 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                  <th className="px-4 py-2.5">{dateMode === 'datetime' ? 'Fecha / Hora' : 'Hora'}</th>
+                  <th className="px-4 py-2.5">Persona</th>
+                  <th className="px-4 py-2.5">Sede</th>
+                  {showService ? <th className="px-4 py-2.5">Servicio</th> : null}
+                  <th className="px-4 py-2.5">Método</th>
+                  <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
+                  <th className="px-4 py-2.5">Registró</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {sorted.map((p, i) => (
+                  <tr key={`${p.id}-${i}`} className="hover:bg-slate-50/60 transition-colors">
+                    <td className="px-4 py-2 text-xs font-mono text-slate-600">{formatWhen(p._date)}</td>
+                    <td className="px-4 py-2 text-xs font-bold text-slate-700 truncate max-w-[150px]">{p._personName}</td>
+                    <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
+                    {showService ? (
+                      <td className="px-4 py-2">
+                        <span className="text-[10px] font-bold bg-green-50 text-green-700 px-2 py-0.5 rounded-full border border-green-100">
+                          {p.service || NO_SERVICE_LABEL}
+                        </span>
+                      </td>
+                    ) : null}
+                    <td className="px-4 py-2">
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                          p.method === 'Tarjeta'
+                            ? 'bg-indigo-50 text-indigo-700 border-indigo-100'
+                            : 'bg-emerald-50 text-emerald-700 border-emerald-100'
+                        }`}
+                      >
+                        {p.method || 'Efectivo'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 text-right font-bold text-slate-800">
+                      {formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}
+                      {cashCutGross && p.method === 'Tarjeta' && getPaymentCommission(p) > 0 ? (
+                        <span className="block text-[10px] font-semibold text-rose-500">
+                          Com.: {formatMoney(getPaymentCommission(p))}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '?'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      );
+    };
+
     const cashCutHorariosLine = (() => {
       const locs = cashCutLocations;
       if (!locs.length) {
@@ -27725,39 +27853,7 @@ function resolveEventName(eventId) {
                   {isExpanded && (
                     <div className="px-5 pb-5 border-t border-slate-100">
                       {renderServiceBreakdownByLocation(cut)}
-                      <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
-                        <table className="w-full text-left text-sm">
-                          <thead>
-                            <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                              <th className="px-4 py-2.5">Hora</th>
-                              <th className="px-4 py-2.5">Persona</th>
-                              <th className="px-4 py-2.5">Sede</th>
-                              <th className="px-4 py-2.5">Servicio</th>
-                              <th className="px-4 py-2.5">Método</th>
-                              <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                              <th className="px-4 py-2.5">Registró</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-50">
-                            {cut.payments.sort((a, b) => a._ts - b._ts).map((p, i) => (
-                              <tr key={`${p.id}-${i}`} className="hover:bg-slate-50/60 transition-colors">
-                                <td className="px-4 py-2 text-xs font-mono text-slate-600">{p._date.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</td>
-                                <td className="px-4 py-2 text-xs font-bold text-slate-700 truncate max-w-[150px]">{p._personName}</td>
-                                <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
-                                <td className="px-4 py-2"><span className="text-[10px] font-bold bg-green-50 text-green-700 px-2 py-0.5 rounded-full border border-green-100">{p.service || NO_SERVICE_LABEL}</span></td>
-                                <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
-                                <td className="px-4 py-2 text-right font-bold text-slate-800">
-                                  {formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}
-                                  {cashCutGross && p.method === 'Tarjeta' && getPaymentCommission(p) > 0 ? (
-                                    <span className="block text-[10px] font-semibold text-rose-500">Com.: {formatMoney(getPaymentCommission(p))}</span>
-                                  ) : null}
-                                </td>
-                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '?'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                      {renderCashCutPaymentsBlock(cut.payments, { showService: true })}
                     </div>
                   )}
                 </div>
@@ -27829,37 +27925,7 @@ function resolveEventName(eventId) {
                           <p className="text-lg font-black text-slate-800">{formatMoney(cut.donations)}</p>
                         </div>
                       )}
-                      <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
-                        <table className="w-full text-left text-sm">
-                          <thead>
-                            <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                              <th className="px-4 py-2.5">Fecha / Hora</th>
-                              <th className="px-4 py-2.5">Persona</th>
-                              <th className="px-4 py-2.5">Sede</th>
-                              <th className="px-4 py-2.5">Método</th>
-                              <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                              <th className="px-4 py-2.5">Registró</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-50">
-                            {cut.payments.sort((a, b) => a._ts - b._ts).map((p, i) => (
-                              <tr key={`${p.id}-${i}`} className="hover:bg-slate-50/60 transition-colors">
-                                <td className="px-4 py-2 text-xs font-mono text-slate-600">{p._date.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })} {p._date.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</td>
-                                <td className="px-4 py-2 text-xs font-bold text-slate-700 truncate max-w-[150px]">{p._personName}</td>
-                                <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
-                                <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
-                                <td className="px-4 py-2 text-right font-bold text-slate-800">
-                                  {formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}
-                                  {cashCutGross && p.method === 'Tarjeta' && getPaymentCommission(p) > 0 ? (
-                                    <span className="block text-[10px] font-semibold text-rose-500">Com.: {formatMoney(getPaymentCommission(p))}</span>
-                                  ) : null}
-                                </td>
-                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '?'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                      {renderCashCutPaymentsBlock(cut.payments, { showService: false, dateMode: 'datetime' })}
                     </div>
                   )}
                 </div>
@@ -27900,39 +27966,7 @@ function resolveEventName(eventId) {
                       {cut.isSunday && Object.keys(cut.byService).length > 0 && (
                         <div className="mb-4">{renderServiceBreakdownByLocation(cut)}</div>
                       )}
-                      <div className={`overflow-x-auto rounded-xl border border-slate-200 ${!cut.isSunday || Object.keys(cut.byService).length === 0 ? 'mt-4' : ''}`}>
-                        <table className="w-full text-left text-sm">
-                          <thead>
-                            <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                              <th className="px-4 py-2.5">Hora</th>
-                              <th className="px-4 py-2.5">Persona</th>
-                              <th className="px-4 py-2.5">Sede</th>
-                              {cut.isSunday && <th className="px-4 py-2.5">Servicio</th>}
-                              <th className="px-4 py-2.5">Método</th>
-                              <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                              <th className="px-4 py-2.5">Registró</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-50">
-                            {cut.payments.sort((a, b) => a._ts - b._ts).map((p, i) => (
-                              <tr key={`${p.id}-${i}`} className="hover:bg-slate-50/60 transition-colors">
-                                <td className="px-4 py-2 text-xs font-mono text-slate-600">{p._date.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</td>
-                                <td className="px-4 py-2 text-xs font-bold text-slate-700 truncate max-w-[150px]">{p._personName}</td>
-                                <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
-                                {cut.isSunday && <td className="px-4 py-2"><span className="text-[10px] font-bold bg-green-50 text-green-700 px-2 py-0.5 rounded-full border border-green-100">{p.service || NO_SERVICE_LABEL}</span></td>}
-                                <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
-                                <td className="px-4 py-2 text-right font-bold text-slate-800">
-                                  {formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}
-                                  {cashCutGross && p.method === 'Tarjeta' && getPaymentCommission(p) > 0 ? (
-                                    <span className="block text-[10px] font-semibold text-rose-500">Com.: {formatMoney(getPaymentCommission(p))}</span>
-                                  ) : null}
-                                </td>
-                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '?'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                      {renderCashCutPaymentsBlock(cut.payments, { showService: cut.isSunday })}
                     </div>
                   )}
                 </div>
@@ -28000,37 +28034,7 @@ function resolveEventName(eventId) {
                           <p className="text-lg font-black text-slate-800">{formatMoney(cut.donations)}</p>
                         </div>
                       )}
-                      <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
-                        <table className="w-full text-left text-sm">
-                          <thead>
-                            <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                              <th className="px-4 py-2.5">Fecha / Hora</th>
-                              <th className="px-4 py-2.5">Persona</th>
-                              <th className="px-4 py-2.5">Sede</th>
-                              <th className="px-4 py-2.5">Método</th>
-                              <th className="px-4 py-2.5 text-right">{cashCutGross ? 'Bruto' : 'Neto'}</th>
-                              <th className="px-4 py-2.5">Registró</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-50">
-                            {cut.payments.sort((a, b) => a._ts - b._ts).map((p, i) => (
-                              <tr key={`${p.id}-${i}`} className="hover:bg-slate-50/60 transition-colors">
-                                <td className="px-4 py-2 text-xs font-mono text-slate-600">{p._date.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })} {p._date.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</td>
-                                <td className="px-4 py-2 text-xs font-bold text-slate-700 truncate max-w-[150px]">{p._personName}</td>
-                                <td className="px-4 py-2 text-xs text-slate-500">{p._loc}</td>
-                                <td className="px-4 py-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.method === 'Tarjeta' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>{p.method || 'Efectivo'}</span></td>
-                                <td className="px-4 py-2 text-right font-bold text-slate-800">
-                                  {formatMoney(cashCutGross ? p.amount : (p.netAmount ?? p.amount))}
-                                  {cashCutGross && p.method === 'Tarjeta' && getPaymentCommission(p) > 0 ? (
-                                    <span className="block text-[10px] font-semibold text-rose-500">Com.: {formatMoney(getPaymentCommission(p))}</span>
-                                  ) : null}
-                                </td>
-                                <td className="px-4 py-2 text-xs text-slate-500">{p.registeredBy || '?'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                      {renderCashCutPaymentsBlock(cut.payments, { showService: false, dateMode: 'datetime' })}
                     </div>
                   )}
                 </div>
@@ -33978,12 +33982,19 @@ function resolveEventName(eventId) {
     );
   };
 
+  const rosterDisplayUnspecified = (raw) => {
+    const s = String(raw ?? '').trim();
+    return s || 'Sin especificar';
+  };
+
   /** Columna «Participante» compartida: mismas etiquetas que en registro por sede (incl. lista de espera en vista global).
    *  `displayIndex`: posición en la lista visible (1, 2, 3…) según filtros y orden actuales. */
   const renderRegistrationParticipantColumn = (person, opts = {}) => {
     const displayIndex = typeof opts.displayIndex === 'number' && opts.displayIndex > 0 ? opts.displayIndex : null;
     const isSubRegistration = !!opts.isSubRegistration;
     const isWaitlist = (person?.status || 'active') === 'waitlist';
+    const useUnspecified = !!opts.useUnspecifiedPlaceholder;
+    const fmt = (v) => (useUnspecified ? rosterDisplayUnspecified(v) : String(v ?? '').trim() || '—');
     const ageFromBirth = (person?.birthDate && String(person.birthDate).trim())
       ? calculateAgeFromBirthDate(person.birthDate)
       : '';
@@ -33991,7 +34002,9 @@ function resolveEventName(eventId) {
       ageFromBirth ||
       (person?.age != null && String(person.age).trim() !== '' ? String(person.age).trim() : '');
     const rosterLocForComments = String(opts.rosterLocation ?? person.location ?? '').trim();
-    const generalCommentsCollapsed = getGeneralRegistrationCommentsForDisplay(person);
+    const generalCommentsCollapsed = person.__globalRegistryVirtual
+      ? []
+      : getGeneralRegistrationCommentsForDisplay(person);
     return (
       <div className={`space-y-1 ${isSubRegistration ? 'ml-5 pl-3 border-l-2 border-sky-300/80 dark:border-sky-600/70' : ''}`}>
         <div className="flex items-center flex-wrap gap-2">
@@ -34115,7 +34128,7 @@ function resolveEventName(eventId) {
               </span>
             );
           })()}
-          {isBautizos && (() => {
+          {isBautizos && !opts.hideBautizosCompanionCountChip && (() => {
             const companionCount = bautizosCompanionChipCountByRegistrant.get(String(person?.id || '')) || 0;
             if (companionCount <= 0) return null;
             return (
@@ -35242,6 +35255,214 @@ function resolveEventName(eventId) {
     );
   };
 
+  const renderRosterQuickActionsPanel = (person, loc, { isExpanded, isBecado, liquidationTarget }) => {
+    const qaBtnSimple = (extra) => `${ROSTER_QUICK_ACTION_BTN_BASE} ${ROSTER_QUICK_ACTION_BTN_MOBILE} ${extra}`;
+    return (
+      <div className="flex flex-col gap-1.5 w-full min-w-0">
+        <div className={ROSTER_QUICK_ACTIONS_ROW_PRIMARY}>
+          {currentUser?.role !== 'Lector' && !participantIsCancelled(person) && (
+            <button
+              type="button"
+              onClick={() =>
+                setPaymentModal({
+                  isOpen: true,
+                  loc,
+                  id: person.id,
+                  personName: person.name,
+                  amount: '',
+                  currentPaid: parseFloat(person.paid || 0),
+                  error: '',
+                  isScholarship: isBecado ? SI : 'No',
+                  baseCost: liquidationTarget,
+                  paymentMethod: 'Efectivo',
+                  paymentService: getAutoPaymentService(new Date(), loc),
+                  cardReference: '',
+                  abonoNote: '',
+                })
+              }
+              className={qaBtnSimple('border border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-700')}
+              title="Abonar pago"
+              aria-label="Abonar pago"
+            >
+              <CreditCard {...ROSTER_QUICK_ACTION_ICON_PROPS} />
+              <span className="hidden sm:inline">Abonar</span>
+            </button>
+          )}
+          {currentUser?.role !== 'Lector' && !participantIsCancelled(person) && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openRegistrationCommentModal(person, loc);
+              }}
+              className={qaBtnSimple(
+                'border border-slate-500 bg-slate-600 text-white hover:bg-slate-700 dark:border-slate-500 dark:bg-slate-700 dark:hover:bg-slate-600'
+              )}
+              title="Comentario del registro"
+              aria-label="Comentario"
+            >
+              <MessageSquare {...ROSTER_QUICK_ACTION_ICON_PROPS} />
+              <span className="hidden sm:inline">Comentario</span>
+            </button>
+          )}
+          {currentUser?.role !== 'Lector' && !participantIsCancelled(person) && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openRosterInlineEditFromQuickActions(person, loc);
+              }}
+              className={qaBtnSimple('border border-indigo-700 bg-indigo-600 text-white hover:bg-indigo-700')}
+              title="Editar registro"
+              aria-label="Editar"
+            >
+              <Edit3 {...ROSTER_QUICK_ACTION_ICON_PROPS} />
+              <span className="hidden sm:inline">Editar</span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => toggleRosterRowExpand(person, loc)}
+            className={qaBtnSimple(
+              `border text-white ${isExpanded ? 'border-violet-800 bg-violet-700 hover:bg-violet-800' : 'border-violet-600 bg-violet-600 hover:bg-violet-700'}`
+            )}
+            title="Ver o ocultar detalles"
+            aria-label="Detalles"
+          >
+            {isExpanded ? <ChevronUp {...ROSTER_QUICK_ACTION_ICON_PROPS} /> : <ChevronDown {...ROSTER_QUICK_ACTION_ICON_PROPS} />}
+            <span className="hidden sm:inline">Detalles</span>
+          </button>
+        </div>
+        {currentUser?.role !== 'Lector' &&
+          (canQuickActionResponsivaDigital || canQuickActionResponsivaLocal || canQuickActionWhatsApp) && (
+            <div className="flex flex-wrap items-center justify-start gap-1.5">
+              {canQuickActionResponsivaDigital ? (
+                <RosterResponsivaWaButton
+                  person={person}
+                  loc={loc}
+                  onSend={sendResponsivaSignLinkWhatsAppForPerson}
+                  busyId={responsivaLinkBusyId}
+                  eventSnapshot={currentEvent}
+                />
+              ) : null}
+              {canQuickActionResponsivaLocal ? (
+                <RosterResponsivaLocalButton
+                  person={person}
+                  onLocal={(p) => markResponsivaLocalDelivery(p, loc)}
+                  busyId={responsivaLocalBusyId}
+                  eventSnapshot={currentEvent}
+                />
+              ) : null}
+              {canQuickActionWhatsApp ? (
+                <RosterWhatsAppButton person={person} loc={loc} onOpen={openWhatsAppModal} />
+              ) : null}
+            </div>
+          )}
+        {currentUser?.role !== 'Lector' && (
+          <div className="flex flex-wrap items-center justify-start gap-1.5">
+            {!participantIsCancelled(person) && (
+              <button
+                type="button"
+                onClick={() => openMoveToWaitlistConfirm(loc, person.id)}
+                className={qaBtnSimple('border border-sky-700 bg-sky-600 text-white hover:bg-sky-700')}
+                title="Mover a lista de espera"
+              >
+                <GraduationCap {...ROSTER_QUICK_ACTION_ICON_PROPS} />
+                <span className="hidden sm:inline">A espera</span>
+              </button>
+            )}
+            {canMarkPersonsOfInterestFlag ? (
+              <RosterPersonOfInterestButton
+                person={person}
+                isMarked={personLikeIsPersonOfInterest(person, personOfInterestVnpSet, { generateVnpPersonId })}
+                onToggle={handleTogglePersonOfInterest}
+              />
+            ) : null}
+            {!participantIsCancelled(person) && canCancelRegistrationsFlag ? (
+              <button
+                type="button"
+                onClick={() => cancelEntry(loc, person.id)}
+                className={qaBtnSimple('border border-amber-600 bg-amber-500 text-white hover:bg-amber-600')}
+                title="Dar de baja"
+              >
+                <Scissors {...ROSTER_QUICK_ACTION_ICON_PROPS} />
+                <span className="hidden sm:inline">Baja</span>
+              </button>
+            ) : participantIsCancelled(person) && canCancelRegistrationsFlag ? (
+              <button
+                type="button"
+                onClick={() => reactivateEntry(loc, person.id)}
+                className={qaBtnSimple('border border-teal-700 bg-teal-600 text-white hover:bg-teal-700')}
+                title="Reactivar registro"
+              >
+                <CheckCircle2 {...ROSTER_QUICK_ACTION_ICON_PROPS} />
+                <span className="hidden sm:inline">Reactivar</span>
+              </button>
+            ) : null}
+            {canArchiveRegistrationsFlag ? (
+              <button
+                type="button"
+                onClick={() => removeEntry(loc, person.id)}
+                className={qaBtnSimple('border border-rose-700 bg-rose-600 text-white hover:bg-rose-700')}
+                title="Archivar registro"
+              >
+                <Trash2 {...ROSTER_QUICK_ACTION_ICON_PROPS} />
+                <span className="hidden sm:inline">Archivar</span>
+              </button>
+            ) : null}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderRosterPersonMobileCard = (person, loc, opts = {}) => {
+    const {
+      displayIndex,
+      isExpanded,
+      showActions = true,
+      showSede = false,
+      sedeLabel,
+      branchMeta = null,
+      financesOverride = null,
+      participantColumnOpts = null,
+      disableExpand = false,
+    } = opts;
+    const isBecado = isCampa && isSiValue(person.isScholarship);
+    const liquidationTarget = getLiquidationTarget(person);
+    return (
+      <RosterParticipantMobileCard
+        key={opts.key || person.id}
+        personId={person.id}
+        anchorId={rosterRowAnchorId(loc, person.id)}
+        isExpanded={isExpanded}
+        onToggleExpand={
+          disableExpand ? undefined : () => toggleRosterRowExpand(person, loc)
+        }
+        participantContent={renderRegistrationParticipantColumn(person, {
+          displayIndex,
+          rosterLocation: loc,
+          isSubRegistration: !!opts.isSubRegistration,
+          ...(participantColumnOpts || {}),
+        })}
+        financesContent={financesOverride ?? renderRegistrationFinancesColumn(person)}
+        actionsContent={
+          showActions
+            ? renderRosterQuickActionsPanel(person, loc, { isExpanded, isBecado, liquidationTarget })
+            : null
+        }
+        expandedContent={
+          isExpanded && !disableExpand
+            ? renderExpandedRosterDetailTableRow(person, loc, { displayIndex })
+            : null
+        }
+        showSede={showSede}
+        sedeLabel={sedeLabel ?? person.location}
+        branchMeta={branchMeta}
+      />
+    );
+  };
+
   const renderLocationSheet = (loc) => {
     const cardAllowedNewReg = isCardPaymentAllowedForLocation(currentEvent, loc);
     const locFieldSuggestions = collectLocationSuggestionsFromRosterSources({
@@ -35343,9 +35564,43 @@ function resolveEventName(eventId) {
       isLocOpen(loc) && newRegSubmitBlocked ? formatRegistrationValidationIssuesMessage(newRegFormIssues) : undefined;
     let rosterDisplayNum = 1;
     let newRegSectionSeq = 0;
+    const rosterLocSlug = String(loc).replace(/[^a-zA-Z0-9_-]/g, '_');
     const newRegSectionLabel = (title) => {
       newRegSectionSeq += 1;
       return `${newRegSectionSeq}. ${title}`;
+    };
+    const buildFlattenedActiveRows = (participants) => {
+      const flattened = [];
+      for (const person of participants) {
+        flattened.push({ kind: 'main', person });
+        const branchRows = getBautizosBaptizedCompanionRows(person);
+        for (let i = 0; i < branchRows.length; i++) {
+          const c = branchRows[i] || {};
+          const nm = String(c?.name || '').trim();
+          if (!nm) continue;
+          flattened.push({
+            kind: 'branch',
+            parent: person,
+            companion: c,
+            branchPerson: {
+              id: `branch-${String(person.id)}-${String(c?.id || i)}`,
+              name: nm,
+              location: person.location,
+              relationship: String(c?.relationship || '').trim(),
+              willBeBaptized: SI,
+              bautizosAttendanceType: BAUTIZOS_ATTENDANCE.bautizado,
+              status: 'active',
+            },
+          });
+        }
+      }
+      return flattened;
+    };
+    const renderActivosEmptyMessage = () => {
+      if (filterWhatsAppPending === 'pending') {
+        return `No hay inscritos con aviso de WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`;
+      }
+      return `No hay registros para mostrar en ${loc}.`;
     };
     return (
     <div className="p-6 space-y-6">
@@ -37436,6 +37691,7 @@ function resolveEventName(eventId) {
 
       {locationTypeSummary?.hasAny ? <LocationRosterTypeSummary summary={locationTypeSummary} /> : null}
 
+      <RosterSectionScrollWrap sectionId={`roster-${rosterLocSlug}-activos`}>
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
         <button
           type="button"
@@ -37454,7 +37710,46 @@ function resolveEventName(eventId) {
           {showRosterActivos ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
         </button>
         {showRosterActivos && (
-        <div className="overflow-x-auto">
+        <>
+        <div className={uiRosterMobile.list}>
+          {visibleParticipants.length === 0 ? (
+            <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">{renderActivosEmptyMessage()}</p>
+          ) : (
+            buildFlattenedActiveRows(visibleParticipants).map((rowItem) => {
+              const rowDisplayIndex = rosterDisplayNum++;
+              if (rowItem.kind === 'branch') {
+                const bp = rowItem.branchPerson;
+                const parentName = String(rowItem?.parent?.name || '').trim() || 'Registro origen';
+                return renderRosterPersonMobileCard(bp, loc, {
+                  key: bp.id,
+                  displayIndex: rowDisplayIndex,
+                  isExpanded: false,
+                  showActions: false,
+                  isSubRegistration: true,
+                  financesOverride: (
+                    <p className="text-[10px] font-semibold text-sky-700 dark:text-sky-300 text-left">
+                      Subregistro (bautizo desde acompañante)
+                    </p>
+                  ),
+                  branchMeta: (
+                    <>
+                      Proviene de: <span className="font-semibold">{parentName}</span>
+                      {bp.relationship ? ` · ${bp.relationship}` : ''}
+                    </>
+                  ),
+                });
+              }
+              const person = rowItem.person;
+              const isExpanded = expandedRows.has(person.id);
+              return renderRosterPersonMobileCard(person, loc, {
+                key: person.id,
+                displayIndex: rowDisplayIndex,
+                isExpanded,
+              });
+            })
+          )}
+        </div>
+        <div className="hidden md:block overflow-x-auto">
           <table className={ROSTER_LIST_TABLE_CLASS}>
             <RosterListColgroup />
             <thead>
@@ -37466,6 +37761,7 @@ function resolveEventName(eventId) {
             </thead>
             <tbody className="divide-y divide-slate-50">
               {(() => {
+                rosterDisplayNum = 1;
                 if (visibleParticipants.length === 0) {
                   const emptyMsg =
                     filterWhatsAppPending === 'pending'
@@ -37474,30 +37770,7 @@ function resolveEventName(eventId) {
                   return <tr><td colSpan="3" className="px-6 py-16 text-center text-slate-400 italic font-medium">{emptyMsg}</td></tr>;
                 }
 
-                const flattenedActiveRows = [];
-                for (const person of visibleParticipants) {
-                  flattenedActiveRows.push({ kind: 'main', person });
-                  const branchRows = getBautizosBaptizedCompanionRows(person);
-                  for (let i = 0; i < branchRows.length; i++) {
-                    const c = branchRows[i] || {};
-                    const nm = String(c?.name || '').trim();
-                    if (!nm) continue;
-                    flattenedActiveRows.push({
-                      kind: 'branch',
-                      parent: person,
-                      companion: c,
-                      branchPerson: {
-                        id: `branch-${String(person.id)}-${String(c?.id || i)}`,
-                        name: nm,
-                        location: person.location,
-                        relationship: String(c?.relationship || '').trim(),
-                        willBeBaptized: SI,
-                        bautizosAttendanceType: BAUTIZOS_ATTENDANCE.bautizado,
-                        status: 'active',
-                      },
-                    });
-                  }
-                }
+                const flattenedActiveRows = buildFlattenedActiveRows(visibleParticipants);
                 return flattenedActiveRows.map((rowItem) => {
                   const rowDisplayIndex = rosterDisplayNum++;
                   if (rowItem.kind === 'branch') {
@@ -37664,9 +37937,12 @@ function resolveEventName(eventId) {
             </tbody>
           </table>
         </div>
+        </>
         )}
       </div>
+      </RosterSectionScrollWrap>
 
+      <RosterSectionScrollWrap sectionId={`roster-${rosterLocSlug}-waitlist`}>
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
         <div
           className={`w-full flex items-center justify-between gap-3 px-4 py-4 border-b border-slate-100 ${rosterSearchActive ? 'bg-slate-50/80' : ''}`}
@@ -37702,7 +37978,29 @@ function resolveEventName(eventId) {
           ) : null}
         </div>
         {showRosterWaitlist && (
-        <div className="overflow-x-auto">
+        <>
+        <div className={uiRosterMobile.list}>
+          {(waitlistData[loc] || []).length === 0 ? (
+            <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">Sin personas en lista de espera en {loc}.</p>
+          ) : waitlistFilteredForLoc.length === 0 ? (
+            <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">
+              {filterWhatsAppPending === 'pending'
+                ? `Nadie en lista de espera con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
+                : `Ninguna entrada coincide con la búsqueda o filtros en lista de espera (${loc}).`}
+            </p>
+          ) : (
+            waitlistFilteredForLoc.map((person) => {
+              const isExpanded = expandedRows.has(person.id);
+              const rowDisplayIndex = rosterDisplayNum++;
+              return renderRosterPersonMobileCard(person, loc, {
+                key: `wait-m-${person.id}`,
+                displayIndex: rowDisplayIndex,
+                isExpanded,
+              });
+            })
+          )}
+        </div>
+        <div className="hidden md:block overflow-x-auto">
           <table className={ROSTER_LIST_TABLE_CLASS}>
             <RosterListColgroup />
             <thead>
@@ -37856,9 +38154,12 @@ function resolveEventName(eventId) {
             </tbody>
           </table>
         </div>
+        </>
         )}
       </div>
+      </RosterSectionScrollWrap>
 
+      <RosterSectionScrollWrap sectionId={`roster-${rosterLocSlug}-cancelled`}>
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
         <button
           type="button"
@@ -37878,7 +38179,29 @@ function resolveEventName(eventId) {
           {showRosterCancelled ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
         </button>
         {showRosterCancelled && (
-        <div className="overflow-x-auto">
+        <>
+        <div className={uiRosterMobile.list}>
+          {(cancelledData[loc] || []).length === 0 ? (
+            <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">No hay registros dados de baja en {loc}.</p>
+          ) : cancelledFilteredForLoc.length === 0 ? (
+            <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">
+              {filterWhatsAppPending === 'pending'
+                ? `Nadie cancelado con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
+                : `Ningún cancelado coincide con la búsqueda o filtros en ${loc}.`}
+            </p>
+          ) : (
+            cancelledFilteredForLoc.map((person) => {
+              const isExpanded = expandedRows.has(person.id);
+              const rowDisplayIndex = rosterDisplayNum++;
+              return renderRosterPersonMobileCard(person, loc, {
+                key: `cxl-m-${person.id}`,
+                displayIndex: rowDisplayIndex,
+                isExpanded,
+              });
+            })
+          )}
+        </div>
+        <div className="hidden md:block overflow-x-auto">
           <table className={ROSTER_LIST_TABLE_CLASS}>
             <RosterListColgroup />
             <thead>
@@ -38018,8 +38341,10 @@ function resolveEventName(eventId) {
             </tbody>
           </table>
         </div>
+        </>
         )}
       </div>
+      </RosterSectionScrollWrap>
 
       {currentUser?.role !== 'Lector' && canQuickActionWhatsApp ? (
         <div className={`${uiRosterSearch.toolbarCard} mt-4`}>
@@ -38082,7 +38407,8 @@ function resolveEventName(eventId) {
   );
 };
 
-  const renderGlobalRegistryListToolbar = (baseRowsForCounts, filtersNote) => {
+  const renderGlobalRegistryListToolbar = (baseRowsForCounts, filtersNote, options = {}) => {
+    const { extraMobilePanelSections = null, sectionStats = null } = options;
     const emptyF = createEmptyGlobalRegistryListFilters();
     const cfo = (key, value) =>
       filterParticipantRows(baseRowsForCounts, true, { ...emptyF, [key]: value }).length;
@@ -38121,6 +38447,19 @@ function resolveEventName(eventId) {
               placeholder="Nombre, teléfono, ID VNPM o comentarios…"
               hintWhenIdle="Encuentra participantes en el registro global consolidado."
               hintWhenActive={`Coincidencias con los filtros actuales: ${grMatchCount}.`}
+              statsLine={
+                sectionStats ? (
+                  <p className={uiRosterSearch.statsTitle}>
+                    Coincidencias (con filtros actuales):{' '}
+                    <span className={uiRosterSearch.statsHighlight}>{grMatchCount}</span>
+                    <span className={uiRosterSearch.statsMuted}>
+                      {' '}
+                      — {sectionStats.activos} activos · {sectionStats.waitlist} lista de espera · {sectionStats.cancelled}{' '}
+                      cancelados
+                    </span>
+                  </p>
+                ) : null
+              }
             />
           </div>
           <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col gap-3">
@@ -38451,15 +38790,146 @@ function resolveEventName(eventId) {
     });
     const invalidSource = sourceRows.filter((p) => !isValidEventLocation(p));
     const validSource = sourceRows.filter((p) => isValidEventLocation(p));
+    const splitTitularsByRosterSection = (rows) => {
+      const activos = [];
+      const waitlist = [];
+      const cancelled = [];
+      for (const p of rows) {
+        const st = p?.status || 'active';
+        if (st === 'waitlist') waitlist.push(p);
+        else if (st === PARTICIPANT_STATUS_CANCELLED) cancelled.push(p);
+        else activos.push(p);
+      }
+      return { activos, waitlist, cancelled };
+    };
+    const titularSections = splitTitularsByRosterSection(validSource);
+    const expandGlobalRegistryGroup = (titularRows) =>
+      isBautizos ? expandBautizosGlobalRegistryRows(titularRows, validSource) : titularRows;
+    const activosExpanded = expandGlobalRegistryGroup(titularSections.activos);
+    const waitlistExpanded = isBautizos
+      ? expandBautizosWaitlistRegistryRows(titularSections.waitlist, validSource)
+      : titularSections.waitlist;
+    const cancelledExpanded = expandGlobalRegistryGroup(titularSections.cancelled);
+    const validSourceExpanded = [...activosExpanded, ...waitlistExpanded, ...cancelledExpanded];
     const invalidFiltered = applyGlobalRegistryLikeFilters(invalidSource);
-    let rows = applyGlobalRegistryLikeFilters(validSource);
-    if (globalLocationFilters.length > 0) {
-      rows = rows.filter((p) => globalLocationFilters.includes(p.location));
-    }
-    const coincidenceTotal = invalidFiltered.length + rows.length;
+    const applyGlobalLocationFilter = (list) =>
+      globalLocationFilters.length > 0
+        ? list.filter((p) => globalLocationFilters.includes(p.location))
+        : list;
+    let activeRows = applyGlobalLocationFilter(applyGlobalRegistryLikeFilters(activosExpanded));
+    let waitlistRows = applyGlobalLocationFilter(applyGlobalRegistryLikeFilters(waitlistExpanded));
+    let cancelledRows = applyGlobalLocationFilter(applyGlobalRegistryLikeFilters(cancelledExpanded));
+    const coincidenceTotal =
+      invalidFiltered.length + activeRows.length + waitlistRows.length + cancelledRows.length;
+    const grSearchActive = !!String(globalRegistryListFilters.searchTerm || '').trim();
+    const showGrActivos = grSearchActive ? activeRows.length > 0 : rosterSectionExpanded.activos;
+    const showGrWaitlist = grSearchActive ? waitlistRows.length > 0 : rosterSectionExpanded.waitlist;
+    const showGrCancelled = grSearchActive ? cancelledRows.length > 0 : rosterSectionExpanded.cancelled;
     const fallbackLoc =
       (Array.isArray(currentEvent?.locations) && currentEvent.locations.length > 0 ? currentEvent.locations[0] : '') || '';
     let globalRosterDisplayNum = 1;
+    const globalRegistryColumnOpts = {
+      useUnspecifiedPlaceholder: true,
+      hideBautizosCompanionCountChip: true,
+    };
+    const globalRegistryRowLoc = (person) =>
+      person.location ||
+      (Array.isArray(currentEvent?.locations) && currentEvent.locations.length > 0
+        ? currentEvent.locations[0]
+        : '');
+
+    const renderGlobalRegistryRowsBlock = (sectionRows, { emptyMessage, emptyFilteredMessage, sectionKey }) => (
+      <>
+        <div className={uiRosterMobile.list}>
+          {sectionRows.length === 0 ? (
+            <p className="px-3 py-14 text-center text-slate-400 italic font-medium text-sm">{emptyMessage}</p>
+          ) : (
+            sectionRows.map((person) => {
+              const isVirtual = !!person.__globalRegistryVirtual;
+              const isExpanded = !isVirtual && expandedRows.has(person.id);
+              const rowLoc = globalRegistryRowLoc(person);
+              const rowDisplayIndex = globalRosterDisplayNum++;
+              return renderRosterPersonMobileCard(person, rowLoc, {
+                key: `global-${sectionKey}-m-${person.id}`,
+                displayIndex: rowDisplayIndex,
+                isExpanded,
+                showActions: false,
+                showSede: true,
+                sedeLabel: rosterDisplayUnspecified(person.location),
+                isSubRegistration: isVirtual,
+                disableExpand: isVirtual,
+                participantColumnOpts: globalRegistryColumnOpts,
+              });
+            })
+          )}
+        </div>
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                <th className={ROSTER_TH_PARTICIPANT}>Participante</th>
+                <th className="px-4 py-4">Sede</th>
+                <th className={`${ROSTER_TH_FINANCES} px-4`}>Finanzas</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {sectionRows.length === 0 ? (
+                <tr>
+                  <td colSpan="3" className="px-6 py-14 text-center text-slate-400 italic font-medium">
+                    {emptyFilteredMessage || emptyMessage}
+                  </td>
+                </tr>
+              ) : (
+                sectionRows.map((person) => {
+                  const isVirtual = !!person.__globalRegistryVirtual;
+                  const isExpanded = !isVirtual && expandedRows.has(person.id);
+                  const rowLoc = globalRegistryRowLoc(person);
+                  const rowDisplayIndex = globalRosterDisplayNum++;
+                  return (
+                    <React.Fragment key={`global-${sectionKey}-${person.id}`}>
+                      <tr
+                        id={rosterRowAnchorId(rowLoc, person.id)}
+                        className={`hover:bg-slate-50/60 transition-colors ${isVirtual ? '' : 'cursor-pointer'} ${isExpanded ? 'bg-slate-50/90' : ''}`}
+                        title={isVirtual ? undefined : 'Clic en la fila para ver u ocultar detalles'}
+                        onClick={
+                          isVirtual
+                            ? undefined
+                            : (e) => {
+                                if (isRosterRowInteractiveClickTarget(e.target)) return;
+                                toggleRosterRowExpand(person, rowLoc);
+                              }
+                        }
+                      >
+                        <td className="px-4 py-3 align-top">
+                          {renderRegistrationParticipantColumn(person, {
+                            displayIndex: rowDisplayIndex,
+                            rosterLocation: rowLoc,
+                            isSubRegistration: isVirtual,
+                            ...globalRegistryColumnOpts,
+                          })}
+                        </td>
+                        <td className="px-4 py-3 align-top">
+                          <span className="inline-flex items-center gap-1 text-xs font-black text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-lg px-2 py-1">
+                            <MapPin size={12} />
+                            {rosterDisplayUnspecified(person.location)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 align-top">
+                          {renderRegistrationFinancesColumn(person)}
+                        </td>
+                      </tr>
+                      {isExpanded && !isVirtual
+                        ? renderExpandedRosterDetailTableRow(person, rowLoc, { displayIndex: rowDisplayIndex })
+                        : null}
+                    </React.Fragment>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </>
+    );
 
     return (
       <div className="p-6 space-y-6">
@@ -38484,7 +38954,13 @@ function resolveEventName(eventId) {
           </div>
         </div>
 
-        {renderGlobalRegistryListToolbar(validSource, 'Solo afectan a esta vista de Registro Global.')}
+        {renderGlobalRegistryListToolbar(validSourceExpanded, 'Solo afectan a esta vista de Registro Global.', {
+          sectionStats: {
+            activos: activeRows.length,
+            waitlist: waitlistRows.length,
+            cancelled: cancelledRows.length,
+          },
+        })}
         {invalidFiltered.length > 0 ? (
           <div className="rounded-2xl border border-amber-200 bg-amber-50/90 p-4 space-y-2">
             <p className="text-xs font-black text-amber-950 flex items-center gap-2">
@@ -38558,65 +39034,106 @@ function resolveEventName(eventId) {
           </div>
         ) : null}
 
+        <RosterSectionScrollWrap sectionId="global-activos">
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                  <th className={ROSTER_TH_PARTICIPANT}>Participante</th>
-                  <th className="px-4 py-4">Sede</th>
-                  <th className={`${ROSTER_TH_FINANCES} px-4`}>Finanzas</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {rows.length === 0 ? (
-                  <tr>
-                    <td colSpan="3" className="px-6 py-14 text-center text-slate-400 italic font-medium">
-                      {invalidFiltered.length > 0
-                        ? 'No hay registros en sedes válidas con los filtros actuales. Revisa la sección superior si hay sedes no reconocidas.'
-                        : 'No hay registros para mostrar con los filtros actuales.'}
-                    </td>
-                  </tr>
-                ) : rows.map((person) => {
-                    const isExpanded = expandedRows.has(person.id);
-                    const rowLoc =
-                      person.location ||
-                      (Array.isArray(currentEvent?.locations) && currentEvent.locations.length > 0
-                        ? currentEvent.locations[0]
-                        : '');
-                    const rowDisplayIndex = globalRosterDisplayNum++;
-                    return (
-                      <React.Fragment key={`global-${person.id}`}>
-                        <tr
-                          id={rosterRowAnchorId(rowLoc, person.id)}
-                          className={`hover:bg-slate-50/60 transition-colors cursor-pointer ${isExpanded ? 'bg-slate-50/90' : ''}`}
-                          title="Clic en la fila para ver u ocultar detalles"
-                          onClick={(e) => {
-                            if (isRosterRowInteractiveClickTarget(e.target)) return;
-                            toggleRosterRowExpand(person, rowLoc);
-                          }}
-                        >
-                          <td className="px-4 py-3 align-top">
-                            {renderRegistrationParticipantColumn(person, { displayIndex: rowDisplayIndex, rosterLocation: rowLoc })}
-                          </td>
-                          <td className="px-4 py-3 align-top">
-                            <span className="inline-flex items-center gap-1 text-xs font-black text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-lg px-2 py-1">
-                              <MapPin size={12} />
-                              {person.location || 'Sin sede'}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 align-top">
-                            {renderRegistrationFinancesColumn(person)}
-                          </td>
-                        </tr>
-                        {isExpanded && renderExpandedRosterDetailTableRow(person, rowLoc, { displayIndex: rowDisplayIndex })}
-                      </React.Fragment>
-                    );
-                  })}
-              </tbody>
-            </table>
-          </div>
+          <button
+            type="button"
+            disabled={grSearchActive}
+            onClick={() => !grSearchActive && toggleRosterSection('activos')}
+            className={`w-full flex items-center justify-between gap-3 px-4 py-4 border-b border-slate-100 text-left transition-colors ${grSearchActive ? 'bg-slate-50/80 cursor-default' : 'hover:bg-slate-50 cursor-pointer'}`}
+          >
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              <Users size={18} className="text-indigo-600 shrink-0" />
+              <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Activos (inscritos)</span>
+              <span className="chip-roster-count-activos text-[10px] font-black text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-lg shrink-0">
+                {activeRows.length}
+              </span>
+              {grSearchActive && activeRows.length > 0 ? (
+                <span className="chip-roster-count-filter-hit text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-lg">
+                  {activeRows.length} coincidencia{activeRows.length === 1 ? '' : 's'}
+                </span>
+              ) : null}
+            </div>
+            {showGrActivos ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
+          </button>
+          {showGrActivos &&
+            renderGlobalRegistryRowsBlock(activeRows, {
+              sectionKey: 'activos',
+              emptyMessage:
+                globalRegistryListFilters.filterWhatsAppPending === 'pending'
+                  ? 'No hay inscritos activos con aviso de WhatsApp pendiente (revisa la búsqueda o filtros).'
+                  : 'No hay registros activos para mostrar con los filtros actuales.',
+            })}
         </div>
+        </RosterSectionScrollWrap>
+
+        <RosterSectionScrollWrap sectionId="global-waitlist">
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <button
+            type="button"
+            disabled={grSearchActive}
+            onClick={() => !grSearchActive && toggleRosterSection('waitlist')}
+            className={`w-full flex items-center justify-between gap-3 px-4 py-4 border-b border-slate-100 text-left transition-colors ${grSearchActive ? 'bg-slate-50/80 cursor-default' : 'hover:bg-slate-50 cursor-pointer'}`}
+          >
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              <GraduationCap size={18} className="text-amber-600 shrink-0" />
+              <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Lista de espera(Becados)</span>
+              <span className="chip-roster-count-waitlist text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-lg shrink-0">
+                {waitlistExpanded.length} en espera
+              </span>
+              {grSearchActive && waitlistRows.length > 0 ? (
+                <span className="chip-roster-count-filter-hit text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-lg">
+                  {waitlistRows.length} coincidencia{waitlistRows.length === 1 ? '' : 's'}
+                </span>
+              ) : null}
+            </div>
+            {showGrWaitlist ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
+          </button>
+          {showGrWaitlist &&
+            renderGlobalRegistryRowsBlock(waitlistRows, {
+              sectionKey: 'waitlist',
+              emptyMessage: 'Sin personas en lista de espera en las sedes visibles.',
+              emptyFilteredMessage:
+                globalRegistryListFilters.filterWhatsAppPending === 'pending'
+                  ? 'Nadie en lista de espera con WhatsApp pendiente (revisa la búsqueda o filtros).'
+                  : 'Ninguna entrada en lista de espera coincide con la búsqueda o filtros actuales.',
+            })}
+        </div>
+        </RosterSectionScrollWrap>
+
+        <RosterSectionScrollWrap sectionId="global-cancelled">
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <button
+            type="button"
+            disabled={grSearchActive}
+            onClick={() => !grSearchActive && toggleRosterSection('cancelled')}
+            className={`w-full flex items-center justify-between gap-3 px-4 py-4 border-b border-slate-100 text-left transition-colors ${grSearchActive ? 'bg-slate-50/80 cursor-default' : 'hover:bg-slate-50 cursor-pointer'}`}
+          >
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              <Ban size={18} className="text-rose-600 shrink-0" />
+              <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Cancelados / dados de baja</span>
+              <span className="chip-roster-count-cancelled text-[10px] font-black text-rose-800 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded-lg shrink-0">
+                {cancelledExpanded.length} cancelados
+              </span>
+              {grSearchActive && cancelledRows.length > 0 ? (
+                <span className="chip-roster-count-filter-hit text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-lg">
+                  {cancelledRows.length} coincidencia{cancelledRows.length === 1 ? '' : 's'}
+                </span>
+              ) : null}
+            </div>
+            {showGrCancelled ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
+          </button>
+          {showGrCancelled &&
+            renderGlobalRegistryRowsBlock(cancelledRows, {
+              sectionKey: 'cancelled',
+              emptyMessage: 'No hay registros dados de baja en las sedes visibles.',
+              emptyFilteredMessage:
+                globalRegistryListFilters.filterWhatsAppPending === 'pending'
+                  ? 'Nadie cancelado con WhatsApp pendiente (revisa la búsqueda o filtros).'
+                  : 'Ningún cancelado coincide con la búsqueda o filtros actuales.',
+            })}
+        </div>
+        </RosterSectionScrollWrap>
       </div>
     );
   };

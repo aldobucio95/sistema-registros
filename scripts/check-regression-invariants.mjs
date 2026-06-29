@@ -36,6 +36,112 @@ function extractBetween(text, startMarker, endMarker) {
   return text.slice(from, end + endMarker.length);
 }
 
+/** Falla si el componente se importa pero no aparece como JSX (<Name …>). */
+function checkImportedComponentUsedAsJsx(app, componentName) {
+  const importRe = new RegExp(`import\\s+${componentName}\\s+from`);
+  const jsxRe = new RegExp(`<${componentName}[\\s/>]`);
+  if (!importRe.test(app)) return;
+  if (!jsxRe.test(app)) {
+    fail(`${componentName} importado en App.jsx pero nunca usado como <${componentName}>`);
+  } else {
+    pass(`${componentName} importado y usado en JSX`);
+  }
+}
+
+function checkSymbolInvoked(app, symbolName) {
+  if (!app.includes(symbolName)) return false;
+  const callRe = new RegExp(`${symbolName}\\s*\\(`);
+  return callRe.test(app);
+}
+
+function checkCompanionWaitlistWiring(app) {
+  const waitlistExpandOk =
+    checkSymbolInvoked(app, 'expandBautizosWaitlistRegistryRows') ||
+    checkSymbolInvoked(app, 'collectCompanionWaitlistVirtualRows');
+  if (!waitlistExpandOk) {
+    fail(
+      'lista de espera bautizos: falta invocar expandBautizosWaitlistRegistryRows o collectCompanionWaitlistVirtualRows'
+    );
+  } else {
+    pass('acompañantes en espera cableados (expand o collect virtual rows)');
+  }
+}
+
+function checkTransportPlanningProps(app) {
+  const block = extractBetween(app, 'const renderTransportPlanningPage', 'const renderCashCutPage');
+  const required = [
+    'applyGlobalRegistryLikeFilters',
+    'renderGlobalRegistryListToolbar',
+    'transportUiPrefs',
+    'onTransportUiPrefsChange',
+    'customCarCatalog',
+  ];
+  const missing = required.filter((prop) => !block.includes(prop));
+  if (missing.length > 0) {
+    fail(`TransportPlanningPage sin props: ${missing.join(', ')}`);
+  } else {
+    pass('TransportPlanningPage con props de filtros y preferencias');
+  }
+}
+
+function checkSedeRosterMobileParity(app) {
+  const locSheet = extractBetween(app, 'const renderLocationSheet = (loc) => {', 'const renderGlobalRegistryPage');
+  const activosHasMobile =
+    locSheet.includes('renderRosterPersonMobileCard') && locSheet.includes('uiRosterMobile.list');
+  const waitlistHasMobile =
+    /showRosterWaitlist[\s\S]{0,2500}renderRosterPersonMobileCard/.test(locSheet);
+  const cancelledHasMobile =
+    /showRosterCancelled[\s\S]{0,2500}renderRosterPersonMobileCard/.test(locSheet);
+  if (!activosHasMobile) {
+    fail('sección Activos sin tarjetas móvil (renderRosterPersonMobileCard / uiRosterMobile.list)');
+  } else if (!waitlistHasMobile || !cancelledHasMobile) {
+    fail('Espera o Cancelados sin tarjetas móvil (solo Activos tiene cards)');
+  } else {
+    pass('secciones sede Activos/Espera/Cancelados con tarjetas móvil');
+  }
+}
+
+function checkCashCutMobilePayments(app) {
+  const cashCut = extractBetween(app, 'const renderCashCutPage = () => {', 'const renderGlobalRegistryPage');
+  const ok =
+    cashCut.includes('renderCashCutPaymentsBlock') ||
+    cashCut.includes('uiCashCutSedeService.paymentsList');
+  if (!ok) {
+    fail('Corte de caja sin lista móvil de pagos (renderCashCutPaymentsBlock o paymentsList)');
+  } else {
+    pass('Corte de caja con lista móvil de pagos');
+  }
+}
+
+function checkGlobalRegistryRosterInvariants(app) {
+  const hasRowsBlock = app.includes('renderGlobalRegistryRowsBlock');
+  const globalPage = extractBetween(
+    app,
+    'const renderGlobalRegistryPage = () => {',
+    'const renderServerProfilesPage'
+  );
+  const hasThreeSectionsInGlobal =
+    hasRowsBlock ||
+    (globalPage.includes('Activos (inscritos)') &&
+      globalPage.includes('Lista de espera') &&
+      globalPage.includes('Cancelados'));
+  if (!hasThreeSectionsInGlobal) {
+    fail(
+      'Registro Global sin bloque de 3 secciones (Activos / Lista de espera / Cancelados): falta renderGlobalRegistryRowsBlock o equivalente'
+    );
+  } else {
+    pass('Registro Global con secciones Activos / Espera / Cancelados');
+  }
+
+  if (!app.includes('expandBautizosGlobalRegistryRows')) {
+    fail('falta expandBautizosGlobalRegistryRows en App.jsx (import o uso)');
+  } else if (!app.includes('expandBautizosGlobalRegistryRows(')) {
+    fail('expandBautizosGlobalRegistryRows importado pero nunca invocado en App.jsx');
+  } else {
+    pass('expandBautizosGlobalRegistryRows referenciado e invocado');
+  }
+}
+
 function main() {
   let app;
   try {
@@ -90,6 +196,14 @@ function main() {
   } else {
     pass('wiring resumen canónico → chips');
   }
+
+  checkImportedComponentUsedAsJsx(app, 'RosterSectionScrollWrap');
+  checkImportedComponentUsedAsJsx(app, 'RosterParticipantMobileCard');
+  checkGlobalRegistryRosterInvariants(app);
+  checkCompanionWaitlistWiring(app);
+  checkTransportPlanningProps(app);
+  checkSedeRosterMobileParity(app);
+  checkCashCutMobilePayments(app);
 
   try {
     statSync(join(ROOT, 'scripts/snapshot-critical-files.mjs'));

@@ -5,6 +5,14 @@ alwaysApply: true
 
 # Anti-regresión y recuperación segura
 
+## App.jsx — lectura y edición segura (obligatorio)
+
+- **Nunca** leer ni editar `src/App.jsx` sin `offset` + `limit` en la herramienta Read (máximo **150 líneas** por lectura).
+- **Nunca** cargar `App.jsx` completo en contexto; usar **Grep/rg** para búsquedas y **git diff** para cambios amplios.
+- Antes de trabajo grande en `App.jsx`: ejecutar `pnpm run snapshot:critical`.
+- **Una** restauración de feature por commit; verificar `pnpm run build` tras cada cambio incremental.
+- **Nunca** restaurar desde `_backups/` ni pegar bloques grandes de copias antiguas.
+
 ## Prohibido sin aprobación explícita del usuario
 
 - Restaurar archivos desde `_backups/` (carpeta padre del repo) o desde `src/app_respaldo.txt`.
