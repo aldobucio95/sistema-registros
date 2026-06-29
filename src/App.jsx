@@ -30297,6 +30297,30 @@ function resolveEventName(eventId) {
         );
       };
 
+      const buildBautizosWaitlistCanonicalForTable = () => {
+        const activeRows = dashboardLocs.flatMap((l) =>
+          applySummaryLikeFilters(data[l] || [], tableScope, { skipBautizosParty: true })
+        );
+        const waitlistTitulars = dashboardLocs.flatMap((l) =>
+          applySummaryLikeFilters(waitlistData[l] || [], tableScope, { skipBautizosParty: true })
+        );
+        const rosterById = new Map();
+        for (const p of activeRows) {
+          const id = String(p?.id || '').trim();
+          if (id) rosterById.set(id, p);
+        }
+        for (const p of waitlistTitulars) {
+          const id = String(p?.id || '').trim();
+          if (id) rosterById.set(id, p);
+        }
+        const roster = [...rosterById.values()];
+        return buildBautizosCanonicalCompanionPlan(
+          roster,
+          buildActiveRegistrantMetaForCompanionDedupe(roster.filter((p) => !participantIsCancelled(p))),
+          { includeBaptizedCompanions: true, waitlistOnly: true }
+        );
+      };
+
       if (isBautizos && metric === 'companions') {
         const plan = buildBautizosCanonicalForTable();
         const out = [];
@@ -30349,6 +30373,46 @@ function resolveEventName(eventId) {
           }
           return cOut;
         })();
+        const all = [...parts, ...compRows];
+        all.sort((a, b) => {
+          const na = a.__summaryCompanionRow ? a.displayName : a.name || '';
+          const nb = b.__summaryCompanionRow ? b.displayName : b.name || '';
+          return na.localeCompare(nb, 'es');
+        });
+        return all;
+      }
+
+      if (isBautizos && metric === 'waitlist') {
+        const parts = [];
+        const seen = new Set();
+        for (const loc of locs) {
+          const filtered = applySummaryLikeFilters(waitlistData[loc] || [], tableScope, { skipBautizosParty: true });
+          for (const p of filtered) {
+            if (!bautizosDashboardTitularCountsForScope(p, bautizosDashScope)) continue;
+            if (!participantMatchesSummaryMetric(p, 'waitlist')) continue;
+            const id = String(p.id);
+            if (seen.has(id)) continue;
+            seen.add(id);
+            parts.push(p);
+          }
+        }
+        const plan = buildBautizosWaitlistCanonicalForTable();
+        const compRows = [];
+        for (const info of plan.values()) {
+          if (participantIsCancelled(info.sourceRegistrant)) continue;
+          const sloc = String(info.sourceRegistrant.location || '').trim();
+          if (!locSet.has(sloc)) continue;
+          const c = info.sourceCompanion || {};
+          if (!String(c?.name || '').trim()) continue;
+          if (!bautizosDashboardCompanionCountsForScope(c, bautizosDashScope, info.sourceRegistrant)) continue;
+          compRows.push({
+            id: `sum-wl-comp-${String(info.canonKey).replace(/[^a-z0-9:]/gi, '_')}`,
+            __summaryCompanionRow: true,
+            displayName: String(c.name || '').trim(),
+            hostName: String(info.sourceRegistrant.name || '').trim(),
+            location: sloc,
+          });
+        }
         const all = [...parts, ...compRows];
         all.sort((a, b) => {
           const na = a.__summaryCompanionRow ? a.displayName : a.name || '';
@@ -30545,15 +30609,38 @@ function resolveEventName(eventId) {
         return out;
       }
 
+      if (metric === 'cancelled' || metric === 'refund') {
+        const cxlOut = [];
+        const cxlSeen = new Set();
+        for (const loc of locs) {
+          let rows = applySummaryLikeFilters(cancelledData[loc] || [], tableScope, { skipBautizosParty: true });
+          if (isBautizos) {
+            rows = rows.filter((p) => bautizosDashboardTitularCountsForScope(p, bautizosDashScope));
+          }
+          for (const p of rows) {
+            if (!participantMatchesSummaryMetric(p, metric)) continue;
+            const id = String(p.id);
+            if (cxlSeen.has(id)) continue;
+            cxlSeen.add(id);
+            cxlOut.push(p);
+          }
+        }
+        cxlOut.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'es'));
+        return cxlOut;
+      }
+
       const out = [];
       const seenIds = new Set();
       const summaryRowsForMetric = (locLabel) => {
-        if (metric === 'cancelled' || metric === 'refund') return cancelledData[locLabel] || [];
         if (metric === 'waitlist') return waitlistData[locLabel] || [];
         return data[locLabel] || [];
       };
       for (const loc of locs) {
-        const filtered = applySummaryLikeFilters(summaryRowsForMetric(loc), tableScope);
+        const filtered = applySummaryLikeFilters(
+          summaryRowsForMetric(loc),
+          tableScope,
+          metric === 'waitlist' ? { skipBautizosParty: true } : null
+        );
         for (const p of filtered) {
           if (!participantMatchesSummaryMetric(p, metric)) continue;
           const id = String(p.id);
@@ -33078,7 +33165,9 @@ function resolveEventName(eventId) {
                         ? `${summaryCellModalDonations.length} donación${summaryCellModalDonations.length !== 1 ? 'es' : ''}`
                         : `${summaryCellModalRows.length} ${
                             isBautizos &&
-                            (summaryCellDetailModal.metric === 'count' || summaryCellDetailModal.metric === 'bautizados')
+                            (summaryCellDetailModal.metric === 'count' ||
+                              summaryCellDetailModal.metric === 'bautizados' ||
+                              summaryCellDetailModal.metric === 'waitlist')
                               ? `persona${summaryCellModalRows.length !== 1 ? 's' : ''}`
                               : `registro${summaryCellModalRows.length !== 1 ? 's' : ''}`
                           }`}

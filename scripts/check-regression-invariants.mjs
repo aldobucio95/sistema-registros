@@ -165,6 +165,29 @@ function checkDashboardSummaryTableWiring(app) {
   }
 }
 
+function checkSummaryCellModalWiring(app) {
+  const block = extractBetween(app, 'const getParticipantsForSummaryCell = (scope, locationLabel, metric) => {', 'const summaryMetricLabels = {');
+  if (!block) {
+    fail('falta getParticipantsForSummaryCell en App.jsx');
+    return;
+  }
+  if (!block.includes('buildBautizosWaitlistCanonicalForTable')) {
+    fail('modal tabla: falta buildBautizosWaitlistCanonicalForTable para lista de espera');
+  } else if (!block.includes("metric === 'waitlist'")) {
+    fail('modal tabla: falta bloque metric === waitlist');
+  } else {
+    pass('modal tabla lista de espera con acompañantes canónicos');
+  }
+  if (
+    !block.includes("metric === 'cancelled' || metric === 'refund'") ||
+    !block.includes('skipBautizosParty: true')
+  ) {
+    fail('modal tabla: cancelados/devolución sin skipBautizosParty');
+  } else {
+    pass('modal tabla cancelados alineado con sección cancelados');
+  }
+}
+
 function main() {
   let app;
   try {
@@ -228,6 +251,7 @@ function main() {
   checkSedeRosterMobileParity(app);
   checkCashCutMobilePayments(app);
   checkDashboardSummaryTableWiring(app);
+  checkSummaryCellModalWiring(app);
 
   try {
     statSync(join(ROOT, 'scripts/snapshot-critical-files.mjs'));
