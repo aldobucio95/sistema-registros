@@ -4,12 +4,11 @@
 import {
   BAUTIZOS_ATTENDANCE,
   buildActiveRegistrantMetaForCompanionDedupe,
-  bautizosCompanionIsAlsoBautizadoRegistrant,
-  getBautizosCompanionsArray,
+  buildBautizosCanonicalCompanionPlan,
   isBautizosCompanionBaptized,
 } from './bautizosParty.js';
 import { normalizeBirthDateToIso } from './birthDateIsoUtils.js';
-import { isCompanionWaitlistPending, isCompanionWaitlistVirtualParticipant } from './bautizosCompanionWaitlist.js';
+import { isCompanionWaitlistVirtualParticipant } from './bautizosCompanionWaitlist.js';
 
 function buildCompanionPartyPerson(host, companion, index) {
   const hostId = String(host?.id || '').trim();
@@ -51,6 +50,17 @@ function companionSubLabel(person, hostPerson) {
   return 'Acompañante del titular';
 }
 
+function groupCanonicalCompanionsByHost(plan, titularIdSet) {
+  const byHost = new Map();
+  for (const [canonKey, entry] of plan) {
+    const hostId = String(entry?.registrantId || '').trim();
+    if (!hostId || !titularIdSet.has(hostId)) continue;
+    if (!byHost.has(hostId)) byHost.set(hostId, []);
+    byHost.get(hostId).push({ canonKey, entry });
+  }
+  return byHost;
+}
+
 /**
  * @param {object[]} titulars — titulares de la sección (ya filtrados)
  * @param {object[]} rosterForPlan — roster del evento para dedupe
@@ -58,12 +68,15 @@ function companionSubLabel(person, hostPerson) {
  * @returns {GlobalRegistryPartyRow[]}
  */
 export function buildGlobalRegistryPartyRowsFromTitulars(titulars, rosterForPlan, options = {}) {
-  const section = options.section || 'active';
   const list = Array.isArray(titulars) ? titulars : [];
   if (list.length === 0) return [];
   const roster = Array.isArray(rosterForPlan) ? rosterForPlan : list;
   const meta = buildActiveRegistrantMetaForCompanionDedupe(roster);
-  const skipPendingOnActive = section === 'active';
+  const titularIdSet = new Set(list.map((p) => String(p?.id || '').trim()).filter(Boolean));
+  const plan = buildBautizosCanonicalCompanionPlan(roster, meta, {
+    includeBaptizedCompanions: true,
+  });
+  const companionsByHost = groupCanonicalCompanionsByHost(plan, titularIdSet);
   const out = [];
 
   for (const host of list) {
@@ -79,34 +92,20 @@ export function buildGlobalRegistryPartyRowsFromTitulars(titulars, rosterForPlan
 
     const nested = [];
     const baptizedStandalone = [];
-    const comps = getBautizosCompanionsArray(host);
-
-    for (let i = 0; i < comps.length; i++) {
-      const c = comps[i] || {};
+    for (const { canonKey, entry } of companionsByHost.get(hostId) || []) {
+      const c = entry?.sourceCompanion || {};
       if (!String(c?.name || '').trim()) continue;
-      if (skipPendingOnActive && isCompanionWaitlistPending(c)) continue;
-      if (
-        bautizosCompanionIsAlsoBautizadoRegistrant(
-          c,
-          meta.bautizadoIdSet,
-          meta.bautizadoNameSet,
-          meta.vnpToBautizadoId
-        )
-      ) {
-        continue;
-      }
-
-      const person = buildCompanionPartyPerson(host, c, i);
+      const person = buildCompanionPartyPerson(entry.sourceRegistrant || host, c, 0);
       if (isBautizosCompanionBaptized(c)) {
-        baptizedStandalone.push(person);
+        baptizedStandalone.push({ person, canonKey });
       } else {
-        nested.push(person);
+        nested.push({ person, canonKey });
       }
     }
 
-    for (const person of nested) {
+    for (const { person, canonKey } of nested) {
       out.push({
-        key: `nested:${person.id}`,
+        key: `nested:${canonKey}`,
         person,
         hostPerson: host,
         isSubRegistration: true,
@@ -114,10 +113,10 @@ export function buildGlobalRegistryPartyRowsFromTitulars(titulars, rosterForPlan
         subRegistrationLabel: companionSubLabel(person, host),
       });
     }
-    for (const person of baptizedStandalone) {
+    for (const { person, canonKey } of baptizedStandalone) {
       const hostName = String(host?.name || '').trim();
       out.push({
-        key: `baptized:${person.id}`,
+        key: `baptized:${canonKey}`,
         person,
         hostPerson: host,
         isSubRegistration: false,

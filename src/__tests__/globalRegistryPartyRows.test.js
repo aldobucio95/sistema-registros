@@ -102,6 +102,24 @@ describe('globalRegistryPartyRows', () => {
     expect(sections.waitlist[0].person.name).toBe('En Espera Virtual');
   });
 
+  it('deduplicates companion listed under multiple titulars via canonical plan', () => {
+    const sharedCompanion = { id: 'c1', name: 'Duplicado', relationship: 'Hermano' };
+    const hostA = {
+      id: 'hA',
+      name: 'Host A',
+      bautizosCompanions: [sharedCompanion],
+    };
+    const hostB = {
+      id: 'hB',
+      name: 'Host B',
+      bautizosCompanions: [{ ...sharedCompanion, linkedCompanionSourceKey: 'c:hA::c1' }],
+    };
+    const rows = buildGlobalRegistryPartyRowsFromTitulars([hostA, hostB], [hostA, hostB]);
+    expect(rows.filter((r) => r.key.startsWith('titular:'))).toHaveLength(2);
+    expect(rows.filter((r) => r.isSubRegistration)).toHaveLength(1);
+    expect(rows).toHaveLength(3);
+  });
+
   it('sortGlobalRegistryPartyRows keeps companion blocks under titular when sorting by name', () => {
     const hostA = {
       id: 'hA',
