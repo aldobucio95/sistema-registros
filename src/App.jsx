@@ -9139,6 +9139,106 @@ function resolveEventName(eventId) {
     resolve?.(!!confirmed);
   }, []);
 
+  const promoteOverCapConfirmRef = useRef(null);
+  const [promoteOverCapConfirmModal, setPromoteOverCapConfirmModal] = useState({
+    isOpen: false,
+    capUsed: 0,
+    capTotal: 0,
+    additionalUnits: 0,
+    reason: 'global',
+    loc: '',
+    personName: '',
+    isCompanion: false,
+  });
+
+  const requestPromoteOverCapConfirm = useCallback(
+    ({ capUsed, capTotal, additionalUnits, reason, loc, personName, isCompanion }) =>
+      new Promise((resolve) => {
+        promoteOverCapConfirmRef.current = resolve;
+        setPromoteOverCapConfirmModal({
+          isOpen: true,
+          capUsed: Math.max(0, Number(capUsed) || 0),
+          capTotal: Math.max(0, Number(capTotal) || 0),
+          additionalUnits: Math.max(0, Number(additionalUnits) || 0),
+          reason: reason === 'sede' ? 'sede' : 'global',
+          loc: String(loc || '').trim(),
+          personName: String(personName || '').trim(),
+          isCompanion: !!isCompanion,
+        });
+      }),
+    []
+  );
+
+  const closePromoteOverCapConfirm = useCallback((confirmed) => {
+    setPromoteOverCapConfirmModal({
+      isOpen: false,
+      capUsed: 0,
+      capTotal: 0,
+      additionalUnits: 0,
+      reason: 'global',
+      loc: '',
+      personName: '',
+      isCompanion: false,
+    });
+    const resolve = promoteOverCapConfirmRef.current;
+    promoteOverCapConfirmRef.current = null;
+    resolve?.(!!confirmed);
+  }, []);
+
+  const ensurePromoteCapAllowed = useCallback(
+    async ({ loc, additionalUnits, personName, isCompanion }) => {
+      const units = Math.max(0, Number(additionalUnits) || 0);
+      const gCap = getEventTotalCap();
+      if (gCap > 0) {
+        const used = getEventCapUsedUnits();
+        if (used + units > gCap) {
+          if (!hasAdminRights) {
+            showToast('No se puede promover: el cupo total del evento está lleno.');
+            return { allowed: false, overCap: false };
+          }
+          const confirmed = await requestPromoteOverCapConfirm({
+            capUsed: used,
+            capTotal: gCap,
+            additionalUnits: units,
+            reason: 'global',
+            loc,
+            personName,
+            isCompanion,
+          });
+          return { allowed: !!confirmed, overCap: !!confirmed };
+        }
+        return { allowed: true, overCap: false };
+      }
+      const locCap = getLocationCap(loc);
+      if (locCap > 0 && getCapUsedUnitsByLocation(loc) + units > locCap) {
+        if (!hasAdminRights) {
+          showToast('No se puede promover: el cupo de la sede está lleno.');
+          return { allowed: false, overCap: false };
+        }
+        const confirmed = await requestPromoteOverCapConfirm({
+          capUsed: getCapUsedUnitsByLocation(loc),
+          capTotal: locCap,
+          additionalUnits: units,
+          reason: 'sede',
+          loc,
+          personName,
+          isCompanion,
+        });
+        return { allowed: !!confirmed, overCap: !!confirmed };
+      }
+      return { allowed: true, overCap: false };
+    },
+    [
+      getEventTotalCap,
+      getEventCapUsedUnits,
+      getLocationCap,
+      getCapUsedUnitsByLocation,
+      hasAdminRights,
+      requestPromoteOverCapConfirm,
+      showToast,
+    ]
+  );
+
   const privacyConsentConfirmRef = useRef(null);
   const [privacyConsentConfirmModal, setPrivacyConsentConfirmModal] = useState({ isOpen: false });
 
@@ -22692,18 +22792,14 @@ function resolveEventName(eventId) {
       showToast('No se encontró el registro en lista de espera.');
       return;
     }
-    const gCapPromote = getEventTotalCap();
-    if (gCapPromote > 0) {
-      const promoteUnits = computePromoteFromWaitlistCapUnits(person, allParticipants, currentEvent, loc);
-      if (getEventCapUsedUnits() + promoteUnits > gCapPromote) {
-        showToast("No se puede promover: el cupo total del evento está lleno.");
-        return;
-      }
-    }
-    if (isLocationSedeCapFull(loc)) {
-      showToast("No se puede promover: el cupo de la sede está lleno.");
-      return;
-    }
+    const promoteUnits = computePromoteFromWaitlistCapUnits(person, allParticipants, currentEvent, loc);
+    const capCheck = await ensurePromoteCapAllowed({
+      loc,
+      additionalUnits: promoteUnits,
+      personName: person.name,
+      isCompanion: false,
+    });
+    if (!capCheck.allowed) return;
     const promoteAt = Date.now();
     const liqPromote = getLiquidationTarget(person);
     const paidPromote = parseFloat(person.paid || 0);
@@ -22762,7 +22858,7 @@ function resolveEventName(eventId) {
       isSiValue(person.isScholarship)
         ? ` Becado ${person.scholarshipType === 'partial' ? 'parcial' : 'total'}${person.scholarshipType === 'partial' ? ` (monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}, a liquidar $${Number(liqPromote || 0).toLocaleString('es-MX')}, abono $${paidPromote.toLocaleString('es-MX')})` : ''}.`
         : '';
-    const _promLog = `Promovió a ${person.name} de lista de espera a inscritos en la sede ${loc}.${promBeca}`;
+    const _promLog = `Promovió a ${person.name} de lista de espera a inscritos en la sede ${loc}.${promBeca}${capCheck.overCap ? ' (sobrecupo autorizado por administrador).' : ''}`;
     addLog(
       'Lista de Espera',
       _promLog,
@@ -22810,19 +22906,14 @@ function resolveEventName(eventId) {
       return;
     }
     const delta = computeAdditionalCompanionCapUnits(host, companion, allParticipants, currentEvent);
-    const gCapPromote = getEventTotalCap();
-    if (gCapPromote > 0) {
-      if (getEventCapUsedUnits() + delta > gCapPromote) {
-        showToast('No se puede promover: el cupo total del evento está lleno.');
-        return;
-      }
-    } else {
-      const locCap = getLocationCap(loc);
-      if (locCap > 0 && getCapUsedUnitsByLocation(loc) + delta > locCap) {
-        showToast('No se puede promover: el cupo de la sede está lleno.');
-        return;
-      }
-    }
+    const compName = String(companion?.name || '').trim() || 'Acompañante';
+    const capCheck = await ensurePromoteCapAllowed({
+      loc,
+      additionalUnits: delta,
+      personName: compName,
+      isCompanion: true,
+    });
+    if (!capCheck.allowed) return;
     const nextCompanions = companions.map((c, i) =>
       i === idx ? clearCompanionWaitlistFlags(c) : c
     );
@@ -22840,9 +22931,8 @@ function resolveEventName(eventId) {
       personId: host.id,
       patch: payload,
     });
-    const compName = String(companion?.name || '').trim() || 'Acompañante';
     const hostName = String(host?.name || '').trim() || 'titular';
-    const _promCompLog = `Promovió a ${compName} (acompañante en espera) a activo en el registro de ${hostName} (${loc}).`;
+    const _promCompLog = `Promovió a ${compName} (acompañante en espera) a activo en el registro de ${hostName} (${loc}).${capCheck.overCap ? ' (sobrecupo autorizado por administrador).' : ''}`;
     addLog(
       'Lista de Espera',
       _promCompLog,
@@ -26964,6 +27054,92 @@ function resolveEventName(eventId) {
     );
   };
 
+  const renderPromoteOverCapConfirmModal = () => {
+    if (!promoteOverCapConfirmModal.isOpen) return null;
+    const {
+      capUsed,
+      capTotal,
+      additionalUnits,
+      reason,
+      loc: capLoc,
+      personName,
+      isCompanion,
+    } = promoteOverCapConfirmModal;
+    const capLabel =
+      reason === 'sede'
+        ? `El cupo de inscripciones activas de la sede ${capLoc || 'seleccionada'} ya está completo`
+        : 'El cupo de inscripciones activas del evento ya está completo';
+    const whoLabel = isCompanion
+      ? `el acompañante ${personName || 'en lista de espera'}`
+      : personName || 'esta persona';
+    const projected = capUsed + additionalUnits;
+    return (
+      <div className={uiModal.overlayTop} role="dialog" aria-modal="true" aria-labelledby="promote-overcap-title">
+        <button
+          type="button"
+          className={uiModal.backdrop}
+          onClick={() => closePromoteOverCapConfirm(false)}
+          aria-label="Cerrar"
+        />
+        <div
+          className={`${uiModal.panelSm} p-6`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <h2 id="promote-overcap-title" className="text-lg font-bold text-rose-700 dark:text-rose-300">
+            Confirmar sobrecupo
+          </h2>
+          <div className="mt-3 space-y-3 text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+            <p>
+              {capLabel}
+              {capTotal > 0 ? (
+                <>
+                  {' '}
+                  (<strong className="tabular-nums text-slate-800 dark:text-slate-100">{capUsed}</strong> de{' '}
+                  <strong className="tabular-nums text-slate-800 dark:text-slate-100">{capTotal}</strong> personas).
+                </>
+              ) : (
+                '.'
+              )}
+            </p>
+            <p>
+              Al promover a <strong className="text-slate-800 dark:text-slate-100">{whoLabel}</strong> se superará el
+              cupo configurado
+              {additionalUnits > 0 ? (
+                <>
+                  {' '}
+                  (quedarían{' '}
+                  <strong className="tabular-nums text-slate-800 dark:text-slate-100">{projected}</strong> de{' '}
+                  <strong className="tabular-nums text-slate-800 dark:text-slate-100">{capTotal}</strong>).
+                </>
+              ) : (
+                '.'
+              )}
+            </p>
+            <p className="text-rose-700 dark:text-rose-300 font-semibold">
+              Solo administradores pueden autorizar sobrecupo. ¿Deseas continuar con la promoción?
+            </p>
+          </div>
+          <div className="mt-6 flex gap-3">
+            <button
+              type="button"
+              onClick={() => closePromoteOverCapConfirm(false)}
+              className="flex-1 rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold text-slate-600 transition-colors hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={() => closePromoteOverCapConfirm(true)}
+              className="flex-1 rounded-xl bg-rose-600 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-rose-200 transition-colors hover:bg-rose-700 dark:shadow-none"
+            >
+              Sí, promover con sobrecupo
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // --- SCREEN 1: LOGIN ---
   if (!currentUser) {
     if (location.pathname !== '/login') {
@@ -27055,6 +27231,7 @@ function resolveEventName(eventId) {
       setRestoreModal,
       confirmRestore,
       renderRegistryConfirmModal,
+      renderPromoteOverCapConfirmModal,
       editorRegFieldsModalEl,
       panelNavModalEl,
       privacyNoticeModalEl,
@@ -39872,6 +40049,7 @@ function resolveEventName(eventId) {
       renderGlobalRegistryPage,
       renderLocationSheet,
       renderRegistryConfirmModal,
+      renderPromoteOverCapConfirmModal,
       renderServerProfilesPage,
       renderSummary,
       resetEditRegistryModal,

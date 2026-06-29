@@ -36,11 +36,15 @@ import CarVehicleMetaPanel from '../components/transport/CarVehicleMetaPanel.jsx
 import { collectCarColorSuggestions, applyCarMetaPassengerInheritance } from '../bautizosCarMeta.js';
 import BautizosCarCrewFields from '../components/transport/BautizosCarCrewFields.jsx';
 import {
+  buildBautizosFamilyMemberOptions,
+  buildBautizosCarSlotsForTransport,
   buildCarCrewAssignmentPatches,
   buildCarInventorySlotsForOwner,
+  buildTransportCarContextForHost,
   collectAssignedCrewSourceKeysOnOtherCars,
   filterDriverMemberOptions,
   formatCarMetaDisplayValue,
+  formatTransportCarMemberRole,
   mergeCarMetaPatchesIntoPlan,
 } from '../bautizosCarMeta.js';
 import {
@@ -169,6 +173,26 @@ export default function TransportPlanningPage({
 
   const [plan, setPlan] = useState(() => normalizeTransportPlanning(currentEvent?.transportPlanning));
   const [saving, setSaving] = useState(false);
+
+  const planForCarMetaRead = useMemo(
+    () => applyCarMetaPassengerInheritance(normalizeTransportPlanning(plan)),
+    [plan]
+  );
+
+  const resolveHostCarContext = useCallback(
+    (hostId) => buildTransportCarContextForHost({ hostId, plan, roster: evRosterFiltered }),
+    [plan, evRosterFiltered]
+  );
+
+  const buildCrewMemberOptions = useCallback(
+    (carCtx) =>
+      buildBautizosFamilyMemberOptions({
+        hostPerson: carCtx.hostPerson,
+        companions: carCtx.companions,
+        hostSourceKey: carCtx.hostSourceKey,
+      }),
+    []
+  );
 
   const canSaveTransport = canEdit || canEditTransportOps;
 
@@ -919,7 +943,10 @@ export default function TransportPlanningPage({
             ? displayGroups
                 .map((grp, gi) => {
                 const leader = resolvePdfGroupLeader(grp);
-                const titularSk = getHostParticipantSourceKeyPdf(leader || grp.hosts?.[0]);
+                const leaderHost = leader || grp.hosts?.[0];
+                const leaderHostId = String(leaderHost?.hostId || '').trim();
+                const carCtx = resolveHostCarContext(leaderHostId);
+                const titularSk = carCtx.hostSourceKey;
                 const pdfManualKeys = new Set(
                   buildManualCarGroupViews(plan, carLines).flatMap((v) => v.memberKeys || [])
                 );
@@ -928,12 +955,17 @@ export default function TransportPlanningPage({
                 );
                 if (filteredLines.length === 0) return null;
                 const eff = resolveDisplayGroupCars(grp);
-                const slots = assignBautizosMembersToCarSlots(
-                  filteredLines,
-                  eff,
-                  seatsForSlotting,
-                  evRosterFiltered
-                );
+                const slots = buildBautizosCarSlotsForTransport({
+                  plan,
+                  hostSourceKey: titularSk,
+                  effectiveCars: eff,
+                  hostPerson: carCtx.hostPerson,
+                  companions: carCtx.companions,
+                  labelIndex: carCtx.labelIndex,
+                  fallbackLines: filteredLines,
+                  roster: evRosterFiltered,
+                  seatsPerCar: seatsForSlotting,
+                });
                 const titleBase = grp.isFamily ? `Grupo familiar ${gi + 1}` : `Registro ${gi + 1}`;
                 return {
                   kind: 'bautizos',
@@ -1321,7 +1353,8 @@ export default function TransportPlanningPage({
     });
   };
 
-  const getCarMeta = (sourceKey, carIndex = 1) => getCarVehicleMetaFromPlan(plan, sourceKey, carIndex);
+  const getCarMeta = (sourceKey, carIndex = 1) =>
+    getCarVehicleMetaFromPlan(planForCarMetaRead, sourceKey, carIndex);
 
   const renderCollapsedCarMetaCells = (ownerSk, carIndex = 1) => {
     const meta = getCarMeta(ownerSk, carIndex);
@@ -1459,7 +1492,7 @@ export default function TransportPlanningPage({
     const memberOptions = opts.memberOptions || [];
     const requirePassengers = memberOptions.some((m) => m.kind === 'companion');
     const vehicleKey = carVehicleMetaStorageKey(titularSk, carIndex);
-    const inventory = buildCarInventorySlotsForOwner(plan, titularSk, K);
+    const inventory = buildCarInventorySlotsForOwner(planForCarMetaRead, titularSk, K);
     const assignedOnOtherCars = collectAssignedCrewSourceKeysOnOtherCars(inventory, vehicleKey);
     const driverMemberOptions = filterDriverMemberOptions(memberOptions, assignedOnOtherCars);
     const driverSk = String(meta?.driverSourceKey || '');
@@ -2330,17 +2363,24 @@ export default function TransportPlanningPage({
                           plan.familyCarOverride && plan.familyCarOverride[host.hostId] != null
                             ? plan.familyCarOverride[host.hostId]
                             : '';
-                        const titularSk = getHostParticipantSourceKey({ lines: cardLines, hostId: host.hostId });
+                        const carCtx = resolveHostCarContext(host.hostId);
+                        const titularSk = carCtx.hostSourceKey;
                         const eff = grp.isFamily
                           ? groupEff
                           : bautizosFamilyEffectiveCarCount(host.hostId, fam, plan, keyToGroup);
-                        const slots = assignBautizosMembersToCarSlots(
-                          cardLines,
-                          eff,
-                          plan.bautizosCarCapacity,
-                          evRosterFiltered
-                        );
-                        const confirmedCars = countConfirmedCarsInSet(plan, titularSk, eff);
+                        const slots = buildBautizosCarSlotsForTransport({
+                          plan,
+                          hostSourceKey: titularSk,
+                          effectiveCars: eff,
+                          hostPerson: carCtx.hostPerson,
+                          companions: carCtx.companions,
+                          labelIndex: carCtx.labelIndex,
+                          fallbackLines: cardLines,
+                          roster: evRosterFiltered,
+                          seatsPerCar: plan.bautizosCarCapacity,
+                        });
+                        const crewMemberOptions = buildCrewMemberOptions(carCtx);
+                        const confirmedCars = countConfirmedCarsInSet(planForCarMetaRead, titularSk, eff);
                         return (
                           <div key={host.hostId} className="rounded-xl border border-slate-200 dark:border-slate-700 p-3">
                             <div className="flex flex-wrap items-start justify-between gap-2">
@@ -2351,6 +2391,9 @@ export default function TransportPlanningPage({
                                 <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
                                   Sede {host.location} · {cardLines.length} persona{cardLines.length !== 1 ? 's' : ''} en carro
                                   {grp.isFamily ? ' · titular familiar' : ''}
+                                  {carCtx.inheritedFromTitular && carCtx.titularName
+                                    ? ` · datos del titular ${carCtx.titularName}`
+                                    : ''}
                                 </p>
                                 <p className="text-[10px] text-slate-600 dark:text-slate-300 mt-1">
                                   Carros en registro: <span className="font-black tabular-nums text-indigo-600 dark:text-indigo-400">{host.hostCarros}</span>
@@ -2406,14 +2449,14 @@ export default function TransportPlanningPage({
                                   </p>
                                   {renderCarVehicleMetaBlock(titularSk, slot.carIndex, eff, {
                                     compact: true,
-                                    memberOptions: buildMemberOptionsFromLines(cardLines),
+                                    memberOptions: crewMemberOptions,
                                   })}
                                   <ul className="space-y-1 text-xs font-semibold text-slate-800 dark:text-slate-100 border-t border-slate-200/80 dark:border-slate-600/80 pt-2">
                                     {slot.members.map((m) => (
                                       <li key={m.sourceKey} className="flex items-center gap-2">
                                         <span className="truncate">{m.name || '—'}</span>
                                         <span className="text-[10px] font-bold text-slate-400 shrink-0">
-                                          {m.kind === 'companion' ? 'Acomp.' : 'Titular'}
+                                          {formatTransportCarMemberRole(m)}
                                         </span>
                                       </li>
                                     ))}
@@ -2621,7 +2664,10 @@ export default function TransportPlanningPage({
                         plan.familyCarOverride && plan.familyCarOverride[host.hostId] != null
                           ? plan.familyCarOverride[host.hostId]
                           : '';
-                      const hostTitularSk = getHostParticipantSourceKey(grp.isFamily ? leader || host : host);
+                      const hostCarCtx = resolveHostCarContext(
+                        grp.isFamily ? String((leader || host)?.hostId || host.hostId) : host.hostId
+                      );
+                      const hostTitularSk = hostCarCtx.hostSourceKey;
                       const showVehicleRows = !grp.isFamily || String(host.hostId) === String(leader?.hostId || host.hostId);
                       const hostVehicleDetailKey = `bautizos-host:${grp.groupId}:${host.hostId}`;
                       const hostVehicleDetailsOpen = expandedCarDetailKeys.has(hostVehicleDetailKey);
@@ -2634,7 +2680,7 @@ export default function TransportPlanningPage({
                                 {showVehicleRows && hostEff >= 2 ? (
                                   <span className="text-emerald-700 dark:text-emerald-400">
                                     {' '}
-                                    · {countConfirmedCarsInSet(plan, hostTitularSk, hostEff)} confirmados
+                                    · {countConfirmedCarsInSet(planForCarMetaRead, hostTitularSk, hostEff)} confirmados
                                   </span>
                                 ) : null}
                               </span>
@@ -2663,7 +2709,7 @@ export default function TransportPlanningPage({
                                 {Array.from({ length: hostEff }, (_, i) =>
                                   renderCarVehicleMetaBlock(hostTitularSk, i + 1, hostEff, {
                                     compact: true,
-                                    memberOptions: buildMemberOptionsFromLines(host.lines),
+                                    memberOptions: buildCrewMemberOptions(hostCarCtx),
                                   })
                                 )}
                               </div>

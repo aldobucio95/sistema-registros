@@ -1,4 +1,5 @@
 import {
+  assignBautizosMembersToCarSlots,
   carVehicleMetaStorageKey,
   normalizeCarVehicleMeta,
   getCarVehicleMetaFromPlan,
@@ -843,6 +844,125 @@ export function translateDraftVehicleKeysToPersisted(patches, hostId) {
 }
 
 /** Parches listos tras crear participante (inventario + borrador del formulario). */
+/** Tripulación capturada en metadatos del vehículo (conductor + pasajeros). */
+export function buildCarCrewMembersFromMeta(meta, hostPerson, companions, labelIndex) {
+  const m = normalizeCarVehicleMeta(meta);
+  const members = [];
+  const driverSk = String(m.driverSourceKey || '').trim();
+  if (driverSk) {
+    members.push({
+      sourceKey: driverSk,
+      name: resolveMemberLabel(driverSk, hostPerson, companions, labelIndex) || '—',
+      crewRole: 'driver',
+    });
+  }
+  for (const psk of m.passengerSourceKeys || []) {
+    const sk = String(psk || '').trim();
+    if (!sk || sk === driverSk) continue;
+    members.push({
+      sourceKey: sk,
+      name: resolveMemberLabel(sk, hostPerson, companions, labelIndex) || '—',
+      crewRole: 'passenger',
+    });
+  }
+  return members;
+}
+
+export function carMetaHasCrewAssignments(meta) {
+  const m = normalizeCarVehicleMeta(meta);
+  if (m.pendingDriver || m.pendingPassengers) return false;
+  return (
+    Boolean(String(m.driverSourceKey || '').trim()) ||
+    (Array.isArray(m.passengerSourceKeys) && m.passengerSourceKeys.length > 0)
+  );
+}
+
+/**
+ * Contexto de carro para un titular en Transporte: misma resolución que «Datos de carros» del roster
+ * (incluye herencia cuando la persona viaja como pasajero en el carro de otro titular).
+ */
+export function buildTransportCarContextForHost({ hostId, plan, roster }) {
+  const hid = String(hostId || '').trim();
+  const normalizedPlan = applyCarMetaPassengerInheritance(normalizeTransportPlanning(plan));
+  const person = (roster || []).find((p) => String(p?.id || '').trim() === hid);
+  if (!person) {
+    const hostSourceKey = hid ? `p:${hid}` : '';
+    return {
+      hostPerson: { id: hid, name: '' },
+      companions: [],
+      hostSourceKey,
+      labelIndex: buildRosterSourceKeyLabelIndex(roster),
+      inheritedFromTitular: false,
+      titularName: '',
+      inventory: [],
+    };
+  }
+  const summary = buildCarDataSummaryForRosterPerson({
+    person,
+    plan: normalizedPlan,
+    roster,
+  });
+  return {
+    hostPerson: summary.hostPerson,
+    companions: summary.companions,
+    hostSourceKey: summary.hostSourceKey,
+    labelIndex: summary.labelIndex,
+    inheritedFromTitular: summary.inheritedFromTitular,
+    titularName: summary.titularName,
+    inventory: summary.inventory,
+  };
+}
+
+/**
+ * Plazas por carro en Transporte: usa conductor/pasajeros de carMeta cuando existen;
+ * si no, reparte personas con la heurística por plazas.
+ */
+export function buildBautizosCarSlotsForTransport({
+  plan,
+  hostSourceKey,
+  effectiveCars,
+  hostPerson,
+  companions,
+  labelIndex,
+  fallbackLines,
+  roster,
+  seatsPerCar = 5,
+}) {
+  const K = Math.max(1, parseInt(effectiveCars, 10) || 1);
+  const cap = Math.max(1, parseInt(seatsPerCar, 10) || 5);
+  const normalizedPlan = applyCarMetaPassengerInheritance(normalizeTransportPlanning(plan));
+  const ownerSk = String(hostSourceKey || '').trim();
+
+  let anyCrew = false;
+  const slots = [];
+  for (let i = 1; i <= K; i += 1) {
+    const meta = getCarVehicleMetaFromPlan(normalizedPlan, ownerSk, i);
+    if (carMetaHasCrewAssignments(meta)) anyCrew = true;
+    const crew = buildCarCrewMembersFromMeta(meta, hostPerson, companions, labelIndex);
+    slots.push({
+      carIndex: i,
+      members: crew.map((m) => ({
+        sourceKey: m.sourceKey,
+        name: m.name,
+        kind: m.crewRole === 'driver' ? 'participant' : 'companion',
+        crewRole: m.crewRole,
+      })),
+    });
+  }
+
+  if (!anyCrew) {
+    return assignBautizosMembersToCarSlots(fallbackLines, K, cap, roster);
+  }
+  return slots;
+}
+
+export function formatTransportCarMemberRole(member) {
+  if (member?.crewRole === 'driver') return 'Conductor';
+  if (member?.crewRole === 'passenger') return 'Pasajero';
+  if (member?.kind === 'companion') return 'Acomp.';
+  return 'Titular';
+}
+
 export function buildCarMetaPatchesAfterSave({
   hostPerson,
   companions,

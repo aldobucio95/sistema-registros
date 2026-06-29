@@ -1258,6 +1258,7 @@ export default function EventWorkspaceScreen() {
       )}
 
       {shell.renderRegistryConfirmModal()}
+      {shell.renderPromoteOverCapConfirmModal()}
 
       {/* PAYMENT MODAL */}
       {shell.paymentModal.isOpen && !shell.bautizosCarDataPrompt?.isOpen && (

@@ -426,6 +426,8 @@ export const uiActivityLogAdmin = {
 export const uiModal = {
   overlay: 'fixed inset-0 z-[200] flex items-end sm:items-center justify-center p-2 sm:p-4',
   overlayNested: 'fixed inset-0 z-[220] flex items-end sm:items-center justify-center p-2 sm:p-4',
+  /** Confirmaciones críticas (p. ej. sobrecupo) por encima de modales anidados y toasts. */
+  overlayTop: 'fixed inset-0 z-[280] flex items-end sm:items-center justify-center p-2 sm:p-4',
   backdrop: 'absolute inset-0 bg-slate-900/55',
   panel:
     'relative w-full max-w-4xl max-h-[90dvh] sm:max-h-[92vh] flex flex-col bg-white dark:bg-slate-900 rounded-t-2xl sm:rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-600 overflow-hidden',
