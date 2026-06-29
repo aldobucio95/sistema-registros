@@ -2,8 +2,185 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /artifacts/{appId}/public/data/{collection}/{docId} {
-      allow read, write: if request.auth != null;
+
+    function isAnonymousAuth() {
+      return request.auth != null
+        && request.auth.token.firebase != null
+        && request.auth.token.firebase.sign_in_provider == 'anonymous';
+    }
+
+    /** Panel con cuenta (correo/Google); excluye sesión anónima del registro público / responsiva. */
+    function isStaffAuth() {
+      return request.auth != null && !isAnonymousAuth();
+    }
+
+    /**
+     * Alta de actividad desde flujos públicos (QR / responsiva digital).
+     * Solo create, con username/acción acotados y sin flags de depuración ni revert pesado.
+     */
+    function isPublicFacingActivityLogCreate() {
+      return request.auth != null
+        && request.resource.data.keys().hasAll([
+          'id', 'createdAt', 'eventId', 'eventName', 'timestamp', 'username', 'action', 'details'
+        ])
+        && request.resource.data.id == docId
+        && request.resource.data.createdAt is int
+        && request.resource.data.details is string
+        && (
+          (request.resource.data.username == 'Registro público'
+            && request.resource.data.action == 'Registro Público')
+          || (request.resource.data.username == 'Responsiva digital'
+            && request.resource.data.action == 'Responsiva digital')
+        )
+        && !('isDebug' in request.resource.data)
+        && !('isHidden' in request.resource.data)
+        && !('isError' in request.resource.data)
+        && (!('revertInfo' in request.resource.data)
+          || (
+            request.resource.data.revertInfo is map
+            && request.resource.data.revertInfo.collectionName == 'app_participants'
+            && request.resource.data.revertInfo.docId is string
+            && request.resource.data.revertInfo.action in ['create', 'update']
+            && !('previousData' in request.resource.data.revertInfo)
+            && !('isBackup' in request.resource.data.revertInfo)
+          ));
+    }
+
+    function sensitiveDataConsentValid(data) {
+      return !('sensitiveDataConsent' in data) || data.sensitiveDataConsent in ['Si', 'No'];
+    }
+
+    /** Registro público por QR: lectura abierta; escrituras con sesión (anónima o normal). */
+    match /app_public_registration_links/{docId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    /** Responsiva pública: el token se lee sin cuenta; la app pública escribe con auth anónima. */
+    match /app_responsiva_sign_tokens/{docId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    /** Catálogo de eventos/participantes usado por QR y responsiva pública. */
+    match /app_events/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    match /app_participants/{docId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && sensitiveDataConsentValid(request.resource.data)
+        && !('sensitiveDataPurgedAt' in request.resource.data);
+      allow update: if request.auth != null
+        && sensitiveDataConsentValid(request.resource.data)
+        && (!('sensitiveDataPurgedAt' in request.resource.data)
+          || request.resource.data.sensitiveDataPurgedAt == resource.data.sensitiveDataPurgedAt);
+      allow delete: if request.auth != null;
+
+      /** Historial por registro (panel): append-only desde la app; lectura acotada en cliente. */
+      match /participant_activity/{entryId} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null;
+      }
+    }
+
+    match /app_logs/{docId} {
+      /** Lectura, edición y borrado: solo personal del panel. */
+      allow read, update, delete: if isStaffAuth();
+      /** Alta: panel completo, o flujos públicos acotados (registro QR / responsiva digital). */
+      allow create: if isStaffAuth() || isPublicFacingActivityLogCreate();
+    }
+
+    /** Snapshots completos para restauración (ligero en app_logs). */
+    match /app_log_reverts/{docId} {
+      allow read, create, update, delete: if isStaffAuth();
+    }
+
+    /**
+     * Segunda fuente de verdad: snapshot íntegro (JSON plano) de cada acción.
+     * Lectura/borrado solo personal del panel; creación/actualización abierta a
+     * cualquier sesión con auth (incluida la anónima del registro público / responsiva)
+     * para que el respaldo "backup-first" se guarde aunque falle el write principal.
+     */
+    match /app_log_snapshots/{docId} {
+      allow read, delete: if isStaffAuth();
+      allow create, update: if request.auth != null;
+    }
+
+    /** Versiones de caché (lectura ligera al recargar; el panel incrementa en cada cambio). */
+    match /app_cache_versions/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    match /app_responsiva_registry/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    match /app_public_documents/{docId} {
+      allow read: if true;
+      allow write: if isStaffAuth();
+    }
+
+    function isSelfServiceAppUserUpdate() {
+      return request.auth != null
+        && resource.data.authUid == request.auth.uid
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'role',
+          'username',
+          'password',
+          'allowedEvents',
+          'allowedLocations',
+          'allowedPanelSections',
+          'eventPermissions',
+          'authUid',
+          'authEmail',
+          'isSuperUser',
+          'maxAdminSessions',
+        ]);
+    }
+
+    /** Panel administrativo: perfiles, config global, sesiones, finanzas, respaldos. */
+    match /app_users/{docId} {
+      allow read: if isStaffAuth();
+      allow create, delete: if isStaffAuth();
+      allow update: if isStaffAuth() || isSelfServiceAppUserUpdate();
+    }
+
+    match /app_data/{docId} {
+      allow read, write: if isStaffAuth();
+    }
+
+    match /app_sessions/{docId} {
+      allow read, write: if isStaffAuth();
+    }
+
+    match /app_donations/{docId} {
+      allow read, write: if isStaffAuth();
+    }
+
+    match /app_expenses/{docId} {
+      allow read, write: if isStaffAuth();
+    }
+
+    match /app_archived_profiles/{docId} {
+      allow read, write: if isStaffAuth();
+    }
+
+    /** Marcas por ID VNPM (persona de interés): lectura para panel y registro público; escritura solo personal. */
+    match /app_vnp_person_flags/{vnpId} {
+      allow read: if request.auth != null;
+      allow write: if isStaffAuth();
+    }
+
+    match /app_backups/{backupId} {
+      allow read, write: if isStaffAuth();
+      match /chunks/{chunkId} {
+        allow read, write: if isStaffAuth();
+      }
     }
   }
 }

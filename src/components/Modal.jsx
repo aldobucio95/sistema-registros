@@ -1,5 +1,6 @@
 import { useEffect, useId } from 'react';
 import { XCircle } from 'lucide-react';
+import { uiButtons, uiModal } from '../ui/uiFormatClasses.js';
 
 const SIZE_MAX = {
   sm: 'max-w-sm',
@@ -75,14 +76,15 @@ export function Modal({
   if (variant === 'bare') {
     return (
       <div
-        className={`fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center ${z} p-4 overflow-y-auto ${overlayClassName}`}
+        className={`${uiModal.overlay} ${z} overflow-y-auto ${overlayClassName}`}
         role="presentation"
         onClick={closeOnBackdrop ? onClose : undefined}
       >
+        <div className={uiModal.backdrop} />
         <div
           role="dialog"
           aria-modal="true"
-          className={`bg-white rounded-3xl shadow-2xl w-full ${maxW} animate-in zoom-in-95 duration-200 max-h-[min(90vh,100%)] overflow-y-auto ${className}`}
+          className={`${uiModal.panel} ${maxW} animate-in zoom-in-95 duration-200 max-h-[min(90vh,100%)] overflow-y-auto ${className}`}
           onClick={(e) => e.stopPropagation()}
         >
           {children}
@@ -93,23 +95,24 @@ export function Modal({
 
   return (
     <div
-      className={`fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center ${z} p-4 overflow-y-auto ${overlayClassName}`}
+      className={`${uiModal.overlay} ${z} overflow-y-auto ${overlayClassName}`}
       role="presentation"
       onClick={closeOnBackdrop ? onClose : undefined}
     >
+      <div className={uiModal.backdrop} />
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}
-        className={`bg-white rounded-3xl shadow-2xl w-full ${maxW} animate-in zoom-in-95 duration-200 flex flex-col max-h-[min(90vh,100%)] overflow-hidden ${className}`}
+        className={`${uiModal.panel} ${maxW} animate-in zoom-in-95 duration-200 flex flex-col max-h-[min(90vh,100%)] overflow-hidden ${className}`}
         onClick={(e) => e.stopPropagation()}
       >
         {(title != null || showCloseButton) && (
-          <div className="px-6 pt-6 pb-4 border-b border-slate-100 flex justify-between items-start gap-3 shrink-0">
+          <div className={`${uiModal.header} px-6 pt-6 pb-4`}>
             {title != null && (
               <div id={titleId} className="min-w-0 flex-1">
                 {typeof title === 'string' ? (
-                  <h3 className="text-xl font-black text-slate-800">{title}</h3>
+                  <h3 className={uiModal.title}>{title}</h3>
                 ) : (
                   title
                 )}
@@ -119,7 +122,7 @@ export function Modal({
               <button
                 type="button"
                 onClick={onClose}
-                className="text-slate-400 hover:bg-slate-100 p-2 rounded-full shrink-0 ml-auto"
+                className={`${uiButtons.closeIcon} ml-auto`}
                 aria-label="Cerrar"
               >
                 <XCircle size={20} />
@@ -128,12 +131,12 @@ export function Modal({
           </div>
         )}
         <div
-          className={`px-6 py-6 flex-1 min-h-0 ${scrollBody ? 'overflow-y-auto overscroll-contain' : ''} ${bodyClassName}`}
+          className={`${uiModal.body} px-6 py-6 ${scrollBody ? 'overflow-y-auto overscroll-contain' : ''} ${bodyClassName}`}
         >
           {children}
         </div>
         {footer != null && (
-          <div className="px-6 pb-6 pt-0 border-t border-slate-100 shrink-0">{footer}</div>
+          <div className="px-6 pb-6 pt-0 border-t border-slate-100 dark:border-slate-700 shrink-0">{footer}</div>
         )}
       </div>
     </div>

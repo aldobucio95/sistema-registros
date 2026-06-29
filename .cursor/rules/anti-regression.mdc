@@ -1,0 +1,39 @@
+---
+description: Evitar regresiones por crash, truncamiento o restore desde backups antiguos
+alwaysApply: true
+---
+
+# Anti-regresión y recuperación segura
+
+## Prohibido sin aprobación explícita del usuario
+
+- Restaurar archivos desde `_backups/` (carpeta padre del repo) o desde `src/app_respaldo.txt`.
+- Pegar bloques grandes desde copias antiguas sin revisar diff contra `main` o `agent/auto`.
+- Dejar cambios a medias (ej. definir `rosterSectionDisplayCounts` sin actualizar los chips).
+
+## Antes de editar archivos críticos
+
+Ejecutar `pnpm run snapshot:critical` antes de tocar:
+
+- `src/App.jsx`
+- Cualquier archivo de más de ~5000 líneas
+
+## Si hay crash o truncamiento
+
+1. Recuperar con `git checkout -- <archivo>` desde la última versión en Git.
+2. O copiar desde `.local-snapshots/<timestamp>/`.
+3. **Nunca** usar `_backups/` como fuente de verdad.
+
+## Al terminar una sesión con cambios
+
+Ejecutar `pnpm run agent:finish` (valida UTF-8, build, commit y push a `agent/auto`).
+
+## Conteos canónicos en roster por sede (Bautizos)
+
+Los chips de Activos / Lista de espera / Cancelados deben usar `rosterSectionDisplayCounts` derivado de `getLocationRosterSectionCountsFromSummary(locationTypeSummary)`, no arrays titular-only (`waitlistData`, `cancelledData`, `visibleParticipants` solos).
+
+Tras cambios en chips o resumen, ejecutar `pnpm run check:invariants`.
+
+## Cierre de tarea
+
+Antes de dar por cerrado: `pnpm run check:utf8`, `pnpm run check:invariants`, `pnpm run build`.

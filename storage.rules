@@ -1,0 +1,31 @@
+rules_version = '2';
+
+/**
+ * Imágenes de firma de responsiva (subida desde el formulario público con sesión anónima o desde la app).
+ * Tras cambiar: firebase deploy --only storage
+ */
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    /** Panel (no anónimo QR/responsiva): mismo criterio que Firestore `isStaffAuth`. */
+    function isStaffAuth() {
+      return request.auth != null && (
+        request.auth.token.firebase == null ||
+        request.auth.token.firebase.sign_in_provider != 'anonymous'
+      );
+    }
+
+    match /responsiva_signatures/{eventId}/{fileName} {
+      allow read: if request.auth != null;
+      /** QR / responsiva pública (anónimo) y panel: subir o actualizar firma. */
+      allow create, update: if request.auth != null;
+      /** Solo personal del panel puede borrar (archivar, baja, eliminar evento). */
+      allow delete: if isStaffAuth();
+    }
+
+    /** Copias automáticas JSON (solo personal autenticado del panel). */
+    match /app_auto_backups/{fileName} {
+      allow read, write: if isStaffAuth();
+    }
+  }
+}

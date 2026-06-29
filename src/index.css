@@ -2,3 +2,508 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  html.dark {
+    color-scheme: dark;
+    /* Texto por defecto más legible sobre fondos oscuros (slate-950/900) */
+    color: rgb(226 232 240);
+  }
+
+  /* Pantallas táctiles: sin pull-to-refresh del navegador al deslizar hacia abajo. */
+  @media (hover: none) and (pointer: coarse) {
+    html,
+    body,
+    #root {
+      overscroll-behavior-y: none;
+    }
+
+    .overscroll-y-contain,
+    .overscroll-contain {
+      overscroll-behavior-y: none;
+    }
+  }
+}
+
+/**
+ * Modo oscuro: mapea superficies y textos «claros» (Tailwind slate/white) a equivalentes oscuros.
+ * Evita tocar fondos semánticos fuertes (rojo/verde sólidos de acción) salvo los tonos pastel de aviso.
+ */
+@layer components {
+  html.dark .bg-white {
+    background-color: rgb(15 23 42) !important; /* slate-900 */
+  }
+  html.dark .bg-slate-50 {
+    background-color: rgb(15 23 42) !important;
+  }
+  html.dark .bg-slate-100 {
+    background-color: rgb(30 41 59) !important; /* slate-800 */
+  }
+  html.dark .bg-slate-200 {
+    background-color: rgb(51 65 85) !important; /* slate-700 */
+  }
+  html.dark .bg-slate-300 {
+    background-color: rgb(51 65 85) !important; /* slate-700 — deshabilitados / acentos grises */
+  }
+
+  html.dark .border-slate-100 {
+    border-color: rgb(51 65 85) !important; /* slate-700 */
+  }
+  html.dark .border-slate-200 {
+    border-color: rgb(51 65 85) !important;
+  }
+
+  /* Escala de grises más clara = mayor contraste sobre bg slate-900/950 */
+  html.dark .text-slate-950 {
+    color: rgb(248 250 252) !important;
+  }
+  html.dark .text-slate-900 {
+    color: rgb(248 250 252) !important; /* slate-50 — titulares */
+  }
+  html.dark .text-slate-800 {
+    color: rgb(248 250 252) !important;
+  }
+  html.dark .text-slate-700 {
+    color: rgb(241 245 249) !important; /* slate-100 — cuerpo destacado */
+  }
+  html.dark .text-slate-600 {
+    color: rgb(226 232 240) !important; /* slate-200 — cuerpo normal */
+  }
+  html.dark .text-slate-500 {
+    color: rgb(203 213 225) !important; /* slate-300 — secundario / captions */
+  }
+  html.dark .text-slate-400 {
+    color: rgb(186 198 214) !important; /* entre 300-400: muted pero legible */
+  }
+  html.dark .text-slate-300 {
+    color: rgb(226 232 240) !important;
+  }
+
+  html.dark .divide-slate-50 > :not([hidden]) ~ :not([hidden]) {
+    border-color: rgb(51 65 85) !important;
+  }
+  html.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+    border-color: rgb(51 65 85) !important;
+  }
+
+  html.dark .shadow-sm {
+    box-shadow: 0 1px 2px 0 rgb(0 0 0) !important;
+  }
+  html.dark .shadow-md {
+    box-shadow:
+      0 4px 6px -1px rgb(0 0 0),
+      0 2px 4px -2px rgb(0 0 0) !important;
+  }
+  html.dark .shadow-lg {
+    box-shadow:
+      0 10px 15px -3px rgb(0 0 0),
+      0 4px 6px -4px rgb(0 0 0) !important;
+  }
+  html.dark .shadow-xl {
+    box-shadow:
+      0 20px 25px -5px rgb(0 0 0),
+      0 8px 10px -6px rgb(0 0 0) !important;
+  }
+  html.dark .shadow-2xl {
+    box-shadow: 0 25px 50px -12px rgb(0 0 0) !important;
+  }
+
+  /**
+   * Misma «gamma» que botones sólidos (600/700) e inputs (slate-900): sin velos blur,
+   * sin sombras teñidas brillantes, superficies y hovers sin alpha tipo pastel.
+   */
+  html.dark .backdrop-blur-sm,
+  html.dark .backdrop-blur {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  html.dark .shadow-xl.shadow-indigo-200,
+  html.dark .shadow-lg.shadow-red-200,
+  html.dark .shadow-lg.shadow-green-200,
+  html.dark .shadow-lg.shadow-emerald-200 {
+    box-shadow:
+      0 10px 15px -3px rgb(0 0 0),
+      0 4px 6px -4px rgb(0 0 0) !important;
+  }
+
+  html.dark [class~='bg-indigo-50\00002f40'] {
+    background-color: rgb(30 41 59) !important;
+  }
+
+  html.dark [class~='border-amber-200\00002f90'] {
+    border-color: rgb(217 119 6) !important;
+  }
+  html.dark [class~='border-sky-200\00002f90'] {
+    border-color: rgb(14 165 233) !important;
+  }
+
+  html.dark [class~='text-amber-900\00002f85'] {
+    color: rgb(254 243 199) !important;
+  }
+  html.dark [class~='text-indigo-900\00002f85'] {
+    color: rgb(224 231 255) !important;
+  }
+  html.dark [class~='text-sky-900\00002f85'] {
+    color: rgb(224 242 254) !important;
+  }
+
+  html.dark [class~='from-amber-50\00002f90'] {
+    --tw-gradient-from: rgb(30 41 59) var(--tw-gradient-from-position);
+    --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+  }
+  html.dark [class~='to-amber-100\00002f40'] {
+    --tw-gradient-to: rgb(15 23 42) var(--tw-gradient-to-position);
+    --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+  }
+  html.dark [class~='from-sky-50\00002f90'] {
+    --tw-gradient-from: rgb(30 41 59) var(--tw-gradient-from-position);
+    --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+  }
+  html.dark [class~='to-sky-100\00002f35'] {
+    --tw-gradient-to: rgb(15 23 42) var(--tw-gradient-to-position);
+    --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+  }
+
+  html.dark [class~='bg-white\00002f90'] {
+    background-color: rgb(30 41 59) !important;
+  }
+
+  html.dark .hover\:bg-slate-100\/80:hover {
+    background-color: rgb(51 65 85) !important;
+  }
+  html.dark [class~='hover:bg-slate-100\00002f40']:hover {
+    background-color: rgb(51 65 85) !important;
+  }
+
+  html.dark [class~='bg-orange-50\00002f30'] {
+    background-color: rgb(30 41 59) !important;
+  }
+  html.dark [class~='bg-purple-50\00002f30'] {
+    background-color: rgb(30 41 59) !important;
+  }
+
+  /**
+   * Opacidad del nodo (propiedad CSS `opacity`) en modo oscuro:
+   * las utilidades `disabled:opacity-*` y `opacity-70` sobre fieldsets
+   * vuelven ilegible el texto sobre fondos oscuros. Se fuerza opacidad 1;
+   * el estado deshabilitado sigue con cursor/pointer-events y estilos de componente.
+   */
+  html.dark .disabled\:opacity-50:disabled,
+  html.dark .disabled\:opacity-40:disabled,
+  html.dark .disabled\:opacity-55:disabled,
+  html.dark .disabled\:opacity-60:disabled {
+    opacity: 1 !important;
+  }
+
+  html.dark fieldset[class~='opacity-70'] {
+    opacity: 1 !important;
+  }
+
+  /* Tarjeta «Nuevo registro» con sede cerrada (opacity-50 + pointer-events-none) */
+  html.dark .opacity-50.pointer-events-none {
+    opacity: 1 !important;
+  }
+
+  html.dark .opacity-90,
+  html.dark .opacity-95 {
+    opacity: 1 !important;
+  }
+
+  html.dark input[class~='opacity-50']:disabled,
+  html.dark input[class~='opacity-50'][disabled] {
+    opacity: 1 !important;
+  }
+
+  html.dark input[type='radio'][class~='opacity-70'],
+  html.dark input[type='checkbox'][class~='opacity-70'] {
+    opacity: 1 !important;
+  }
+
+  /* Placeholders más visibles que el fondo del input */
+  html.dark input::placeholder,
+  html.dark textarea::placeholder {
+    color: rgb(148 163 184) !important; /* slate-400 */
+  }
+
+  /* Hover sobre filas / botones secundarios claros */
+  html.dark .hover\:bg-slate-50:hover {
+    background-color: rgb(30 41 59) !important;
+  }
+  html.dark .hover\:bg-slate-100:hover {
+    background-color: rgb(51 65 85) !important;
+  }
+  html.dark [class~='hover:bg-slate-50\00002f50']:hover {
+    background-color: rgb(51 65 85) !important; /* slate-700 */
+  }
+  html.dark [class~='hover:bg-slate-50\00002f90']:hover {
+    background-color: rgb(30 41 59) !important;
+  }
+
+  /* Badges y acentos de color: mover a clases específicas para evitar fugas globales. */
+
+  html.dark .open\:border-indigo-200.open {
+    border-color: rgb(99 102 241) !important;
+  }
+
+  /* Focus ring visible en oscuro */
+  html.dark .focus\:ring-indigo-500:focus,
+  html.dark [class~='focus:ring-indigo-500\00002f30']:focus {
+    --tw-ring-color: rgb(99 102 241) !important;
+  }
+  html.dark .focus\:border-indigo-300:focus {
+    border-color: rgb(129 140 248) !important;
+  }
+
+  /**
+   * Superficies que en claro usan blanco con alpha (bg-white/5–20): en oscuro deben ser paneles oscuros
+   * sólidos (sin transparencia), no slate-50 (quedaría como parche claro con bajo contraste).
+   * Selectores vía [class~=] porque PostCSS no acepta bien clases con barra escapada en este pipeline.
+   */
+  html.dark [class~='bg-white\00002f5'] {
+    background-color: rgb(30 41 59) !important; /* slate-800 */
+  }
+  html.dark [class~='bg-white\00002f10'] {
+    background-color: rgb(30 41 59) !important;
+  }
+  html.dark [class~='bg-white\00002f20'] {
+    background-color: rgb(51 65 85) !important; /* slate-700 — un poco más claro que /5–/10 */
+  }
+  html.dark [class~='bg-white\00002f70'] {
+    background-color: rgb(15 23 42) !important;
+  }
+  html.dark [class~='bg-white\00002f80'] {
+    background-color: rgb(15 23 42) !important;
+  }
+  html.dark [class~='bg-white\00002f90'] {
+    background-color: rgb(15 23 42) !important;
+  }
+  html.dark [class~='bg-white\00002f95'] {
+    background-color: rgb(15 23 42) !important;
+  }
+
+  html.dark [class~='border-white\00002f80'] {
+    border-color: rgb(71 85 105) !important;
+  }
+
+  html.dark [class~='bg-slate-50\00002f30'] {
+    background-color: rgb(30 41 59) !important;
+  }
+  html.dark [class~='bg-slate-50\00002f35'] {
+    background-color: rgb(30 41 59) !important;
+  }
+  html.dark [class~='bg-slate-50\00002f40'] {
+    background-color: rgb(30 41 59) !important;
+  }
+  html.dark [class~='bg-slate-50\00002f50'] {
+    background-color: rgb(30 41 59) !important; /* slate-800 sólido */
+  }
+  html.dark [class~='bg-slate-50\00002f60'] {
+    background-color: rgb(30 41 59) !important;
+  }
+  html.dark [class~='bg-slate-50\00002f80'] {
+    background-color: rgb(30 41 59) !important;
+  }
+  html.dark [class~='bg-slate-50\00002f90'] {
+    background-color: rgb(30 41 59) !important;
+  }
+
+  html.dark [class~='bg-slate-100\00002f80'] {
+    background-color: rgb(51 65 85) !important;
+  }
+
+  html.dark [class~='hover:bg-slate-50\00002f60']:hover {
+    background-color: rgb(30 41 59) !important;
+  }
+  html.dark [class~='hover:bg-slate-50\00002f80']:hover {
+    background-color: rgb(30 41 59) !important;
+  }
+  html.dark [class~='hover:bg-slate-50\00002f90']:hover {
+    background-color: rgb(30 41 59) !important;
+  }
+
+  /* Eliminar overrides globales de tonos amber/emerald para evitar tintes inesperados. */
+  html.dark [class~='bg-teal-50\00002f20'],
+  html.dark [class~='bg-teal-50\00002f45'],
+  html.dark [class~='bg-teal-50\00002f50'] {
+    background-color: rgb(30 41 59) !important; /* slate-800 sólido */
+  }
+  /* Eliminar overrides globales de tonos brand con alpha para evitar conflictos entre componentes. */
+
+  html.dark [class~='ring-amber-200\00002f80'] {
+    --tw-ring-color: rgb(217 119 6) !important;
+  }
+  html.dark [class~='ring-sky-200\00002f80'] {
+    --tw-ring-color: rgb(14 165 233) !important;
+  }
+
+  /* Bordes sólidos en oscuro (equivalentes a variantes con alpha en claro) */
+  html.dark [class~='border-slate-200\00002f50'] {
+    border-color: rgb(51 65 85) !important;
+  }
+  html.dark [class~='border-slate-200\00002f60'] {
+    border-color: rgb(51 65 85) !important;
+  }
+  html.dark [class~='border-slate-200\00002f80'] {
+    border-color: rgb(71 85 105) !important;
+  }
+  /* Eliminar overrides globales de bordes/textos de acento; usar variantes `dark:*` locales. */
+
+  /* Modales: velo ligeramente más opaco para separar del contenido */
+  html.dark [class~='bg-slate-900\00002f40'] {
+    background-color: rgb(2 6 23) !important;
+  }
+  html.dark [class~='bg-slate-900\00002f50'] {
+    background-color: rgb(2 6 23) !important;
+  }
+  html.dark [class~='bg-slate-900\00002f60'] {
+    background-color: rgb(2 6 23) !important;
+  }
+
+  /* Filas/tablas: hover con fracción (Tailwind) → sólido en oscuro */
+  html.dark .hover\:bg-slate-50\/50:hover {
+    background-color: rgb(51 65 85) !important;
+  }
+
+  /* Eliminar mapeo global de paletas de marca (text/bg/border) para evitar efectos colaterales. */
+
+  /* Fondos sky con alpha en claro → sky-900 sólido en oscuro (tarjetas detalle usuario / UA) */
+  html.dark [class~='bg-sky-50\00002f60'] {
+    background-color: rgb(12 74 110) !important;
+  }
+  html.dark [class~='bg-sky-50\00002f70'] {
+    background-color: rgb(12 74 110) !important;
+  }
+
+  /**
+   * «Responsiva firmada» / «Responsiva pendiente» en filas de registro:
+   * deben declararse al final para ganar a utilidades globales. Modo oscuro: tonos 600/700
+   * (misma gamma que botones de acciones rápidas) + texto blanco.
+   */
+  html.dark .chip-responsiva-firmada.bg-emerald-50.text-emerald-800,
+  html.dark .chip-responsiva-firmada {
+    background-color: rgb(5 150 105) !important; /* emerald-600 */
+    color: rgb(255 255 255) !important;
+    border-color: rgb(4 120 87) !important; /* emerald-700 */
+  }
+  html.dark .chip-responsiva-pendiente.bg-amber-50.text-amber-900,
+  html.dark .chip-responsiva-pendiente {
+    background-color: rgb(217 119 6) !important; /* amber-600 */
+    color: rgb(255 255 255) !important;
+    border-color: rgb(180 83 9) !important; /* amber-700 */
+  }
+
+  /** Servidor — oscuro: naranja 600 (brillante, distinto de «Responsiva pendiente» en ámbar). */
+  html.dark .chip-roster-servidor.bg-amber-100.text-amber-700,
+  html.dark .chip-roster-servidor {
+    background-color: rgb(234 88 12) !important; /* orange-600 */
+    color: rgb(255 255 255) !important;
+  }
+
+  /** Asignación Teens / Jóvenes — oscuro: índigo-600 como botones de panel. */
+  html.dark .chip-roster-asignacion-campa.bg-indigo-100.text-indigo-700,
+  html.dark .chip-roster-asignacion-campa {
+    background-color: rgb(79 70 229) !important; /* indigo-600 */
+    color: rgb(255 255 255) !important;
+  }
+
+  /** Transporte — llega en carro (misma familia de chips roster). */
+  html.dark .chip-roster-carro.bg-stone-100.text-stone-800,
+  html.dark .chip-roster-carro {
+    background-color: rgb(87 83 78) !important; /* stone-600 */
+    color: rgb(255 255 255) !important;
+    border-color: rgb(68 64 60) !important; /* stone-700 */
+  }
+
+  /** Contadores en cabeceras Activos / Lista de espera / Cancelados (registro por sede). */
+  html.dark .chip-roster-count-activos.bg-indigo-50.text-indigo-700,
+  html.dark .chip-roster-count-activos {
+    background-color: rgb(79 70 229) !important; /* indigo-600 */
+    color: rgb(255 255 255) !important;
+    border-color: rgb(67 56 202) !important; /* indigo-700 */
+  }
+  html.dark .chip-roster-count-waitlist.bg-amber-50.text-amber-700,
+  html.dark .chip-roster-count-waitlist {
+    background-color: rgb(217 119 6) !important; /* amber-600 */
+    color: rgb(255 255 255) !important;
+    border-color: rgb(180 83 9) !important; /* amber-700 */
+  }
+  html.dark .chip-roster-count-cancelled.bg-rose-50.text-rose-800,
+  html.dark .chip-roster-count-cancelled {
+    background-color: rgb(225 29 72) !important; /* rose-600 */
+    color: rgb(255 255 255) !important;
+    border-color: rgb(190 18 60) !important; /* rose-700 */
+  }
+  html.dark .chip-roster-count-filter-hit.bg-emerald-50.text-emerald-700,
+  html.dark .chip-roster-count-filter-hit {
+    background-color: rgb(5 150 105) !important; /* emerald-600 */
+    color: rgb(255 255 255) !important;
+    border-color: rgb(4 120 87) !important; /* emerald-700 */
+  }
+
+  /** Columna «Tipo» en página Responsivas (vista entregadas). */
+  html.dark .chip-responsiva-page-tipo.bg-emerald-50.text-emerald-800,
+  html.dark .chip-responsiva-page-tipo {
+    background-color: rgb(5 150 105) !important;
+    color: rgb(255 255 255) !important;
+    border-color: rgb(4 120 87) !important;
+  }
+
+  /**
+   * Pantalla de login: siempre apariencia clara. Con `html.dark` activo, los remapes globales
+   * (p. ej. `.bg-white` → slate-900) no deben aplicarse antes de autenticarse.
+   */
+  html.dark .login-screen-island {
+    color-scheme: light;
+    color: rgb(15 23 42);
+  }
+  html.dark .login-screen-island .bg-white {
+    background-color: rgb(255 255 255) !important;
+  }
+  html.dark .login-screen-island .bg-slate-50 {
+    background-color: rgb(248 250 252) !important;
+  }
+  html.dark .login-screen-island .border-slate-200 {
+    border-color: rgb(226 232 240) !important;
+  }
+  html.dark .login-screen-island .border-slate-200\/80 {
+    border-color: rgba(226, 232, 240, 0.8) !important;
+  }
+  html.dark .login-screen-island .text-slate-800 {
+    color: rgb(30 41 59) !important;
+  }
+  html.dark .login-screen-island .text-slate-600 {
+    color: rgb(71 85 105) !important;
+  }
+  html.dark .login-screen-island .text-slate-500 {
+    color: rgb(100 116 139) !important;
+  }
+  html.dark .login-screen-island .text-slate-400 {
+    color: rgb(148 163 184) !important;
+  }
+  html.dark .login-screen-island .hover\:bg-slate-50:hover {
+    background-color: rgb(248 250 252) !important;
+  }
+  html.dark .login-screen-island .hover\:bg-slate-100:hover {
+    background-color: rgb(241 245 249) !important;
+  }
+  html.dark .login-screen-island .hover\:text-slate-700:hover {
+    color: rgb(51 65 85) !important;
+  }
+  html.dark .login-screen-island .shadow-2xl {
+    box-shadow:
+      0 25px 50px -12px rgb(0 0 0 / 0.25) !important;
+  }
+  html.dark .login-screen-island .shadow-lg {
+    box-shadow:
+      0 10px 15px -3px rgb(0 0 0 / 0.1),
+      0 4px 6px -4px rgb(0 0 0 / 0.1) !important;
+  }
+
+  /* Fecha de nacimiento: mes alineado a la izquierda (mejor lectura de nombres largos). */
+  .vnpm-birth-month-select,
+  .vnpm-birth-month-select option {
+    text-align: left;
+    text-align-last: left;
+  }
+}
+

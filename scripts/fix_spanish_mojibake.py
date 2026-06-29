@@ -8,6 +8,36 @@ TARGET = ROOT / "src" / "App.jsx"
 
 # Longest keys first — order matters
 REPLACEMENTS = [
+    # Métricas Excel / encabezados (mayúsculas)
+    ("M?TRICAS: ASIGNACI?N / SERVIDORES", "MÉTRICAS: ASIGNACIÓN / SERVIDORES"),
+    ("M?TRICAS: CAMPOS PERSONALIZADOS", "MÉTRICAS: CAMPOS PERSONALIZADOS"),
+    ("M?TRICAS: BAUTIZOS (conteo por segmento del evento)", "MÉTRICAS: BAUTIZOS (conteo por segmento del evento)"),
+    ("M?TRICAS: RANGOS DE EDAD", "MÉTRICAS: RANGOS DE EDAD"),
+    ("M?TRICAS: G?NERO", "MÉTRICAS: GÉNERO"),
+    ("M?TRICAS PRINCIPALES", "MÉTRICAS PRINCIPALES"),
+    ("M?TRICAS: SALUD", "MÉTRICAS: SALUD"),
+    ("M?TRICAS: NADO", "MÉTRICAS: NADO"),
+    ("M?TRICAS", "MÉTRICAS"),
+    ("G?NERO", "GÉNERO"),
+    ("ATENCI?N SUPERUSUARIO:", "ATENCIÓN SUPERUSUARIO:"),
+    ("DEPURACI?N", "DEPURACIÓN"),
+    ("?Nos vemos el", "¡Nos vemos el"),
+    ("Iniciando sesión?", "Iniciando sesión…"),
+    ("Selecciona?", "Seleccionar"),
+    ("Ordenar?", "Ordenar…"),
+    ("VNPM?", "VNPM…"),
+    ("BOT?N EXPORTAR", "BOTÓN EXPORTAR"),
+    ("?Sabe nadar?:", "¿Sabe nadar?:"),
+    ("?Sabe nadar?", "¿Sabe nadar?"),
+    ("?Es casado?", "¿Es casado?"),
+    ("?Va con hijos?", "¿Va con hijos?"),
+    ("?Han servido en otro campa?", "¿Han servido en otro campa?"),
+    ("?Sirven en sus congres?", "¿Sirven en sus congresos?"),
+    ("Sirvi? en otro campa", "Sirvió en otro campa"),
+    ("Registr? un abono", "Registró un abono"),
+    ("Registr?", "Registró"),
+    ("Columna ?Participante?", "Columna «Participante»"),
+    ("Firestore rechaz? la lectura", "Firestore rechazó la lectura"),
     ("Llega cami?n / Regresa cami?n", "Llega camión / Regresa camión"),
     ("Llega carro / Regresa cami?n", "Llega carro / Regresa camión"),
     ("Llega cami?n / Regresa carro", "Llega camión / Regresa carro"),
@@ -443,6 +473,13 @@ REPLACEMENTS = [
     ("L?pez", "López"),
     ("Menú M?vil", "Menú Móvil"),
     ("M?dicas", "Médicas"),
+    ("referencia de la Última copia autom?tica", "referencia de la Última copia automática"),
+    ("registro(s) de copia autom?tica (restauración disponible)", "registro(s) de copia automática (restauración disponible)"),
+    ("log(s) de copia autom?tica no se eliminan", "log(s) de copia automática no se eliminan"),
+    ("Última copia autom?tica", "Última copia automática"),
+    ("A?ade o elimina preguntas extra para este evento.", "Añade o elimina preguntas extra para este evento."),
+    ("A?ade o elimina", "Añade o elimina"),
+    ("autom?tica", "automática"),
     # --- Round 3: U+FFFD (archivo leído con codificación incorrecta) ---
     ("Opciones: \uFFFDEn qu\uFFFD \uFFFDrea les gustar\uFFFDa servir?", "Opciones: ¿En qué área les gustaría servir?"),
     ("Configuraci\uFFFDn de Precios", "Configuración de Precios"),
@@ -456,8 +493,8 @@ REPLACEMENTS = [
 
 def main():
     path = TARGET
-    # errors='replace' evita fallo si el archivo mezcla bytes (guardado con codificación incorrecta).
-    text = path.read_text(encoding="utf-8", errors="replace")
+    # UTF-8 estricto: si falla, el archivo debe normalizarse antes (evita doble codificación).
+    text = path.read_text(encoding="utf-8")
     original = text
     # Sort by key length descending
     reps = sorted(REPLACEMENTS, key=lambda x: len(x[0]), reverse=True)

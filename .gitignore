@@ -8,9 +8,23 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+package-lock.json
+functions/package-lock.json
 dist
 dist-ssr
 *.local
+
+# Secretos SMTP / entorno local de Cloud Functions (copia desde functions/.env.example)
+functions/.env
+scripts/credenciales.json
+credenciales.json
+
+# Snapshots locales del agente (no subir a GitHub)
+.local-snapshots/
+
+# Respaldos de texto sueltos en src (no versionar)
+src/app_respaldo.txt
+src/_extracted_form.txt
 
 # Editor directories and files
 .vscode/*

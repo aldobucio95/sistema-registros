@@ -1,0 +1,90 @@
+const DEFAULT_PANEL_NAV = {
+  dashboard: true,
+  bautizados: true,
+  serversPage: true,
+  becados: true,
+  cashCut: true,
+  expenseList: true,
+  responsivas: true,
+  registroGlobal: true,
+  transporte: true,
+  locations: true,
+};
+
+const EDITOR_LECTOR_PANEL_DEFAULT = {
+  dashboard: false,
+  bautizados: false,
+  serversPage: false,
+  becados: false,
+  cashCut: false,
+  responsivas: false,
+  expenseList: false,
+  registroGlobal: false,
+  transporte: false,
+  locations: true,
+};
+
+/** Estado inicial del formulario de alta de usuario. */
+export function defaultNewUserFormState() {
+  return {
+    username: '',
+    password: '',
+    loginEmail: '',
+    role: 'Editor',
+    canViewFinances: false,
+    canViewHiddenDonations: false,
+    canViewExpenses: false,
+    restrictedEventId: '',
+    restrictedLocation: '',
+    allowedEventIds: [],
+    allowedLocations: [],
+    allowedLocationsByEvent: {},
+    allowedPanelSections: { ...EDITOR_LECTOR_PANEL_DEFAULT },
+    allowedPanelSectionsByEvent: {},
+    preferredLandingTab: 'Summary',
+    hideMyExpenseConcepts: true,
+    canEditRegistryDates: false,
+    canMarkPersonsOfInterest: false,
+    maxConcurrentSessions: '1',
+    canSendWhatsAppQuickAction: false,
+    canMarkResponsivaLocalQuickAction: true,
+    canSendResponsivaDigitalQuickAction: false,
+    canCancelRegistrations: false,
+  };
+}
+
+/** Cierra el modal de edición de usuario (estado en App / EventHub). */
+export function closedEditingUserState() {
+  return {
+    isOpen: false,
+    id: null,
+    username: '',
+    authEmail: '',
+    currentPasswordInput: '',
+    newPassword: '',
+    confirmPassword: '',
+    adminNewPassword: '',
+    adminConfirmPassword: '',
+    adminTargetCurrentPassword: '',
+    role: 'Editor',
+    canViewFinances: false,
+    canViewHiddenDonations: false,
+    canViewExpenses: false,
+    restrictedEventId: '',
+    restrictedLocation: '',
+    allowedEventIds: [],
+    allowedLocations: [],
+    allowedLocationsByEvent: {},
+    allowedPanelSections: { ...DEFAULT_PANEL_NAV },
+    allowedPanelSectionsByEvent: {},
+    preferredLandingTab: 'Summary',
+    hideMyExpenseConcepts: true,
+    canEditRegistryDates: false,
+    canMarkPersonsOfInterest: false,
+    maxConcurrentSessions: '1',
+    canSendWhatsAppQuickAction: false,
+    canMarkResponsivaLocalQuickAction: true,
+    canSendResponsivaDigitalQuickAction: false,
+    canCancelRegistrations: false,
+  };
+}
