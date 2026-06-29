@@ -466,6 +466,7 @@ export function expandBautizosGlobalRegistryRows(titularRows, rosterForPlan) {
     for (let i = 0; i < comps.length; i++) {
       const c = comps[i] || {};
       if (!String(c?.name || '').trim() || !isBautizosCompanionBaptized(c)) continue;
+      if (c?.companionWaitlistPending === true) continue;
       const row = buildVirtualBaptizedCompanionGlobalRow(host, c, i, meta);
       if (!row || seenVirtual.has(row.id)) continue;
       seenVirtual.add(row.id);
@@ -486,57 +487,7 @@ export function expandBautizosGlobalRegistryRows(titularRows, rosterForPlan) {
   return out;
 }
 
-/**
- * Registro global / conteos con estado «Lista de espera»:
- * - Titulares en espera + todos sus acompañantes canónicos (Parte A)
- * - Acompañantes con `companionWaitlistPending` aún no contados (p. ej. en titulares activos) (Parte B)
- */
-export function expandBautizosWaitlistRegistryRows(titularWaitlistRows, rosterForPlan) {
-  const titulars = Array.isArray(titularWaitlistRows) ? titularWaitlistRows : [];
-  const roster = Array.isArray(rosterForPlan) ? rosterForPlan : titulars;
-  const meta = buildActiveRegistrantMetaForCompanionDedupe(
-    roster.filter((p) => (p?.status || 'active') !== 'cancelled')
-  );
-  const seenIds = new Set();
-  const out = [];
-
-  const partA = expandBautizosGlobalRegistryRows(titulars, roster);
-  for (const row of partA) {
-    const id = String(row?.id || '').trim();
-    if (!id || seenIds.has(id)) continue;
-    seenIds.add(id);
-    if (row.__globalRegistryVirtual) {
-      out.push({ ...row, status: 'waitlist' });
-    } else {
-      out.push(row);
-    }
-  }
-
-  const pendingPlan = buildBautizosCanonicalCompanionPlan(roster, meta, {
-    includeBaptizedCompanions: true,
-    waitlistOnly: true,
-  });
-  for (const [canonKey, entry] of pendingPlan) {
-    const host = entry?.sourceRegistrant;
-    const companion = entry?.sourceCompanion;
-    if (!host || !String(companion?.name || '').trim()) continue;
-    let row = null;
-    if (isBautizosCompanionBaptized(companion)) {
-      const idx = getBautizosCompanionsArray(host).findIndex(
-        (c) => String(c?.id || '') === String(companion?.id || '')
-      );
-      row = buildVirtualBaptizedCompanionGlobalRow(host, companion, idx >= 0 ? idx : 0, meta);
-    } else {
-      row = buildVirtualCompanionGlobalRow(entry, canonKey);
-    }
-    if (!row) continue;
-    const id = String(row.id || '').trim();
-    if (!id || seenIds.has(id)) continue;
-    seenIds.add(id);
-    out.push({ ...row, status: 'waitlist' });
-  }
-  return out;
-}
+export { expandBautizosWaitlistRegistryRows } from './bautizosWaitlistRegistryExpand.js';
 
 /**
  * Inscritos tipo servidor o empleado (vista «Servidores y empleados» en Bautizos).

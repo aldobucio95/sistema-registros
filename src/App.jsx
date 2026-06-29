@@ -27079,7 +27079,7 @@ function resolveEventName(eventId) {
           <Suspense fallback={<ScreenLoadingFallback title="Cargando panel…" />}>
             <EventHubScreenLazy />
           </Suspense>
-          <AppVersionBadge />
+          <AppVersionBadge showInternal={isSuperUser} />
           <p className="text-center text-[10px] text-slate-400 pb-2">
             <a href={privacyNoticePublicUrl} target="_blank" rel="noopener noreferrer" className="font-bold text-indigo-600 hover:underline">
               Aviso de privacidad integral
@@ -34029,7 +34029,9 @@ function resolveEventName(eventId) {
     const out = new Map();
     if (!isBautizos || !currentEvent?.id) return out;
     const activeEventRoster = (allParticipants || []).filter(
-      (p) => String(p?.eventId) === String(currentEvent.id) && participantIsActiveInRoster(p)
+      (p) =>
+        String(p?.eventId) === String(currentEvent.id) &&
+        participantIsActiveOrWaitlistForCompanionDisplay(p)
     );
     for (const p of activeEventRoster) {
       const pid = String(p?.id || '').trim();
@@ -34523,12 +34525,25 @@ function resolveEventName(eventId) {
     const payBoxPaidDisplay = payCostsDerivedSplit ? 0 : paidSummary;
     const payBoxPendingDisplay = payCostsDerivedSplit ? 0 : pendingSummary;
     const payBoxSaldoFavorDisplay = payCostsDerivedSplit ? 0 : saldoFavorSummary;
+    const rosterForCompanionDisplay = (allParticipants || []).filter(
+      (p) =>
+        String(p?.eventId) === String(currentEvent?.id || '') &&
+        participantIsActiveOrWaitlistForCompanionDisplay(p)
+    );
+    const companionWaitlistVirtual = isCompanionWaitlistVirtualParticipant(row);
+    const carDataAnchorPerson = (() => {
+      if (!companionWaitlistVirtual) return row;
+      const hostId = String(row._companionWaitlistHostId || '').trim();
+      if (!hostId) return row;
+      const live = allParticipants.find((p) => String(p?.id) === hostId);
+      const cached = participantExpandCache[hostId]?.serverDoc;
+      if (!live && !cached) return row;
+      return { ...(cached || {}), ...(live || {}) };
+    })();
     const bautizosCompanionRows = isBautizos
       ? getBautizosCompanionsVisibleForRegistrant(
-          String(row?.id || ''),
-          (allParticipants || []).filter(
-            (p) => String(p?.eventId) === String(currentEvent?.id || '') && participantIsActiveInRoster(p)
-          )
+          String(carDataAnchorPerson?.id || row?.id || ''),
+          rosterForCompanionDisplay
         )
       : [];
     const bautizosCompanionBaptizedRows = isBautizos
@@ -35017,6 +35032,18 @@ function resolveEventName(eventId) {
                     </div>
                   )}
                 </div>
+              ) : null}
+              {isBautizos &&
+              familyHasAnyCarTransport(
+                carDataAnchorPerson,
+                getBautizosCompanionsArray(carDataAnchorPerson)
+              ) ? (
+                <BautizosCarDataSummaryCard
+                  hostPerson={carDataAnchorPerson}
+                  companions={getBautizosCompanionsArray(carDataAnchorPerson)}
+                  plan={currentEvent?.transportPlanning}
+                  roster={rosterForCompanionDisplay}
+                />
               ) : null}
               {isBautizos && bautizosCompanionBaptizedRows.length > 0 ? (
                 <div className="p-2.5 rounded-lg shadow-sm border border-sky-200 bg-sky-50/45 dark:bg-transparent dark:border-2 dark:border-sky-500 dark:shadow-none">
@@ -39774,7 +39801,7 @@ function resolveEventName(eventId) {
             <EventWorkspaceScreenLazy />
           </Suspense>
         </WorkspaceShellProvider>
-        <AppVersionBadge variant="workspace" className="top-2.5 right-3 sm:top-3 sm:right-3" />
+        <AppVersionBadge variant="workspace" className="top-2.5 right-3 sm:top-3 sm:right-3" showInternal={isSuperUser} />
         {logoutConfirmOnBackModalEl}
       </>
     </SystemViewGuard>

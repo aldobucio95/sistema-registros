@@ -9,11 +9,13 @@ import {
   expandBautizosWaitlistRegistryRows,
   getBautizosCompanionsArray,
   GLOBAL_REGISTRY_VIRTUAL_KIND,
+  isBautizosCompanionBaptized,
   normalizeBautizosAttendanceType,
   participantHasBaptismChip,
   BAUTIZOS_ATTENDANCE,
 } from './bautizosParty.js';
 import { computeBautizosDashboardActiveStatsForLocation } from './bautizosDashboardLocationStats.js';
+import { isCompanionWaitlistPending } from './bautizosCompanionWaitlist.js';
 
 const PARTICIPANT_STATUS_ARCHIVED = 'archived';
 
@@ -46,6 +48,17 @@ function filterExpandedRowsForLocation(expandedRows, roster, locNorm, dashboardS
   const out = [];
   for (const row of expandedRows || []) {
     if (!rowAtLocation(row, locNorm)) continue;
+    if (row._isCompanionWaitlistVirtual === true) {
+      const host = rosterById.get(String(row._companionWaitlistHostId || '').trim());
+      if (!host) continue;
+      const comp = getBautizosCompanionsArray(host).find(
+        (c) => String(c?.id || '').trim() === String(row._companionWaitlistCompanionId || '').trim()
+      );
+      if (!comp || !isCompanionWaitlistPending(comp)) continue;
+      if (!bautizosDashboardCompanionCountsForScope(comp, dashboardScope, host)) continue;
+      out.push(row);
+      continue;
+    }
     if (row.__globalRegistryVirtual) {
       const host = rosterById.get(String(row.__hostRegistrantId || '').trim());
       if (!host) continue;
@@ -78,6 +91,14 @@ function analyzeBautizosExpandedRowsToTypes(expandedRows) {
   let empleados = 0;
   let cortesias = 0;
   for (const p of expandedRows || []) {
+    if (p._isCompanionWaitlistVirtual === true) {
+      if (isBautizosCompanionBaptized({ willBeBaptized: p.willBeBaptized })) {
+        bautizados += 1;
+      } else {
+        acompanantes += 1;
+      }
+      continue;
+    }
     if (p.__globalRegistryVirtual) {
       if (p.__virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companionBaptized) {
         bautizados += 1;

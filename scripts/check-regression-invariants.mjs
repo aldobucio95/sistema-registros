@@ -253,6 +253,12 @@ function main() {
   checkDashboardSummaryTableWiring(app);
   checkSummaryCellModalWiring(app);
 
+  if (!app.includes('AppVersionBadge showInternal={isSuperUser}')) {
+    fail('App.jsx no pasa showInternal={isSuperUser} a AppVersionBadge (versión interna SuperUsuario)');
+  } else {
+    pass('AppVersionBadge con versión interna para SuperUsuario');
+  }
+
   try {
     statSync(join(ROOT, 'scripts/snapshot-critical-files.mjs'));
     pass('script snapshot:critical presente');

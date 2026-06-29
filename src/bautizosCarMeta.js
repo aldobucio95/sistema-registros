@@ -7,6 +7,7 @@ import {
 import {
   normalizeArrivalCarCount,
   bautizosLlegaEnCarroForTransportPricing,
+  companionRowIsEffectivelyEmpty,
   getBautizosCompanionsArray,
 } from './bautizosParty.js';
 
@@ -427,7 +428,8 @@ export function buildBautizosFamilyCarInventory({
   const inventory = [];
 
   const hostGoesByCar = bautizosLlegaEnCarroForTransportPricing(hostPerson);
-  const anyCompanionGoesByCar = comps.some((c) => companionGoesByCar(c));
+  const filledComps = comps.filter((c) => !companionRowIsEffectivelyEmpty(c));
+  const anyCompanionGoesByCar = filledComps.some((c) => companionGoesByCar(c));
   if (!hostGoesByCar && !anyCompanionGoesByCar) return inventory;
 
   const familyCarCount = normalizeArrivalCarCount(hostPerson?.carrosLlegada);
@@ -799,7 +801,9 @@ export function countAdditionalCarsForHost(hostPerson) {
 export function familyHasAnyCarTransport(hostPerson, companions) {
   if (bautizosLlegaEnCarroForTransportPricing(hostPerson)) return true;
   const comps = Array.isArray(companions) ? companions : getBautizosCompanionsArray(hostPerson);
-  return comps.some((c) => companionGoesByCar(c));
+  return comps
+    .filter((c) => !companionRowIsEffectivelyEmpty(c))
+    .some((c) => companionGoesByCar(c));
 }
 
 /** Aplica parches de carMeta al plan del evento y persiste en Firestore. */
