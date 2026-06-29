@@ -34564,12 +34564,27 @@ function resolveEventName(eventId) {
 
     const fmtExpandedMoney = (n) => (canSeeMoney ? formatMoney(Number(n) || 0) : '$***');
 
+    const bautizosCarDataSummaryEl =
+      isBautizos &&
+      familyHasAnyCarTransport(
+        carDataAnchorPerson,
+        getBautizosCompanionsArray(carDataAnchorPerson)
+      ) ? (
+        <BautizosCarDataSummaryCard
+          hostPerson={carDataAnchorPerson}
+          companions={getBautizosCompanionsArray(carDataAnchorPerson)}
+          plan={currentEvent?.transportPlanning}
+          roster={rosterForCompanionDisplay}
+        />
+      ) : null;
+
     const readOnlySummaryGrid = (
       <>
         <p className="text-[9px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest px-0.5">
           Resumen por secciones
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-4 gap-3 md:gap-4 text-[11px] leading-snug items-start">
+            <div className="flex flex-col gap-3 min-w-0">
             <div className="p-2.5 rounded-lg shadow-sm border border-indigo-200 bg-indigo-50/50 dark:bg-transparent dark:border-2 dark:border-indigo-500 dark:shadow-none">
               <p className="font-bold text-indigo-900 dark:text-indigo-100 mb-1.5 uppercase tracking-wider text-[9px]">
                 Detalles generales
@@ -34783,6 +34798,8 @@ function resolveEventName(eventId) {
                   </p>
                 );
               })()}
+            </div>
+            {bautizosCarDataSummaryEl}
             </div>
             <div className="flex flex-col gap-3 min-w-0">
               <div className="p-2.5 rounded-lg shadow-sm border border-teal-200 bg-teal-50/45 dark:bg-transparent dark:border-2 dark:border-teal-500 dark:shadow-none">
@@ -35042,18 +35059,6 @@ function resolveEventName(eventId) {
                     </div>
                   )}
                 </div>
-              ) : null}
-              {isBautizos &&
-              familyHasAnyCarTransport(
-                carDataAnchorPerson,
-                getBautizosCompanionsArray(carDataAnchorPerson)
-              ) ? (
-                <BautizosCarDataSummaryCard
-                  hostPerson={carDataAnchorPerson}
-                  companions={getBautizosCompanionsArray(carDataAnchorPerson)}
-                  plan={currentEvent?.transportPlanning}
-                  roster={rosterForCompanionDisplay}
-                />
               ) : null}
               {isBautizos && bautizosCompanionBaptizedRows.length > 0 ? (
                 <div className="p-2.5 rounded-lg shadow-sm border border-sky-200 bg-sky-50/45 dark:bg-transparent dark:border-2 dark:border-sky-500 dark:shadow-none">
