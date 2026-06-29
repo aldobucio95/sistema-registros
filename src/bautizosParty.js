@@ -39,6 +39,7 @@ export function normalizeBaptismShirtSize(raw) {
 export function participantHasBaptismChip(personLike, eventType) {
   const et = String(eventType || '').trim();
   if (personLike?._isCompanionWaitlistVirtual === true) return false;
+  if (personLike?.__globalRegistryCompanionRow === true) return false;
   if (et === 'Campa') return isSiValue(personLike?.willBeBaptized);
   if (et === 'Bautizos') {
     return normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado;

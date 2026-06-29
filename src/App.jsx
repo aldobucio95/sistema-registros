@@ -34129,6 +34129,10 @@ function resolveEventName(eventId) {
     const displayIndex = typeof opts.displayIndex === 'number' && opts.displayIndex > 0 ? opts.displayIndex : null;
     const isSubRegistration = !!opts.isSubRegistration;
     const isWaitlist = (person?.status || 'active') === 'waitlist';
+    const showCompanionChip =
+      isCompanionWaitlistVirtualParticipant(person) ||
+      isSubRegistration ||
+      person?.__globalRegistryCompanionRow === true;
     const useUnspecified = !!opts.useUnspecifiedPlaceholder;
     const fmt = (v) => (useUnspecified ? rosterDisplayUnspecified(v) : String(v ?? '').trim() || '—');
     const ageFromBirth = (person?.birthDate && String(person.birthDate).trim())
@@ -34162,7 +34166,7 @@ function resolveEventName(eventId) {
                 Lista de espera
               </span>
             ) : null}
-            {isCompanionWaitlistVirtualParticipant(person) ? (
+            {showCompanionChip ? (
               <span className="text-[8px] font-black uppercase bg-violet-50 text-violet-800 border border-violet-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center justify-center gap-0.5 dark:bg-violet-600 dark:text-white dark:border-violet-700">
                 <Users size={10} className="shrink-0" aria-hidden />
                 Acompañante

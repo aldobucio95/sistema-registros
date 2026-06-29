@@ -32,6 +32,15 @@ describe('bautizosCompanionWaitlist', () => {
     expect(participantHasBaptismChip(row, 'Bautizos')).toBe(false);
   });
 
+  it('omits baptism chip for global registry nested companion rows', () => {
+    const companionPerson = {
+      name: 'Acompañante',
+      bautizosAttendanceType: 'Bautizado',
+      __globalRegistryCompanionRow: true,
+    };
+    expect(participantHasBaptismChip(companionPerson, 'Bautizos')).toBe(false);
+  });
+
   it('parses companion waitlist virtual ids', () => {
     expect(parseCompanionWaitlistVirtualId('cw:host1::c1')).toEqual({
       hostId: 'host1',
