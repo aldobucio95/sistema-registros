@@ -135,13 +135,13 @@ function checkGlobalRegistryRosterInvariants(app) {
 
   if (
     !app.includes('expandBautizosGlobalRegistryActivosDisplayRows(') ||
-    !app.includes('expandBautizosWaitlistRegistryDisplayRows(')
+    !app.includes('aggregateLocationRosterSectionCountsForLocations(')
   ) {
     fail(
-      'Registro Global debe usar expandBautizosGlobalRegistryActivosDisplayRows y expandBautizosWaitlistRegistryDisplayRows (vista lista alineada con sede)'
+      'Registro Global debe usar expandBautizosGlobalRegistryActivosDisplayRows y aggregateLocationRosterSectionCountsForLocations (misma lógica que sede)'
     );
   } else {
-    pass('Registro Global con expansión de vista lista (activos/waitlist display)');
+    pass('Registro Global con expansión de vista lista y conteos canónicos por sede');
   }
 }
 

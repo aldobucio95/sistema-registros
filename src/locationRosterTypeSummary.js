@@ -294,6 +294,55 @@ export function getLocationRosterSectionCountsFromSummary(summary) {
   };
 }
 
+/**
+ * Suma conteos canónicos de varias sedes (misma lógica que los chips del roster por sede).
+ */
+export function aggregateLocationRosterSectionCountsForLocations({
+  locations = [],
+  event,
+  globalConfig,
+  allParticipants = [],
+  activeTitularParticipantsByLocation = {},
+  waitlistParticipantsByLocation = {},
+  cancelledParticipantsByLocation = {},
+  dashboardScope = 'all',
+} = {}) {
+  const evId = String(event?.id || '').trim();
+  const roster =
+    evId === ''
+      ? allParticipants || []
+      : (allParticipants || []).filter((p) => String(p?.eventId || '') === evId);
+  const isBautizos = String(event?.eventType || '') === 'Bautizos';
+  let active = 0;
+  let waitlist = 0;
+  let cancelled = 0;
+
+  for (const loc of locations) {
+    const locKey = String(loc || '').trim();
+    if (!locKey) continue;
+    if (isBautizos) {
+      const summary = buildLocationRosterTypeSummaryByStatus({
+        activeTitularParticipants: activeTitularParticipantsByLocation[locKey] || [],
+        allParticipants: roster,
+        event,
+        loc: locKey,
+        globalConfig,
+        dashboardScope,
+      });
+      const c = getLocationRosterSectionCountsFromSummary(summary);
+      active += c.active;
+      waitlist += c.waitlist;
+      cancelled += c.cancelled;
+    } else {
+      active += (activeTitularParticipantsByLocation[locKey] || []).length;
+      waitlist += (waitlistParticipantsByLocation[locKey] || []).length;
+      cancelled += (cancelledParticipantsByLocation[locKey] || []).length;
+    }
+  }
+
+  return { active, waitlist, cancelled };
+}
+
 /** @deprecated Usar buildLocationRosterTypeSummaryByStatus */
 export function buildLocationRosterTypeSummary(activeTitularParticipants, options = {}) {
   const section = buildActiveTypeSection(activeTitularParticipants, options);

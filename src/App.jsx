@@ -169,7 +169,6 @@ import {
   getBautizosAttendanceTypeLabel,
   resolveBautizosAttendanceChipKind,
   expandBautizosGlobalRegistryActivosDisplayRows,
-  expandBautizosWaitlistRegistryDisplayRows,
   GLOBAL_REGISTRY_VIRTUAL_KIND,
   getBautizosCompanionsVisibleForRegistrant,
   buildBautizosExistingCompanionOptions,
@@ -496,7 +495,7 @@ import {
 import { logError as logErrorToActivity, setErrorLogContextProvider } from './errorLogger.js';
 import ActivityLogSnapshotDetails from './components/ActivityLogSnapshotDetails.jsx';
 import { deleteOldestLogsByCount, deleteLogsByIds } from './activityLogsDelete.js';
-import { buildLocationRosterTypeSummaryByStatus, getLocationRosterSectionCountsFromSummary } from './locationRosterTypeSummary.js';
+import { buildLocationRosterTypeSummaryByStatus, getLocationRosterSectionCountsFromSummary, aggregateLocationRosterSectionCountsForLocations } from './locationRosterTypeSummary.js';
 import LocationRosterTypeSummary from './LocationRosterTypeSummary.jsx';
 import {
   LocationRosterActivosChip,
@@ -38946,40 +38945,33 @@ function resolveEventName(eventId) {
     });
     const invalidSource = sourceRows.filter((p) => !isValidEventLocation(p));
     const validSource = sourceRows.filter((p) => isValidEventLocation(p));
-    const splitTitularsByRosterSection = (rows) => {
-      const activos = [];
-      const waitlist = [];
-      const cancelled = [];
-      for (const p of rows) {
-        const st = p?.status || 'active';
-        if (st === 'waitlist') waitlist.push(p);
-        else if (st === PARTICIPANT_STATUS_CANCELLED) cancelled.push(p);
-        else activos.push(p);
-      }
-      return { activos, waitlist, cancelled };
-    };
-    const titularSections = splitTitularsByRosterSection(validSource);
+    const locsInScope = (() => {
+      const base =
+        globalLocationFilters.length > 0
+          ? globalLocationFilters.filter((loc) => visibleLocations.includes(loc))
+          : [...visibleLocations];
+      return base.map((l) => String(l).trim()).filter(Boolean);
+    })();
+    const globalSectionDisplayCounts = aggregateLocationRosterSectionCountsForLocations({
+      locations: locsInScope,
+      event: currentEvent,
+      globalConfig,
+      allParticipants,
+      activeTitularParticipantsByLocation: data,
+      waitlistParticipantsByLocation: waitlistData,
+      cancelledParticipantsByLocation: cancelledData,
+    });
+    const activosTitularsInScope = locsInScope.flatMap((loc) => data[loc] || []);
     const activosExpanded = isBautizos
-      ? expandBautizosGlobalRegistryActivosDisplayRows(titularSections.activos, validSource)
-      : titularSections.activos;
-    const waitlistExpanded = isBautizos
-      ? expandBautizosWaitlistRegistryDisplayRows(
-          titularSections.waitlist,
-          validSource,
-          currentEvent,
-          visibleLocations
-        )
-      : titularSections.waitlist;
-    const cancelledExpanded = titularSections.cancelled;
+      ? expandBautizosGlobalRegistryActivosDisplayRows(activosTitularsInScope, validSource)
+      : activosTitularsInScope;
+    const waitlistExpanded = locsInScope.flatMap((loc) => getSortedWaitlistForLocation(loc));
+    const cancelledExpanded = locsInScope.flatMap((loc) => getSortedCancelledForLocation(loc));
     const validSourceExpanded = [...activosExpanded, ...waitlistExpanded, ...cancelledExpanded];
     const invalidFiltered = applyGlobalRegistryLikeFilters(invalidSource);
-    const applyGlobalLocationFilter = (list) =>
-      globalLocationFilters.length > 0
-        ? list.filter((p) => globalLocationFilters.includes(p.location))
-        : list;
-    let activeRows = applyGlobalLocationFilter(applyGlobalRegistryLikeFilters(activosExpanded));
-    let waitlistRows = applyGlobalLocationFilter(applyGlobalRegistryLikeFilters(waitlistExpanded));
-    let cancelledRows = applyGlobalLocationFilter(applyGlobalRegistryLikeFilters(cancelledExpanded));
+    let activeRows = applyGlobalRegistryLikeFilters(activosExpanded);
+    let waitlistRows = applyGlobalRegistryLikeFilters(waitlistExpanded);
+    let cancelledRows = applyGlobalRegistryLikeFilters(cancelledExpanded);
     const coincidenceTotal =
       invalidFiltered.length + activeRows.length + waitlistRows.length + cancelledRows.length;
     const grSearchActive = !!String(globalRegistryListFilters.searchTerm || '').trim();
@@ -39206,9 +39198,10 @@ function resolveEventName(eventId) {
             <div className="flex flex-wrap items-center gap-2 min-w-0">
               <Users size={18} className="text-indigo-600 shrink-0" />
               <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Activos (inscritos)</span>
-              <span className="chip-roster-count-activos text-[10px] font-black text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-lg shrink-0">
-                {activeRows.length}
-              </span>
+              <LocationRosterActivosChip
+                isBautizos={isBautizos}
+                activeCount={globalSectionDisplayCounts.active}
+              />
               {grSearchActive && activeRows.length > 0 ? (
                 <span className="chip-roster-count-filter-hit text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-lg">
                   {activeRows.length} coincidencia{activeRows.length === 1 ? '' : 's'}
@@ -39239,14 +39232,11 @@ function resolveEventName(eventId) {
             <div className="flex flex-wrap items-center gap-2 min-w-0">
               <GraduationCap size={18} className="text-amber-600 shrink-0" />
               <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Lista de espera(Becados)</span>
-              <span className="chip-roster-count-waitlist text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-lg shrink-0">
-                {waitlistExpanded.length} en espera
-              </span>
-              {grSearchActive && waitlistRows.length > 0 ? (
-                <span className="chip-roster-count-filter-hit text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-lg">
-                  {waitlistRows.length} coincidencia{waitlistRows.length === 1 ? '' : 's'}
-                </span>
-              ) : null}
+              <LocationRosterWaitlistChip
+                waitlistCount={globalSectionDisplayCounts.waitlist}
+                rosterSearchActive={grSearchActive}
+                filteredCount={waitlistRows.length}
+              />
             </div>
             {showGrWaitlist ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
           </button>
@@ -39273,14 +39263,11 @@ function resolveEventName(eventId) {
             <div className="flex flex-wrap items-center gap-2 min-w-0">
               <Ban size={18} className="text-rose-600 shrink-0" />
               <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Cancelados / dados de baja</span>
-              <span className="chip-roster-count-cancelled text-[10px] font-black text-rose-800 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded-lg shrink-0">
-                {cancelledExpanded.length} cancelados
-              </span>
-              {grSearchActive && cancelledRows.length > 0 ? (
-                <span className="chip-roster-count-filter-hit text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-lg">
-                  {cancelledRows.length} coincidencia{cancelledRows.length === 1 ? '' : 's'}
-                </span>
-              ) : null}
+              <LocationRosterCancelledChip
+                cancelledCount={globalSectionDisplayCounts.cancelled}
+                rosterSearchActive={grSearchActive}
+                filteredCount={cancelledRows.length}
+              />
             </div>
             {showGrCancelled ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
           </button>
