@@ -168,8 +168,8 @@ import {
   participantIsBautizosServidorOrEmpleadoAttendance,
   getBautizosAttendanceTypeLabel,
   resolveBautizosAttendanceChipKind,
-  expandBautizosGlobalRegistryRows,
-  expandBautizosWaitlistRegistryRows,
+  expandBautizosGlobalRegistryActivosDisplayRows,
+  expandBautizosWaitlistRegistryDisplayRows,
   GLOBAL_REGISTRY_VIRTUAL_KIND,
   getBautizosCompanionsVisibleForRegistrant,
   buildBautizosExistingCompanionOptions,
@@ -38959,13 +38959,18 @@ function resolveEventName(eventId) {
       return { activos, waitlist, cancelled };
     };
     const titularSections = splitTitularsByRosterSection(validSource);
-    const expandGlobalRegistryGroup = (titularRows) =>
-      isBautizos ? expandBautizosGlobalRegistryRows(titularRows, validSource) : titularRows;
-    const activosExpanded = expandGlobalRegistryGroup(titularSections.activos);
+    const activosExpanded = isBautizos
+      ? expandBautizosGlobalRegistryActivosDisplayRows(titularSections.activos, validSource)
+      : titularSections.activos;
     const waitlistExpanded = isBautizos
-      ? expandBautizosWaitlistRegistryRows(titularSections.waitlist, validSource)
+      ? expandBautizosWaitlistRegistryDisplayRows(
+          titularSections.waitlist,
+          validSource,
+          currentEvent,
+          visibleLocations
+        )
       : titularSections.waitlist;
-    const cancelledExpanded = expandGlobalRegistryGroup(titularSections.cancelled);
+    const cancelledExpanded = titularSections.cancelled;
     const validSourceExpanded = [...activosExpanded, ...waitlistExpanded, ...cancelledExpanded];
     const invalidFiltered = applyGlobalRegistryLikeFilters(invalidSource);
     const applyGlobalLocationFilter = (list) =>

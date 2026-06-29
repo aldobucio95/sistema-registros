@@ -52,3 +52,48 @@ export function expandBautizosWaitlistRegistryRows(titularWaitlistRows, rosterFo
 
   return out;
 }
+
+/**
+ * Lista de espera en registro global / sede (vista lista):
+ * titulares en espera + acompañantes `companionWaitlistPending` en titulares activos.
+ * Los acompañantes del titular en espera se muestran al expandir la fila, no como filas canónicas extra.
+ */
+export function expandBautizosWaitlistRegistryDisplayRows(
+  titularWaitlistRows,
+  rosterForPlan,
+  eventLike = null,
+  visibleLocations = null
+) {
+  const titulars = Array.isArray(titularWaitlistRows) ? titularWaitlistRows : [];
+  const roster = Array.isArray(rosterForPlan) ? rosterForPlan : titulars;
+  const ev = inferEventLikeFromRoster(roster, eventLike);
+  const locSet =
+    Array.isArray(visibleLocations) && visibleLocations.length > 0
+      ? new Set(visibleLocations.map((l) => String(l).trim()).filter(Boolean))
+      : null;
+  const seenIds = new Set();
+  const out = [];
+
+  for (const row of titulars) {
+    const id = String(row?.id || '').trim();
+    if (!id || seenIds.has(id)) continue;
+    seenIds.add(id);
+    out.push(row);
+  }
+
+  for (const host of roster) {
+    if ((host?.status || 'active') !== 'active') continue;
+    const hostLoc = String(host?.location || '').trim();
+    if (locSet && !locSet.has(hostLoc)) continue;
+    for (const c of getBautizosCompanionsArray(host)) {
+      if (!isCompanionWaitlistPending(c)) continue;
+      const row = buildCompanionWaitlistVirtualParticipant(host, c, ev, roster);
+      const id = String(row?.id || '').trim();
+      if (!id || seenIds.has(id)) continue;
+      seenIds.add(id);
+      out.push(row);
+    }
+  }
+
+  return out;
+}

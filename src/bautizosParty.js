@@ -487,7 +487,37 @@ export function expandBautizosGlobalRegistryRows(titularRows, rosterForPlan) {
   return out;
 }
 
-export { expandBautizosWaitlistRegistryRows } from './bautizosWaitlistRegistryExpand.js';
+/**
+ * Registro global / sede (vista lista): titulares + ramas de acompañantes bautizados.
+ * Sin filas del plan canónico (evita inflar conteos respecto al dashboard y registro por sede).
+ */
+export function expandBautizosGlobalRegistryActivosDisplayRows(titularRows, rosterForPlan) {
+  const titulars = Array.isArray(titularRows) ? titularRows : [];
+  const roster = Array.isArray(rosterForPlan) ? rosterForPlan : titulars;
+  const meta = buildActiveRegistrantMetaForCompanionDedupe(roster);
+  const out = [...titulars];
+  const seenVirtual = new Set();
+
+  for (const host of titulars) {
+    const comps = getBautizosCompanionsArray(host);
+    for (let i = 0; i < comps.length; i++) {
+      const c = comps[i] || {};
+      if (!String(c?.name || '').trim() || !isBautizosCompanionBaptized(c)) continue;
+      if (c?.companionWaitlistPending === true) continue;
+      const row = buildVirtualBaptizedCompanionGlobalRow(host, c, i, meta);
+      if (!row || seenVirtual.has(row.id)) continue;
+      seenVirtual.add(row.id);
+      out.push(row);
+    }
+  }
+
+  return out;
+}
+
+export {
+  expandBautizosWaitlistRegistryRows,
+  expandBautizosWaitlistRegistryDisplayRows,
+} from './bautizosWaitlistRegistryExpand.js';
 
 /**
  * Inscritos tipo servidor o empleado (vista «Servidores y empleados» en Bautizos).

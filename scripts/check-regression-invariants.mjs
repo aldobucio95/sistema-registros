@@ -133,12 +133,15 @@ function checkGlobalRegistryRosterInvariants(app) {
     pass('Registro Global con secciones Activos / Espera / Cancelados');
   }
 
-  if (!app.includes('expandBautizosGlobalRegistryRows')) {
-    fail('falta expandBautizosGlobalRegistryRows en App.jsx (import o uso)');
-  } else if (!app.includes('expandBautizosGlobalRegistryRows(')) {
-    fail('expandBautizosGlobalRegistryRows importado pero nunca invocado en App.jsx');
+  if (
+    !app.includes('expandBautizosGlobalRegistryActivosDisplayRows(') ||
+    !app.includes('expandBautizosWaitlistRegistryDisplayRows(')
+  ) {
+    fail(
+      'Registro Global debe usar expandBautizosGlobalRegistryActivosDisplayRows y expandBautizosWaitlistRegistryDisplayRows (vista lista alineada con sede)'
+    );
   } else {
-    pass('expandBautizosGlobalRegistryRows referenciado e invocado');
+    pass('Registro Global con expansión de vista lista (activos/waitlist display)');
   }
 }
 
