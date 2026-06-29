@@ -4,6 +4,7 @@ import {
   buildTransportCarContextForHost,
   familyHasAnyCarTransport,
 } from '../bautizosCarMeta.js';
+import { bautizosLlegaEnCarroForTransportPricing } from '../bautizosParty.js';
 
 describe('familyHasAnyCarTransport', () => {
   it('no cuenta filas de acompañante vacías con llegaEnCarro por defecto', () => {
@@ -46,6 +47,16 @@ describe('familyHasAnyCarTransport', () => {
       wantsBautizosTransport: 'Si',
       bautizosCompanions: [],
     };
+    expect(familyHasAnyCarTransport(host, [])).toBe(false);
+  });
+
+  it('transporte del evento no se interpreta como carro por transportType legacy', () => {
+    const host = {
+      llegaEnCarro: false,
+      wantsBautizosTransport: 'Si',
+      transportType: 'Carro',
+    };
+    expect(bautizosLlegaEnCarroForTransportPricing(host)).toBe(false);
     expect(familyHasAnyCarTransport(host, [])).toBe(false);
   });
 });

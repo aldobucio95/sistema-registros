@@ -774,6 +774,8 @@ export function bautizosLlegaEnCarroForTransportPricing(personLike) {
   if (typeof personLike?.llegaEnCarro === 'boolean') return personLike.llegaEnCarro;
   if (isSiValue(personLike?.llegaEnCarro)) return true;
   if (personLike?.llegaEnCarro === 'No') return false;
+  // Bautizos: transporte del evento prevalece sobre `transportType` legacy «Carro».
+  if (isSiValue(personLike?.wantsBautizosTransport)) return false;
   return (personLike?.transportType || 'Camión') === 'Carro';
 }
 

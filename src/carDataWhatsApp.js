@@ -131,3 +131,22 @@ export function titularHasPendingCarDataWhatsApp(titular, eventSnapshot, roster)
   const ctx = buildCarDataPendingWhatsAppContext({ titular, eventSnapshot, roster });
   return ctx.needsAttention;
 }
+
+/** Excluye avisos `datos_carro` obsoletos (p. ej. titular pasó a transporte del evento). */
+export function filterWhatsAppFinanceNotificationsForQueue(person, notifications, eventSnapshot, roster) {
+  const list = Array.isArray(notifications) ? notifications : [];
+  return list.filter((n) => {
+    if (!n || n.sent) return false;
+    if (String(n?.kind || '') !== 'datos_carro') return true;
+    if (!eventSnapshot || String(eventSnapshot.eventType || '') !== 'Bautizos') return false;
+    const { titular } = resolveCarDataWhatsAppTitularPerson(person, roster);
+    return titularHasPendingCarDataWhatsApp(titular, eventSnapshot, roster);
+  });
+}
+
+export function countUnsentWhatsAppNotificationsForQueue(person, eventSnapshot, roster) {
+  const notifications = Array.isArray(person?.whatsAppFinanceNotifications)
+    ? person.whatsAppFinanceNotifications
+    : [];
+  return filterWhatsAppFinanceNotificationsForQueue(person, notifications, eventSnapshot, roster).length;
+}

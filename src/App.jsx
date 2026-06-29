@@ -227,6 +227,8 @@ import {
 import {
   buildCarDataPendingWhatsAppContext,
   CAR_DATA_PENDING_FILTER_OPTIONS,
+  countUnsentWhatsAppNotificationsForQueue,
+  filterWhatsAppFinanceNotificationsForQueue,
   listCarDataPendingTitularTargets,
   listSplitCompanionParticipantIds,
   titularHasPendingCarDataWhatsApp,
@@ -3206,8 +3208,11 @@ const NEW_REG_DONATION_BTN =
 
 const ROSTER_MOBILE_CHIP_ICON = 12;
 
-function RosterWhatsAppButton({ person, loc, onOpen, variant = 'inline' }) {
-  const n = countUnsentWhatsAppNotifications(person);
+function RosterWhatsAppButton({ person, loc, onOpen, variant = 'inline', eventSnapshot, roster }) {
+  const n =
+    eventSnapshot && roster
+      ? countUnsentWhatsAppNotificationsForQueue(person, eventSnapshot, roster)
+      : countUnsentWhatsAppNotifications(person);
   const title =
     n > 0 ? `Enviar WhatsApp (${n} pendiente${n === 1 ? '' : 's'} en cola)` : 'Enviar WhatsApp';
   if (variant === 'chip') {
@@ -16200,12 +16205,18 @@ function resolveEventName(eventId) {
       const notifications = Array.isArray(person.whatsAppFinanceNotifications) ? person.whatsAppFinanceNotifications : [];
       for (const n of notifications) {
         if (n?.sent) continue;
+        if (
+          String(n?.kind || '') === 'datos_carro' &&
+          !filterWhatsAppFinanceNotificationsForQueue(person, [n], currentEvent, allParticipants).length
+        ) {
+          continue;
+        }
         rows.push({ person, waPhone, notification: n, markKey: getWhatsAppNotificationMarkKey(n) });
       }
     }
     rows.sort((a, b) => Number(a.notification.createdAt || 0) - Number(b.notification.createdAt || 0));
     return rows;
-  }, [data, waitlistData, cancelledData, applyRosterLikeFilters]);
+  }, [data, waitlistData, cancelledData, applyRosterLikeFilters, currentEvent, allParticipants]);
 
   const exportPendingWhatsAppToExcel = useCallback(async (loc) => {
     if (currentUser?.role === 'Lector' || !userCanSendWhatsAppQuickAction(currentUser)) {
@@ -16894,7 +16905,12 @@ function resolveEventName(eventId) {
       }
       const liq = getLiquidationTarget(person);
       const notifications = Array.isArray(person.whatsAppFinanceNotifications) ? person.whatsAppFinanceNotifications : [];
-      const pendingList = notifications.filter((n) => n && !n.sent);
+      const pendingList = filterWhatsAppFinanceNotificationsForQueue(
+        person,
+        notifications.filter((n) => n && !n.sent),
+        currentEvent,
+        allParticipants
+      );
       let message = '';
       let pendingMergeMarkKeys = null;
       let whatsAppQueuedMessageSnapshot = null;
@@ -35725,7 +35741,7 @@ function resolveEventName(eventId) {
                 />
               ) : null}
               {canQuickActionWhatsApp ? (
-                <RosterWhatsAppButton person={person} loc={loc} onOpen={openWhatsAppModal} />
+                <RosterWhatsAppButton person={person} loc={loc} onOpen={openWhatsAppModal} eventSnapshot={currentEvent} roster={allParticipants} />
               ) : null}
             </div>
           )}
@@ -38272,7 +38288,7 @@ function resolveEventName(eventId) {
                                 />
                                 )}
                                 {canQuickActionWhatsApp && (
-                                <RosterWhatsAppButton person={person} loc={loc} onOpen={openWhatsAppModal} />
+                                <RosterWhatsAppButton person={person} loc={loc} onOpen={openWhatsAppModal} eventSnapshot={currentEvent} roster={allParticipants} />
                                 )}
                               </div>
                             )}
@@ -38501,7 +38517,7 @@ function resolveEventName(eventId) {
                                 />
                                 )}
                                 {canQuickActionWhatsApp && (
-                                <RosterWhatsAppButton person={person} loc={loc} onOpen={openWhatsAppModal} />
+                                <RosterWhatsAppButton person={person} loc={loc} onOpen={openWhatsAppModal} eventSnapshot={currentEvent} roster={allParticipants} />
                                 )}
                               </div>
                             )}
@@ -38675,7 +38691,7 @@ function resolveEventName(eventId) {
                               />
                               )}
                               {canQuickActionWhatsApp && (
-                              <RosterWhatsAppButton person={person} loc={loc} onOpen={openWhatsAppModal} />
+                              <RosterWhatsAppButton person={person} loc={loc} onOpen={openWhatsAppModal} eventSnapshot={currentEvent} roster={allParticipants} />
                               )}
                             </div>
                           )}
