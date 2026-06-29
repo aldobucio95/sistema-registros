@@ -22688,7 +22688,10 @@ function resolveEventName(eventId) {
       return;
     }
     const person = (waitlistData[loc] || []).find(p => String(p.id) === String(id));
-    if (!person) return;
+    if (!person) {
+      showToast('No se encontró el registro en lista de espera.');
+      return;
+    }
     const gCapPromote = getEventTotalCap();
     if (gCapPromote > 0) {
       const promoteUnits = computePromoteFromWaitlistCapUnits(person, allParticipants, currentEvent, loc);
@@ -34159,6 +34162,12 @@ function resolveEventName(eventId) {
                 Lista de espera
               </span>
             ) : null}
+            {isCompanionWaitlistVirtualParticipant(person) ? (
+              <span className="text-[8px] font-black uppercase bg-violet-50 text-violet-800 border border-violet-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center justify-center gap-0.5 dark:bg-violet-600 dark:text-white dark:border-violet-700">
+                <Users size={10} className="shrink-0" aria-hidden />
+                Acompañante
+              </span>
+            ) : null}
             {person.alias ? (
               <span className="text-[8px] font-black uppercase bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center dark:bg-indigo-600 dark:text-white dark:border-indigo-700">
                 Alias: {person.alias}
@@ -34312,6 +34321,14 @@ function resolveEventName(eventId) {
               ? ` · monto becado $${Number(person.scholarshipPartialAmount || 0).toLocaleString('es-MX')}`
               : ''}{' '}
             (pendiente al promover)
+          </p>
+        ) : null}
+        {isCompanionWaitlistVirtualParticipant(person) ? (
+          <p className="text-[10px] font-semibold text-violet-800 dark:text-violet-200 leading-snug">
+            Acompañante de {String(person._companionWaitlistHostName || 'titular').trim()}
+            {String(person.relationship || '').trim() && person.relationship !== 'No disponible'
+              ? ` · ${String(person.relationship).trim()}`
+              : ''}
           </p>
         ) : null}
         <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1">
@@ -35428,6 +35445,8 @@ function resolveEventName(eventId) {
 
   const renderRosterQuickActionsPanel = (person, loc, { isExpanded, isBecado, liquidationTarget }) => {
     const qaBtnSimple = (extra) => `${ROSTER_QUICK_ACTION_BTN_BASE} ${ROSTER_QUICK_ACTION_BTN_MOBILE} ${extra}`;
+    const isWaitlistRow =
+      (person?.status || 'active') === 'waitlist' || isCompanionWaitlistVirtualParticipant(person);
     return (
       <div className="flex flex-col gap-1.5 w-full min-w-0">
         <div className={ROSTER_QUICK_ACTIONS_ROW_PRIMARY}>
@@ -35481,10 +35500,10 @@ function resolveEventName(eventId) {
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                openRosterInlineEditFromQuickActions(person, loc);
+                openWaitlistRowEdit(person, loc);
               }}
               className={qaBtnSimple('border border-indigo-700 bg-indigo-600 text-white hover:bg-indigo-700')}
-              title="Editar registro"
+              title={isWaitlistRow ? 'Editar registro en lista de espera' : 'Editar registro'}
               aria-label="Editar"
             >
               <Edit3 {...ROSTER_QUICK_ACTION_ICON_PROPS} />
@@ -35531,7 +35550,17 @@ function resolveEventName(eventId) {
           )}
         {currentUser?.role !== 'Lector' && (
           <div className="flex flex-wrap items-center justify-start gap-1.5">
-            {!participantIsCancelled(person) && (
+            {isWaitlistRow ? (
+              <button
+                type="button"
+                onClick={() => promoteFromWaitlistSection(loc, person)}
+                className={qaBtnSimple('border border-cyan-700 bg-cyan-600 text-white hover:bg-cyan-700')}
+                title="Promover a inscritos"
+              >
+                <CheckCircle2 {...ROSTER_QUICK_ACTION_ICON_PROPS} />
+                <span className="hidden sm:inline">Promover</span>
+              </button>
+            ) : !participantIsCancelled(person) ? (
               <button
                 type="button"
                 onClick={() => openMoveToWaitlistConfirm(loc, person.id)}
@@ -35541,7 +35570,7 @@ function resolveEventName(eventId) {
                 <GraduationCap {...ROSTER_QUICK_ACTION_ICON_PROPS} />
                 <span className="hidden sm:inline">A espera</span>
               </button>
-            )}
+            ) : null}
             {canMarkPersonsOfInterestFlag ? (
               <RosterPersonOfInterestButton
                 person={person}
@@ -35549,7 +35578,7 @@ function resolveEventName(eventId) {
                 onToggle={handleTogglePersonOfInterest}
               />
             ) : null}
-            {!participantIsCancelled(person) && canCancelRegistrationsFlag ? (
+            {!isCompanionWaitlistVirtualParticipant(person) && !participantIsCancelled(person) && canCancelRegistrationsFlag ? (
               <button
                 type="button"
                 onClick={() => cancelEntry(loc, person.id)}
@@ -35570,7 +35599,7 @@ function resolveEventName(eventId) {
                 <span className="hidden sm:inline">Reactivar</span>
               </button>
             ) : null}
-            {canArchiveRegistrationsFlag ? (
+            {!isCompanionWaitlistVirtualParticipant(person) && canArchiveRegistrationsFlag ? (
               <button
                 type="button"
                 onClick={() => removeEntry(loc, person.id)}
@@ -38258,7 +38287,7 @@ function resolveEventName(eventId) {
                                   type="button"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    openRosterInlineEditFromQuickActions(person, loc);
+                                    openWaitlistRowEdit(person, loc);
                                   }}
                                   className={`${ROSTER_QUICK_ACTION_BTN_BASE} border border-indigo-700 bg-indigo-600 text-white hover:bg-indigo-700`}
                                   title="Editar registro en lista de espera"
@@ -38298,7 +38327,7 @@ function resolveEventName(eventId) {
                             {/* Fila 3 · Estado del registro */}
                             {currentUser?.role !== 'Lector' && (
                               <div className="flex flex-wrap items-center justify-center gap-1.5">
-                                <button type="button" onClick={() => promoteWaitlistEntry(loc, person.id)} className={`${ROSTER_QUICK_ACTION_BTN_BASE} border border-cyan-700 bg-cyan-600 text-white hover:bg-cyan-700`} title="Promover a inscritos"><CheckCircle2 {...ROSTER_QUICK_ACTION_ICON_PROPS} />Promover</button>
+                                <button type="button" onClick={() => promoteFromWaitlistSection(loc, person)} className={`${ROSTER_QUICK_ACTION_BTN_BASE} border border-cyan-700 bg-cyan-600 text-white hover:bg-cyan-700`} title="Promover a inscritos"><CheckCircle2 {...ROSTER_QUICK_ACTION_ICON_PROPS} />Promover</button>
                                 {canMarkPersonsOfInterestFlag ? (
                                   <RosterPersonOfInterestButton
                                     person={person}
@@ -38306,10 +38335,10 @@ function resolveEventName(eventId) {
                                     onToggle={handleTogglePersonOfInterest}
                                   />
                                 ) : null}
-                                {canCancelRegistrationsFlag ? (
+                                {canCancelRegistrationsFlag && !isCompanionWaitlistVirtualParticipant(person) ? (
                                 <button type="button" onClick={() => cancelEntry(loc, person.id)} className={`${ROSTER_QUICK_ACTION_BTN_BASE} border border-amber-600 bg-amber-500 text-white hover:bg-amber-600`} title="Dar de baja (queda visible, no cuenta en inscritos/becados/servidores)"><Scissors {...ROSTER_QUICK_ACTION_ICON_PROPS} />Baja</button>
                                 ) : null}
-                                {canArchiveRegistrationsFlag ? (
+                                {canArchiveRegistrationsFlag && !isCompanionWaitlistVirtualParticipant(person) ? (
                                 <button type="button" onClick={() => removeEntry(loc, person.id)} className={`${ROSTER_QUICK_ACTION_BTN_BASE} border border-rose-700 bg-rose-600 text-white hover:bg-rose-700`} title="Archivar registro (deja de contar en el evento; datos e ID VNPM siguen para precargar)"><Trash2 {...ROSTER_QUICK_ACTION_ICON_PROPS} />Archivar</button>
                                 ) : null}
                               </div>
