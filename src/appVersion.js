@@ -36,7 +36,13 @@ export function getAppInternalVersionLabel() {
   if (APP_VERSION.endsWith('-dev')) {
     return `v.${APP_SEMVER}.devi`;
   }
-  const seq = String(APP_BUILD_SEQ || '0').trim();
+  let seq = String(APP_BUILD_SEQ || '0').trim();
+  if (!seq || seq === '0') {
+    const parts = String(APP_VERSION || '').split('.');
+    if (parts.length >= 4 && /^\d+$/.test(parts[3])) {
+      seq = parts[3];
+    }
+  }
   if (seq && seq !== '0') {
     return `v.${APP_SEMVER}.${seq}i`;
   }

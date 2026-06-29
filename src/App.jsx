@@ -27079,7 +27079,7 @@ function resolveEventName(eventId) {
           <Suspense fallback={<ScreenLoadingFallback title="Cargando panel…" />}>
             <EventHubScreenLazy />
           </Suspense>
-          <AppVersionBadge showInternal={isSuperUser} />
+          <AppVersionBadge showInternal={isSuperUser} currentUser={currentUser} />
           <p className="text-center text-[10px] text-slate-400 pb-2">
             <a href={privacyNoticePublicUrl} target="_blank" rel="noopener noreferrer" className="font-bold text-indigo-600 hover:underline">
               Aviso de privacidad integral
@@ -39801,7 +39801,12 @@ function resolveEventName(eventId) {
             <EventWorkspaceScreenLazy />
           </Suspense>
         </WorkspaceShellProvider>
-        <AppVersionBadge variant="workspace" className="top-2.5 right-3 sm:top-3 sm:right-3" showInternal={isSuperUser} />
+        <AppVersionBadge
+          variant="workspace"
+          className="top-2.5 right-3 sm:top-3 sm:right-3"
+          showInternal={isSuperUser}
+          currentUser={currentUser}
+        />
         {logoutConfirmOnBackModalEl}
       </>
     </SystemViewGuard>

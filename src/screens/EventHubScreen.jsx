@@ -13,6 +13,7 @@ import { usernameToAuthEmail, AUTH_EMAIL_DOMAIN } from '../firebaseConfig.js';
 import { resolvePanelNavConfigItemCopy, panelNavSidebarItemAppliesToEvent } from '../panelNavUi.js';
 import { uiButtons, uiModal, uiShell, uiUserEdit, uiUserAccountForm, uiFeedback, uiBadgeSoft, uiMobileMenu, uiHubHeader } from '../ui/uiFormatClasses.js';
 import UserAccountModalShell from '../components/UserAccountModalShell.jsx';
+import AppVersionBadge from '../AppVersionBadge.jsx';
 import { closedEditingUserState } from '../userAccountFormDefaults.js';
 import PwaInstallControl from '../components/PwaInstallControl.jsx';
 import BulkRestoreResyncBanner from '../components/BulkRestoreResyncBanner.jsx';
@@ -330,6 +331,9 @@ export default function EventHubScreen() {
                 </div>
 
                 <div className={uiHubHeader.desktopMeta}>
+                  {isSuperUser ? (
+                    <AppVersionBadge variant="inline" currentUser={currentUser} className="px-1" />
+                  ) : null}
                   <div className={uiHubHeader.userChip}>
                     <UserCircle size={14} className="text-slate-400 dark:text-slate-500 shrink-0" />
                     <span className={uiHubHeader.userName}>{currentUser.username}</span>
@@ -478,6 +482,9 @@ export default function EventHubScreen() {
                     </span>
                   )}
                 </div>
+                {isSuperUser ? (
+                  <AppVersionBadge variant="inline" currentUser={currentUser} className="px-1" />
+                ) : null}
               </div>
 
               {systemView === 'events' && !networkOnline && (

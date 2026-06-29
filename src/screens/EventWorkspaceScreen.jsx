@@ -24,6 +24,7 @@ import {
 import { donationAddsToRecaudacionBalance } from '../donationHelpers.js';
 import { useWorkspaceShell } from './eventWorkspace/WorkspaceShellContext.jsx';
 import BautizosCarDataPromptModal from '../components/transport/BautizosCarDataPromptModal.jsx';
+import AppVersionBadge from '../AppVersionBadge.jsx';
 import { collectCarColorSuggestions } from '../bautizosCarMeta.js';
 import { isCardPaymentAllowedForLocation } from '../cardPaymentEligibility.js';
 import { isResponsivaEventSectionVisible } from '../responsivaSignLogic.js';
@@ -727,6 +728,9 @@ export default function EventWorkspaceScreen() {
 
           <div className="flex flex-col gap-2.5 w-full lg:w-auto lg:flex-row lg:items-center lg:justify-end lg:gap-3 lg:flex-shrink-0">
             <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2 w-full lg:w-auto">
+              {shell.isSuperUser ? (
+                <AppVersionBadge variant="workspace-inline" currentUser={shell.currentUser} className="px-0.5" />
+              ) : null}
               <button
                 type="button"
                 onClick={() => shell.goTo('events', null, 'Summary')}
