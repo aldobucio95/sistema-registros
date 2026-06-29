@@ -142,6 +142,29 @@ function checkGlobalRegistryRosterInvariants(app) {
   }
 }
 
+function checkDashboardSummaryTableWiring(app) {
+  const block = extractBetween(app, 'const buildTableByLocation = (campaScope) => {', 'const tableByLocation = buildTableByLocation');
+  if (!block) {
+    fail('falta buildTableByLocation en App.jsx');
+    return;
+  }
+  const hasWaitlistCounts =
+    block.includes('waitlistCountsForTable') &&
+    (block.includes('computeWaitlistCountsForEvent') || block.includes('stats.waitlist = waitlistCountsForTable'));
+  if (!hasWaitlistCounts) {
+    fail('buildTableByLocation sin waitlistCountsForTable / computeWaitlistCountsForEvent');
+  } else {
+    pass('buildTableByLocation cableado a waitlistCountsForTable');
+  }
+  if (!block.includes('filterSummaryStatusRows')) {
+    fail('buildTableByLocation sin filterSummaryStatusRows para cancelados/devolución');
+  } else if (!block.includes('cancelledData[loc]')) {
+    fail('buildTableByLocation sin cancelledData[loc] para stats.cancelled');
+  } else {
+    pass('buildTableByLocation usa filterSummaryStatusRows + cancelledData para cancelados');
+  }
+}
+
 function main() {
   let app;
   try {
@@ -204,6 +227,7 @@ function main() {
   checkTransportPlanningProps(app);
   checkSedeRosterMobileParity(app);
   checkCashCutMobilePayments(app);
+  checkDashboardSummaryTableWiring(app);
 
   try {
     statSync(join(ROOT, 'scripts/snapshot-critical-files.mjs'));

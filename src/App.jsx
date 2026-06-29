@@ -29624,6 +29624,32 @@ function resolveEventName(eventId) {
               { includeBaptizedCompanions: true }
             )
           : null;
+      const filterSummaryStatusRows = (rows) => {
+        let sectionRows = applySummaryLikeFilters(rows || [], campaScope, { skipBautizosParty: true });
+        if (currentEvent?.eventType === 'Bautizos') {
+          sectionRows = sectionRows.filter((p) => bautizosDashboardTitularCountsForScope(p, bzScope));
+        }
+        if (isCampa) {
+          sectionRows = sectionRows.filter((p) => campaAttendanceScopeMatches(isCampa, p, campaScope));
+        }
+        return sectionRows;
+      };
+      const summarySectionWeight = (p) =>
+        currentEvent?.eventType === 'Campa' &&
+        campaScope === 'all' &&
+        countAmbosDoubleInAllCounts &&
+        participantCountsAsRealCostX2(p, currentEvent)
+          ? 2
+          : 1;
+      const waitlistCountsForTable = computeWaitlistCountsForEvent(
+        allParticipants,
+        currentEvent,
+        dashboardLocs,
+        {
+          dashboardScope: bzScope,
+          sectionWeight: summarySectionWeight,
+        }
+      );
       return dashboardLocs.map((loc) => {
       const filtered = applySummaryLikeFilters(data[loc] || [], campaScope, { skipBautizosParty: true });
       const filteredBzParty =
@@ -29696,9 +29722,7 @@ function resolveEventName(eventId) {
               : getParticipantPhysicalRecaudadoNet(p, paidNet, computeNetAmountByMethod);
           }
         }
-        const isCancelled = participantIsCancelled(p);
-        if (!isCancelled) {
-          if (bzPartyMatch) {
+        if (bzPartyMatch) {
             acc.count += allScopeDoubleWeight;
             if (isSiValue(p.isScholarship)) acc.scholarship += allScopeDoubleWeight;
             if (currentEvent?.eventType === 'Bautizos') {
@@ -29728,10 +29752,6 @@ function resolveEventName(eventId) {
             }
             if (currentEvent?.eventType === 'Campa' && isSiValue(p.willBeBaptized)) acc.bautizos += allScopeDoubleWeight;
           }
-        } else if (bzPartyMatch) {
-          acc.cancelled += allScopeDoubleWeight;
-        }
-        if (bzPartyMatch && (Number(p.refundPendingAmount || 0) || 0) > 0) acc.refund += allScopeDoubleWeight;
         if (bzFinMatch) {
           acc.paid += recaudadoAdd;
           if (bzAlloc && bautizosDashboardScopeUsesSplitPayments(bzScope)) {
@@ -29782,6 +29802,7 @@ function resolveEventName(eventId) {
         bautizos: 0,
         teens: 0,
         jovenes: 0,
+        waitlist: 0,
         cancelled: 0,
         refund: 0,
         paid: 0,
@@ -29855,6 +29876,13 @@ function resolveEventName(eventId) {
         }
         stats.bautizados = baptizedN;
       }
+      stats.waitlist = waitlistCountsForTable.bySede[loc]?.total ?? 0;
+      const cancelledRows = filterSummaryStatusRows(cancelledData[loc]);
+      stats.cancelled = cancelledRows.reduce((n, p) => n + summarySectionWeight(p), 0);
+      stats.refund = cancelledRows.reduce(
+        (n, p) => (getCancelledRefundPendingAmount(p) > 0 ? n + summarySectionWeight(p) : n),
+        0
+      );
       const refundDonationForSede = eventDonations
         .filter(
           (d) =>
@@ -29950,6 +29978,7 @@ function resolveEventName(eventId) {
         acc.bautizos += stats.bautizos;
         acc.teens += stats.teens;
         acc.jovenes += stats.jovenes;
+        acc.waitlist += stats.waitlist || 0;
         acc.cancelled += stats.cancelled;
         acc.refund += stats.refund;
         acc.paid += stats.paid;
@@ -29979,6 +30008,7 @@ function resolveEventName(eventId) {
         bautizos: 0,
         teens: 0,
         jovenes: 0,
+        waitlist: 0,
         cancelled: 0,
         refund: 0,
         paid: 0,
@@ -30110,6 +30140,7 @@ function resolveEventName(eventId) {
         case 'bautizosCarro': return `${num} text-cyan-700 font-bold`;
         case 'empleadosBautizos': return `${num} text-teal-700 font-bold`;
         case 'cancelled': return `${num} text-slate-700 font-bold`;
+        case 'waitlist': return `${num} text-amber-700 font-bold`;
         case 'refund': return `${num} text-amber-700 font-bold`;
         case 'cortesia': return `${num} text-fuchsia-700 font-bold`;
         case 'count': return `${num} font-medium text-slate-700`;
@@ -30132,6 +30163,7 @@ function resolveEventName(eventId) {
         case 'bautizosCarro': return `${num} text-cyan-700 dark:text-cyan-300`;
         case 'empleadosBautizos': return `${num} text-teal-700 dark:text-teal-300`;
         case 'cancelled': return `${num} text-slate-700 dark:text-slate-200`;
+        case 'waitlist': return `${num} text-amber-700 dark:text-amber-300`;
         case 'refund': return `${num} text-amber-700 dark:text-amber-300`;
         case 'cortesia': return `${num} text-fuchsia-700 dark:text-fuchsia-300`;
         case 'count': return `${num} text-indigo-900 dark:text-indigo-100`;
@@ -30203,8 +30235,10 @@ function resolveEventName(eventId) {
         }
         case 'cancelled':
           return isCancelled;
+        case 'waitlist':
+          return participantIsWaitlistRow(p);
         case 'refund':
-          return (Number(p.refundPendingAmount || 0) || 0) > 0;
+          return getCancelledRefundPendingAmount(p) > 0;
         case 'paid':
           return true;
         case 'paidEfectivo': {
@@ -30513,8 +30547,13 @@ function resolveEventName(eventId) {
 
       const out = [];
       const seenIds = new Set();
+      const summaryRowsForMetric = (locLabel) => {
+        if (metric === 'cancelled' || metric === 'refund') return cancelledData[locLabel] || [];
+        if (metric === 'waitlist') return waitlistData[locLabel] || [];
+        return data[locLabel] || [];
+      };
       for (const loc of locs) {
-        const filtered = applySummaryLikeFilters(data[loc] || [], tableScope);
+        const filtered = applySummaryLikeFilters(summaryRowsForMetric(loc), tableScope);
         for (const p of filtered) {
           if (!participantMatchesSummaryMetric(p, metric)) continue;
           const id = String(p.id);
@@ -30542,6 +30581,7 @@ function resolveEventName(eventId) {
       teens: 'Teens',
       jovenes: 'Jóvenes',
       cancelled: 'Cancelados',
+      waitlist: 'Lista de espera',
       refund: 'Con devolución pendiente',
       donations: 'Donaciones',
       paid: 'Recaudado',
@@ -30805,7 +30845,7 @@ function resolveEventName(eventId) {
               </div>
             </div>
             <div className="overflow-x-auto rounded-xl border border-amber-200/80 bg-white/80">
-              <table className="w-full text-left text-[11px] md:text-xs">
+              <table className="w-full text-left text-[10px] md:text-xs">
                 <thead>
                   <tr className="bg-amber-100/80 text-amber-950 uppercase tracking-wider font-black border-b border-amber-200">
                     <th className="px-3 py-2">Nombre</th>
@@ -32885,7 +32925,7 @@ function resolveEventName(eventId) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
-                  {tableByLocation.every(({ stats }) => stats.count === 0 && stats.cancelled === 0) ? (
+                  {tableByLocation.every(({ stats }) => stats.count === 0 && stats.waitlist === 0 && stats.cancelled === 0) ? (
                     <tr>
                       <td colSpan={summaryVisibleColCount} className="px-3 py-8 text-center text-slate-400 italic font-medium">No hay registros con los filtros actuales.</td>
                     </tr>
