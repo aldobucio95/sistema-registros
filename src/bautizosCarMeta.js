@@ -11,6 +11,7 @@ import {
   bautizosLineUsesEventTransportOnly,
   companionRowIsEffectivelyEmpty,
   getBautizosCompanionsArray,
+  isBautizosCompanionBaptized,
 } from './bautizosParty.js';
 
 export const CAR_META_VEHICLE_FIELDS = ['brand', 'model', 'color', 'plates'];
@@ -258,6 +259,58 @@ export function companionGoesByCar(companion) {
   return bautizosLlegaEnCarroForTransportPricing(companion);
 }
 
+function formatCarDataWaCompanionLabel(companion) {
+  const name = String(companion?.name || '').trim() || 'Acompañante';
+  const rel = String(companion?.relationship || '').trim();
+  return rel && rel !== 'Integrante del mismo registro' ? `${name} (${rel})` : name;
+}
+
+function joinSpanishNameList(names) {
+  if (!names.length) return '';
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} y ${names[1]}`;
+  return `${names.slice(0, -1).join(', ')} y ${names[names.length - 1]}`;
+}
+
+/**
+ * Texto introductorio para solicitud WA de datos de carro según quién viaja en vehículo propio.
+ * @param {object} hostPerson
+ * @param {object[]|null|undefined} [companions]
+ */
+export function buildCarDataWaSubjectContext(hostPerson, companions = null) {
+  const comps = (Array.isArray(companions) ? companions : getBautizosCompanionsArray(hostPerson)).filter(
+    (c) => !companionRowIsEffectivelyEmpty(c) && !isBautizosCompanionBaptized(c)
+  );
+  const hostGoesByCar = bautizosLlegaEnCarroForTransportPricing(hostPerson);
+  const companionsByCar = comps.filter((c) => companionGoesByCar(c));
+  const companionLabels = companionsByCar.map(formatCarDataWaCompanionLabel);
+
+  if (!hostGoesByCar && companionLabels.length > 0) {
+    const namesText = joinSpanishNameList(companionLabels);
+    return {
+      requestIntro: `Favor de proporcionar a la brevedad los datos del vehículo en el que llegará ${namesText} (acompañante${companionLabels.length > 1 ? 's' : ''} de tu registro). Si son varios vehículos, incluye los datos de todos:`,
+      companionOnly: true,
+      companionLabels,
+    };
+  }
+
+  if (hostGoesByCar && companionLabels.length > 0) {
+    const namesText = joinSpanishNameList(companionLabels);
+    return {
+      requestIntro: `Favor de proporcionar a la brevedad los datos del vehículo donde llegarán tú y tu grupo (${namesText}). Si son varios vehículos, incluye los datos de todos:`,
+      companionOnly: false,
+      companionLabels,
+    };
+  }
+
+  return {
+    requestIntro:
+      'Favor de proporcionar a la brevedad los datos del vehículo donde llegarán. Si son varios vehículos, incluye los datos de todos:',
+    companionOnly: false,
+    companionLabels: [],
+  };
+}
+
 export function buildBautizosFamilyMemberOptions({
   hostPerson,
   companions,
@@ -431,7 +484,9 @@ export function buildBautizosFamilyCarInventory({
 
   const hostGoesByCar = bautizosLlegaEnCarroForTransportPricing(hostPerson);
   const filledComps = comps.filter((c) => !companionRowIsEffectivelyEmpty(c));
-  const anyCompanionGoesByCar = filledComps.some((c) => companionGoesByCar(c));
+  const anyCompanionGoesByCar = filledComps
+    .filter((c) => !isBautizosCompanionBaptized(c))
+    .some((c) => companionGoesByCar(c));
   if (!hostGoesByCar && !anyCompanionGoesByCar) return inventory;
 
   const familyCarCount = normalizeArrivalCarCount(hostPerson?.carrosLlegada);
@@ -686,11 +741,13 @@ export function buildCarDataSummaryForRosterPerson({
   const personSk = `p:${String(person?.id || '').trim()}`;
   const labelIndex = buildRosterSourceKeyLabelIndex(roster);
   const comps = Array.isArray(companions) ? companions : getBautizosCompanionsArray(person);
+  const carDataCompanions = getNonBaptizedCompanionsForCarData(person, comps);
 
   if (
     forRosterDisplay &&
     bautizosLineUsesEventTransportOnly(person, eventLike) &&
-    !familyHasAnyCarTransport(person, comps, eventLike)
+    !familyHasAnyCarTransport(person, carDataCompanions, eventLike) &&
+    !personEligibleForBautizosCarData(person, roster, eventLike)
   ) {
     return {
       hostPerson: person,
@@ -706,13 +763,33 @@ export function buildCarDataSummaryForRosterPerson({
 
   const splitHostId = String(person?.bautizosSplitPartyHostParticipantId || '').trim();
   if (splitHostId) {
-    const titular = (roster || []).find((p) => String(p?.id || '').trim() === splitHostId);
-    if (titular) return buildCarSummaryFromTitular(titular, normalizedPlan, roster, { inherited: true });
+    const host = (roster || []).find((p) => String(p?.id || '').trim() === splitHostId);
+    if (host && baptizedSplitCompanionOwnsCarData(person, host, eventLike)) {
+      const inventory = buildBautizosFamilyCarInventory({
+        hostPerson: person,
+        companions: [],
+        plan: normalizedPlan,
+        hostSourceKey: personSk,
+      });
+      if (inventory.length) {
+        return {
+          hostPerson: person,
+          companions: [],
+          hostSourceKey: personSk,
+          inventory,
+          inheritedFromTitular: false,
+          titularName: '',
+          carCount: normalizeArrivalCarCount(person?.carrosLlegada),
+          labelIndex,
+        };
+      }
+    }
+    if (host) return buildCarSummaryFromTitular(host, normalizedPlan, roster, { inherited: true });
   }
 
   const inventory = buildBautizosFamilyCarInventory({
     hostPerson: person,
-    companions: comps,
+    companions: carDataCompanions,
     plan: normalizedPlan,
     hostSourceKey: personSk,
   });
@@ -823,12 +900,77 @@ export function countAdditionalCarsForHost(hostPerson) {
   return Math.max(0, total - 1);
 }
 
-/** Titular o algún acompañante con nombre declaró llegada en carro (no transporte del evento). */
+/** Acompañantes no bautizados con nombre (para datos de carro del titular). */
+export function getNonBaptizedCompanionsForCarData(hostPerson, companions = null) {
+  const comps = Array.isArray(companions) ? companions : getBautizosCompanionsArray(hostPerson);
+  return comps.filter((c) => !companionRowIsEffectivelyEmpty(c) && !isBautizosCompanionBaptized(c));
+}
+
+/**
+ * Subregistro derivado (acompañante que se bautiza) con carro propio mientras el titular usa transporte del evento.
+ */
+export function baptizedSplitCompanionOwnsCarData(derivedPerson, hostPerson, eventLike = null) {
+  const hostId = String(derivedPerson?.bautizosSplitPartyHostParticipantId || '').trim();
+  if (!hostId || !hostPerson) return false;
+  if (String(hostPerson?.id || '').trim() !== hostId) return false;
+  return (
+    bautizosLineUsesEventTransportOnly(hostPerson, eventLike) &&
+    bautizosLlegaEnCarroForTransportPricing(derivedPerson)
+  );
+}
+
+/**
+ * Quién debe completar datos de carro / recibir WA (alineado a Transporte).
+ * @returns {{ eligible: boolean, anchorPerson: object|null, inventoryCompanions: object[], companionsForCrew: object[], waRecipient: object|null }}
+ */
+export function resolveBautizosCarDataAnchor(person, roster, eventLike = null) {
+  const empty = {
+    eligible: false,
+    anchorPerson: null,
+    inventoryCompanions: [],
+    companionsForCrew: [],
+    waRecipient: null,
+  };
+  if (!person) return empty;
+
+  const splitHostId = String(person?.bautizosSplitPartyHostParticipantId || '').trim();
+  if (splitHostId) {
+    const host = (roster || []).find((p) => String(p?.id || '').trim() === splitHostId);
+    if (!host || !baptizedSplitCompanionOwnsCarData(person, host, eventLike)) return empty;
+    return {
+      eligible: true,
+      anchorPerson: person,
+      inventoryCompanions: [],
+      companionsForCrew: [],
+      waRecipient: person,
+    };
+  }
+
+  const allFilled = getBautizosCompanionsArray(person).filter((c) => !companionRowIsEffectivelyEmpty(c));
+  const nonBaptized = allFilled.filter((c) => !isBautizosCompanionBaptized(c));
+  if (!familyHasAnyCarTransport(person, nonBaptized, eventLike)) return empty;
+
+  const hostGoesByCar = bautizosLlegaEnCarroForTransportPricing(person);
+  return {
+    eligible: true,
+    anchorPerson: person,
+    inventoryCompanions: nonBaptized,
+    companionsForCrew: hostGoesByCar ? allFilled : nonBaptized,
+    waRecipient: person,
+  };
+}
+
+export function personEligibleForBautizosCarData(person, roster, eventLike = null) {
+  return resolveBautizosCarDataAnchor(person, roster, eventLike).eligible;
+}
+
+/** Titular o algún acompañante no bautizado declaró llegada en carro (no transporte del evento). */
 export function familyHasAnyCarTransport(hostPerson, companions, eventLike = null) {
   const comps = Array.isArray(companions) ? companions : getBautizosCompanionsArray(hostPerson);
-  const anyCompanionByCar = comps
-    .filter((c) => !companionRowIsEffectivelyEmpty(c))
-    .some((c) => companionGoesByCar(c));
+  const relevantComps = comps.filter(
+    (c) => !companionRowIsEffectivelyEmpty(c) && !isBautizosCompanionBaptized(c)
+  );
+  const anyCompanionByCar = relevantComps.some((c) => companionGoesByCar(c));
 
   if (bautizosLineUsesEventTransportOnly(hostPerson, eventLike)) {
     return anyCompanionByCar;

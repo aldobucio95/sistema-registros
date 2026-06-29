@@ -226,14 +226,17 @@ import {
 } from './rosterParticipantFilters.js';
 import {
   allUnsentCarDataNotificationMarkKeys,
+  applyCarDataWaSnooze,
   buildCarDataPendingWhatsAppContext,
   buildCarDataWhatsAppNotificationId,
   CAR_DATA_PENDING_FILTER_OPTIONS,
   countUnsentWhatsAppNotificationsForQueue,
   dedupeUnsentCarDataNotifications,
   filterWhatsAppFinanceNotificationsForQueue,
+  isCarDataNotificationSnoozed,
   listCarDataPendingTitularTargets,
   listSplitCompanionParticipantIds,
+  titularCarDataVisibleInWhatsAppQueue,
   titularHasPendingCarDataWhatsApp,
   upsertCarDataWhatsAppNotification,
 } from './carDataWhatsApp.js';
@@ -253,6 +256,7 @@ import BautizosCarDataSummaryCard from './components/transport/BautizosCarDataSu
 import {
   buildBautizosFamilyCarInventory,
   buildCarDataSummaryForRosterPerson,
+  buildCarDataWaSubjectContext,
   buildCarMetaPatchesAfterSave,
   buildMergedFamilyCarInventory,
   carCrewRequiresPassengerSelection,
@@ -261,6 +265,7 @@ import {
   familyHasAnyCarTransport,
   getFamilyCarInventoryValidationIssues,
   persistEventCarMetaPatches,
+  resolveBautizosCarDataAnchor,
 } from './bautizosCarMeta.js';
 import {
   compareIsoDates,
@@ -4631,39 +4636,62 @@ const App = () => {
       for (const p of allParticipants) {
         if (String(p?.eventId || '') !== eid) continue;
         if (!participantIsActiveInRoster(p)) continue;
-        const companions = getBautizosCompanionsArray(p);
-        if (!familyHasAnyCarTransport(p, companions)) continue;
+        const anchor = resolveBautizosCarDataAnchor(p, allParticipants, currentEvent);
+        if (!anchor.eligible || !anchor.waRecipient || !anchor.anchorPerson) continue;
+        if (String(anchor.waRecipient.id || '').trim() !== String(p.id || '').trim()) continue;
         const inventory = buildBautizosFamilyCarInventory({
-          hostPerson: p,
-          companions,
+          hostPerson: anchor.anchorPerson,
+          companions: anchor.inventoryCompanions,
           plan: currentEvent.transportPlanning,
-          hostSourceKey: `p:${String(p.id || '').trim()}`,
+          hostSourceKey: `p:${String(anchor.anchorPerson.id || '').trim()}`,
         });
-        if (!familyCarInventoryNeedsAttention(inventory, { hostPerson: p, companions })) continue;
+        if (
+          !familyCarInventoryNeedsAttention(inventory, {
+            hostPerson: anchor.anchorPerson,
+            companions: anchor.companionsForCrew,
+          })
+        ) {
+          continue;
+        }
         const existing = Array.isArray(p.whatsAppFinanceNotifications) ? p.whatsAppFinanceNotifications : [];
+        const existingCar = dedupeUnsentCarDataNotifications(existing).find(
+          (n) => n && !n.sent && String(n?.kind || '') === 'datos_carro'
+        );
+        if (existingCar && isCarDataNotificationSnoozed(existingCar)) continue;
         const createdAt = Date.now();
         const loc = String(p.location || '').trim();
         const pid = String(p.id || '').trim();
+        const carDataSubjectContext = buildCarDataWaSubjectContext(
+          anchor.anchorPerson,
+          anchor.inventoryCompanions
+        );
         const message = buildCarDataRequestWhatsAppMessage({
           person: p,
           loc,
           eventSnapshot: currentEvent,
           carSlots: inventory,
           reportedAtMs: createdAt,
+          requiresPassengers: carCrewRequiresPassengerSelection(
+            anchor.anchorPerson,
+            anchor.companionsForCrew
+          ),
+          carDataSubjectContext,
         });
         const notification = {
           id: buildCarDataWhatsAppNotificationId(pid, eid),
           kind: 'datos_carro',
           carSlots: inventory,
+          carDataSubjectContext,
           message,
-          createdAt,
+          createdAt: existingCar?.createdAt ?? createdAt,
           sent: false,
           sentAt: null,
         };
         const nextNotifications = upsertCarDataWhatsAppNotification(existing, notification);
         const unchanged =
-          nextNotifications.length === existing.length &&
-          existing.some((n) => String(n?.kind || '') === 'datos_carro' && !n.sent);
+          existingCar &&
+          String(existingCar.message || '') === message &&
+          !isCarDataNotificationSnoozed(existingCar, createdAt);
         if (unchanged) continue;
         try {
           await updateDoc(getDocRef('app_participants', pid), {
@@ -11274,33 +11302,41 @@ function resolveEventName(eventId) {
       const participantExcelCarDataWaInfo = (hostPerson) => {
         const empty = { pendingLabel: '', url: '', linkText: '', message: '' };
         if (!isBautizos || !hostPerson) return empty;
-        const companions = getBautizosCompanionsArray(hostPerson);
-        if (!familyHasAnyCarTransport(hostPerson, companions)) {
+        const anchor = resolveBautizosCarDataAnchor(hostPerson, allParticipants, currentEvent);
+        if (!anchor.eligible || !anchor.waRecipient || !anchor.anchorPerson) {
           return { ...empty, pendingLabel: 'No aplica' };
         }
         const inventory = buildBautizosFamilyCarInventory({
-          hostPerson,
-          companions,
+          hostPerson: anchor.anchorPerson,
+          companions: anchor.inventoryCompanions,
           plan: currentEvent.transportPlanning,
-          hostSourceKey: `p:${String(hostPerson.id || '').trim()}`,
+          hostSourceKey: `p:${String(anchor.anchorPerson.id || '').trim()}`,
         });
         const needsAttention = familyCarInventoryNeedsAttention(inventory, {
-          hostPerson,
-          companions,
+          hostPerson: anchor.anchorPerson,
+          companions: anchor.companionsForCrew,
         });
         if (!needsAttention) {
           return { ...empty, pendingLabel: 'No' };
         }
-        const loc = String(hostPerson.location || '').trim();
-        const waPhone = normalizeWhatsAppPhone(hostPerson?.phone);
+        const waRecipient = anchor.waRecipient;
+        const loc = String(waRecipient.location || '').trim();
+        const waPhone = normalizeWhatsAppPhone(waRecipient?.phone);
         const message = (
           buildCarDataRequestWhatsAppMessage({
-            person: hostPerson,
+            person: waRecipient,
             loc,
             eventSnapshot: currentEvent,
             carSlots: inventory,
             reportedAtMs: Date.now(),
-            requiresPassengers: carCrewRequiresPassengerSelection(hostPerson, companions),
+            requiresPassengers: carCrewRequiresPassengerSelection(
+              anchor.anchorPerson,
+              anchor.companionsForCrew
+            ),
+            carDataSubjectContext: buildCarDataWaSubjectContext(
+              anchor.anchorPerson,
+              anchor.inventoryCompanions
+            ),
           }) || ''
         ).trim();
         const url = waPhone && message ? buildWhatsAppMeUrl(waPhone, message) : '';
@@ -16563,9 +16599,11 @@ function resolveEventName(eventId) {
             (n) => !n?.sent && String(n?.kind || '') === 'datos_carro' && keySet.has(getWhatsAppNotificationMarkKey(n))
           );
           const carDataKeys = mergingCarData ? new Set(allUnsentCarDataNotificationMarkKeys(arr)) : keySet;
-          const nextNotifications = arr.map((n) =>
-            carDataKeys.has(getWhatsAppNotificationMarkKey(n)) ? { ...n, sent: true, sentAt: now } : n
-          );
+          const nextNotifications = arr.map((n) => {
+            if (!carDataKeys.has(getWhatsAppNotificationMarkKey(n))) return n;
+            if (String(n?.kind || '') === 'datos_carro') return applyCarDataWaSnooze(n, now);
+            return { ...n, sent: true, sentAt: now };
+          });
           const sentItems = arr
             .filter((n) => carDataKeys.has(getWhatsAppNotificationMarkKey(n)))
             .map((n) => compactWhatsAppNotificationToken(n));
@@ -16676,9 +16714,12 @@ function resolveEventName(eventId) {
 
       const nextNotifications =
         carDataKeys.size > 0
-          ? arr.map((n) =>
-              carDataKeys.has(getWhatsAppNotificationMarkKey(n)) ? { ...n, sent: true, sentAt: now } : n
-            )
+          ? arr.map((n) => {
+              const mk = getWhatsAppNotificationMarkKey(n);
+              if (!carDataKeys.has(mk)) return n;
+              if (String(n?.kind || '') === 'datos_carro') return applyCarDataWaSnooze(n, now);
+              return { ...n, sent: true, sentAt: now };
+            })
           : arr;
 
       const sentCarItems = arr
@@ -16771,12 +16812,17 @@ function resolveEventName(eventId) {
         eventSnapshot: currentEvent,
         roster: allParticipants,
       });
-      if (!ctx.needsAttention || !ctx.message) {
+      if (!titularCarDataVisibleInWhatsAppQueue(titular, currentEvent, allParticipants)) {
+        showToast('Este titular no tiene datos de carro pendientes en cola.');
+        return;
+      }
+      if (!ctx.message) {
         showToast('Este titular no tiene datos de carro pendientes.');
         return;
       }
 
-      const waPhone = normalizeWhatsAppPhone(titular.phone);
+      const waRecipient = ctx.waRecipient || titular;
+      const waPhone = normalizeWhatsAppPhone(waRecipient.phone);
       if (!waPhone) {
         showToast('Teléfono inválido para WhatsApp.');
         return;
@@ -16784,11 +16830,11 @@ function resolveEventName(eventId) {
 
       window.open(buildWhatsAppMeUrl(waPhone, ctx.message), '_blank', 'noopener,noreferrer');
       await finalizeCarDataWhatsAppSend({
-        titularId: titular.id,
+        titularId: waRecipient.id,
         loc: waLoc,
         text: ctx.message,
         markKeys: ctx.markKeys,
-        titularName: titular.name,
+        titularName: waRecipient.name,
       });
       showToast('WhatsApp abierto con solicitud de datos de carro.');
     },
@@ -27385,7 +27431,7 @@ function resolveEventName(eventId) {
           onTransportUiPrefsChange={onTransportUiPrefsChange}
           canSendCarDataWhatsApp={userCanSendWhatsAppQuickAction(currentUser)}
           titularHasPendingCarData={(titular) =>
-            titularHasPendingCarDataWhatsApp(titular, currentEvent, allParticipants)
+            titularCarDataVisibleInWhatsAppQueue(titular, currentEvent, allParticipants)
           }
           onSendCarDataWhatsApp={openCarDataWhatsAppForTitular}
           onBulkSendCarDataWhatsApp={() => runBulkCarDataWhatsAppForRoster(scopedEventParticipants)}
@@ -34797,16 +34843,16 @@ function resolveEventName(eventId) {
 
     const fmtExpandedMoney = (n) => (canSeeMoney ? formatMoney(Number(n) || 0) : '$***');
 
+    const carDataAnchor = resolveBautizosCarDataAnchor(
+      carDataAnchorPerson,
+      rosterForCompanionDisplay,
+      currentEvent
+    );
     const bautizosCarDataSummaryEl =
-      isBautizos &&
-      familyHasAnyCarTransport(
-        carDataAnchorPerson,
-        getBautizosCompanionsArray(carDataAnchorPerson),
-        currentEvent
-      ) ? (
+      isBautizos && carDataAnchor.eligible && carDataAnchor.anchorPerson ? (
         <BautizosCarDataSummaryCard
-          hostPerson={carDataAnchorPerson}
-          companions={getBautizosCompanionsArray(carDataAnchorPerson)}
+          hostPerson={carDataAnchor.anchorPerson}
+          companions={carDataAnchor.companionsForCrew}
           plan={currentEvent?.transportPlanning}
           roster={rosterForCompanionDisplay}
           eventLike={currentEvent}

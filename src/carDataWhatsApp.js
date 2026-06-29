@@ -1,16 +1,18 @@
 import {
   buildBautizosFamilyCarInventory,
+  buildCarDataWaSubjectContext,
   carCrewRequiresPassengerSelection,
   familyCarInventoryNeedsAttention,
-  familyHasAnyCarTransport,
+  resolveBautizosCarDataAnchor,
 } from './bautizosCarMeta.js';
-import { getBautizosCompanionsArray } from './bautizosParty.js';
 import { buildCarDataRequestWhatsAppMessage } from './whatsappFinanceMessages.js';
 
 export const CAR_DATA_PENDING_FILTER_OPTIONS = Object.freeze([
   { id: 'all', label: 'Todos' },
   { id: 'pending', label: 'Pendientes de datos de carro' },
 ]);
+
+export const CAR_DATA_WA_SNOOZE_MS = 24 * 60 * 60 * 1000;
 
 export function getCarDataWhatsAppNotificationMarkKey(n) {
   return n?.id ? String(n.id) : `legacy-${n.createdAt ?? 0}-${n.kind ?? ''}`;
@@ -21,6 +23,28 @@ export function buildCarDataWhatsAppNotificationId(participantId, eventId) {
   const eid = String(eventId || '').trim();
   if (!pid || !eid) return '';
   return `car-data-${eid}-${pid}`;
+}
+
+export function isCarDataNotificationSnoozed(n, now = Date.now()) {
+  if (!n || String(n?.kind || '') !== 'datos_carro') return false;
+  const until = Number(n.carDataWaSnoozedUntil || 0);
+  return until > now;
+}
+
+export function isCarDataNotificationQueueVisible(n, now = Date.now()) {
+  if (!n || n.sent) return false;
+  if (String(n?.kind || '') !== 'datos_carro') return true;
+  return !isCarDataNotificationSnoozed(n, now);
+}
+
+export function applyCarDataWaSnooze(n, now = Date.now()) {
+  return {
+    ...n,
+    sent: false,
+    sentAt: null,
+    lastCarDataWaSentAt: now,
+    carDataWaSnoozedUntil: now + CAR_DATA_WA_SNOOZE_MS,
+  };
 }
 
 /** Colapsa avisos `datos_carro` sin enviar a uno solo (el más reciente). */
@@ -58,15 +82,24 @@ export function upsertCarDataWhatsAppNotification(existing, notification) {
   return [...withoutDupes, notification];
 }
 
-/** Claves de todos los `datos_carro` sin enviar (para marcar como enviados tras fusionar). */
+/** Claves de todos los `datos_carro` sin enviar (para posponer tras fusionar o enviar). */
 export function allUnsentCarDataNotificationMarkKeys(notifications) {
   return dedupeUnsentCarDataNotifications(notifications)
     .filter((n) => n && !n.sent && String(n?.kind || '') === 'datos_carro')
     .map((n) => getCarDataWhatsAppNotificationMarkKey(n));
 }
 
-/** Titular que recibe la solicitud; si `person` es acompañante split, devuelve al host. */
-export function resolveCarDataWhatsAppTitularPerson(person, roster) {
+/** Titular que recibe la solicitud; split derivado con carro propio conserva su registro. */
+export function resolveCarDataWhatsAppTitularPerson(person, roster, eventLike = null) {
+  const anchor = resolveBautizosCarDataAnchor(person, roster, eventLike);
+  if (anchor.eligible && anchor.waRecipient) {
+    const splitHostId = String(person?.bautizosSplitPartyHostParticipantId || '').trim();
+    return {
+      titular: anchor.waRecipient,
+      companionPerson: splitHostId ? person : null,
+      isCompanionSplit: !!splitHostId,
+    };
+  }
   const splitHostId = String(person?.bautizosSplitPartyHostParticipantId || '').trim();
   if (splitHostId) {
     const titular = (roster || []).find((p) => String(p?.id || '').trim() === splitHostId);
@@ -89,9 +122,48 @@ export function listSplitCompanionParticipantIds(titularId, roster) {
     .filter(Boolean);
 }
 
+function buildCarDataInventoryForAnchor(anchor, eventSnapshot) {
+  return buildBautizosFamilyCarInventory({
+    hostPerson: anchor.anchorPerson,
+    companions: anchor.inventoryCompanions,
+    plan: eventSnapshot.transportPlanning,
+    hostSourceKey: `p:${String(anchor.anchorPerson?.id || '').trim()}`,
+  });
+}
+
+export function personInventoryNeedsCarDataAttention(person, eventSnapshot, roster) {
+  if (!person || !eventSnapshot) return false;
+  const anchor = resolveBautizosCarDataAnchor(person, roster, eventSnapshot);
+  if (!anchor.eligible || !anchor.anchorPerson) return false;
+  if (String(anchor.waRecipient?.id || '').trim() !== String(person?.id || '').trim()) return false;
+  const inventory = buildCarDataInventoryForAnchor(anchor, eventSnapshot);
+  return familyCarInventoryNeedsAttention(inventory, {
+    hostPerson: anchor.anchorPerson,
+    companions: anchor.companionsForCrew,
+  });
+}
+
+/** @deprecated alias */
+export function titularInventoryNeedsCarDataAttention(titular, eventSnapshot, roster) {
+  return personInventoryNeedsCarDataAttention(titular, eventSnapshot, roster);
+}
+
+/** Visible en burbuja/cola WA (excluye pospuesto 24 h tras envío). */
+export function titularCarDataVisibleInWhatsAppQueue(person, eventSnapshot, roster, now = Date.now()) {
+  if (!personInventoryNeedsCarDataAttention(person, eventSnapshot, roster)) return false;
+  const notifications = Array.isArray(person?.whatsAppFinanceNotifications)
+    ? person.whatsAppFinanceNotifications
+    : [];
+  const carNotif = dedupeUnsentCarDataNotifications(notifications).find(
+    (n) => n && !n.sent && String(n?.kind || '') === 'datos_carro'
+  );
+  if (!carNotif) return true;
+  return isCarDataNotificationQueueVisible(carNotif, now);
+}
+
 /**
- * Contexto para enviar solicitud de datos de carro al titular.
- * @returns {{ needsAttention: boolean, inventory: object[], message: string, markKeys: string[], pendingNotifications: object[] }}
+ * Contexto para enviar solicitud de datos de carro (titular o subregistro bautizado con carro propio).
+ * @returns {{ needsAttention: boolean, inventory: object[], message: string, markKeys: string[], pendingNotifications: object[], waRecipient: object|null }}
  */
 export function buildCarDataPendingWhatsAppContext({ titular, eventSnapshot, roster }) {
   const empty = {
@@ -100,39 +172,43 @@ export function buildCarDataPendingWhatsAppContext({ titular, eventSnapshot, ros
     message: '',
     markKeys: [],
     pendingNotifications: [],
+    waRecipient: null,
   };
   if (!titular || !eventSnapshot) return empty;
 
-  const companions = getBautizosCompanionsArray(titular);
-  if (!familyHasAnyCarTransport(titular, companions, eventSnapshot)) return empty;
+  const anchor = resolveBautizosCarDataAnchor(titular, roster, eventSnapshot);
+  if (!anchor.eligible || !anchor.waRecipient || !anchor.anchorPerson) return empty;
 
-  const inventory = buildBautizosFamilyCarInventory({
-    hostPerson: titular,
-    companions,
-    plan: eventSnapshot.transportPlanning,
-    hostSourceKey: `p:${String(titular.id || '').trim()}`,
-  });
-
+  const inventory = buildCarDataInventoryForAnchor(anchor, eventSnapshot);
   const needsAttention = familyCarInventoryNeedsAttention(inventory, {
-    hostPerson: titular,
-    companions,
+    hostPerson: anchor.anchorPerson,
+    companions: anchor.companionsForCrew,
   });
   if (!needsAttention) return empty;
 
-  const loc = String(titular.location || '').trim();
+  const waRecipient = anchor.waRecipient;
+  const loc = String(waRecipient.location || titular.location || '').trim();
+  const carDataSubjectContext = buildCarDataWaSubjectContext(
+    anchor.anchorPerson,
+    anchor.inventoryCompanions
+  );
   const message = (
     buildCarDataRequestWhatsAppMessage({
-      person: titular,
+      person: waRecipient,
       loc,
       eventSnapshot,
       carSlots: inventory,
       reportedAtMs: Date.now(),
-      requiresPassengers: carCrewRequiresPassengerSelection(titular, companions),
+      requiresPassengers: carCrewRequiresPassengerSelection(
+        anchor.anchorPerson,
+        anchor.companionsForCrew
+      ),
+      carDataSubjectContext,
     }) || ''
   ).trim();
 
-  const notifications = Array.isArray(titular.whatsAppFinanceNotifications)
-    ? titular.whatsAppFinanceNotifications
+  const notifications = Array.isArray(waRecipient.whatsAppFinanceNotifications)
+    ? waRecipient.whatsAppFinanceNotifications
     : [];
   const pendingNotifications = dedupeUnsentCarDataNotifications(notifications).filter(
     (n) => n && !n.sent && String(n?.kind || '') === 'datos_carro'
@@ -145,58 +221,67 @@ export function buildCarDataPendingWhatsAppContext({ titular, eventSnapshot, ros
     message,
     markKeys,
     pendingNotifications,
+    carDataSubjectContext,
+    waRecipient,
   };
 }
 
-/** Filtro anidado: titular (o su familia vía split) con datos de carro pendientes. */
-export function participantMatchesCarDataPendingFilter(person, eventSnapshot, roster) {
+/** Filtro: fila con datos de carro visibles en cola WA (titular o subregistro bautizado elegible). */
+export function participantMatchesCarDataPendingFilter(person, eventSnapshot, roster, now = Date.now()) {
   if (!person || !eventSnapshot) return false;
   if (String(eventSnapshot.eventType || '') !== 'Bautizos') return false;
-  const { titular } = resolveCarDataWhatsAppTitularPerson(person, roster);
-  const ctx = buildCarDataPendingWhatsAppContext({ titular, eventSnapshot, roster });
-  return ctx.needsAttention;
+  return titularCarDataVisibleInWhatsAppQueue(person, eventSnapshot, roster, now);
 }
 
 /**
- * Titulares únicos con datos de carro pendientes (excluye filas split de acompañante).
+ * Registros con datos de carro visibles en cola WA (titular raíz o acompañante bautizado con carro propio).
  * @param {object[]} roster
  */
-export function listCarDataPendingTitularTargets(roster, eventSnapshot) {
+export function listCarDataPendingTitularTargets(roster, eventSnapshot, now = Date.now()) {
   const seen = new Set();
   const out = [];
   for (const p of roster || []) {
-    if (String(p?.bautizosSplitPartyHostParticipantId || '').trim()) continue;
-    const tid = String(p?.id || '').trim();
-    if (!tid || seen.has(tid)) continue;
+    const pid = String(p?.id || '').trim();
+    if (!pid || seen.has(pid)) continue;
+    if (!titularCarDataVisibleInWhatsAppQueue(p, eventSnapshot, roster, now)) continue;
     const ctx = buildCarDataPendingWhatsAppContext({ titular: p, eventSnapshot, roster });
     if (!ctx.needsAttention) continue;
-    seen.add(tid);
-    out.push({ titular: p, ...ctx });
+    seen.add(pid);
+    out.push({ titular: ctx.waRecipient || p, ...ctx });
   }
   return out;
 }
 
-export function titularHasPendingCarDataWhatsApp(titular, eventSnapshot, roster) {
-  const ctx = buildCarDataPendingWhatsAppContext({ titular, eventSnapshot, roster });
-  return ctx.needsAttention;
+export function titularHasPendingCarDataWhatsApp(person, eventSnapshot, roster) {
+  return personInventoryNeedsCarDataAttention(person, eventSnapshot, roster);
 }
 
-/** Excluye avisos `datos_carro` obsoletos (p. ej. titular pasó a transporte del evento). */
-export function filterWhatsAppFinanceNotificationsForQueue(person, notifications, eventSnapshot, roster) {
+/** Excluye avisos `datos_carro` obsoletos o pospuestos 24 h. */
+export function filterWhatsAppFinanceNotificationsForQueue(
+  person,
+  notifications,
+  eventSnapshot,
+  roster,
+  now = Date.now()
+) {
   const list = Array.isArray(notifications) ? notifications : [];
   const filtered = list.filter((n) => {
     if (!n || n.sent) return false;
     if (String(n?.kind || '') !== 'datos_carro') return true;
     if (!eventSnapshot || String(eventSnapshot.eventType || '') !== 'Bautizos') return false;
-    const { titular } = resolveCarDataWhatsAppTitularPerson(person, roster);
-    return titularHasPendingCarDataWhatsApp(titular, eventSnapshot, roster);
+    if (isCarDataNotificationSnoozed(n, now)) return false;
+    return personInventoryNeedsCarDataAttention(person, eventSnapshot, roster);
   });
   return dedupeUnsentCarDataNotifications(filtered);
 }
 
-export function countUnsentWhatsAppNotificationsForQueue(person, eventSnapshot, roster) {
+export function countUnsentWhatsAppNotificationsForQueue(person, eventSnapshot, roster, now = Date.now()) {
   const notifications = Array.isArray(person?.whatsAppFinanceNotifications)
     ? person.whatsAppFinanceNotifications
     : [];
-  return filterWhatsAppFinanceNotificationsForQueue(person, notifications, eventSnapshot, roster).length;
+  const filtered = filterWhatsAppFinanceNotificationsForQueue(person, notifications, eventSnapshot, roster, now);
+  const hasCarInFiltered = filtered.some((n) => String(n?.kind || '') === 'datos_carro');
+  const syntheticCar =
+    !hasCarInFiltered && titularCarDataVisibleInWhatsAppQueue(person, eventSnapshot, roster, now) ? 1 : 0;
+  return filtered.length + syntheticCar;
 }

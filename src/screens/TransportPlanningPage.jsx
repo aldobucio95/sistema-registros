@@ -285,7 +285,6 @@ export default function TransportPlanningPage({
     const seen = new Set();
     let n = 0;
     for (const p of evRosterFiltered) {
-      if (String(p?.bautizosSplitPartyHostParticipantId || '').trim()) continue;
       const tid = String(p?.id || '').trim();
       if (!tid || seen.has(tid)) continue;
       if (!titularHasPendingCarData(p)) continue;

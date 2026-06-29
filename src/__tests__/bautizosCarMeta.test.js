@@ -4,6 +4,7 @@ import {
   buildCarDataSummaryForRosterPerson,
   buildTransportCarContextForHost,
   familyHasAnyCarTransport,
+  resolveBautizosCarDataAnchor,
 } from '../bautizosCarMeta.js';
 import { bautizosLlegaEnCarroForTransportPricing } from '../bautizosParty.js';
 
@@ -40,6 +41,25 @@ describe('familyHasAnyCarTransport', () => {
       ],
     };
     expect(familyHasAnyCarTransport(host, host.bautizosCompanions)).toBe(true);
+  });
+
+  it('no cuenta acompañante bautizado en carro del titular (va en su subregistro)', () => {
+    const host = {
+      id: 'host-1',
+      llegaEnCarro: false,
+      wantsBautizosTransport: 'Si',
+      bautizosCompanions: [
+        {
+          id: 'c1',
+          name: 'Pedro Bautizado',
+          relationship: 'Hermano',
+          willBeBaptized: 'Si',
+          wantsBautizosTransport: 'No',
+          llegaEnCarro: true,
+        },
+      ],
+    };
+    expect(familyHasAnyCarTransport(host, host.bautizosCompanions)).toBe(false);
   });
 
   it('titular solo en transporte del evento no requiere datos de carro', () => {
@@ -79,6 +99,55 @@ describe('familyHasAnyCarTransport', () => {
       forRosterDisplay: true,
     });
     expect(summary.inventory).toEqual([]);
+  });
+});
+
+describe('resolveBautizosCarDataAnchor', () => {
+  const event = { eventType: 'Bautizos', transportPlanning: {} };
+
+  it('titular con acompañante no bautizado en carro sigue siendo responsable', () => {
+    const host = {
+      id: 'host-1',
+      name: 'María',
+      llegaEnCarro: false,
+      wantsBautizosTransport: 'Si',
+      bautizosCompanions: [
+        {
+          id: 'c1',
+          name: 'Ana',
+          relationship: 'Esposa',
+          llegaEnCarro: true,
+          wantsBautizosTransport: 'No',
+        },
+      ],
+    };
+    const anchor = resolveBautizosCarDataAnchor(host, [host], event);
+    expect(anchor.eligible).toBe(true);
+    expect(anchor.waRecipient?.id).toBe('host-1');
+  });
+
+  it('subregistro bautizado en carro con titular en transporte es responsable propio', () => {
+    const host = {
+      id: 'host-1',
+      name: 'María',
+      llegaEnCarro: false,
+      wantsBautizosTransport: 'Si',
+      carrosLlegada: 1,
+      bautizosCompanions: [],
+    };
+    const derived = {
+      id: 'split-1',
+      name: 'Pedro',
+      bautizosSplitPartyHostParticipantId: 'host-1',
+      llegaEnCarro: true,
+      carrosLlegada: 1,
+      wantsBautizosTransport: 'No',
+    };
+    const roster = [host, derived];
+    expect(resolveBautizosCarDataAnchor(host, roster, event).eligible).toBe(false);
+    const splitAnchor = resolveBautizosCarDataAnchor(derived, roster, event);
+    expect(splitAnchor.eligible).toBe(true);
+    expect(splitAnchor.waRecipient?.id).toBe('split-1');
   });
 });
 
