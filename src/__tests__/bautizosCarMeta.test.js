@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildBautizosCarSlotsForTransport,
+  buildCarDataSummaryForRosterPerson,
   buildTransportCarContextForHost,
   familyHasAnyCarTransport,
 } from '../bautizosCarMeta.js';
@@ -58,6 +59,26 @@ describe('familyHasAnyCarTransport', () => {
     };
     expect(bautizosLlegaEnCarroForTransportPricing(host)).toBe(false);
     expect(familyHasAnyCarTransport(host, [])).toBe(false);
+  });
+
+  it('titular en transporte con carrosLlegada por defecto no muestra inventario de carro', () => {
+    const host = {
+      llegaEnCarro: false,
+      wantsBautizosTransport: 'Si',
+      transportType: 'Carro',
+      carrosLlegada: 1,
+      bautizosCompanions: [],
+    };
+    expect(familyHasAnyCarTransport(host, [], host)).toBe(false);
+    const summary = buildCarDataSummaryForRosterPerson({
+      person: host,
+      companions: [],
+      plan: { carMetaBySource: { 'p:mayra|c1': { brand: '', pendingBrand: true } } },
+      roster: [host],
+      eventLike: host,
+      forRosterDisplay: true,
+    });
+    expect(summary.inventory).toEqual([]);
   });
 });
 

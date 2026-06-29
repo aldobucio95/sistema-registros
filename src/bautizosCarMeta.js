@@ -8,6 +8,7 @@ import {
 import {
   normalizeArrivalCarCount,
   bautizosLlegaEnCarroForTransportPricing,
+  bautizosLineUsesEventTransportOnly,
   companionRowIsEffectivelyEmpty,
   getBautizosCompanionsArray,
 } from './bautizosParty.js';
@@ -673,11 +674,35 @@ export function findTitularParticipantForCarPassenger(plan, passengerSk, roster)
  * Inventario y contexto de la tarjeta «Datos de carros» en el resumen expandido del roster.
  * Pasajeros (bautizados derivados, grupo manual) heredan la vista del titular del carro.
  */
-export function buildCarDataSummaryForRosterPerson({ person, companions, plan, roster }) {
+export function buildCarDataSummaryForRosterPerson({
+  person,
+  companions,
+  plan,
+  roster,
+  eventLike = null,
+  forRosterDisplay = false,
+}) {
   const normalizedPlan = applyCarMetaPassengerInheritance(normalizeTransportPlanning(plan));
   const personSk = `p:${String(person?.id || '').trim()}`;
   const labelIndex = buildRosterSourceKeyLabelIndex(roster);
   const comps = Array.isArray(companions) ? companions : getBautizosCompanionsArray(person);
+
+  if (
+    forRosterDisplay &&
+    bautizosLineUsesEventTransportOnly(person, eventLike) &&
+    !familyHasAnyCarTransport(person, comps, eventLike)
+  ) {
+    return {
+      hostPerson: person,
+      companions: comps,
+      hostSourceKey: personSk,
+      inventory: [],
+      inheritedFromTitular: false,
+      titularName: '',
+      carCount: 0,
+      labelIndex,
+    };
+  }
 
   const splitHostId = String(person?.bautizosSplitPartyHostParticipantId || '').trim();
   if (splitHostId) {
@@ -798,13 +823,18 @@ export function countAdditionalCarsForHost(hostPerson) {
   return Math.max(0, total - 1);
 }
 
-/** Titular o algún acompañante declaró llegada en carro. */
-export function familyHasAnyCarTransport(hostPerson, companions) {
-  if (bautizosLlegaEnCarroForTransportPricing(hostPerson)) return true;
+/** Titular o algún acompañante con nombre declaró llegada en carro (no transporte del evento). */
+export function familyHasAnyCarTransport(hostPerson, companions, eventLike = null) {
   const comps = Array.isArray(companions) ? companions : getBautizosCompanionsArray(hostPerson);
-  return comps
+  const anyCompanionByCar = comps
     .filter((c) => !companionRowIsEffectivelyEmpty(c))
     .some((c) => companionGoesByCar(c));
+
+  if (bautizosLineUsesEventTransportOnly(hostPerson, eventLike)) {
+    return anyCompanionByCar;
+  }
+  if (bautizosLlegaEnCarroForTransportPricing(hostPerson)) return true;
+  return anyCompanionByCar;
 }
 
 /** Aplica parches de carMeta al plan del evento y persiste en Firestore. */

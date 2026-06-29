@@ -43,6 +43,7 @@ export default function BautizosCarDataSummaryCard({
   companions,
   plan,
   roster,
+  eventLike = null,
   className = '',
 }) {
   const summary = useMemo(
@@ -52,8 +53,10 @@ export default function BautizosCarDataSummaryCard({
         companions,
         plan,
         roster,
+        eventLike,
+        forRosterDisplay: true,
       }),
-    [hostPerson, companions, plan, roster]
+    [hostPerson, companions, plan, roster, eventLike]
   );
 
   const {

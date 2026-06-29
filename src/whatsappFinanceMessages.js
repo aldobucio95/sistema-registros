@@ -3,6 +3,7 @@ import { SI_LABEL } from './appConstants.js';
 import { WA_EMOJI as E } from './whatsappEmojiConstants.js';
 import { getBautizosCompanionsArray } from './bautizosParty.js';
 import { getBautizosCompanionInformativeListPrice, getBautizosTitularListPrice } from './publicRegistrationLogic.js';
+import { dedupeUnsentCarDataNotifications } from './carDataWhatsApp.js';
 import { carCrewRequiresPassengerSelection } from './bautizosCarMeta.js';
 
 const SI_CANON = 'Si';
@@ -597,7 +598,7 @@ export function buildMergedFinanceWhatsAppMessage(
   getLiquidationTarget,
   rosterParticipants = null
 ) {
-  const sorted = [...(unsentNotifications || [])]
+  const sorted = dedupeUnsentCarDataNotifications(unsentNotifications || [])
     .filter((n) => n && !n.sent)
     .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
 

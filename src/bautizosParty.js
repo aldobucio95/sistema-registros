@@ -878,6 +878,18 @@ export function bautizosLineGoesByCar(lineLike) {
   return bautizosLlegaEnCarroForTransportPricing(lineLike);
 }
 
+/**
+ * Línea (titular o acompañante) que viaja en transporte del evento y no en carro propio.
+ * Tiene prioridad sobre `transportType` legacy o `carrosLlegada` por defecto.
+ */
+export function bautizosLineUsesEventTransportOnly(lineLike, eventLike = null) {
+  if (!lineLike) return false;
+  if (isBautizosUnder3YearsAtEvent(lineLike, eventLike)) return false;
+  if (isBautizosLapInfantCompanion(lineLike, eventLike)) return false;
+  if (bautizosLlegaEnCarroForTransportPricing(lineLike)) return false;
+  return isSiValue(lineLike?.wantsBautizosTransport);
+}
+
 /** Menor de 3 años / infante en brazos: exento de elegir transporte. */
 export function bautizosHasExplicitTransportChoice(lineLike, eventLike = null) {
   if (!lineLike) return false;

@@ -16,6 +16,55 @@ export function getCarDataWhatsAppNotificationMarkKey(n) {
   return n?.id ? String(n.id) : `legacy-${n.createdAt ?? 0}-${n.kind ?? ''}`;
 }
 
+export function buildCarDataWhatsAppNotificationId(participantId, eventId) {
+  const pid = String(participantId || '').trim();
+  const eid = String(eventId || '').trim();
+  if (!pid || !eid) return '';
+  return `car-data-${eid}-${pid}`;
+}
+
+/** Colapsa avisos `datos_carro` sin enviar a uno solo (el más reciente). */
+export function dedupeUnsentCarDataNotifications(notifications) {
+  const arr = Array.isArray(notifications) ? notifications : [];
+  let latestCar = null;
+  const rest = [];
+  for (const n of arr) {
+    if (!n) continue;
+    if (n.sent) {
+      rest.push(n);
+      continue;
+    }
+    if (String(n?.kind || '') === 'datos_carro') {
+      if (!latestCar || Number(n.createdAt || 0) >= Number(latestCar.createdAt || 0)) {
+        latestCar = n;
+      }
+      continue;
+    }
+    rest.push(n);
+  }
+  if (!latestCar) return rest;
+  return [...rest, latestCar];
+}
+
+/** Reemplaza avisos previos de datos de carro del mismo id (o sin enviar) por uno actualizado. */
+export function upsertCarDataWhatsAppNotification(existing, notification) {
+  const arr = Array.isArray(existing) ? existing : [];
+  const nid = String(notification?.id || '').trim();
+  const withoutDupes = dedupeUnsentCarDataNotifications(arr).filter((n) => {
+    if (!n || String(n?.kind || '') !== 'datos_carro') return true;
+    if (nid && String(n?.id || '') === nid) return false;
+    return !!n.sent;
+  });
+  return [...withoutDupes, notification];
+}
+
+/** Claves de todos los `datos_carro` sin enviar (para marcar como enviados tras fusionar). */
+export function allUnsentCarDataNotificationMarkKeys(notifications) {
+  return dedupeUnsentCarDataNotifications(notifications)
+    .filter((n) => n && !n.sent && String(n?.kind || '') === 'datos_carro')
+    .map((n) => getCarDataWhatsAppNotificationMarkKey(n));
+}
+
 /** Titular que recibe la solicitud; si `person` es acompañante split, devuelve al host. */
 export function resolveCarDataWhatsAppTitularPerson(person, roster) {
   const splitHostId = String(person?.bautizosSplitPartyHostParticipantId || '').trim();
@@ -55,7 +104,7 @@ export function buildCarDataPendingWhatsAppContext({ titular, eventSnapshot, ros
   if (!titular || !eventSnapshot) return empty;
 
   const companions = getBautizosCompanionsArray(titular);
-  if (!familyHasAnyCarTransport(titular, companions)) return empty;
+  if (!familyHasAnyCarTransport(titular, companions, eventSnapshot)) return empty;
 
   const inventory = buildBautizosFamilyCarInventory({
     hostPerson: titular,
@@ -85,7 +134,7 @@ export function buildCarDataPendingWhatsAppContext({ titular, eventSnapshot, ros
   const notifications = Array.isArray(titular.whatsAppFinanceNotifications)
     ? titular.whatsAppFinanceNotifications
     : [];
-  const pendingNotifications = notifications.filter(
+  const pendingNotifications = dedupeUnsentCarDataNotifications(notifications).filter(
     (n) => n && !n.sent && String(n?.kind || '') === 'datos_carro'
   );
   const markKeys = pendingNotifications.map((n) => getCarDataWhatsAppNotificationMarkKey(n));
@@ -135,13 +184,14 @@ export function titularHasPendingCarDataWhatsApp(titular, eventSnapshot, roster)
 /** Excluye avisos `datos_carro` obsoletos (p. ej. titular pasó a transporte del evento). */
 export function filterWhatsAppFinanceNotificationsForQueue(person, notifications, eventSnapshot, roster) {
   const list = Array.isArray(notifications) ? notifications : [];
-  return list.filter((n) => {
+  const filtered = list.filter((n) => {
     if (!n || n.sent) return false;
     if (String(n?.kind || '') !== 'datos_carro') return true;
     if (!eventSnapshot || String(eventSnapshot.eventType || '') !== 'Bautizos') return false;
     const { titular } = resolveCarDataWhatsAppTitularPerson(person, roster);
     return titularHasPendingCarDataWhatsApp(titular, eventSnapshot, roster);
   });
+  return dedupeUnsentCarDataNotifications(filtered);
 }
 
 export function countUnsentWhatsAppNotificationsForQueue(person, eventSnapshot, roster) {

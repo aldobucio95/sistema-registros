@@ -225,13 +225,17 @@ import {
   participantMatchesRegistrationStatusFilter,
 } from './rosterParticipantFilters.js';
 import {
+  allUnsentCarDataNotificationMarkKeys,
   buildCarDataPendingWhatsAppContext,
+  buildCarDataWhatsAppNotificationId,
   CAR_DATA_PENDING_FILTER_OPTIONS,
   countUnsentWhatsAppNotificationsForQueue,
+  dedupeUnsentCarDataNotifications,
   filterWhatsAppFinanceNotificationsForQueue,
   listCarDataPendingTitularTargets,
   listSplitCompanionParticipantIds,
   titularHasPendingCarDataWhatsApp,
+  upsertCarDataWhatsAppNotification,
 } from './carDataWhatsApp.js';
 import {
   buildBusGroupSections,
@@ -4637,9 +4641,9 @@ const App = () => {
         });
         if (!familyCarInventoryNeedsAttention(inventory, { hostPerson: p, companions })) continue;
         const existing = Array.isArray(p.whatsAppFinanceNotifications) ? p.whatsAppFinanceNotifications : [];
-        if (existing.some((n) => String(n?.kind || '') === 'datos_carro' && !n.sent)) continue;
         const createdAt = Date.now();
         const loc = String(p.location || '').trim();
+        const pid = String(p.id || '').trim();
         const message = buildCarDataRequestWhatsAppMessage({
           person: p,
           loc,
@@ -4648,7 +4652,7 @@ const App = () => {
           reportedAtMs: createdAt,
         });
         const notification = {
-          id: `car-data-${eid}`,
+          id: buildCarDataWhatsAppNotificationId(pid, eid),
           kind: 'datos_carro',
           carSlots: inventory,
           message,
@@ -4656,9 +4660,14 @@ const App = () => {
           sent: false,
           sentAt: null,
         };
+        const nextNotifications = upsertCarDataWhatsAppNotification(existing, notification);
+        const unchanged =
+          nextNotifications.length === existing.length &&
+          existing.some((n) => String(n?.kind || '') === 'datos_carro' && !n.sent);
+        if (unchanged) continue;
         try {
-          await updateDoc(getDocRef('app_participants', String(p.id)), {
-            whatsAppFinanceNotifications: [...existing, notification],
+          await updateDoc(getDocRef('app_participants', pid), {
+            whatsAppFinanceNotifications: nextNotifications,
           });
         } catch (err) {
           console.warn('car data WA backfill', err);
@@ -16550,11 +16559,15 @@ function resolveEventName(eventId) {
               : [];
           const now = Date.now();
           const keySet = new Set(pendingMergeMarkKeys.map(String));
+          const mergingCarData = arr.some(
+            (n) => !n?.sent && String(n?.kind || '') === 'datos_carro' && keySet.has(getWhatsAppNotificationMarkKey(n))
+          );
+          const carDataKeys = mergingCarData ? new Set(allUnsentCarDataNotificationMarkKeys(arr)) : keySet;
           const nextNotifications = arr.map((n) =>
-            keySet.has(getWhatsAppNotificationMarkKey(n)) ? { ...n, sent: true, sentAt: now } : n
+            carDataKeys.has(getWhatsAppNotificationMarkKey(n)) ? { ...n, sent: true, sentAt: now } : n
           );
           const sentItems = arr
-            .filter((n) => keySet.has(getWhatsAppNotificationMarkKey(n)))
+            .filter((n) => carDataKeys.has(getWhatsAppNotificationMarkKey(n)))
             .map((n) => compactWhatsAppNotificationToken(n));
           const histToken = {
             id: `wa_hist_${now}_${Math.random().toString(36).slice(2, 8)}`,
@@ -16656,15 +16669,20 @@ function resolveEventName(eventId) {
           ? titularInMemory.whatsAppFinanceNotifications
           : [];
 
-      const nextNotifications =
+      const carDataKeys =
         keySet.size > 0
+          ? new Set([...keySet, ...allUnsentCarDataNotificationMarkKeys(arr)])
+          : keySet;
+
+      const nextNotifications =
+        carDataKeys.size > 0
           ? arr.map((n) =>
-              keySet.has(getWhatsAppNotificationMarkKey(n)) ? { ...n, sent: true, sentAt: now } : n
+              carDataKeys.has(getWhatsAppNotificationMarkKey(n)) ? { ...n, sent: true, sentAt: now } : n
             )
           : arr;
 
       const sentCarItems = arr
-        .filter((n) => keySet.has(getWhatsAppNotificationMarkKey(n)))
+        .filter((n) => carDataKeys.has(getWhatsAppNotificationMarkKey(n)))
         .map((n) => compactWhatsAppNotificationToken(n));
 
       const titularHistToken = {
@@ -20737,7 +20755,8 @@ function resolveEventName(eventId) {
                     </div>
                     {familyHasAnyCarTransport(
                       editRegistryModal.data,
-                      editRegistryModal.data.bautizosCompanions || []
+                      editRegistryModal.data.bautizosCompanions || [],
+                      currentEvent
                     ) ? (
                       <BautizosCarDataSection
                         hostPerson={editRegistryModal.data}
@@ -34782,13 +34801,15 @@ function resolveEventName(eventId) {
       isBautizos &&
       familyHasAnyCarTransport(
         carDataAnchorPerson,
-        getBautizosCompanionsArray(carDataAnchorPerson)
+        getBautizosCompanionsArray(carDataAnchorPerson),
+        currentEvent
       ) ? (
         <BautizosCarDataSummaryCard
           hostPerson={carDataAnchorPerson}
           companions={getBautizosCompanionsArray(carDataAnchorPerson)}
           plan={currentEvent?.transportPlanning}
           roster={rosterForCompanionDisplay}
+          eventLike={currentEvent}
         />
       ) : null;
 
