@@ -37862,7 +37862,7 @@ function resolveEventName(eventId) {
 
       {locationTypeSummary?.hasAny ? <LocationRosterTypeSummary summary={locationTypeSummary} /> : null}
 
-      <RosterSectionScrollWrap sectionId={`roster-${rosterLocSlug}-activos`}>
+      <RosterSectionScrollWrap sectionId={`roster-${rosterLocSlug}-activos`} controlsEnabled={showRosterActivos}>
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
         <button
           type="button"
@@ -38113,7 +38113,7 @@ function resolveEventName(eventId) {
       </div>
       </RosterSectionScrollWrap>
 
-      <RosterSectionScrollWrap sectionId={`roster-${rosterLocSlug}-waitlist`}>
+      <RosterSectionScrollWrap sectionId={`roster-${rosterLocSlug}-waitlist`} controlsEnabled={showRosterWaitlist}>
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
         <div
           className={`w-full flex items-center justify-between gap-3 px-4 py-4 border-b border-slate-100 ${rosterSearchActive ? 'bg-slate-50/80' : ''}`}
@@ -38330,7 +38330,7 @@ function resolveEventName(eventId) {
       </div>
       </RosterSectionScrollWrap>
 
-      <RosterSectionScrollWrap sectionId={`roster-${rosterLocSlug}-cancelled`}>
+      <RosterSectionScrollWrap sectionId={`roster-${rosterLocSlug}-cancelled`} controlsEnabled={showRosterCancelled}>
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
         <button
           type="button"
@@ -39247,7 +39247,7 @@ function resolveEventName(eventId) {
           </div>
         ) : null}
 
-        <RosterSectionScrollWrap sectionId="global-activos">
+        <RosterSectionScrollWrap sectionId="global-activos" controlsEnabled={showGrActivos}>
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
           <button
             type="button"
@@ -39281,7 +39281,7 @@ function resolveEventName(eventId) {
         </div>
         </RosterSectionScrollWrap>
 
-        <RosterSectionScrollWrap sectionId="global-waitlist">
+        <RosterSectionScrollWrap sectionId="global-waitlist" controlsEnabled={showGrWaitlist}>
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
           <button
             type="button"
@@ -39312,7 +39312,7 @@ function resolveEventName(eventId) {
         </div>
         </RosterSectionScrollWrap>
 
-        <RosterSectionScrollWrap sectionId="global-cancelled">
+        <RosterSectionScrollWrap sectionId="global-cancelled" controlsEnabled={showGrCancelled}>
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
           <button
             type="button"
