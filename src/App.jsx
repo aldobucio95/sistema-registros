@@ -168,8 +168,6 @@ import {
   participantIsBautizosServidorOrEmpleadoAttendance,
   getBautizosAttendanceTypeLabel,
   resolveBautizosAttendanceChipKind,
-  expandBautizosGlobalRegistryActivosDisplayRows,
-  GLOBAL_REGISTRY_VIRTUAL_KIND,
   getBautizosCompanionsVisibleForRegistrant,
   buildBautizosExistingCompanionOptions,
   bautizosAttendanceUsesParticipantPackage,
@@ -496,6 +494,10 @@ import { logError as logErrorToActivity, setErrorLogContextProvider } from './er
 import ActivityLogSnapshotDetails from './components/ActivityLogSnapshotDetails.jsx';
 import { deleteOldestLogsByCount, deleteLogsByIds } from './activityLogsDelete.js';
 import { buildLocationRosterTypeSummaryByStatus, getLocationRosterSectionCountsFromSummary, aggregateLocationRosterSectionCountsForLocations } from './locationRosterTypeSummary.js';
+import {
+  buildGlobalRegistryPartySections,
+  globalRegistryPartyRowsToPersons,
+} from './globalRegistryPartyRows.js';
 import LocationRosterTypeSummary from './LocationRosterTypeSummary.jsx';
 import {
   LocationRosterActivosChip,
@@ -34291,7 +34293,15 @@ function resolveEventName(eventId) {
         </div>
         {isSubRegistration ? (
           <p className="text-[10px] font-semibold text-sky-800 dark:text-sky-200 leading-snug">
-            Subregistro de acompañante marcado para bautizo.
+            {opts.subRegistrationLabel ||
+              (person.__globalRegistryVirtual
+                ? 'Subregistro de acompañante marcado para bautizo.'
+                : 'Acompañante del titular')}
+          </p>
+        ) : null}
+        {!isSubRegistration && opts.subRegistrationLabel ? (
+          <p className="text-[10px] font-semibold text-violet-800 dark:text-violet-200 leading-snug">
+            {opts.subRegistrationLabel}
           </p>
         ) : null}
         {isWaitlist && isSiValue(person.isScholarship) && person.scholarshipPendingApproval ? (
@@ -38962,29 +38972,44 @@ function resolveEventName(eventId) {
       cancelledParticipantsByLocation: cancelledData,
     });
     const activosTitularsInScope = locsInScope.flatMap((loc) => data[loc] || []);
-    const waitlistInScope = locsInScope.flatMap((loc) => getSortedWaitlistForLocation(loc));
-    const cancelledInScope = locsInScope.flatMap((loc) => getSortedCancelledForLocation(loc));
     const filterGlobalRegistrySectionRows = (rows, preserveOrder = true) =>
       filterParticipantRows(rows, preserveOrder, globalRegistryListFilters, {
         expandBautizosCompanions: false,
       });
     const activosTitularsFiltered = filterGlobalRegistrySectionRows(activosTitularsInScope);
-    const activosExpanded = isBautizos
-      ? expandBautizosGlobalRegistryActivosDisplayRows(activosTitularsFiltered, validSource)
-      : activosTitularsFiltered;
-    const waitlistExpanded = waitlistInScope;
-    const cancelledExpanded = cancelledInScope;
+    const waitlistSortedFiltered = (() => {
+      const sorted = locsInScope.flatMap((loc) => getSortedWaitlistForLocation(loc));
+      const filteredIdSet = new Set(
+        filterGlobalRegistrySectionRows(sorted).map((p) => String(p?.id || ''))
+      );
+      return sorted.filter((p) => filteredIdSet.has(String(p?.id || '')));
+    })();
+    const cancelledTitularsFiltered = filterGlobalRegistrySectionRows(
+      locsInScope.flatMap((loc) => cancelledData[loc] || [])
+    );
+    const partySections = buildGlobalRegistryPartySections({
+      isBautizos,
+      activeTitulars: activosTitularsFiltered,
+      waitlistRows: waitlistSortedFiltered,
+      cancelledTitulars: cancelledTitularsFiltered,
+      rosterForPlan: validSource,
+    });
+    const activeRows = partySections.active;
+    const waitlistRows = partySections.waitlist;
+    const cancelledRows = partySections.cancelled;
+    const validSourceParty = buildGlobalRegistryPartySections({
+      isBautizos,
+      activeTitulars: activosTitularsInScope,
+      waitlistRows: locsInScope.flatMap((loc) => getSortedWaitlistForLocation(loc)),
+      cancelledTitulars: locsInScope.flatMap((loc) => cancelledData[loc] || []),
+      rosterForPlan: validSource,
+    });
     const validSourceExpanded = [
-      ...(isBautizos
-        ? expandBautizosGlobalRegistryActivosDisplayRows(activosTitularsInScope, validSource)
-        : activosTitularsInScope),
-      ...waitlistInScope,
-      ...cancelledInScope,
+      ...globalRegistryPartyRowsToPersons(validSourceParty.active),
+      ...globalRegistryPartyRowsToPersons(validSourceParty.waitlist),
+      ...globalRegistryPartyRowsToPersons(validSourceParty.cancelled),
     ];
     const invalidFiltered = applyGlobalRegistryLikeFilters(invalidSource);
-    let activeRows = activosExpanded;
-    let waitlistRows = filterGlobalRegistrySectionRows(waitlistExpanded);
-    let cancelledRows = filterGlobalRegistrySectionRows(cancelledExpanded);
     const coincidenceTotal =
       invalidFiltered.length + activeRows.length + waitlistRows.length + cancelledRows.length;
     const grSearchActive = !!String(globalRegistryListFilters.searchTerm || '').trim();
@@ -38993,7 +39018,6 @@ function resolveEventName(eventId) {
     const showGrCancelled = grSearchActive ? cancelledRows.length > 0 : rosterSectionExpanded.cancelled;
     const fallbackLoc =
       (Array.isArray(currentEvent?.locations) && currentEvent.locations.length > 0 ? currentEvent.locations[0] : '') || '';
-    let globalRosterDisplayNum = 1;
     const globalRegistryColumnOpts = {
       useUnspecifiedPlaceholder: true,
       hideBautizosCompanionCountChip: true,
@@ -39004,27 +39028,34 @@ function resolveEventName(eventId) {
         ? currentEvent.locations[0]
         : '');
 
-    const renderGlobalRegistryRowsBlock = (sectionRows, { emptyMessage, emptyFilteredMessage, sectionKey }) => (
+    const renderGlobalRegistryRowsBlock = (sectionPartyRows, { emptyMessage, emptyFilteredMessage, sectionKey }) => {
+      let sectionDisplayNum = 1;
+      return (
       <>
         <div className={uiRosterMobile.list}>
-          {sectionRows.length === 0 ? (
+          {sectionPartyRows.length === 0 ? (
             <p className="px-3 py-14 text-center text-slate-400 italic font-medium text-sm">{emptyMessage}</p>
           ) : (
-            sectionRows.map((person) => {
-              const isVirtual = !!person.__globalRegistryVirtual;
-              const isExpanded = !isVirtual && expandedRows.has(person.id);
+            sectionPartyRows.map((partyRow) => {
+              const person = partyRow.person;
+              const isExpanded =
+                !partyRow.disableExpand && !person.__globalRegistryCompanionRow && expandedRows.has(person.id);
               const rowLoc = globalRegistryRowLoc(person);
-              const rowDisplayIndex = globalRosterDisplayNum++;
+              const rowDisplayIndex = sectionDisplayNum++;
               return renderRosterPersonMobileCard(person, rowLoc, {
-                key: `global-${sectionKey}-m-${person.id}`,
+                key: `global-${sectionKey}-m-${partyRow.key}`,
                 displayIndex: rowDisplayIndex,
                 isExpanded,
                 showActions: false,
                 showSede: true,
                 sedeLabel: rosterDisplayUnspecified(person.location),
-                isSubRegistration: isVirtual,
-                disableExpand: isVirtual,
-                participantColumnOpts: globalRegistryColumnOpts,
+                isSubRegistration: partyRow.isSubRegistration,
+                disableExpand: partyRow.disableExpand,
+                participantColumnOpts: {
+                  ...globalRegistryColumnOpts,
+                  subRegistrationLabel: partyRow.subRegistrationLabel,
+                },
+                branchMeta: partyRow.subRegistrationLabel && !partyRow.isSubRegistration ? partyRow.subRegistrationLabel : undefined,
               });
             })
           )}
@@ -39039,26 +39070,34 @@ function resolveEventName(eventId) {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
-              {sectionRows.length === 0 ? (
+              {sectionPartyRows.length === 0 ? (
                 <tr>
                   <td colSpan="3" className="px-6 py-14 text-center text-slate-400 italic font-medium">
                     {emptyFilteredMessage || emptyMessage}
                   </td>
                 </tr>
               ) : (
-                sectionRows.map((person) => {
-                  const isVirtual = !!person.__globalRegistryVirtual;
-                  const isExpanded = !isVirtual && expandedRows.has(person.id);
+                sectionPartyRows.map((partyRow) => {
+                  const person = partyRow.person;
+                  const isExpanded =
+                    !partyRow.disableExpand && !person.__globalRegistryCompanionRow && expandedRows.has(person.id);
                   const rowLoc = globalRegistryRowLoc(person);
-                  const rowDisplayIndex = globalRosterDisplayNum++;
+                  const rowDisplayIndex = sectionDisplayNum++;
+                  const columnOpts = {
+                    displayIndex: rowDisplayIndex,
+                    rosterLocation: rowLoc,
+                    isSubRegistration: partyRow.isSubRegistration,
+                    subRegistrationLabel: partyRow.subRegistrationLabel,
+                    ...globalRegistryColumnOpts,
+                  };
                   return (
-                    <React.Fragment key={`global-${sectionKey}-${person.id}`}>
+                    <React.Fragment key={`global-${sectionKey}-${partyRow.key}`}>
                       <tr
                         id={rosterRowAnchorId(rowLoc, person.id)}
-                        className={`hover:bg-slate-50/60 transition-colors ${isVirtual ? '' : 'cursor-pointer'} ${isExpanded ? 'bg-slate-50/90' : ''}`}
-                        title={isVirtual ? undefined : 'Clic en la fila para ver u ocultar detalles'}
+                        className={`hover:bg-slate-50/60 transition-colors ${partyRow.disableExpand ? '' : 'cursor-pointer'} ${isExpanded ? 'bg-slate-50/90' : ''}`}
+                        title={partyRow.disableExpand ? undefined : 'Clic en la fila para ver u ocultar detalles'}
                         onClick={
-                          isVirtual
+                          partyRow.disableExpand
                             ? undefined
                             : (e) => {
                                 if (isRosterRowInteractiveClickTarget(e.target)) return;
@@ -39067,12 +39106,7 @@ function resolveEventName(eventId) {
                         }
                       >
                         <td className="px-4 py-3 align-top">
-                          {renderRegistrationParticipantColumn(person, {
-                            displayIndex: rowDisplayIndex,
-                            rosterLocation: rowLoc,
-                            isSubRegistration: isVirtual,
-                            ...globalRegistryColumnOpts,
-                          })}
+                          {renderRegistrationParticipantColumn(person, columnOpts)}
                         </td>
                         <td className="px-4 py-3 align-top">
                           <span className="inline-flex items-center gap-1 text-xs font-black text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-lg px-2 py-1">
@@ -39084,7 +39118,7 @@ function resolveEventName(eventId) {
                           {renderRegistrationFinancesColumn(person)}
                         </td>
                       </tr>
-                      {isExpanded && !isVirtual
+                      {isExpanded
                         ? renderExpandedRosterDetailTableRow(person, rowLoc, { displayIndex: rowDisplayIndex })
                         : null}
                     </React.Fragment>
@@ -39095,7 +39129,8 @@ function resolveEventName(eventId) {
           </table>
         </div>
       </>
-    );
+      );
+    };
 
     return (
       <div className="p-6 space-y-6">
@@ -39144,10 +39179,12 @@ function resolveEventName(eventId) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-amber-100">
-                  {invalidFiltered.map((person) => {
+                  {(() => {
+                    let invalidLocDisplayNum = 1;
+                    return invalidFiltered.map((person) => {
                     const isExpanded = expandedRows.has(person.id);
                     const rowLoc = person.location || fallbackLoc;
-                    const rowDisplayIndex = globalRosterDisplayNum++;
+                    const rowDisplayIndex = invalidLocDisplayNum++;
                     return (
                       <React.Fragment key={`global-badloc-${person.id}`}>
                         <tr
@@ -39193,7 +39230,8 @@ function resolveEventName(eventId) {
                         {isExpanded && renderExpandedRosterDetailTableRow(person, rowLoc, { displayIndex: rowDisplayIndex })}
                       </React.Fragment>
                     );
-                  })}
+                  });
+                  })()}
                 </tbody>
               </table>
             </div>

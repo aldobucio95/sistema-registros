@@ -134,15 +134,14 @@ function checkGlobalRegistryRosterInvariants(app) {
   }
 
   if (
-    !app.includes('expandBautizosGlobalRegistryActivosDisplayRows(') ||
-    !app.includes('aggregateLocationRosterSectionCountsForLocations(') ||
-    !app.includes('expandBautizosCompanions: false')
+    !app.includes('buildGlobalRegistryPartySections(') ||
+    !app.includes('aggregateLocationRosterSectionCountsForLocations(')
   ) {
     fail(
-      'Registro Global debe filtrar titulares sin re-expandir canónicos (expandBautizosCompanions: false) y usar conteos agregados por sede'
+      'Registro Global debe usar buildGlobalRegistryPartySections (lista en cascada titular→acompañantes) y conteos canónicos por sede'
     );
   } else {
-    pass('Registro Global con expansión de vista lista y conteos canónicos por sede');
+    pass('Registro Global con lista party en cascada y conteos canónicos por sede');
   }
 }
 
