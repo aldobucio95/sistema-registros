@@ -38962,16 +38962,29 @@ function resolveEventName(eventId) {
       cancelledParticipantsByLocation: cancelledData,
     });
     const activosTitularsInScope = locsInScope.flatMap((loc) => data[loc] || []);
+    const waitlistInScope = locsInScope.flatMap((loc) => getSortedWaitlistForLocation(loc));
+    const cancelledInScope = locsInScope.flatMap((loc) => getSortedCancelledForLocation(loc));
+    const filterGlobalRegistrySectionRows = (rows, preserveOrder = true) =>
+      filterParticipantRows(rows, preserveOrder, globalRegistryListFilters, {
+        expandBautizosCompanions: false,
+      });
+    const activosTitularsFiltered = filterGlobalRegistrySectionRows(activosTitularsInScope);
     const activosExpanded = isBautizos
-      ? expandBautizosGlobalRegistryActivosDisplayRows(activosTitularsInScope, validSource)
-      : activosTitularsInScope;
-    const waitlistExpanded = locsInScope.flatMap((loc) => getSortedWaitlistForLocation(loc));
-    const cancelledExpanded = locsInScope.flatMap((loc) => getSortedCancelledForLocation(loc));
-    const validSourceExpanded = [...activosExpanded, ...waitlistExpanded, ...cancelledExpanded];
+      ? expandBautizosGlobalRegistryActivosDisplayRows(activosTitularsFiltered, validSource)
+      : activosTitularsFiltered;
+    const waitlistExpanded = waitlistInScope;
+    const cancelledExpanded = cancelledInScope;
+    const validSourceExpanded = [
+      ...(isBautizos
+        ? expandBautizosGlobalRegistryActivosDisplayRows(activosTitularsInScope, validSource)
+        : activosTitularsInScope),
+      ...waitlistInScope,
+      ...cancelledInScope,
+    ];
     const invalidFiltered = applyGlobalRegistryLikeFilters(invalidSource);
-    let activeRows = applyGlobalRegistryLikeFilters(activosExpanded);
-    let waitlistRows = applyGlobalRegistryLikeFilters(waitlistExpanded);
-    let cancelledRows = applyGlobalRegistryLikeFilters(cancelledExpanded);
+    let activeRows = activosExpanded;
+    let waitlistRows = filterGlobalRegistrySectionRows(waitlistExpanded);
+    let cancelledRows = filterGlobalRegistrySectionRows(cancelledExpanded);
     const coincidenceTotal =
       invalidFiltered.length + activeRows.length + waitlistRows.length + cancelledRows.length;
     const grSearchActive = !!String(globalRegistryListFilters.searchTerm || '').trim();

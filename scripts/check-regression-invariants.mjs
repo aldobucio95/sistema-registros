@@ -135,10 +135,11 @@ function checkGlobalRegistryRosterInvariants(app) {
 
   if (
     !app.includes('expandBautizosGlobalRegistryActivosDisplayRows(') ||
-    !app.includes('aggregateLocationRosterSectionCountsForLocations(')
+    !app.includes('aggregateLocationRosterSectionCountsForLocations(') ||
+    !app.includes('expandBautizosCompanions: false')
   ) {
     fail(
-      'Registro Global debe usar expandBautizosGlobalRegistryActivosDisplayRows y aggregateLocationRosterSectionCountsForLocations (misma lógica que sede)'
+      'Registro Global debe filtrar titulares sin re-expandir canónicos (expandBautizosCompanions: false) y usar conteos agregados por sede'
     );
   } else {
     pass('Registro Global con expansión de vista lista y conteos canónicos por sede');
