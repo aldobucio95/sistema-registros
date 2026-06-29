@@ -63,6 +63,52 @@ function needsReload(remote) {
 let pendingDeployReload = false;
 let reloadInProgress = false;
 
+const RELOAD_GUARD_KEY = 'vnpm_deploy_reload_guard';
+const RELOAD_GUARD_MAX = 3;
+const RELOAD_GUARD_WINDOW_MS = 120_000;
+
+function readReloadGuard() {
+  try {
+    const raw = sessionStorage.getItem(RELOAD_GUARD_KEY);
+    if (!raw) return { count: 0, startedAt: Date.now() };
+    const parsed = JSON.parse(raw);
+    const startedAt = Number(parsed?.startedAt) || Date.now();
+    const count = Number(parsed?.count) || 0;
+    if (Date.now() - startedAt > RELOAD_GUARD_WINDOW_MS) return { count: 0, startedAt: Date.now() };
+    return { count, startedAt };
+  } catch {
+    return { count: 0, startedAt: Date.now() };
+  }
+}
+
+function writeReloadGuard(count, startedAt) {
+  try {
+    sessionStorage.setItem(RELOAD_GUARD_KEY, JSON.stringify({ count, startedAt }));
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearReloadGuard() {
+  try {
+    sessionStorage.removeItem(RELOAD_GUARD_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function canAttemptHardReload() {
+  const guard = readReloadGuard();
+  if (guard.count >= RELOAD_GUARD_MAX) {
+    console.warn(
+      '[hostingVersionCheck] Se detuvo la recarga automática tras varios intentos. Recarga manual (Ctrl+F5) o borra datos del sitio.',
+    );
+    return false;
+  }
+  writeReloadGuard(guard.count + 1, guard.startedAt);
+  return true;
+}
+
 function triggerReloadForNewDeploy() {
   if (reloadInProgress) return;
   if (document.visibilityState === 'visible') {
@@ -82,6 +128,7 @@ function flushPendingReloadIfVisible() {
  */
 async function hardReloadAfterDeploy() {
   if (reloadInProgress) return;
+  if (!canAttemptHardReload()) return;
   reloadInProgress = true;
   pendingDeployReload = false;
   try {
@@ -94,7 +141,9 @@ async function hardReloadAfterDeploy() {
   } catch {
     /* recargar igual: mejor intento parcial que quedar bloqueado */
   }
-  window.location.reload();
+  const url = new URL(window.location.href);
+  url.searchParams.set('__vnpm_deploy', String(Date.now()));
+  window.location.replace(url.toString());
 }
 
 let checking = false;
@@ -113,6 +162,8 @@ async function checkDeployAndMaybeReload() {
         /* ignorar: el hard reload siguiente limpia estado */
       }
       triggerReloadForNewDeploy();
+    } else if (remote?.buildId && remote.buildId === LOCAL_BUILD_ID) {
+      clearReloadGuard();
     }
   } catch {
     /* red / timeout / CORS: no bucle */

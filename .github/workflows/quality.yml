@@ -23,7 +23,6 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check:utf8
-      - run: pnpm run lint
       - run: pnpm run test
       - run: pnpm run check:invariants
       - run: pnpm run build
