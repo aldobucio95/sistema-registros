@@ -200,6 +200,7 @@ import {
   isCompanionWaitlistPending,
   isCompanionWaitlistVirtualParticipant,
   parseCompanionWaitlistVirtualId,
+  resolveCompanionWaitlistVirtualLocation,
 } from './bautizosCompanionWaitlist.js';
 import {
   computeWaitlistCountsForEvent,
@@ -39633,11 +39634,18 @@ function resolveEventName(eventId) {
       useUnspecifiedPlaceholder: true,
       hideBautizosCompanionCountChip: true,
     };
-    const globalRegistryRowLoc = (person) =>
-      person.location ||
-      (Array.isArray(currentEvent?.locations) && currentEvent.locations.length > 0
-        ? currentEvent.locations[0]
-        : '');
+    const globalRegistryRowLoc = (person) => {
+      if (isCompanionWaitlistVirtualParticipant(person)) {
+        const fromHost = resolveCompanionWaitlistVirtualLocation(person, validSource);
+        if (fromHost) return fromHost;
+      }
+      return (
+        person.location ||
+        (Array.isArray(currentEvent?.locations) && currentEvent.locations.length > 0
+          ? currentEvent.locations[0]
+          : '')
+      );
+    };
 
     const renderGlobalRegistryRowsBlock = (sectionPartyRows, { emptyMessage, emptyFilteredMessage, sectionKey }) => (
       <>
@@ -39657,7 +39665,7 @@ function resolveEventName(eventId) {
                 isExpanded,
                 showActions: false,
                 showSede: true,
-                sedeLabel: rosterDisplayUnspecified(person.location),
+                sedeLabel: rosterDisplayUnspecified(rowLoc),
                 isSubRegistration: partyRow.isSubRegistration,
                 disableExpand: partyRow.disableExpand,
                 participantColumnOpts: {
@@ -39720,7 +39728,7 @@ function resolveEventName(eventId) {
                         <td className="px-4 py-3 align-top">
                           <span className="inline-flex items-center gap-1 text-xs font-black text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-lg px-2 py-1">
                             <MapPin size={12} />
-                            {rosterDisplayUnspecified(person.location)}
+                            {rosterDisplayUnspecified(rowLoc)}
                           </span>
                         </td>
                         <td className="px-4 py-3 align-top">

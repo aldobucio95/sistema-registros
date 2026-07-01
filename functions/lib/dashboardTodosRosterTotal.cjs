@@ -125,6 +125,7 @@ function bautizosCompanionIsAlsoBautizadoRegistrant(c, bautizadoIdSet, bautizado
 
 function buildBautizosCanonicalCompanionPlan(roster, bautizadoMeta, options) {
   const includeBaptizedCompanions = options?.includeBaptizedCompanions === true;
+  const waitlistOnly = options?.waitlistOnly === true;
   const list = Array.isArray(roster) ? roster : [];
   const idMap = new Map();
   for (const p of list) {
@@ -151,6 +152,9 @@ function buildBautizosCanonicalCompanionPlan(roster, bautizadoMeta, options) {
       const c = comps[i] || {};
       const nm = String(c?.name || '').trim();
       if (!nm) continue;
+      if (waitlistOnly) {
+        if (c?.companionWaitlistPending !== true) continue;
+      } else if (c?.companionWaitlistPending === true) continue;
       if (!includeBaptizedCompanions && isBautizosCompanionBaptized(c)) continue;
       if (bautizosCompanionIsAlsoBautizadoRegistrant(c, meta.bautizadoIdSet, meta.bautizadoNameSet, meta.vnpToBautizadoId)) continue;
       const canon = getBautizosCompanionCanonicalKey(p.id, c, i, sourceLinkMap);

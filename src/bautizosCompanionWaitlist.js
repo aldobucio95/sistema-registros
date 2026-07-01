@@ -39,6 +39,23 @@ export function isCompanionWaitlistVirtualParticipant(personLike) {
   return personLike?._isCompanionWaitlistVirtual === true;
 }
 
+/** Sede del titular para filas virtuales de acompañante en espera. */
+export function hostSedeForCompanionWaitlist(hostLike) {
+  return String(hostLike?.location || hostLike?.cancelledFromLocation || '').trim();
+}
+
+/**
+ * Sede visible en registro global / listas: usa `location` de la fila virtual o la del titular en el roster.
+ */
+export function resolveCompanionWaitlistVirtualLocation(virtualPerson, rosterParticipants) {
+  const direct = String(virtualPerson?.location || '').trim();
+  if (direct) return direct;
+  const hostId = String(virtualPerson?._companionWaitlistHostId || '').trim();
+  if (!hostId) return '';
+  const host = (rosterParticipants || []).find((p) => String(p?.id || '') === hostId);
+  return hostSedeForCompanionWaitlist(host);
+}
+
 /** Acompañantes que sí cuentan para cupo y precio de lista. */
 export function getBautizosCompanionsActiveOnly(personLike) {
   return getBautizosCompanionsArray(personLike).filter((c) => !isCompanionWaitlistPending(c));
@@ -189,7 +206,7 @@ export function buildCompanionWaitlistVirtualParticipant(host, companion, eventL
     _companionWaitlistCompanionId: companionId,
     status: 'waitlist',
     eventId: host?.eventId || eventLike?.id || '',
-    location: host?.location || '',
+    location: hostSedeForCompanionWaitlist(host),
     name: fieldOrUnavailable(companion?.name),
     relationship: fieldOrUnavailable(companion?.relationship),
     alias: '',

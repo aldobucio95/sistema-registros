@@ -8,7 +8,10 @@ import {
   isBautizosCompanionBaptized,
 } from './bautizosParty.js';
 import { normalizeBirthDateToIso } from './birthDateIsoUtils.js';
-import { isCompanionWaitlistVirtualParticipant } from './bautizosCompanionWaitlist.js';
+import {
+  isCompanionWaitlistVirtualParticipant,
+  resolveCompanionWaitlistVirtualLocation,
+} from './bautizosCompanionWaitlist.js';
 
 function buildCompanionPartyPerson(host, companion, index) {
   const hostId = String(host?.id || '').trim();
@@ -131,11 +134,16 @@ export function buildGlobalRegistryPartyRowsFromTitulars(titulars, rosterForPlan
   return out;
 }
 
-export function buildGlobalRegistryPartyRowFromWaitlistVirtual(virtualPerson) {
+export function buildGlobalRegistryPartyRowFromWaitlistVirtual(virtualPerson, rosterForPlan = []) {
   const hostName = String(virtualPerson?._companionWaitlistHostName || '').trim();
+  const location = resolveCompanionWaitlistVirtualLocation(virtualPerson, rosterForPlan);
+  const person =
+    location && String(virtualPerson?.location || '').trim() !== location
+      ? { ...virtualPerson, location }
+      : virtualPerson;
   return {
     key: `cw:${String(virtualPerson?.id || '')}`,
-    person: virtualPerson,
+    person,
     isSubRegistration: false,
     disableExpand: true,
     subRegistrationLabel: hostName
@@ -179,7 +187,7 @@ export function buildGlobalRegistryPartySections({
   const processedTitulars = new Set();
   for (const row of waitlistRows || []) {
     if (isCompanionWaitlistVirtualParticipant(row)) {
-      waitlist.push(buildGlobalRegistryPartyRowFromWaitlistVirtual(row));
+      waitlist.push(buildGlobalRegistryPartyRowFromWaitlistVirtual(row, rosterForPlan));
       continue;
     }
     const id = String(row?.id || '').trim();

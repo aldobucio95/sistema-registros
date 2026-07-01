@@ -4,6 +4,7 @@ import {
   collectCompanionWaitlistVirtualRows,
   companionWaitlistVirtualId,
   parseCompanionWaitlistVirtualId,
+  resolveCompanionWaitlistVirtualLocation,
 } from '../bautizosCompanionWaitlist.js';
 import { participantHasBaptismChip } from '../bautizosParty.js';
 
@@ -30,7 +31,25 @@ describe('bautizosCompanionWaitlist', () => {
     ]);
     expect(row._isCompanionWaitlistVirtual).toBe(true);
     expect(row.id).toBe(companionWaitlistVirtualId('host1', 'c1'));
+    expect(row.location).toBe('Sede A');
     expect(participantHasBaptismChip(row, 'Bautizos')).toBe(false);
+  });
+
+  it('resolveCompanionWaitlistVirtualLocation falls back to host roster sede', () => {
+    const host = {
+      id: 'host1',
+      eventId: 'ev1',
+      location: 'Norte',
+      status: 'active',
+      name: 'Titular',
+    };
+    const virtual = {
+      id: 'cw:host1::c1',
+      _isCompanionWaitlistVirtual: true,
+      _companionWaitlistHostId: 'host1',
+      location: '',
+    };
+    expect(resolveCompanionWaitlistVirtualLocation(virtual, [host])).toBe('Norte');
   });
 
   it('omits baptism chip for global registry nested companion rows', () => {

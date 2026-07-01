@@ -54,5 +54,7 @@ describe('global registry display rows', () => {
     expect(display.some((r) => r.id === 'w1')).toBe(true);
     expect(display.some((r) => String(r.id).startsWith('cw:'))).toBe(true);
     expect(display.filter((r) => r.__globalRegistryVirtual).length).toBe(0);
+    const virtual = display.find((r) => String(r.id).startsWith('cw:'));
+    expect(virtual?.location).toBe('Sede A');
   });
 });

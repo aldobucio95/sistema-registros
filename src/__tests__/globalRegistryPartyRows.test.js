@@ -89,17 +89,27 @@ describe('globalRegistryPartyRows', () => {
         {
           id: 'cw:h1::c1',
           _isCompanionWaitlistVirtual: true,
+          _companionWaitlistHostId: 'h1',
           _companionWaitlistHostName: 'Host Activo',
           name: 'En Espera Virtual',
           status: 'waitlist',
-          location: 'Sede A',
+          location: '',
         },
       ],
       cancelledTitulars: [],
-      rosterForPlan: [],
+      rosterForPlan: [
+        {
+          id: 'h1',
+          eventId: 'ev1',
+          location: 'Sede A',
+          status: 'active',
+          name: 'Host Activo',
+        },
+      ],
     });
     expect(sections.waitlist).toHaveLength(1);
     expect(sections.waitlist[0].person.name).toBe('En Espera Virtual');
+    expect(sections.waitlist[0].person.location).toBe('Sede A');
   });
 
   it('deduplicates companion listed under multiple titulars via canonical plan', () => {
