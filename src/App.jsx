@@ -4140,6 +4140,11 @@ const App = () => {
 
   const currentEvent = useMemo(() => events.find(e => e.id === selectedEventId) || null, [events, selectedEventId]);
 
+  const participantLocationsKey = useMemo(() => {
+    const locs = currentEvent?.locations?.length ? currentEvent.locations : globalLocations || [];
+    return [...new Set(locs.map((l) => String(l || '').trim()).filter(Boolean))].sort().join('|');
+  }, [currentEvent?.id, currentEvent?.locations, globalLocations]);
+
   const mergedPrivacyNotice = useMemo(
     () => mergePrivacyNoticeConfig(globalConfig?.privacyNotice),
     [globalConfig?.privacyNotice]
@@ -8114,15 +8119,17 @@ function resolveEventName(eventId) {
           participantsVersionUnsubRef.current = subscribeParticipantsLocationVersionsDebounced(
             eid,
             locations,
-            async (eventId, staleLocs) => {
+            async (eventId, staleItems) => {
               try {
                 const slices = await Promise.all(
-                  staleLocs.map((loc) => refetchParticipantsForLocation(eventId, loc))
+                  staleItems.map(({ loc, remoteV }) =>
+                    refetchParticipantsForLocation(eventId, loc, { remoteV })
+                  )
                 );
                 if (cancelled) return;
                 setAllParticipants((prev) => {
                   let next = prev;
-                  staleLocs.forEach((loc, i) => {
+                  staleItems.forEach(({ loc }, i) => {
                     next = replaceParticipantsForLocation(next, eventId, loc, slices[i]);
                   });
                   return next;
@@ -8161,7 +8168,7 @@ function resolveEventName(eventId) {
       cancelled = true;
       cleanupListeners();
     };
-  }, [fbUser, currentUser?.id, selectedEventId, systemView, currentEvent?.id, currentEvent?.locations, globalLocations]);
+  }, [fbUser, currentUser?.id, selectedEventId, systemView, currentEvent?.id, participantLocationsKey]);
 
   /** Tras cargar roster completo del evento abierto, alinea el contador del hub con el dashboard (sin tocar el hub con datos parciales). */
   useEffect(() => {

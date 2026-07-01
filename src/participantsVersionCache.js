@@ -12,6 +12,7 @@ import {
   normalizeCacheVersion,
   participantCacheVersionsCompatible,
   resolveVersionForStore,
+  syncLocalVersionIndexFromIdb,
 } from './firestoreVersionCache.js';
 
 /** Documentos huérfanos `cw:…` en Firestore (duplican filas virtuales del titular activo). */
@@ -99,7 +100,7 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
   await Promise.all(
     locs.map(async (loc) => {
       const scope = scopeParticipantsLocation(eid, loc);
-      const remoteV = await fetchRemoteCacheVersion(scope);
+      const remoteV = await fetchRemoteCacheVersion(scope, { preferServer: true });
       const local = await readVersionCacheRecord(scope);
       versionByLoc.set(loc, { scope, remoteV, local });
     })
@@ -113,6 +114,7 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
   const anyMiss = locs.some((loc) => !isHit(loc));
 
   if (!anyMiss) {
+    await Promise.all(locs.map((loc) => syncLocalVersionIndexFromIdb(versionByLoc.get(loc).scope)));
     const merged = locs.flatMap((loc) => versionByLoc.get(loc).local.data);
     const byId = new Map();
     for (const p of merged) byId.set(String(p.id), p);
@@ -149,13 +151,16 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
   return all;
 }
 
-export async function refetchParticipantsForLocation(eventId, location) {
+export async function refetchParticipantsForLocation(eventId, location, opts = {}) {
   const eid = String(eventId || '').trim();
   const loc = normalizeLocKey(location);
   if (!eid || !loc) return [];
 
   const scope = scopeParticipantsLocation(eid, loc);
-  const remoteV = await fetchRemoteCacheVersion(scope);
+  const remoteV =
+    opts.remoteV != null
+      ? normalizeCacheVersion(opts.remoteV)
+      : await fetchRemoteCacheVersion(scope, { preferServer: true });
 
   let slice;
   const runQuery = async (q) => {
@@ -206,11 +211,24 @@ export function subscribeParticipantsLocationVersions(eventId, locations, onLoca
 
   for (const loc of locs) {
     const scope = scopeParticipantsLocation(eid, loc);
+    let isFirst = true;
+    let lastRemoteV = null;
     const unsub = onSnapshot(
       getDocRef('app_cache_versions', scope),
       { includeMetadataChanges: false },
-      (snap) => {
+      async (snap) => {
         const remoteV = snap.exists() ? normalizeCacheVersion(snap.data()?.v) : 0;
+
+        if (isFirst) {
+          isFirst = false;
+          lastRemoteV = remoteV;
+          await syncLocalVersionIndexFromIdb(scope);
+          return;
+        }
+
+        if (remoteV === lastRemoteV) return;
+        lastRemoteV = remoteV;
+
         const local = readLocalVersionCache(scope);
         if (local && participantCacheVersionsCompatible(local.version, remoteV)) return;
         logCacheDecision(scope, {
@@ -233,7 +251,7 @@ export function subscribeParticipantsLocationVersions(eventId, locations, onLoca
 
 /**
  * Coalesce avisos de sedes obsoletas (evita N refetch seguidos al abrir un evento con muchas sedes).
- * @param {(eventId: string, locations: string[]) => void} onLocationsStale
+ * @param {(eventId: string, staleItems: { loc: string, remoteV: number }[]) => void} onLocationsStale
  */
 export function subscribeParticipantsLocationVersionsDebounced(
   eventId,
@@ -241,22 +259,23 @@ export function subscribeParticipantsLocationVersionsDebounced(
   onLocationsStale,
   debounceMs = 400
 ) {
-  const pendingLocs = new Set();
+  /** @type {Map<string, number>} */
+  const pendingByLoc = new Map();
   let timer = null;
   const eid = String(eventId || '').trim();
 
   const flush = () => {
     timer = null;
-    if (pendingLocs.size === 0) return;
-    const locs = [...pendingLocs];
-    pendingLocs.clear();
-    onLocationsStale(eid, locs);
+    if (pendingByLoc.size === 0) return;
+    const staleItems = [...pendingByLoc.entries()].map(([loc, remoteV]) => ({ loc, remoteV }));
+    pendingByLoc.clear();
+    onLocationsStale(eid, staleItems);
   };
 
-  const unsub = subscribeParticipantsLocationVersions(eid, locations, (_ev, loc) => {
+  const unsub = subscribeParticipantsLocationVersions(eid, locations, (_ev, loc, remoteV) => {
     const key = normalizeLocKey(loc);
     if (!key) return;
-    pendingLocs.add(key);
+    pendingByLoc.set(key, normalizeCacheVersion(remoteV));
     if (timer) clearTimeout(timer);
     timer = setTimeout(flush, Math.max(100, Number(debounceMs) || 400));
   });

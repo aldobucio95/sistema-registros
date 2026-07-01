@@ -3,7 +3,7 @@
  * Índice de versión en localStorage; blobs de datos en IndexedDB (`versionCacheStore.js`).
  * Si la versión remota coincide con la local, se evita releer colecciones grandes.
  */
-import { getDoc, getDocFromCache, onSnapshot, updateDoc, setDoc, increment } from 'firebase/firestore';
+import { getDoc, getDocFromCache, getDocFromServer, onSnapshot, updateDoc, setDoc, increment } from 'firebase/firestore';
 import { getDocRef } from './firebaseRefs.js';
 import { sanitizeFirestoreDocId } from './firestoreDocId.js';
 import { idbGetRecord, idbPutRecord, idbDeleteRecord } from './versionCacheStore.js';
@@ -243,9 +243,19 @@ export function logCacheDecision(scope, detail) {
   }
 }
 
-export async function fetchRemoteCacheVersion(scope) {
+export async function fetchRemoteCacheVersion(scope, opts = {}) {
   const ref = getDocRef('app_cache_versions', scope);
+  const preferServer = opts.preferServer !== false;
   try {
+    if (preferServer) {
+      try {
+        const serverSnap = await getDocFromServer(ref);
+        if (serverSnap.exists()) return normalizeCacheVersion(serverSnap.data()?.v);
+        return 0;
+      } catch {
+        /* offline o sin red: caer a caché local de Firestore */
+      }
+    }
     try {
       const cached = await getDocFromCache(ref);
       if (cached.exists()) return normalizeCacheVersion(cached.data()?.v);
@@ -259,6 +269,22 @@ export async function fetchRemoteCacheVersion(scope) {
     console.warn('[cache-version] lectura remota falló:', scope, e);
     return 0;
   }
+}
+
+/**
+ * Repara el índice localStorage cuando IndexedDB tiene datos pero el índice falta o difiere.
+ * Evita que el listener dispare refetch en cada snapshot tras un cache HIT.
+ */
+export async function syncLocalVersionIndexFromIdb(scope) {
+  const idbRec = await readVersionCacheRecord(scope);
+  if (!idbRec || idbRec.version < 1) return false;
+  const local = readLocalVersionCache(scope);
+  const meta = idbRec.meta && typeof idbRec.meta === 'object' ? idbRec.meta : {};
+  if (!local || !cacheVersionsMatch(local.version, idbRec.version)) {
+    writeLocalVersionIndex(scope, idbRec.version, meta);
+    return true;
+  }
+  return false;
 }
 
 /**
