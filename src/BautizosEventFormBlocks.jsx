@@ -54,6 +54,7 @@ function attendanceBtnClass(selected, id, { variant = 'panel' } = {}) {
   if (id === BAUTIZOS_ATTENDANCE.servidor) return `${base} ${uiBautizosAttendanceBtn.activeServidor}`;
   if (id === BAUTIZOS_ATTENDANCE.empleado) return `${base} ${uiBautizosAttendanceBtn.activeEmpleado}`;
   if (id === BAUTIZOS_ATTENDANCE.cortesia) return `${base} ${uiBautizosAttendanceBtn.activeCortesia}`;
+  if (id === BAUTIZOS_ATTENDANCE.pastor) return `${base} ${uiBautizosAttendanceBtn.activePastor}`;
   return `${base} border-slate-600 bg-slate-600 text-white dark:bg-slate-600 dark:border-slate-500`;
 }
 
@@ -145,13 +146,33 @@ const BAUTIZOS_PUBLIC_ATTENDANCE_IDS = Object.freeze(
   Object.values(BAUTIZOS_ATTENDANCE).filter((id) => id !== BAUTIZOS_ATTENDANCE.pastor)
 );
 
-export function BautizosAttendanceTypeField({ value, onChange, disabled, labelClasses, variant = 'panel' }) {
+export function BautizosAttendanceTypeField({
+  value,
+  onChange,
+  disabled,
+  labelClasses,
+  variant = 'panel',
+  showPastor = false,
+}) {
   const cur = normalizeBautizosAttendanceType(value);
-  const attendanceIds = variant === 'public' ? BAUTIZOS_PUBLIC_ATTENDANCE_IDS : Object.values(BAUTIZOS_ATTENDANCE);
+  let attendanceIds =
+    variant === 'public'
+      ? BAUTIZOS_PUBLIC_ATTENDANCE_IDS
+      : Object.values(BAUTIZOS_ATTENDANCE).filter((id) => showPastor || id !== BAUTIZOS_ATTENDANCE.pastor);
+  const pastorLocked =
+    !showPastor && cur === BAUTIZOS_ATTENDANCE.pastor && variant !== 'public';
   return (
     <div className="space-y-2">
       {labelClasses ? <label className={labelClasses}>Tipo de asistencia</label> : null}
       <div className="flex flex-wrap gap-2">
+        {pastorLocked ? (
+          <span
+            className={`${attendanceBtnClass(cur, BAUTIZOS_ATTENDANCE.pastor, { variant })} cursor-default opacity-90`}
+            title="Sin permiso para cambiar el tipo Pastor"
+          >
+            {attendanceLabels[BAUTIZOS_ATTENDANCE.pastor]}
+          </span>
+        ) : null}
         {attendanceIds.map((id) => (
           <button
             key={id}

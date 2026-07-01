@@ -123,6 +123,7 @@ import {
   getEditorRegistrationFieldMetaForEventType,
   getEditorRegistrationFieldGroupOrderForEventType,
   EDITOR_REGISTRATION_FIELD_GROUP_LABELS,
+  canShowBautizosPastorAttendance,
 } from './registrationFormEditorConfig.js';
 import {
   isParticipantFieldApplicableToEventType,
@@ -17531,9 +17532,11 @@ function resolveEventName(eventId) {
       const isPastorReg =
         currentEvent.eventType === 'Bautizos' &&
         normalizeBautizosAttendanceType(entryPayload.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor;
-      const editorCanPastorOverCap =
-        currentUser?.role === 'Editor' && editorRegistrationFieldVis?.bautizosAttendanceType !== false;
-      const canPastorOverCap = hasAdminRights || editorCanPastorOverCap;
+      const canPastorOverCap = canShowBautizosPastorAttendance({
+        role: currentUser?.role,
+        visibility: editorRegistrationFieldVis,
+        hasAdminRights,
+      });
       if (isPastorReg && canPastorOverCap) {
         const capUsed = nextGlobalFull ? getEventCapUsedUnits() : getCapUsedUnitsByLocation(loc);
         const capTotal = nextGlobalFull ? globalCap : locCap;
@@ -20332,6 +20335,11 @@ function resolveEventName(eventId) {
                           }}
                           disabled={false}
                           labelClasses={labelClasses}
+                          showPastor={canShowBautizosPastorAttendance({
+                            role: currentUser?.role,
+                            visibility: editorRegistrationFieldVis,
+                            hasAdminRights,
+                          })}
                         />
                       </div>
                       {isSiValue(editRegistryModal.data.isServer) &&
@@ -36085,8 +36093,12 @@ function resolveEventName(eventId) {
     const isPastorNewReg =
       isBautizos &&
       normalizeBautizosAttendanceType(newEntry.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor;
-    const pastorOverCapAllowed =
-      hasAdminRights || (restrictEditorForm && editorRegistrationFieldVis.bautizosAttendanceType !== false);
+    const pastorOverCapAllowed = canShowBautizosPastorAttendance({
+      role: currentUser?.role,
+      visibility: editorRegistrationFieldVis,
+      hasAdminRights,
+    });
+    const canShowPastorAttendanceType = pastorOverCapAllowed;
     const newRegSubmitBlocked = newRegFormIssues.length > 0;
     const canSubmitNewRegistration = isLocOpen(loc) && !newRegSubmitBlocked;
     const newRegSubmitBlockedTooltip =
@@ -36721,6 +36733,7 @@ function resolveEventName(eventId) {
                         }}
                         disabled={fieldBlocked('bautizosAttendanceType')}
                         labelClasses={labelClasses}
+                        showPastor={canShowPastorAttendanceType}
                       />
                     </fieldset>
                     {fv('serverProfileExtra') &&

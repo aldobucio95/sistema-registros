@@ -4,6 +4,7 @@
  */
 import { ATTENDANCE_SPECIAL, isSiValue } from './publicRegistrationLogic.js';
 import { BLOOD_TYPE_UNSPECIFIED } from './registrationFormShared.js';
+import { BAUTIZOS_ATTENDANCE, normalizeBautizosAttendanceType } from './bautizosParty.js';
 
 const SI = 'Si';
 
@@ -45,7 +46,8 @@ export const EDITOR_REGISTRATION_FIELD_META = [
   { key: 'allergies', label: 'Alergias', group: 'salud', eventTypes: [T.campa, T.bautizos] },
   { key: 'diseases', label: 'Enfermedades', group: 'salud', eventTypes: [T.campa, T.bautizos] },
   { key: 'disability', label: 'Discapacidades', group: 'salud', eventTypes: [T.campa, T.bautizos] },
-  { key: 'bautizosAttendanceType', label: 'Tipo de asistencia (bautizado / asistente / servidor / empleado / cortesía / pastor)', group: 'bautizos', eventTypes: [T.bautizos] },
+  { key: 'bautizosAttendanceType', label: 'Tipo de asistencia (bautizado / asistente / servidor / empleado / cortesía)', group: 'bautizos', eventTypes: [T.bautizos] },
+  { key: 'bautizosPastorAttendance', label: 'Tipo de asistencia: Pastor', group: 'bautizos', eventTypes: [T.bautizos] },
   { key: 'bautizosCompanions', label: 'Acompañantes / familia', group: 'bautizos', eventTypes: [T.bautizos] },
   { key: 'bautizosFood', label: 'Comida (evento Bautizos)', group: 'bautizos', eventTypes: [T.bautizos] },
   { key: 'bautizosTransport', label: 'Transporte (evento Bautizos)', group: 'bautizos', eventTypes: [T.bautizos] },
@@ -54,7 +56,7 @@ export const EDITOR_REGISTRATION_FIELD_META = [
   { key: 'serverProfileExtra', label: 'Datos extra de servidor (pareja, hijos, áreas…)', group: 'asistencia', eventTypes: [T.campa, T.bautizos] },
   { key: 'willBeBaptized', label: 'Bautizo en el evento', group: 'asistencia', eventTypes: [T.campa] },
   { key: 'campAssignment', label: 'Asignación campista (Teens / Jóvenes)', group: 'asistencia', eventTypes: [T.campa] },
-  { key: 'attendanceSpecial', label: 'Asistencia empleado / cortesía / pastor', group: 'asistencia', eventTypes: [T.campa] },
+  { key: 'attendanceSpecial', label: 'Asistencia empleado / cortesía', group: 'asistencia', eventTypes: [T.campa] },
   { key: 'travelFrom', label: 'Sale de / origen', group: 'viaje', eventTypes: [T.campa, T.general, T.bautizos] },
   { key: 'travelTo', label: 'Regresa a / destino', group: 'viaje', eventTypes: [T.campa, T.general, T.bautizos] },
   { key: 'transportExtras', label: 'Llega/regresa en carro y tipo', group: 'viaje', eventTypes: [T.campa, T.general] },
@@ -81,6 +83,16 @@ export const defaultEditorRegistrationFieldVisibility = () =>
 
 export function mergeEditorRegistrationFieldVisibility(raw) {
   return { ...defaultEditorRegistrationFieldVisibility(), ...(raw && typeof raw === 'object' ? raw : {}) };
+}
+
+/** Administradores y SuperUsuario siempre; Editores solo si el campo «Pastor» está habilitado en su perfil. */
+export function canShowBautizosPastorAttendance({ role, visibility, hasAdminRights = false }) {
+  if (hasAdminRights) return true;
+  const r = String(role || '').trim();
+  if (r === 'SuperUsuario' || r === 'Administrador') return true;
+  if (r !== 'Editor') return false;
+  const vis = mergeEditorRegistrationFieldVisibility(visibility);
+  return vis.bautizosPastorAttendance !== false;
 }
 
 /**
@@ -170,6 +182,12 @@ export function applyEditorRegistrationDefaults(entry, visibility, eventType, lo
     }
     if (!vis.bautizosCompanions) out.bautizosCompanions = [];
     if (!vis.bautizosAttendanceType) out.bautizosAttendanceType = 'bautizado';
+    if (
+      !vis.bautizosPastorAttendance &&
+      normalizeBautizosAttendanceType(out.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor
+    ) {
+      out.bautizosAttendanceType = BAUTIZOS_ATTENDANCE.bautizado;
+    }
   }
   if (!vis.transportExtras) {
     out.regresaEnCarro = false;
