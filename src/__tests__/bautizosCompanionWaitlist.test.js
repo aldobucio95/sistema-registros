@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCompanionWaitlistVirtualParticipant,
+  collectCompanionWaitlistVirtualRows,
   companionWaitlistVirtualId,
   parseCompanionWaitlistVirtualId,
 } from '../bautizosCompanionWaitlist.js';
@@ -46,5 +47,23 @@ describe('bautizosCompanionWaitlist', () => {
       hostId: 'host1',
       companionId: 'c1',
     });
+  });
+
+  it('collects virtual waitlist rows for active host even when titular waitlist is empty', () => {
+    const event = { id: 'ev1', eventType: 'Bautizos' };
+    const host = {
+      id: 'host1',
+      eventId: 'ev1',
+      location: 'Norte',
+      status: 'active',
+      name: 'Titular',
+      bautizosCompanions: [
+        { id: 'c1', name: 'Acomp 1', companionWaitlistPending: true },
+        { id: 'c2', name: 'Acomp 2', companionWaitlistPending: true },
+      ],
+    };
+    const rows = collectCompanionWaitlistVirtualRows([host], event, 'Norte');
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r._isCompanionWaitlistVirtual)).toBe(true);
   });
 });

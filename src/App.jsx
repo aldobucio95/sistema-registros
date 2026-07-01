@@ -205,7 +205,10 @@ import {
   computeWaitlistCountsForEvent,
   participantCountsForCupoWaitlistColumn,
 } from './waitlistDashboardCounts.js';
-import { computeBautizosRosterStatusCountsForLocation } from './rosterCanonicalCounts.js';
+import {
+  computeBautizosRosterStatusCountsForLocation,
+  countBautizosWaitlistExpandedPeople,
+} from './rosterCanonicalCounts.js';
 import {
   bautizosPartyCancelModalApplies,
   getBautizosPartyCancelTargetMeta,
@@ -9177,7 +9180,10 @@ function resolveEventName(eventId) {
     if (!visibleLocations.includes(activeTab)) return;
     const tabLoc = activeTab;
     const na = (data[tabLoc] || []).length;
-    const nw = (waitlistData[tabLoc] || []).length;
+    const nw =
+      currentEvent?.eventType === 'Bautizos'
+        ? countBautizosWaitlistExpandedPeople(allParticipants, currentEvent, tabLoc)
+        : (waitlistData[tabLoc] || []).length;
     const nc = (cancelledData[tabLoc] || []).length;
     const next = { activos: na <= 10, waitlist: nw <= 10, cancelled: nc <= 10 };
     setRosterSectionExpanded(next);
@@ -9187,7 +9193,7 @@ function resolveEventName(eventId) {
       /* ignore */
     }
     rosterSectionsPrefsLoadedRef.current = uid;
-  }, [currentUser?.id, activeTab, visibleLocations, data, waitlistData, cancelledData]);
+  }, [currentUser?.id, activeTab, visibleLocations, data, waitlistData, cancelledData, currentEvent, allParticipants]);
 
   const isLocOpen = useCallback((loc) => {
     return currentEvent ? currentEvent.regStatus?.[loc] !== false : false;
@@ -17627,13 +17633,30 @@ function resolveEventName(eventId) {
         });
         if (!confirmed) return;
       } else {
-        const capUsed = nextGlobalFull ? getEventCapUsedUnits() : getCapUsedUnitsByLocation(loc);
-        const capTotal = nextGlobalFull ? globalCap : locCap;
-        const reason = nextGlobalFull ? 'global' : 'sede';
-        const confirmed = await requestCapFullWaitlistConfirm({ capUsed, capTotal, reason, loc });
-        if (!confirmed) return;
-        await handleAddToWaitlist(loc, true, { redirectedByCap: true });
-        return;
+        let allowBautizosSplitCompanionWaitlist = false;
+        if (currentEvent.eventType === 'Bautizos') {
+          const hostOnlyPayload = { ...entryPayload, bautizosCompanions: [] };
+          const hostOnlyRows = buildCapSimulationRows(hostOnlyPayload, currentEvent, loc, vnpCapHelpers);
+          const hostOnlyUnits = computeIncomingRegistrationCapUnits(
+            hostOnlyRows,
+            allParticipants,
+            currentEvent
+          );
+          const hostFitsGlobal =
+            globalCap <= 0 || getEventCapUsedUnits() + hostOnlyUnits <= globalCap;
+          const hostFitsLoc =
+            globalCap > 0 || locCap <= 0 || getCapUsedUnitsByLocation(loc) + hostOnlyUnits <= locCap;
+          allowBautizosSplitCompanionWaitlist = hostFitsGlobal && hostFitsLoc;
+        }
+        if (!allowBautizosSplitCompanionWaitlist) {
+          const capUsed = nextGlobalFull ? getEventCapUsedUnits() : getCapUsedUnitsByLocation(loc);
+          const capTotal = nextGlobalFull ? globalCap : locCap;
+          const reason = nextGlobalFull ? 'global' : 'sede';
+          const confirmed = await requestCapFullWaitlistConfirm({ capUsed, capTotal, reason, loc });
+          if (!confirmed) return;
+          await handleAddToWaitlist(loc, true, { redirectedByCap: true });
+          return;
+        }
       }
     }
 
@@ -18193,6 +18216,18 @@ function resolveEventName(eventId) {
       personData.bautizosCompanions =
         normalizedBautCompForAdd ||
         normalizeBautizosCompanionsForPersist(personData, loc, { canonicalizeVnpPersonId, generateVnpPersonId });
+      personData.bautizosCompanions = applyCompanionWaitlistCapOnEdit({
+        originalCompanions: [],
+        nextCompanions: personData.bautizosCompanions,
+        hostPerson: personData,
+        participants: allParticipants,
+        event: currentEvent,
+        loc,
+        getGlobalCap: getEventTotalCap,
+        getGlobalCapUsed: getEventCapUsedUnits,
+        getLocCap: getLocationCap,
+        getLocCapUsed: getCapUsedUnitsByLocation,
+      });
       const bt = normalizeBautizosAttendanceType(personData.bautizosAttendanceType);
       personData.willBeBaptized = bautizosWillBeBaptizedFromAttendance(bt);
       personData.baptismSegment = '';
@@ -36142,8 +36177,9 @@ function resolveEventName(eventId) {
       ? visibleParticipants.reduce((sum, p) => sum + getBautizosBaptizedCompanionRows(p).length, 0)
       : 0;
     const sortPreservesWaitlistBaseDateOrder = sortBy === 'registered-asc' || sortBy === 'none';
+    const sortedWaitlistForLoc = getSortedWaitlistForLocation(loc);
     const waitlistFilteredForLoc = applyRosterLikeFilters(
-      getSortedWaitlistForLocation(loc),
+      sortedWaitlistForLoc,
       sortPreservesWaitlistBaseDateOrder
     );
     const cancelledFilteredForLoc = applyRosterLikeFilters(
@@ -38712,7 +38748,7 @@ function resolveEventName(eventId) {
         {showRosterWaitlist && (
         <>
         <div className={uiRosterMobile.list}>
-          {(waitlistData[loc] || []).length === 0 ? (
+          {sortedWaitlistForLoc.length === 0 ? (
             <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">Sin personas en lista de espera en {loc}.</p>
           ) : waitlistFilteredForLoc.length === 0 ? (
             <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">
@@ -38743,7 +38779,7 @@ function resolveEventName(eventId) {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
-              {(waitlistData[loc] || []).length === 0 ? (
+              {sortedWaitlistForLoc.length === 0 ? (
                 <tr><td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">Sin personas en lista de espera en {loc}.</td></tr>
               ) : waitlistFilteredForLoc.length === 0 ? (
                     <tr>

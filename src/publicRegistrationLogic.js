@@ -41,6 +41,7 @@ import {
   bautizosDashboardCompanionCountsForScope,
   normalizeBautizosDashboardScope,
 } from './bautizosParty.js';
+import { applyCompanionWaitlistCapOnEdit } from './bautizosCompanionWaitlist.js';
 import {
   buildCarMetaPatchesAfterSave,
   buildMergedFamilyCarInventory,
@@ -1637,16 +1638,29 @@ function shouldRedirectPublicRegistrationToWaitlist(entry, loc, eventForCaps, pa
   const capSimulationRows = buildCapSimulationRows(entry, eventForCaps, loc, vnpCapHelpers);
   const incomingUnits = computeIncomingRegistrationCapUnits(capSimulationRows, participants, eventForCaps);
   const globalCap = Math.max(0, Number(eventForCaps?.eventTotalCap || 0));
-  if (globalCap > 0) {
-    const used = computeEventCapUsedUnits(participants, eventForCaps);
-    return used + incomingUnits > globalCap;
-  }
   const locCap = Number(eventForCaps?.locationCaps?.[loc] || 0);
-  if (locCap > 0) {
-    const usedLoc = computeEventCapUsedUnitsBySede(participants, eventForCaps)[loc] ?? 0;
-    return usedLoc + incomingUnits > locCap;
+  const partyExceedsGlobal = globalCap > 0 && computeEventCapUsedUnits(participants, eventForCaps) + incomingUnits > globalCap;
+  const partyExceedsLoc =
+    globalCap <= 0 && locCap > 0 && (computeEventCapUsedUnitsBySede(participants, eventForCaps)[loc] ?? 0) + incomingUnits > locCap;
+  if (!partyExceedsGlobal && !partyExceedsLoc) return false;
+
+  if (String(eventForCaps?.eventType || '') === 'Bautizos') {
+    const hostOnlyRows = buildCapSimulationRows(
+      { ...entry, bautizosCompanions: [] },
+      eventForCaps,
+      loc,
+      vnpCapHelpers
+    );
+    const hostOnlyUnits = computeIncomingRegistrationCapUnits(hostOnlyRows, participants, eventForCaps);
+    const hostFitsGlobal =
+      globalCap <= 0 || computeEventCapUsedUnits(participants, eventForCaps) + hostOnlyUnits <= globalCap;
+    const hostFitsLoc =
+      globalCap > 0 ||
+      locCap <= 0 ||
+      (computeEventCapUsedUnitsBySede(participants, eventForCaps)[loc] ?? 0) + hostOnlyUnits <= locCap;
+    if (hostFitsGlobal && hostFitsLoc) return false;
   }
-  return false;
+  return true;
 }
 
 export async function fetchParticipantsForEvent(eventId) {
@@ -2376,6 +2390,18 @@ export async function submitPublicRegistration({
     personData.bautizosAttendanceType = normalizeBautizosAttendanceType(personData.bautizosAttendanceType);
     personData.bautizosCompanions =
       normalizedBautizosCompanionsPub || normalizeBautizosCompanionsForPersist(personData, loc, vnpCompanionHelpersPub);
+    personData.bautizosCompanions = applyCompanionWaitlistCapOnEdit({
+      originalCompanions: [],
+      nextCompanions: personData.bautizosCompanions,
+      hostPerson: personData,
+      participants,
+      event: eventSnapshot,
+      loc,
+      getGlobalCap: () => Math.max(0, Number(eventSnapshot.eventTotalCap ?? 0)),
+      getGlobalCapUsed: () => computeEventCapUsedUnits(participants, eventSnapshot),
+      getLocCap: (l) => Number(eventSnapshot.locationCaps?.[l] || 0),
+      getLocCapUsed: (l) => computeEventCapUsedUnitsBySede(participants, eventSnapshot)[l] ?? 0,
+    });
     const bType = normalizeBautizosAttendanceType(personData.bautizosAttendanceType);
     personData.willBeBaptized = bautizosWillBeBaptizedFromAttendance(bType);
     personData.baptismSegment = '';
