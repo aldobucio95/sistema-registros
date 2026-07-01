@@ -578,7 +578,7 @@ import {
   refetchParticipantsForLocation,
   replaceParticipantsForLocation,
   stripCompanionWaitlistPhantomRows,
-  subscribeParticipantsLocationVersions,
+  subscribeParticipantsLocationVersionsDebounced,
   loadArchivedParticipantsWithVersionCache,
   subscribeArchiveParticipantsVersion,
 } from './participantsVersionCache.js';
@@ -8111,15 +8111,24 @@ function resolveEventName(eventId) {
           if (!cancelled) setAllParticipants([]);
         }
         if (!cancelled) {
-          participantsVersionUnsubRef.current = subscribeParticipantsLocationVersions(
+          participantsVersionUnsubRef.current = subscribeParticipantsLocationVersionsDebounced(
             eid,
             locations,
-            async (eventId, loc) => {
+            async (eventId, staleLocs) => {
               try {
-                const slice = await refetchParticipantsForLocation(eventId, loc);
-                setAllParticipants((prev) => replaceParticipantsForLocation(prev, eventId, loc, slice));
+                const slices = await Promise.all(
+                  staleLocs.map((loc) => refetchParticipantsForLocation(eventId, loc))
+                );
+                if (cancelled) return;
+                setAllParticipants((prev) => {
+                  let next = prev;
+                  staleLocs.forEach((loc, i) => {
+                    next = replaceParticipantsForLocation(next, eventId, loc, slices[i]);
+                  });
+                  return next;
+                });
               } catch (err) {
-                console.error('[cache-version] refetch sede', err);
+                console.error('[cache-version] refetch sede(s)', err);
               }
             }
           );

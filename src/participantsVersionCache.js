@@ -10,6 +10,7 @@ import {
   cacheVersionsMatch,
   logCacheDecision,
   normalizeCacheVersion,
+  participantCacheVersionsCompatible,
   resolveVersionForStore,
 } from './firestoreVersionCache.js';
 
@@ -73,7 +74,11 @@ async function loadEventParticipantsQueryFromStore(eventId) {
 }
 
 function isParticipantSliceHit(local, remoteV) {
-  return Boolean(local?.data && Array.isArray(local.data) && cacheVersionsMatch(local.version, remoteV));
+  return Boolean(
+    local?.data &&
+      Array.isArray(local.data) &&
+      participantCacheVersionsCompatible(local.version, remoteV)
+  );
 }
 
 /**
@@ -207,7 +212,7 @@ export function subscribeParticipantsLocationVersions(eventId, locations, onLoca
       (snap) => {
         const remoteV = snap.exists() ? normalizeCacheVersion(snap.data()?.v) : 0;
         const local = readLocalVersionCache(scope);
-        if (local && cacheVersionsMatch(local.version, remoteV)) return;
+        if (local && participantCacheVersionsCompatible(local.version, remoteV)) return;
         logCacheDecision(scope, {
           event: 'version-changed',
           remoteVersion: remoteV,
@@ -226,12 +231,52 @@ export function subscribeParticipantsLocationVersions(eventId, locations, onLoca
   };
 }
 
+/**
+ * Coalesce avisos de sedes obsoletas (evita N refetch seguidos al abrir un evento con muchas sedes).
+ * @param {(eventId: string, locations: string[]) => void} onLocationsStale
+ */
+export function subscribeParticipantsLocationVersionsDebounced(
+  eventId,
+  locations,
+  onLocationsStale,
+  debounceMs = 400
+) {
+  const pendingLocs = new Set();
+  let timer = null;
+  const eid = String(eventId || '').trim();
+
+  const flush = () => {
+    timer = null;
+    if (pendingLocs.size === 0) return;
+    const locs = [...pendingLocs];
+    pendingLocs.clear();
+    onLocationsStale(eid, locs);
+  };
+
+  const unsub = subscribeParticipantsLocationVersions(eid, locations, (_ev, loc) => {
+    const key = normalizeLocKey(loc);
+    if (!key) return;
+    pendingLocs.add(key);
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(flush, Math.max(100, Number(debounceMs) || 400));
+  });
+
+  return () => {
+    if (timer) clearTimeout(timer);
+    unsub();
+  };
+}
+
 export async function loadArchivedParticipantsWithVersionCache() {
   const scope = scopeParticipantsArchive();
   const remoteV = await fetchRemoteCacheVersion(scope);
   const local = await readVersionCacheRecord(scope);
 
-  if (local?.data && Array.isArray(local.data) && cacheVersionsMatch(local.version, remoteV)) {
+  if (
+    local?.data &&
+    Array.isArray(local.data) &&
+    participantCacheVersionsCompatible(local.version, remoteV)
+  ) {
     logCacheDecision(scope, { event: 'hit', version: remoteV, rows: local.data.length, source: 'indexedDB' });
     return local.data;
   }
@@ -260,7 +305,7 @@ export function subscribeArchiveParticipantsVersion(onStale) {
     (snap) => {
       const remoteV = snap.exists() ? normalizeCacheVersion(snap.data()?.v) : 0;
       const local = readLocalVersionCache(scope);
-      if (local && cacheVersionsMatch(local.version, remoteV)) return;
+      if (local && participantCacheVersionsCompatible(local.version, remoteV)) return;
       logCacheDecision(scope, { event: 'version-changed', remoteVersion: remoteV, localVersion: local?.version ?? 0 });
       onStale(remoteV);
     },

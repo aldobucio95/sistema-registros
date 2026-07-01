@@ -40,6 +40,18 @@ export function cacheVersionsMatch(a, b) {
   return na === nb;
 }
 
+/**
+ * Participantes/archivo (`pe_*`): la caché local sembrada (v≥1) sigue válida mientras no exista
+ * doc remoto (v=0). La invalidación real solo ocurre cuando la Cloud Function incrementa `v`.
+ */
+export function participantCacheVersionsCompatible(localV, remoteV) {
+  const local = normalizeCacheVersion(localV);
+  const remote = normalizeCacheVersion(remoteV);
+  if (cacheVersionsMatch(local, remote)) return true;
+  if (remote === 0 && local >= 1) return true;
+  return false;
+}
+
 export function scopeParticipantsLocation(eventId, location) {
   const e = sanitizeFirestoreDocId(eventId, { maxChars: 240, fallback: 'event' });
   const loc = sanitizeFirestoreDocId(location, { maxChars: 120, fallback: 'sin-sede' });
@@ -310,6 +322,8 @@ export async function waitLogsHeadBumpQueueIdle() {
 export async function resolveVersionForStore(scope, remoteV) {
   const rv = normalizeCacheVersion(remoteV);
   if (rv > 0) return rv;
+  /** Participantes/archivo: no incrementar `app_cache_versions` desde el cliente (solo Cloud Function). */
+  if (String(scope || '').startsWith('pe_')) return 1;
   const bumped = await bumpCacheVersion(scope, { action: 'init-cache' });
   return bumped || 1;
 }
