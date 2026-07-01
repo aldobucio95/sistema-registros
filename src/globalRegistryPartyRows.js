@@ -6,6 +6,7 @@ import {
   buildActiveRegistrantMetaForCompanionDedupe,
   buildBautizosCanonicalCompanionPlan,
   isBautizosCompanionBaptized,
+  isBautizosPastorAttendance,
 } from './bautizosParty.js';
 import { normalizeBirthDateToIso } from './birthDateIsoUtils.js';
 import {
@@ -42,6 +43,7 @@ function buildCompanionPartyPerson(host, companion, index) {
     __hostRegistrantId: hostId,
     __sourceRegistrantName: String(host?.name || '').trim(),
     __companionRelationship: rel,
+    ...(isBautizosPastorAttendance(host) ? { __pastorCourtesyCompanion: true } : {}),
   };
 }
 

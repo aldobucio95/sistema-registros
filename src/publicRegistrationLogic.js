@@ -21,6 +21,7 @@ import {
   getBautizosLineListPrice,
   isBautizosUnder3YearsAtEvent,
   isFreeBautizosAttendance,
+  isBautizosPastorAttendance,
   normalizeBautizosAttendanceType,
   syncBautizosAttendanceServerFields,
   normalizeArrivalCarCount,
@@ -932,6 +933,7 @@ export function getBautizosTitularListPrice(personLike, eventLike = null) {
 
 /** Suma del precio de lista de todas las filas de acompañante (cada una comida ± transporte propios). */
 export function getBautizosCompanionsListPriceSum(personLike, eventLike = null) {
+  if (isBautizosPastorAttendance(personLike)) return 0;
   const { food, transport } = getBautizosListPriceBreakdown(eventLike);
   let sum = 0;
   for (const c of getBautizosCompanionsArray(personLike)) {
@@ -967,6 +969,7 @@ export function getBautizosCompanionInformativeListPrice(companionRow, eventLike
 }
 
 export function getBautizosCompanionsInformativeListPriceSum(personLike, eventLike = null, rosterParticipants = null) {
+  if (isBautizosPastorAttendance(personLike)) return 0;
   let sum = 0;
   for (const c of getBautizosCompanionsArray(personLike)) {
     sum += getBautizosCompanionInformativeListPrice(c, eventLike, rosterParticipants);
@@ -994,6 +997,7 @@ export function getBautizosSplitPartyHostListPrice(hostPerson, roster, eventLike
 /** Subtotal de lista de filas «acompañantes» del dashboard (nombre, no bautizado en subregistro, no duplicado titular). */
 export function getBautizosDashboardCompanionListSubtotal(personLike, eventLike, companionDedupeMeta = null) {
   if (!eventLike || eventLike.eventType !== 'Bautizos') return 0;
+  if (isBautizosPastorAttendance(personLike)) return 0;
   const { food, transport } = getBautizosListPriceBreakdown(eventLike);
   let sum = 0;
   for (const c of getBautizosCompanionsArray(personLike)) {
@@ -1226,6 +1230,7 @@ export const getPersonCost = (person, pricing, eventLike = null) => {
   if (eventLike?.eventType === 'Bautizos') {
     return getBautizosPartyListPrice(person, eventLike);
   }
+  if (isFreeAttendanceType(normalizeAttendanceSpecial(person))) return 0;
   if (!pricing) return 0;
   const g = Number(pricing.global) || 0;
   if (!isSiValue(person?.isServer)) return g;
@@ -1295,6 +1300,7 @@ const resolveRegisteredCost = (person, pricing, eventLike = null) => {
 
 const getLiquidationTarget = (person, currentPricing, eventLike = null) => {
   if (isFreeAttendanceType(normalizeAttendanceSpecial(person))) return 0;
+  if (eventLike?.eventType === 'Bautizos' && isFreeBautizosAttendance(person)) return 0;
   const listPrice = resolveRegisteredCost(person, currentPricing, eventLike);
   if (!isSiValue(person?.isScholarship)) return listPrice;
   if (person?.scholarshipType === 'partial') {
@@ -2327,7 +2333,8 @@ export async function submitPublicRegistration({
       : [];
 
   const baseRegisteredCost = getPersonCost(entry, currentPricing, eventSnapshot);
-  const skipCampaignForAttendance = isCampa && isFreeAttendanceType(entry.attendanceSpecialType);
+  const skipCampaignForAttendance =
+    (isCampa || evType === 'General') && isFreeAttendanceType(normalizeAttendanceSpecial(entry));
   const skipCampaignNonCampaPricing = evType === 'Bautizos';
   const matchedCampaign = skipCampaignForAttendance || skipCampaignNonCampaPricing ? null : resolveMatchedCampaignForNewEntry(entry, eventSnapshot);
   if (entry.selectedDiscountCampaignId && !skipCampaignForAttendance && !skipCampaignNonCampaPricing && !matchedCampaign) {
@@ -2339,11 +2346,15 @@ export async function submitPublicRegistration({
       ].join('\n'),
     };
   }
-  const registeredCost = skipCampaignForAttendance || skipCampaignNonCampaPricing
-    ? baseRegisteredCost
-    : matchedCampaign
-      ? Math.max(0, Number(matchedCampaign.finalAmount) || 0)
-      : baseRegisteredCost;
+  const registeredCost =
+    (evType === 'Bautizos' && isBautizosPastorAttendance(entry)) ||
+    ((isCampa || evType === 'General') && normalizeAttendanceSpecial(entry) === ATTENDANCE_SPECIAL.pastor)
+      ? 0
+      : skipCampaignForAttendance || skipCampaignNonCampaPricing
+        ? baseRegisteredCost
+        : matchedCampaign
+          ? Math.max(0, Number(matchedCampaign.finalAmount) || 0)
+          : baseRegisteredCost;
   const { selectedDiscountCampaignId: _sel, ...entryCore } = entry;
 
   const initialCampAssignment =
@@ -2703,7 +2714,8 @@ async function submitWaitlist({
     evType === 'Campa' && !isSiValue(entry.isServer) ? (parseInt(entry.age, 10) < 18 ? 'Teens' : 'Jóvenes') : '';
 
   const baseRegisteredCost = getPersonCost(entry, currentPricing, eventSnapshot);
-  const skipCampaignWl = evType === 'Campa' && isFreeAttendanceType(entry.attendanceSpecialType);
+  const skipCampaignWl =
+    (evType === 'Campa' || evType === 'General') && isFreeAttendanceType(normalizeAttendanceSpecial(entry));
   const skipCampaignBautizosWl = evType === 'Bautizos';
   const matchedCampaign = skipCampaignWl || skipCampaignBautizosWl ? null : resolveMatchedCampaignForNewEntry(entry, eventSnapshot);
   if (entry.selectedDiscountCampaignId && !skipCampaignWl && !skipCampaignBautizosWl && !matchedCampaign) {
@@ -2745,11 +2757,15 @@ async function submitWaitlist({
     whatsAppFinanceNotifications: prevWlWaPubWaitlist,
     responsivaStatus: resolveResponsivaStatus(entry, eventSnapshot),
     campAssignment: initialCampAssignment,
-    registeredCost: skipCampaignWl || skipCampaignBautizosWl
-      ? baseRegisteredCost
-      : matchedCampaign
-        ? Math.max(0, Number(matchedCampaign.finalAmount) || 0)
-        : baseRegisteredCost,
+    registeredCost:
+      (evType === 'Bautizos' && isBautizosPastorAttendance(entry)) ||
+      ((evType === 'Campa' || evType === 'General') && normalizeAttendanceSpecial(entry) === ATTENDANCE_SPECIAL.pastor)
+        ? 0
+        : skipCampaignWl || skipCampaignBautizosWl
+          ? baseRegisteredCost
+          : matchedCampaign
+            ? Math.max(0, Number(matchedCampaign.finalAmount) || 0)
+            : baseRegisteredCost,
     registeredCostManual: false,
     discountCampaignId: matchedCampaign?.id || '',
     discountCampaignConcept: matchedCampaign?.concept || '',

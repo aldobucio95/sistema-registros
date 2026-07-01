@@ -4535,6 +4535,7 @@ const App = () => {
   /** Monto que debe liquidar la persona (0 = beca total cubierta). Beca parcial: lista menos monto becado (scholarshipPartialAmount). */
   const getLiquidationTarget = useCallback((person) => {
     if (isFreeAttendanceType(normalizeAttendanceSpecial(person))) return 0;
+    if (currentEvent?.eventType === 'Bautizos' && isFreeBautizosAttendance(person)) return 0;
     const listPrice = resolveRegisteredCost(person, currentPricing);
     if (!isSiValue(person?.isScholarship)) return listPrice;
     if (person?.scholarshipType === 'partial') {
@@ -4544,7 +4545,7 @@ const App = () => {
       return Math.max(0, Math.min(toLiquidate, listPrice));
     }
     return 0;
-  }, [resolveRegisteredCost, currentPricing]);
+  }, [resolveRegisteredCost, currentPricing, currentEvent?.eventType]);
 
   /** Beca parcial (Campa): abono inicial cualquier monto ≥ 0 hasta el saldo pendiente por liquidar (no exige apartado mínimo ni pago completo). */
   const isValidPartialScholarshipInitialPaid = useCallback((entry, _minDep) => {
@@ -4754,6 +4755,10 @@ const App = () => {
 
   const handleSavePastorFields = useCallback(
     async (personId, fields) => {
+      if (!hasAdminRights) {
+        showToast('Solo administradores pueden editar datos de pastores.');
+        return;
+      }
       const pid = String(personId || '').trim();
       if (!pid || !currentEvent?.id) return;
       const person = allParticipants.find((p) => String(p.id) === pid);
@@ -4778,7 +4783,7 @@ const App = () => {
         setSavingPastorId('');
       }
     },
-    [allParticipants, currentEvent?.id, refreshParticipantCache, showToast]
+    [allParticipants, currentEvent?.id, hasAdminRights, refreshParticipantCache, showToast]
   );
   /** Participantes de otros eventos (lotes `in`) para importar perfil sin suscribirse a toda la colección. */
   const [importProfileParticipants, setImportProfileParticipants] = useState([]);
@@ -18123,16 +18128,22 @@ function resolveEventName(eventId) {
     }] : [];
 
     const baseRegisteredCost = getPersonCost(entryPayload, currentPricing, currentEvent);
-    const skipCampaignForAttendance = currentEvent.eventType === 'Campa' && isFreeAttendanceType(entryPayload.attendanceSpecialType);
+    const skipCampaignForAttendance =
+      (currentEvent.eventType === 'Campa' || currentEvent.eventType === 'General') &&
+      isFreeAttendanceType(normalizeAttendanceSpecial(entryPayload));
     const skipCampaignBautizos = currentEvent.eventType === 'Bautizos';
     const matchedCampaign = skipCampaignForAttendance || skipCampaignBautizos ? null : resolveMatchedCampaignForNewEntry(entryPayload);
     if (entryPayload.selectedDiscountCampaignId && !skipCampaignForAttendance && !skipCampaignBautizos && !matchedCampaign) {
       showToast('La campaña elegida no aplica a este perfil o no está bien configurada (concepto y monto).');
       return;
     }
-    const registeredCost = skipCampaignForAttendance || skipCampaignBautizos
-      ? baseRegisteredCost
-      : (matchedCampaign ? Math.max(0, Number(matchedCampaign.finalAmount) || 0) : baseRegisteredCost);
+    const registeredCost = isPastorParticipant(entryPayload, currentEvent.eventType)
+      ? 0
+      : skipCampaignForAttendance || skipCampaignBautizos
+        ? baseRegisteredCost
+        : matchedCampaign
+          ? Math.max(0, Number(matchedCampaign.finalAmount) || 0)
+          : baseRegisteredCost;
     const { selectedDiscountCampaignId: _newSelCamp, ...newEntryCore } = entryPayload;
 
     const initialCampAssignment = currentEvent.eventType === 'Campa' && !isSiValue(entryPayload.isServer) 
@@ -19625,6 +19636,9 @@ function resolveEventName(eventId) {
       );
       if (!editedPerson.registeredCostManual) {
         const mergedForCost = { ...editedPerson, ...payload };
+        if (isPastorParticipant(mergedForCost, currentEvent.eventType)) {
+          payload.registeredCost = 0;
+        } else {
         const splitHostId = String(mergedForCost.bautizosSplitPartyHostParticipantId || mergedForCost.id).trim();
         const splitHostBase =
           mergedForCost.bautizosSplitPartyHostParticipantId
@@ -19640,6 +19654,7 @@ function resolveEventName(eventId) {
         } else {
           payload.registeredCost = getPersonCost(mergedForCost, currentPricing, currentEvent);
         }
+        }
       }
     }
 
@@ -19648,7 +19663,10 @@ function resolveEventName(eventId) {
         originalPerson.isServer !== editedPerson.isServer ||
         originalPerson.serverAssignment !== editedPerson.serverAssignment ||
         String(originalPerson.ambosServeInSegment || '') !== String(editedPerson.ambosServeInSegment || '');
-      const freeAtt = currentEvent.eventType === 'Campa' && isFreeAttendanceType(normalizeAttendanceSpecial(editedPerson));
+      const freeAtt =
+        isPastorParticipant(editedPerson, currentEvent.eventType) ||
+        isFreeAttendanceType(normalizeAttendanceSpecial(editedPerson)) ||
+        (currentEvent.eventType === 'Bautizos' && isFreeBautizosAttendance(editedPerson));
       const campCleared =
         hasAdminRights &&
         Array.isArray(currentEvent?.discountCampaigns) &&
@@ -19665,6 +19683,10 @@ function resolveEventName(eventId) {
       let rm = editedPerson.registeredCostManual === true;
       if (serverChanged || freeAtt || campCleared || newCampaignChosen || bautizosPartyChanged) rm = false;
       payload.registeredCostManual = rm;
+      if (isPastorParticipant(editedPerson, currentEvent.eventType)) {
+        payload.registeredCost = 0;
+        payload.registeredCostManual = false;
+      }
     }
 
     const mergedForRefund = { ...editedPerson, ...payload };
@@ -21628,7 +21650,7 @@ function resolveEventName(eventId) {
                         </div>
                       );
                     })()}
-                    {hasAdminRights ? (
+                    {hasAdminRights && !isPastorParticipant(editRegistryModal.data, currentEvent?.eventType) ? (
                       <div className="max-w-xs flex items-stretch rounded-xl border border-slate-200 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-green-500">
                         <span className="px-2 py-1.5 bg-slate-50 border-r border-slate-200 text-slate-500 font-black text-[11px] flex items-center justify-center">$</span>
                         <input type="number" className="w-full px-2.5 py-1.5 bg-white outline-none text-slate-800 font-bold text-[11px]"
@@ -21645,7 +21667,12 @@ function resolveEventName(eventId) {
                         </div>
                       </div>
                     )}
-                    {hasAdminRights && editRegistryModal.data.registeredCostManual ? (
+                    {isPastorParticipant(editRegistryModal.data, currentEvent?.eventType) ? (
+                      <p className="text-[9px] text-slate-500 mt-1.5 max-w-md leading-snug">
+                        Pastor: sin cobro en registro. El costo real se define en la sección Pastores.
+                      </p>
+                    ) : null}
+                    {hasAdminRights && editRegistryModal.data.registeredCostManual && !isPastorParticipant(editRegistryModal.data, currentEvent?.eventType) ? (
                       <p className="text-[9px] text-slate-500 mt-1.5 max-w-md leading-snug">
                         Precio fijado manualmente.
                       </p>
@@ -34553,6 +34580,16 @@ function resolveEventName(eventId) {
         </span>
       );
     }
+    if (att === ATTENDANCE_SPECIAL.pastor) {
+      nodes.push(
+        <span
+          key="assistance-pastor"
+          className="bg-amber-100 text-amber-900 text-[8px] font-black px-1.5 py-0.5 rounded uppercase inline-flex items-center gap-1 border border-amber-200"
+        >
+          <Church size={10} /> Pastor
+        </span>
+      );
+    }
     if (!eventTypeIsDesayuno(currentEvent?.eventType) && resolveLlegaEnCarro(person)) {
       nodes.push(
         <span
@@ -34627,6 +34664,12 @@ function resolveEventName(eventId) {
               <span className="text-[8px] font-black uppercase bg-violet-50 text-violet-800 border border-violet-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center justify-center gap-0.5 dark:bg-violet-600 dark:text-white dark:border-violet-700">
                 <Users size={10} className="shrink-0" aria-hidden />
                 Acompañante
+              </span>
+            ) : null}
+            {showCompanionChip && person?.__pastorCourtesyCompanion ? (
+              <span className="text-[8px] font-black uppercase bg-fuchsia-50 text-fuchsia-800 border border-fuchsia-200 px-1.5 py-0.5 rounded h-5 leading-none inline-flex items-center justify-center gap-0.5 dark:bg-fuchsia-600 dark:text-white dark:border-fuchsia-700">
+                <Gift size={10} className="shrink-0" aria-hidden />
+                Cortesía
               </span>
             ) : null}
             {person.alias ? (

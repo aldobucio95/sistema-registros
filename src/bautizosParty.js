@@ -467,6 +467,7 @@ function buildVirtualCompanionGlobalRow(planEntry, canonKey) {
       companion?.relationship || companion?.linkedCompanionRelationship || ''
     ).trim(),
     __companionLinked: !!companion?.linkedNoExtraCharge || !!companion?.linkedCompanionSourceKey,
+    ...(isBautizosPastorAttendance(host) ? { __pastorCourtesyCompanion: true } : {}),
   };
 }
 

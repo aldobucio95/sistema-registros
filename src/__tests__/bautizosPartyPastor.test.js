@@ -7,7 +7,7 @@ import {
   normalizeBautizosAttendanceType,
   bautizosAttendancePaysEventListPrice,
 } from '../bautizosParty.js';
-import { getBautizosTitularListPrice } from '../publicRegistrationLogic.js';
+import { getBautizosTitularListPrice, getBautizosPartyListPrice, getPersonCost } from '../publicRegistrationLogic.js';
 
 describe('Bautizos Pastor attendance', () => {
   it('exports pastor attendance id', () => {
@@ -31,5 +31,23 @@ describe('Bautizos Pastor attendance', () => {
     expect(isFreeBautizosAttendance(person)).toBe(true);
     expect(bautizosAttendancePaysEventListPrice(person)).toBe(false);
     expect(getBautizosTitularListPrice(person, event)).toBe(0);
+  });
+
+  it('pastor party total is $0 including companions', () => {
+    const person = {
+      bautizosAttendanceType: 'pastor',
+      bautizosCompanions: [
+        { name: 'Ana', wantsBautizosTransport: 'Si' },
+        { name: 'Luis', wantsBautizosTransport: 'No' },
+      ],
+    };
+    const event = { eventType: 'Bautizos', bautizosListPriceFood: 100, bautizosListPriceTransport: 50 };
+    expect(getBautizosPartyListPrice(person, event)).toBe(0);
+  });
+
+  it('Campa pastor has $0 list cost in getPersonCost', () => {
+    const person = { attendanceSpecialType: 'pastor', isServer: 'No' };
+    const pricing = { global: 500 };
+    expect(getPersonCost(person, pricing, { eventType: 'Campa' })).toBe(0);
   });
 });
