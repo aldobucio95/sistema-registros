@@ -12,6 +12,11 @@ import {
   buildBautizosCanonicalCompanionPlan,
 } from './bautizosParty.js';
 
+function isCompanionWaitlistPhantomStoredParticipant(personLike) {
+  if (personLike?._isCompanionWaitlistVirtual === true) return true;
+  return String(personLike?.id || '').trim().startsWith('cw:');
+}
+
 const SI = 'Si';
 const SI_LABEL = 'Sí';
 
@@ -65,7 +70,10 @@ function participantLocationInEventLocations(personRow, eventLike) {
  */
 export function filterDashboardTodosRosterRows(participantRows, eventRow) {
   return (participantRows || []).filter(
-    (p) => participantIsActiveInRoster(p) && participantLocationInEventLocations(p, eventRow)
+    (p) =>
+      !isCompanionWaitlistPhantomStoredParticipant(p) &&
+      participantIsActiveInRoster(p) &&
+      participantLocationInEventLocations(p, eventRow)
   );
 }
 

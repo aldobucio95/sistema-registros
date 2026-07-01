@@ -199,8 +199,10 @@ import {
   computeAdditionalCompanionCapUnits,
   isCompanionWaitlistPending,
   isCompanionWaitlistVirtualParticipant,
+  isCompanionWaitlistPhantomStoredParticipant,
   parseCompanionWaitlistVirtualId,
   resolveCompanionWaitlistVirtualLocation,
+  resolveParticipantEffectiveLocation,
 } from './bautizosCompanionWaitlist.js';
 import {
   computeWaitlistCountsForEvent,
@@ -534,6 +536,7 @@ import {
   computeIncomingRegistrationCapUnits,
   computePromoteFromWaitlistCapUnits,
 } from './eventCapUnits.js';
+import { computeDashboardTodosRosterTotal } from './dashboardTodosRosterTotal.js';
 import {
   getAuth,
   signInWithCustomToken,
@@ -573,6 +576,7 @@ import {
   loadEventParticipantsWithVersionCache,
   refetchParticipantsForLocation,
   replaceParticipantsForLocation,
+  stripCompanionWaitlistPhantomRows,
   subscribeParticipantsLocationVersions,
   loadArchivedParticipantsWithVersionCache,
   subscribeArchiveParticipantsVersion,
@@ -8149,6 +8153,23 @@ function resolveEventName(eventId) {
     };
   }, [fbUser, currentUser?.id, selectedEventId, systemView, currentEvent?.id, currentEvent?.locations, globalLocations]);
 
+  /** Tras cargar roster completo del evento abierto, alinea el contador del hub con el dashboard (sin tocar el hub con datos parciales). */
+  useEffect(() => {
+    if (!currentEvent?.id || selectedEventId == null || selectedEventId === '') return;
+    const evId = String(currentEvent.id);
+    const rows = (allParticipants || []).filter((p) => String(p?.eventId || '') === evId);
+    if (rows.length === 0) return;
+    const computed = computeDashboardTodosRosterTotal(rows, currentEvent);
+    if (!Number.isFinite(computed)) return;
+    const stored = Math.floor(Number(currentEvent.activeRosterUnitsTotal) || 0);
+    if (computed === stored) return;
+    setEvents((prev) =>
+      prev.map((ev) =>
+        String(ev.id) === evId ? { ...ev, activeRosterUnitsTotal: computed } : ev
+      )
+    );
+  }, [allParticipants, currentEvent, selectedEventId]);
+
   useEffect(() => {
     if (!fbUser || !currentUser) return;
     if (selectedEventId == null || selectedEventId === '') {
@@ -8716,7 +8737,9 @@ function resolveEventName(eventId) {
       }
       const participantsRows = participantsSnap.empty
         ? []
-        : participantsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        : stripCompanionWaitlistPhantomRows(
+            participantsSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
+          );
       setAllParticipants(participantsRows);
       if (eid) {
         const locations = [
@@ -8976,6 +8999,7 @@ function resolveEventName(eventId) {
     const groupedData = globalLocations.reduce((acc, loc) => ({ ...acc, [loc]: [] }), {});
     allParticipants.forEach((p) => {
       if (p.eventId === currentEvent.id && participantIsWaitlistRow(p)) {
+        if (isCompanionWaitlistPhantomStoredParticipant(p)) return;
         if (!groupedData[p.location]) groupedData[p.location] = [];
         groupedData[p.location].push(p);
       }
@@ -9125,13 +9149,14 @@ function resolveEventName(eventId) {
   const participantsLocationIntegrity = useMemo(() => {
     if (!currentEvent) return { invalid: [] };
     const eventLocs = new Set((currentEvent.locations || []).map((x) => String(x).trim()).filter(Boolean));
+    const roster = (allParticipants || []).filter((p) => String(p?.eventId || '') === String(currentEvent.id || ''));
     const invalid = [];
-    for (const p of allParticipants) {
-      if (p.eventId !== currentEvent.id) continue;
+    for (const p of roster) {
       if (participantIsArchived(p)) continue;
+      if (isCompanionWaitlistPhantomStoredParticipant(p)) continue;
       const st = p?.status || 'active';
       if (st !== 'active' && st !== 'waitlist' && st !== PARTICIPANT_STATUS_CANCELLED) continue;
-      const locRaw = String(p.location ?? '').trim();
+      const locRaw = resolveParticipantEffectiveLocation(p, roster);
       if (!locRaw || !eventLocs.has(locRaw)) {
         invalid.push(p);
       }
@@ -39545,16 +39570,19 @@ function resolveEventName(eventId) {
 
   const renderGlobalRegistryPage = () => {
     const eventLocs = new Set((currentEvent?.locations || []).map((x) => String(x).trim()).filter(Boolean));
+    const rosterForEvent = (allParticipants || []).filter(
+      (p) => String(p?.eventId || '') === String(currentEvent?.id || '')
+    );
     const isValidEventLocation = (p) => {
-      const r = String(p.location ?? '').trim();
+      const r = resolveParticipantEffectiveLocation(p, rosterForEvent);
       return r && eventLocs.has(r);
     };
-    const sourceRows = allParticipants.filter((p) => {
-      if (p.eventId !== currentEvent?.id) return false;
+    const sourceRows = rosterForEvent.filter((p) => {
+      if (isCompanionWaitlistPhantomStoredParticipant(p)) return false;
       const status = p?.status || 'active';
       if (status === PARTICIPANT_STATUS_ARCHIVED) return false;
       if (!(status === 'active' || status === 'waitlist' || status === PARTICIPANT_STATUS_CANCELLED)) return false;
-      const locRaw = String(p.location ?? '').trim();
+      const locRaw = resolveParticipantEffectiveLocation(p, rosterForEvent);
       const validLoc = locRaw && eventLocs.has(locRaw);
       if (validLoc && !visibleLocations.includes(locRaw)) return false;
       return true;
@@ -39635,6 +39663,8 @@ function resolveEventName(eventId) {
       hideBautizosCompanionCountChip: true,
     };
     const globalRegistryRowLoc = (person) => {
+      const effective = resolveParticipantEffectiveLocation(person, rosterForEvent);
+      if (effective) return effective;
       if (isCompanionWaitlistVirtualParticipant(person)) {
         const fromHost = resolveCompanionWaitlistVirtualLocation(person, validSource);
         if (fromHost) return fromHost;
@@ -39799,7 +39829,7 @@ function resolveEventName(eventId) {
                     let invalidLocDisplayNum = 1;
                     return invalidFiltered.map((person) => {
                     const isExpanded = expandedRows.has(person.id);
-                    const rowLoc = person.location || fallbackLoc;
+                    const rowLoc = globalRegistryRowLoc(person) || fallbackLoc;
                     const rowDisplayIndex = invalidLocDisplayNum++;
                     return (
                       <React.Fragment key={`global-badloc-${person.id}`}>
@@ -39816,7 +39846,7 @@ function resolveEventName(eventId) {
                           <td className="px-3 py-2 align-top">
                             <span className="inline-flex items-center gap-1 text-[10px] font-black text-amber-900 bg-amber-100 border border-amber-200 rounded-lg px-2 py-1">
                               <MapPin size={12} />
-                              {String(person.location ?? '').trim() || 'Vacío'}
+                              {rosterDisplayUnspecified(rowLoc)}
                             </span>
                           </td>
                           <td className="px-3 py-2 align-top">{renderRegistrationFinancesColumn(person)}</td>

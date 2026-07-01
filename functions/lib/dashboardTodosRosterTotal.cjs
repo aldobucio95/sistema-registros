@@ -234,9 +234,18 @@ function participantLocationInEventLocations(personRow, eventLike) {
   return locs.includes(loc);
 }
 
+function isCompanionWaitlistPhantomStoredParticipant(personLike) {
+  if (personLike?._isCompanionWaitlistVirtual === true) return true;
+  const id = String(personLike?.id || '').trim();
+  return id.startsWith('cw:');
+}
+
 function filterDashboardTodosRosterRows(participantRows, eventRow) {
   return (participantRows || []).filter(
-    (p) => participantIsActiveInRoster(p) && participantLocationInEventLocations(p, eventRow)
+    (p) =>
+      !isCompanionWaitlistPhantomStoredParticipant(p) &&
+      participantIsActiveInRoster(p) &&
+      participantLocationInEventLocations(p, eventRow)
   );
 }
 

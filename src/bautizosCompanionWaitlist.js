@@ -39,6 +39,12 @@ export function isCompanionWaitlistVirtualParticipant(personLike) {
   return personLike?._isCompanionWaitlistVirtual === true;
 }
 
+/** Documentos huérfanos `cw:…` en Firestore: no son titulares; la fuente de verdad es el titular activo. */
+export function isCompanionWaitlistPhantomStoredParticipant(personLike) {
+  if (isCompanionWaitlistVirtualParticipant(personLike)) return true;
+  return parseCompanionWaitlistVirtualId(personLike?.id) != null;
+}
+
 /** Sede del titular para filas virtuales de acompañante en espera. */
 export function hostSedeForCompanionWaitlist(hostLike) {
   return String(hostLike?.location || hostLike?.cancelledFromLocation || '').trim();
@@ -54,6 +60,20 @@ export function resolveCompanionWaitlistVirtualLocation(virtualPerson, rosterPar
   if (!hostId) return '';
   const host = (rosterParticipants || []).find((p) => String(p?.id || '') === hostId);
   return hostSedeForCompanionWaitlist(host);
+}
+
+/**
+ * Sede efectiva para listados / integridad: filas virtuales heredan la del titular activo.
+ */
+export function resolveParticipantEffectiveLocation(personLike, rosterParticipants) {
+  if (
+    isCompanionWaitlistVirtualParticipant(personLike) ||
+    parseCompanionWaitlistVirtualId(personLike?.id)
+  ) {
+    const fromHost = resolveCompanionWaitlistVirtualLocation(personLike, rosterParticipants);
+    if (fromHost) return fromHost;
+  }
+  return String(personLike?.location ?? '').trim();
 }
 
 /** Acompañantes que sí cuentan para cupo y precio de lista. */

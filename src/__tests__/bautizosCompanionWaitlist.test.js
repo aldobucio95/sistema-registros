@@ -5,6 +5,8 @@ import {
   companionWaitlistVirtualId,
   parseCompanionWaitlistVirtualId,
   resolveCompanionWaitlistVirtualLocation,
+  isCompanionWaitlistPhantomStoredParticipant,
+  resolveParticipantEffectiveLocation,
 } from '../bautizosCompanionWaitlist.js';
 import { participantHasBaptismChip } from '../bautizosParty.js';
 
@@ -84,5 +86,16 @@ describe('bautizosCompanionWaitlist', () => {
     const rows = collectCompanionWaitlistVirtualRows([host], event, 'Norte');
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r._isCompanionWaitlistVirtual)).toBe(true);
+  });
+
+  it('detects phantom stored cw documents', () => {
+    expect(isCompanionWaitlistPhantomStoredParticipant({ id: 'cw:h1::c1', status: 'waitlist' })).toBe(true);
+    expect(isCompanionWaitlistPhantomStoredParticipant({ id: 'real1', status: 'active' })).toBe(false);
+  });
+
+  it('resolveParticipantEffectiveLocation inherits host sede for phantom rows', () => {
+    const host = { id: 'h1', location: 'Coapa', status: 'active' };
+    const phantom = { id: 'cw:h1::c1', _companionWaitlistHostId: 'h1', location: '', status: 'waitlist' };
+    expect(resolveParticipantEffectiveLocation(phantom, [host])).toBe('Coapa');
   });
 });

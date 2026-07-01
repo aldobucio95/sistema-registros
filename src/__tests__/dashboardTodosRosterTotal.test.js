@@ -42,6 +42,31 @@ describe('computeDashboardTodosRosterTotal (Bautizos)', () => {
     ];
     expect(computeDashboardTodosRosterTotal(participants, event)).toBe(2);
   });
+
+  it('ignores phantom cw documents in roster total', () => {
+    const participants = [
+      {
+        id: 't1',
+        eventId: 'ev1',
+        status: 'active',
+        location: 'Norte',
+        name: 'Titular',
+        bautizosAttendanceType: 'bautizado',
+        bautizosCompanions: [
+          { id: 'c1', name: 'Acomp pending', companionWaitlistPending: true },
+        ],
+      },
+      {
+        id: 'cw:t1::c1',
+        eventId: 'ev1',
+        status: 'waitlist',
+        location: 'Norte',
+        _isCompanionWaitlistVirtual: true,
+        name: 'Acomp phantom',
+      },
+    ];
+    expect(computeDashboardTodosRosterTotal(participants, event)).toBe(1);
+  });
 });
 
 describe('computeEventCapUsedUnitsBySede (Bautizos)', () => {

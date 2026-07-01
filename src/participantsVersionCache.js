@@ -13,6 +13,18 @@ import {
   resolveVersionForStore,
 } from './firestoreVersionCache.js';
 
+/** Documentos huérfanos `cw:…` en Firestore (duplican filas virtuales del titular activo). */
+function isCompanionWaitlistPhantomStoredParticipant(personLike) {
+  if (personLike?._isCompanionWaitlistVirtual === true) return true;
+  return String(personLike?.id || '').trim().startsWith('cw:');
+}
+
+function stripCompanionWaitlistPhantomRows(rows) {
+  return (rows || []).filter((p) => !isCompanionWaitlistPhantomStoredParticipant(p));
+}
+
+export { stripCompanionWaitlistPhantomRows };
+
 /**
  * Aplica un parche a un participante en un arreglo en memoria (p. ej. `allParticipants`).
  */
@@ -75,7 +87,7 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
   const locs = [...new Set((locations || []).map(normalizeLocKey).filter(Boolean))];
   if (locs.length === 0) {
     const snap = await loadEventParticipantsQueryFromStore(eid);
-    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    return stripCompanionWaitlistPhantomRows(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
   }
 
   const versionByLoc = new Map();
@@ -109,11 +121,11 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
         sede: loc,
       });
     }
-    return [...byId.values()];
+    return stripCompanionWaitlistPhantomRows([...byId.values()]);
   }
 
   const snap = await loadEventParticipantsQueryFromStore(eid);
-  const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const all = stripCompanionWaitlistPhantomRows(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
 
   for (const loc of locs) {
     const { scope, remoteV } = versionByLoc.get(loc);
@@ -167,7 +179,7 @@ export async function refetchParticipantsForLocation(eventId, location) {
   const vToStore = await resolveVersionForStore(scope, remoteV);
   await writeLocalVersionCache(scope, vToStore, slice, { eventId: eid, location: loc });
   logCacheDecision(scope, { event: 'refetch', version: vToStore, rows: slice.length, sede: loc });
-  return slice;
+  return stripCompanionWaitlistPhantomRows(slice);
 }
 
 export function replaceParticipantsForLocation(prev, eventId, location, slice) {
