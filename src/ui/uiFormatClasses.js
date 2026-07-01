@@ -308,6 +308,7 @@ export const uiBautizosAttendanceBtn = {
   activeServidor: 'bg-indigo-600 text-white border-indigo-500 dark:bg-indigo-600 dark:border-indigo-400',
   activeEmpleado: 'bg-teal-600 text-white border-teal-500 dark:bg-teal-600 dark:border-teal-500',
   activeCortesia: 'bg-fuchsia-600 text-white border-fuchsia-500 dark:bg-fuchsia-600 dark:border-fuchsia-500',
+  activePastor: 'bg-violet-700 text-white border-violet-600 dark:bg-violet-700 dark:border-violet-600',
 };
 
 /** Chips de tipo de asistencia en roster / Registro global (Bautizos). */
@@ -324,6 +325,8 @@ export const uiBautizosAttendanceChip = {
     'bg-teal-100 text-teal-800 border-teal-200 dark:bg-teal-600 dark:text-white dark:border-teal-700',
   cortesia:
     'bg-fuchsia-100 text-fuchsia-800 border-fuchsia-200 dark:bg-fuchsia-600 dark:text-white dark:border-fuchsia-700',
+  pastor:
+    'bg-violet-100 text-violet-900 border-violet-200 dark:bg-violet-700 dark:text-white dark:border-violet-600',
   acompanante:
     'bg-violet-100 text-violet-800 border-violet-200 dark:bg-violet-600 dark:text-white dark:border-violet-700',
 };

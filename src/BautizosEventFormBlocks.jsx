@@ -39,6 +39,7 @@ const attendanceLabels = {
   [BAUTIZOS_ATTENDANCE.servidor]: 'Servidor',
   [BAUTIZOS_ATTENDANCE.empleado]: 'Empleado',
   [BAUTIZOS_ATTENDANCE.cortesia]: 'Cortesía',
+  [BAUTIZOS_ATTENDANCE.pastor]: 'Pastor',
 };
 
 function attendanceBtnClass(selected, id, { variant = 'panel' } = {}) {
@@ -140,13 +141,18 @@ function BautizosCompanionLinkPicker({ value, options, disabled, onSelect, input
   );
 }
 
+const BAUTIZOS_PUBLIC_ATTENDANCE_IDS = Object.freeze(
+  Object.values(BAUTIZOS_ATTENDANCE).filter((id) => id !== BAUTIZOS_ATTENDANCE.pastor)
+);
+
 export function BautizosAttendanceTypeField({ value, onChange, disabled, labelClasses, variant = 'panel' }) {
   const cur = normalizeBautizosAttendanceType(value);
+  const attendanceIds = variant === 'public' ? BAUTIZOS_PUBLIC_ATTENDANCE_IDS : Object.values(BAUTIZOS_ATTENDANCE);
   return (
     <div className="space-y-2">
       {labelClasses ? <label className={labelClasses}>Tipo de asistencia</label> : null}
       <div className="flex flex-wrap gap-2">
-        {Object.values(BAUTIZOS_ATTENDANCE).map((id) => (
+        {attendanceIds.map((id) => (
           <button
             key={id}
             type="button"

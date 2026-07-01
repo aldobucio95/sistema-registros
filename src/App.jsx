@@ -4145,15 +4145,17 @@ const App = () => {
         countAmbosDoubleInAllCounts: true,
         includeCortesiaInRealCost: false,
         includeEmpleadoInRealCost: false,
+        includePastorInRealCost: false,
       };
     }
     return {
       countAmbosDoubleInAllCounts: o.countAmbosDoubleInAllCounts !== false,
       includeCortesiaInRealCost: o.includeCortesiaInRealCost === true,
       includeEmpleadoInRealCost: o.includeEmpleadoInRealCost === true,
+      includePastorInRealCost: o.includePastorInRealCost === true,
     };
   }, [currentEvent?.campaRealCostCountOptions, currentEvent?.id]);
-  const { countAmbosDoubleInAllCounts, includeCortesiaInRealCost, includeEmpleadoInRealCost } = campaRealCostCountOpts;
+  const { countAmbosDoubleInAllCounts, includeCortesiaInRealCost, includeEmpleadoInRealCost, includePastorInRealCost } = campaRealCostCountOpts;
   const isGeneral = currentEvent?.eventType === 'General';
   const isBautizos = currentEvent?.eventType === 'Bautizos';
   const isResponsivaEnabled = isResponsivaEnabledForEvent(currentEvent);
@@ -12714,11 +12716,13 @@ function resolveEventName(eventId) {
               countAmbosDoubleInAllCounts: true,
               includeCortesiaInRealCost: false,
               includeEmpleadoInRealCost: false,
+              includePastorInRealCost: false,
             }
           : {
               countAmbosDoubleInAllCounts: o.countAmbosDoubleInAllCounts !== false,
               includeCortesiaInRealCost: o.includeCortesiaInRealCost === true,
               includeEmpleadoInRealCost: o.includeEmpleadoInRealCost === true,
+              includePastorInRealCost: o.includePastorInRealCost === true,
             };
       try {
         await updateEventConfig({ campaRealCostCountOptions: { ...base, ...patch } });
@@ -17524,13 +17528,35 @@ function resolveEventName(eventId) {
     const nextLocFull =
       globalCap <= 0 && locCap > 0 && getCapUsedUnitsByLocation(loc) + incomingUnits > locCap;
     if (nextGlobalFull || nextLocFull) {
-      const capUsed = nextGlobalFull ? getEventCapUsedUnits() : getCapUsedUnitsByLocation(loc);
-      const capTotal = nextGlobalFull ? globalCap : locCap;
-      const reason = nextGlobalFull ? 'global' : 'sede';
-      const confirmed = await requestCapFullWaitlistConfirm({ capUsed, capTotal, reason, loc });
-      if (!confirmed) return;
-      await handleAddToWaitlist(loc, true, { redirectedByCap: true });
-      return;
+      const isPastorReg =
+        currentEvent.eventType === 'Bautizos' &&
+        normalizeBautizosAttendanceType(entryPayload.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor;
+      const editorCanPastorOverCap =
+        currentUser?.role === 'Editor' && editorRegistrationFieldVis?.bautizosAttendanceType !== false;
+      const canPastorOverCap = hasAdminRights || editorCanPastorOverCap;
+      if (isPastorReg && canPastorOverCap) {
+        const capUsed = nextGlobalFull ? getEventCapUsedUnits() : getCapUsedUnitsByLocation(loc);
+        const capTotal = nextGlobalFull ? globalCap : locCap;
+        const reason = nextGlobalFull ? 'global' : 'sede';
+        const confirmed = await requestPromoteOverCapConfirm({
+          capUsed,
+          capTotal,
+          additionalUnits: incomingUnits,
+          reason,
+          loc,
+          personName: String(entryPayload.name || '').trim(),
+          isCompanion: false,
+        });
+        if (!confirmed) return;
+      } else {
+        const capUsed = nextGlobalFull ? getEventCapUsedUnits() : getCapUsedUnitsByLocation(loc);
+        const capTotal = nextGlobalFull ? globalCap : locCap;
+        const reason = nextGlobalFull ? 'global' : 'sede';
+        const confirmed = await requestCapFullWaitlistConfirm({ capUsed, capTotal, reason, loc });
+        if (!confirmed) return;
+        await handleAddToWaitlist(loc, true, { redirectedByCap: true });
+        return;
+      }
     }
 
     /** Bautizos: acompañantes marcados como bautizados → un registro activo completo por integrante, con vínculos `p:` cruzados. */
@@ -28556,10 +28582,16 @@ function resolveEventName(eventId) {
     const cortesiaRows = eventRosterRows.filter((p) => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.cortesia);
     const cortesiaNonServerRows = cortesiaRows.filter((p) => !isSiValue(p.isServer));
     const empleadoRows = eventRosterRows.filter((p) => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.empleado);
+    const pastorRows = isBautizos
+      ? eventRosterRows.filter(
+          (p) => normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor
+        )
+      : [];
     const realCostExtraUnits =
       realCostX2Rows.length +
       (includeCortesiaInRealCost ? cortesiaNonServerRows.length : 0) +
-      (includeEmpleadoInRealCost ? empleadoRows.length : 0);
+      (includeEmpleadoInRealCost ? empleadoRows.length : 0) +
+      (includePastorInRealCost && isBautizos ? pastorRows.length : 0);
     const totalRealCostUnits = totalRegs + realCostExtraUnits;
     const cancelledRefundRows = allParticipants
       .filter((p) => p.eventId === eventId && participantIsCancelled(p))
@@ -28928,6 +28960,21 @@ function resolveEventName(eventId) {
                   {includeCortesiaInRealCost ? ` + Cortesías ${cortesiaNonServerRows.length}` : ''}
                   {includeEmpleadoInRealCost ? ` + Empleados ${empleadoRows.length}` : ''}
                 </p>
+              ) : null}
+              {isBautizos ? (
+                <div className="mt-2 space-y-1" onClick={(e) => e.stopPropagation()}>
+                  <label className="flex items-center gap-2 text-[10px] font-semibold text-slate-600 dark:text-slate-300">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 rounded accent-violet-600"
+                      checked={includePastorInRealCost}
+                      disabled={!hasAdminRights}
+                      onChange={(e) => void patchCampaRealCostCountOptions({ includePastorInRealCost: e.target.checked })}
+                    />
+                    Sumar pastores en costo unitario (+{pastorRows.length})
+                  </label>
+                  <p className="text-[9px] text-slate-500 dark:text-slate-400">Los pastores ya cuentan en registros activos; esta casilla agrega una unidad extra por pastor al multiplicar el costo real.</p>
+                </div>
               ) : null}
             </div>
             <div className={`rounded-2xl border shadow-sm p-5 bg-white dark:bg-slate-900 ${balanceFinal >= 0 ? 'border-emerald-200 dark:border-emerald-700' : 'border-red-200 dark:border-red-700'}`}>
@@ -29671,10 +29718,16 @@ function resolveEventName(eventId) {
     const rosterCortesiaList = eventRosterRows.filter((p) => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.cortesia);
     const rosterCortesiaNonServerList = rosterCortesiaList.filter((p) => !isSiValue(p.isServer));
     const rosterEmpleadoList = eventRosterRows.filter((p) => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.empleado);
+    const rosterPastorList = isBautizos
+      ? eventRosterRows.filter(
+          (p) => normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor
+        )
+      : [];
     const realCostExtraUnitsForCurrentEvent =
       rosterRealCostX2List.length +
       (includeCortesiaInRealCost ? rosterCortesiaNonServerList.length : 0) +
-      (includeEmpleadoInRealCost ? rosterEmpleadoList.length : 0);
+      (includeEmpleadoInRealCost ? rosterEmpleadoList.length : 0) +
+      (includePastorInRealCost && isBautizos ? rosterPastorList.length : 0);
     const sRealCostCard = getDashboardSummaryForCampaScope('dashRealCostX2');
     const totalRegsForRealCostCard = sRealCostCard.globalStats.all.count;
     const totalRealCostUnitsForCurrentEvent = totalRegsForRealCostCard + realCostExtraUnitsForCurrentEvent;
@@ -30345,6 +30398,13 @@ function resolveEventName(eventId) {
         : 0) +
       (includeEmpleadoInRealCost
         ? rosterEmpleadoList.filter(
+            (p) =>
+              campaAttendanceScopeMatches(isCampa, p, balScope) &&
+              (!isBautizos || participantMatchesBautizosDashboardPartyScope(p, balBzScope))
+          ).length
+        : 0) +
+      (includePastorInRealCost && isBautizos
+        ? rosterPastorList.filter(
             (p) =>
               campaAttendanceScopeMatches(isCampa, p, balScope) &&
               (!isBautizos || participantMatchesBautizosDashboardPartyScope(p, balBzScope))
@@ -36022,6 +36082,11 @@ function resolveEventName(eventId) {
         requirePrivacy: true,
       }
     );
+    const isPastorNewReg =
+      isBautizos &&
+      normalizeBautizosAttendanceType(newEntry.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor;
+    const pastorOverCapAllowed =
+      hasAdminRights || (restrictEditorForm && editorRegistrationFieldVis.bautizosAttendanceType !== false);
     const newRegSubmitBlocked = newRegFormIssues.length > 0;
     const canSubmitNewRegistration = isLocOpen(loc) && !newRegSubmitBlocked;
     const newRegSubmitBlockedTooltip =
@@ -37785,7 +37850,7 @@ function resolveEventName(eventId) {
                         <Plus size={20} />{' '}
                         {isCampa && isSiValue(newEntry.isScholarship)
                           ? 'Enviar solicitud de beca'
-                          : sendToWaitlist || isLocationFull(loc)
+                          : sendToWaitlist || (isLocationFull(loc) && !(isPastorNewReg && pastorOverCapAllowed))
                             ? 'Registrar (a espera)'
                             : 'Registrar'}
                       </button>

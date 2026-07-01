@@ -43,7 +43,7 @@ describe('familyHasAnyCarTransport', () => {
     expect(familyHasAnyCarTransport(host, host.bautizosCompanions)).toBe(true);
   });
 
-  it('no cuenta acompañante bautizado en carro del titular (va en su subregistro)', () => {
+  it('no excluye acompañante bautizado en carro para formularios de registro', () => {
     const host = {
       id: 'host-1',
       llegaEnCarro: false,
@@ -59,7 +59,7 @@ describe('familyHasAnyCarTransport', () => {
         },
       ],
     };
-    expect(familyHasAnyCarTransport(host, host.bautizosCompanions)).toBe(false);
+    expect(familyHasAnyCarTransport(host, host.bautizosCompanions)).toBe(true);
   });
 
   it('titular solo en transporte del evento no requiere datos de carro', () => {

@@ -484,9 +484,7 @@ export function buildBautizosFamilyCarInventory({
 
   const hostGoesByCar = bautizosLlegaEnCarroForTransportPricing(hostPerson);
   const filledComps = comps.filter((c) => !companionRowIsEffectivelyEmpty(c));
-  const anyCompanionGoesByCar = filledComps
-    .filter((c) => !isBautizosCompanionBaptized(c))
-    .some((c) => companionGoesByCar(c));
+  const anyCompanionGoesByCar = filledComps.some((c) => companionGoesByCar(c));
   if (!hostGoesByCar && !anyCompanionGoesByCar) return inventory;
 
   const familyCarCount = normalizeArrivalCarCount(hostPerson?.carrosLlegada);
@@ -789,7 +787,7 @@ export function buildCarDataSummaryForRosterPerson({
 
   const inventory = buildBautizosFamilyCarInventory({
     hostPerson: person,
-    companions: carDataCompanions,
+    companions: comps,
     plan: normalizedPlan,
     hostSourceKey: personSk,
   });
@@ -948,9 +946,10 @@ export function resolveBautizosCarDataAnchor(person, roster, eventLike = null) {
 
   const allFilled = getBautizosCompanionsArray(person).filter((c) => !companionRowIsEffectivelyEmpty(c));
   const nonBaptized = allFilled.filter((c) => !isBautizosCompanionBaptized(c));
-  if (!familyHasAnyCarTransport(person, nonBaptized, eventLike)) return empty;
-
   const hostGoesByCar = bautizosLlegaEnCarroForTransportPricing(person);
+  const anyNonBaptizedByCar = nonBaptized.some((c) => companionGoesByCar(c));
+  if (!hostGoesByCar && !anyNonBaptizedByCar) return empty;
+
   return {
     eligible: true,
     anchorPerson: person,
@@ -964,13 +963,12 @@ export function personEligibleForBautizosCarData(person, roster, eventLike = nul
   return resolveBautizosCarDataAnchor(person, roster, eventLike).eligible;
 }
 
-/** Titular o algún acompañante no bautizado declaró llegada en carro (no transporte del evento). */
+/** Titular o algún acompañante con nombre declaró llegada en carro (no transporte del evento). */
 export function familyHasAnyCarTransport(hostPerson, companions, eventLike = null) {
   const comps = Array.isArray(companions) ? companions : getBautizosCompanionsArray(hostPerson);
-  const relevantComps = comps.filter(
-    (c) => !companionRowIsEffectivelyEmpty(c) && !isBautizosCompanionBaptized(c)
-  );
-  const anyCompanionByCar = relevantComps.some((c) => companionGoesByCar(c));
+  const anyCompanionByCar = comps
+    .filter((c) => !companionRowIsEffectivelyEmpty(c))
+    .some((c) => companionGoesByCar(c));
 
   if (bautizosLineUsesEventTransportOnly(hostPerson, eventLike)) {
     return anyCompanionByCar;

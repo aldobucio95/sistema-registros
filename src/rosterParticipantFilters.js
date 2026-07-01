@@ -64,6 +64,7 @@ export const BAUTIZOS_ATTENDANCE_FILTER_OPTIONS = Object.freeze([
   { id: BAUTIZOS_ATTENDANCE.servidor, label: 'Servidor' },
   { id: BAUTIZOS_ATTENDANCE.empleado, label: 'Empleado' },
   { id: BAUTIZOS_ATTENDANCE.cortesia, label: 'Cortesía' },
+  { id: BAUTIZOS_ATTENDANCE.pastor, label: 'Pastor' },
 ]);
 
 /** Transporte Bautizos: camión del evento vs llegada en carro. */

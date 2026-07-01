@@ -28,6 +28,7 @@ export const LOCATION_ROSTER_TYPE_ROWS = Object.freeze([
   { id: 'asistente', label: 'Asistentes', short: 'Asist.' },
   { id: 'servidor', label: 'Servidores', short: 'Serv.' },
   { id: 'empleado', label: 'Empleados', short: 'Emp.' },
+  { id: 'pastor', label: 'Pastores', short: 'Past.' },
   { id: 'cortesia', label: 'Cortesías', short: 'Cort.' },
 ]);
 
@@ -68,6 +69,7 @@ function attendanceTypeToSummaryId(att) {
   if (att === BAUTIZOS_ATTENDANCE.servidor) return 'servidor';
   if (att === BAUTIZOS_ATTENDANCE.empleado) return 'empleado';
   if (att === BAUTIZOS_ATTENDANCE.cortesia) return 'cortesia';
+  if (att === BAUTIZOS_ATTENDANCE.pastor) return 'pastor';
   return null;
 }
 

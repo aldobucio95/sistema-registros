@@ -18,7 +18,12 @@ export const BAUTIZOS_ATTENDANCE = {
   servidor: 'servidor',
   empleado: 'empleado',
   cortesia: 'cortesia',
+  pastor: 'pastor',
 };
+
+/** Valor persistido para tipo Pastor (Bautizos). */
+export const bautizosPastorAttendance = BAUTIZOS_ATTENDANCE.pastor;
+
 
 /** Tallas de playera para bautizados (Campa / Bautizos). */
 export const BAPTISM_SHIRT_SIZES = Object.freeze(['CH', 'M', 'G', 'XL', 'XXL']);
@@ -59,6 +64,7 @@ export const BAUTIZOS_DASHBOARD_SCOPE_OPTIONS = Object.freeze([
   { id: BAUTIZOS_ATTENDANCE.servidor, label: 'Servidores' },
   { id: BAUTIZOS_ATTENDANCE.empleado, label: 'Empleados' },
   { id: BAUTIZOS_ATTENDANCE.cortesia, label: 'Cortesías' },
+  { id: BAUTIZOS_ATTENDANCE.pastor, label: 'Pastores' },
 ]);
 
 export const BAUTIZOS_DASHBOARD_SCOPE_IDS = BAUTIZOS_DASHBOARD_SCOPE_OPTIONS.map((o) => o.id);
@@ -76,6 +82,7 @@ export function normalizeBautizosDashboardScope(raw) {
   if (s === 'servidor') return BAUTIZOS_ATTENDANCE.servidor;
   if (s === 'empleado') return BAUTIZOS_ATTENDANCE.empleado;
   if (s === 'cortesia') return BAUTIZOS_ATTENDANCE.cortesia;
+  if (s === 'pastor') return BAUTIZOS_ATTENDANCE.pastor;
   return 'all';
 }
 
@@ -245,7 +252,10 @@ export function getBautizosDashboardScopeChartHint(scope, variant = 'generic') {
       return `Solo fichas titulares con tipo Cortesía (sin cobro de lista; excluye los demás tipos y acompañantes).`;
     }
     if (variant === 'empleadoCard') {
-      return `Solo fichas titulares con tipo Empleado (excluye Bautizado, Asistente, Servidor, Cortesía y acompañantes).`;
+      return `Solo fichas titulares con tipo Empleado (excluye Bautizado, Asistente, Servidor, Cortesía, Pastor y acompañantes).`;
+    }
+    if (variant === 'pastorCard') {
+      return `Solo fichas titulares con tipo Pastor (sin cobro de lista; excluye los demás tipos y acompañantes).`;
     }
     return `Datos de ${BZ_HINT_TITULARES_ALL}, más ${BZ_HINT_ACOMPANANTES_ALL} cuando la métrica suma personas al total.`;
   }
@@ -315,6 +325,7 @@ export function normalizeBautizosAttendanceType(raw) {
   if (s === 'servidor') return BAUTIZOS_ATTENDANCE.servidor;
   if (s === 'empleado') return BAUTIZOS_ATTENDANCE.empleado;
   if (s === 'cortesia') return BAUTIZOS_ATTENDANCE.cortesia;
+  if (s === 'pastor') return BAUTIZOS_ATTENDANCE.pastor;
   return BAUTIZOS_ATTENDANCE.bautizado;
 }
 
@@ -341,7 +352,12 @@ export function bautizosWillBeBaptizedFromAttendance(rawType) {
 }
 
 export function isFreeBautizosAttendance(personLike) {
-  return normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.cortesia;
+  const t = normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType);
+  return t === BAUTIZOS_ATTENDANCE.cortesia || t === BAUTIZOS_ATTENDANCE.pastor;
+}
+
+export function isBautizosPastorAttendance(personLike) {
+  return normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor;
 }
 
 /** Etiqueta fija de asignación servidor en Bautizos (sin Teens/Jóvenes/Ambos). */
@@ -366,6 +382,7 @@ export function getBautizosAttendanceTypeLabel(personLike) {
   if (t === BAUTIZOS_ATTENDANCE.servidor) return 'Servidor';
   if (t === BAUTIZOS_ATTENDANCE.empleado) return 'Empleado';
   if (t === BAUTIZOS_ATTENDANCE.cortesia) return 'Cortesía';
+  if (t === BAUTIZOS_ATTENDANCE.pastor) return 'Pastor';
   return 'Bautizado';
 }
 
@@ -377,6 +394,7 @@ export function resolveBautizosAttendanceChipKind(personLike) {
   if (t === BAUTIZOS_ATTENDANCE.servidor) return 'servidor';
   if (t === BAUTIZOS_ATTENDANCE.empleado) return 'empleado';
   if (t === BAUTIZOS_ATTENDANCE.cortesia) return 'cortesia';
+  if (t === BAUTIZOS_ATTENDANCE.pastor) return 'pastor';
   return 'bautizado';
 }
 
