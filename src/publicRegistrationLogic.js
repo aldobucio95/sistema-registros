@@ -41,6 +41,8 @@ import {
   bautizosDashboardTitularCountsForScope,
   bautizosDashboardCompanionCountsForScope,
   normalizeBautizosDashboardScope,
+  buildBautizosCanonicalCompanionPlan,
+  buildActiveRegistrantMetaForCompanionDedupe,
 } from './bautizosParty.js';
 import { applyCompanionWaitlistCapOnEdit } from './bautizosCompanionWaitlist.js';
 import {
@@ -1073,7 +1075,12 @@ export function buildBautizosDashboardLiquidationUnits(
     const nm = String(companionLike?.name || '').trim();
     if (!nm) return;
     const w = getBautizosLineListPrice(companionLike, food, transport, eventLike);
-    weighted.push({ kind: 'companion', weight: Math.max(0, w) });
+    weighted.push({
+      kind: 'companion',
+      weight: Math.max(0, w),
+      companionKey: String(companionLike?.id || '').trim(),
+      companionName: nm,
+    });
   };
 
   if (canonicalCompanionInfos) {
@@ -1102,13 +1109,200 @@ export function buildBautizosDashboardLiquidationUnits(
 
   const den = weighted.reduce((s, u) => s + u.weight, 0);
   if (den <= 0.005) {
-    if (L <= 0.005) return weighted.map((u) => ({ kind: u.kind, owed: 0 }));
+    if (L <= 0.005) return weighted.map((u) => mapLiquidationUnit(u, 0));
     if (weighted.length === 0 && bautizosDashboardTitularCountsForScope(personLike, bzScope)) {
       return [{ kind: 'titular', owed: L }];
     }
-    return weighted.map((u) => ({ kind: u.kind, owed: 0 }));
+    return weighted.map((u) => mapLiquidationUnit(u, 0));
   }
-  return weighted.map((u) => ({ kind: u.kind, owed: (L * u.weight) / den }));
+  return weighted.map((u) => mapLiquidationUnit(u, (L * u.weight) / den));
+}
+
+function mapLiquidationUnit(unit, owed) {
+  return {
+    kind: unit.kind,
+    owed,
+    companionKey: unit.companionKey,
+    companionName: unit.companionName,
+  };
+}
+
+/** Reparte abonos en orden FIFO sobre cada unidad de liquidación. */
+export function getBautizosFifoUnitBalances(units, paidGross) {
+  let remaining = Math.max(0, Number(paidGross) || 0);
+  return (units || []).map((u) => {
+    const owed = Math.max(0, Number(u?.owed) || 0);
+    if (owed <= 0.005) {
+      return {
+        ...u,
+        owed,
+        paidAllocated: 0,
+        balance: 0,
+        isLiquidated: true,
+      };
+    }
+    const applied = Math.min(remaining, owed);
+    remaining -= applied;
+    const balance = Math.max(0, owed - applied);
+    return {
+      ...u,
+      owed,
+      paidAllocated: applied,
+      balance: balance <= 0.005 ? 0 : balance,
+      isLiquidated: balance <= 0.005,
+    };
+  });
+}
+
+function parseGlobalRegistryCompanionKeyFromPerson(companionPerson) {
+  const id = String(companionPerson?.id || '');
+  const m = id.match(/^gr-companion:[^:]+:(.+)$/);
+  return m ? String(m[1] || '').trim() : '';
+}
+
+function findBautizosCompanionLiquidationUnitIndex(units, companionPerson) {
+  const cid = parseGlobalRegistryCompanionKeyFromPerson(companionPerson);
+  const name = String(companionPerson?.name || '').trim().toLowerCase();
+  if (cid) {
+    const byKey = (units || []).findIndex(
+      (u) => u.kind === 'companion' && String(u.companionKey || '') === cid
+    );
+    if (byKey >= 0) return byKey;
+  }
+  if (name) {
+    const byName = (units || []).findIndex(
+      (u) =>
+        u.kind === 'companion' &&
+        String(u.companionName || '')
+          .trim()
+          .toLowerCase() === name
+    );
+    if (byName >= 0) return byName;
+  }
+  return -1;
+}
+
+function buildCanonicalCompanionInfosForHost(hostPerson, roster, companionDedupeMeta) {
+  const hostId = String(hostPerson?.id || '').trim();
+  if (!hostId) return [];
+  const rosterList = Array.isArray(roster) ? roster : [];
+  const meta = companionDedupeMeta || buildActiveRegistrantMetaForCompanionDedupe(rosterList);
+  const plan = buildBautizosCanonicalCompanionPlan(rosterList, meta, { includeBaptizedCompanions: true });
+  const out = [];
+  for (const [, entry] of plan) {
+    if (String(entry?.registrantId || '') !== hostId) continue;
+    out.push({
+      sourceCompanion: entry.sourceCompanion,
+      sourceRegistrant: entry.sourceRegistrant || hostPerson,
+    });
+  }
+  return out;
+}
+
+/**
+ * Finanzas de una fila del registro global Bautizos: acompañantes heredan abonos del titular vía FIFO proporcional.
+ */
+export function resolveBautizosGlobalRegistryRowFinances(
+  personLike,
+  hostPerson,
+  eventLike,
+  opts = {}
+) {
+  const {
+    companionDedupeMeta = null,
+    roster = [],
+    getLiquidationTargetFn,
+    getPaidGrossFromHostFn,
+    getPaidDisplayFn,
+  } = opts;
+  const getLiq = typeof getLiquidationTargetFn === 'function' ? getLiquidationTargetFn : () => 0;
+  const getPaidGross =
+    typeof getPaidGrossFromHostFn === 'function'
+      ? getPaidGrossFromHostFn
+      : (p) => Math.max(0, Number(p?.paid ?? 0) || 0);
+  const getPaidDisplay =
+    typeof getPaidDisplayFn === 'function' ? getPaidDisplayFn : (p) => getPaidGross(p);
+
+  if (
+    personLike?.__pastorCourtesyCompanion === true ||
+    (personLike?.__globalRegistryCompanionRow === true && isBautizosPastorAttendance(hostPerson))
+  ) {
+    return {
+      liquidationTarget: 0,
+      paidDisplay: 0,
+      balance: 0,
+      isLiquidated: true,
+      usesHostPayments: true,
+    };
+  }
+
+  if (personLike?.__globalRegistryCompanionRow === true && hostPerson) {
+    const hostLiq = getLiq(hostPerson);
+    const paidGross = getPaidGross(hostPerson);
+    const canonicalCompanionInfos = buildCanonicalCompanionInfosForHost(
+      hostPerson,
+      roster,
+      companionDedupeMeta
+    );
+    const units = buildBautizosDashboardLiquidationUnits(
+      hostPerson,
+      eventLike,
+      companionDedupeMeta,
+      hostLiq,
+      { bzScope: 'all', canonicalCompanionInfos }
+    );
+    const balances = getBautizosFifoUnitBalances(units, paidGross);
+    const idx = findBautizosCompanionLiquidationUnitIndex(balances, personLike);
+    if (idx < 0) {
+      const { food, transport } = getBautizosListPriceBreakdown(eventLike);
+      const cid = parseGlobalRegistryCompanionKeyFromPerson(personLike);
+      const companionSource =
+        canonicalCompanionInfos.find(
+          (info) => String(info?.sourceCompanion?.id || '') === cid
+        )?.sourceCompanion || null;
+      const fallbackOwed = companionSource
+        ? getBautizosLineListPrice(companionSource, food, transport, eventLike)
+        : 0;
+      return {
+        liquidationTarget: fallbackOwed,
+        paidDisplay: 0,
+        balance: fallbackOwed,
+        isLiquidated: fallbackOwed <= 0.005,
+        usesHostPayments: true,
+      };
+    }
+    const unit = balances[idx];
+    return {
+      liquidationTarget: unit.owed,
+      paidDisplay: unit.paidAllocated,
+      balance: unit.balance,
+      isLiquidated: unit.isLiquidated,
+      usesHostPayments: true,
+    };
+  }
+
+  const liquidationTarget = getLiq(personLike);
+  const paidDisplay = getPaidDisplay(personLike);
+  const balance = Math.max(0, liquidationTarget - paidDisplay);
+  return {
+    liquidationTarget,
+    paidDisplay,
+    balance,
+    isLiquidated: liquidationTarget <= 0.005 || balance <= 0.005,
+    usesHostPayments: false,
+  };
+}
+
+/** Adeudo bruto pendiente de una fila del registro global (acompañante = parte FIFO del titular). */
+export function getBautizosGlobalRegistryRowOutstandingGross(
+  personLike,
+  hostPerson,
+  eventLike,
+  opts = {}
+) {
+  if (personLike?.__pastorCourtesyCompanion === true) return 0;
+  const finance = resolveBautizosGlobalRegistryRowFinances(personLike, hostPerson, eventLike, opts);
+  return Math.max(0, finance.balance);
 }
 
 /** Aplica abonos en orden FIFO: cada unidad se liquida por completo antes de pasar a la siguiente. */

@@ -79,6 +79,8 @@ import {
   allocateBautizosDashboardPayments,
   buildBautizosDashboardLiquidationUnits,
   countBautizosFifoLiquidationUnits,
+  getBautizosGlobalRegistryRowOutstandingGross,
+  resolveBautizosGlobalRegistryRowFinances,
   accumulateDashboardParticipantDemographics,
   resolveDashboardParticipantAgeYears,
   attendanceSpecialChoiceButtonClass,
@@ -9061,6 +9063,26 @@ function resolveEventName(eventId) {
     () => buildBautizosRosterIndex(allParticipants, currentEvent),
     [allParticipants, currentEvent?.id, currentEvent?.eventType]
   );
+
+  const resolveGlobalRegistryFinanceHost = useCallback(
+    (person) => {
+      const hostId = String(person?.__hostRegistrantId || '').trim();
+      if (!hostId) return null;
+      return (allParticipants || []).find((p) => String(p?.id) === hostId) || null;
+    },
+    [allParticipants]
+  );
+
+  const bautizosGlobalRegistryFinanceOpts = useMemo(() => {
+    if (!isBautizos) return null;
+    return {
+      companionDedupeMeta: bautizosRosterIndex.meta,
+      roster: bautizosRosterIndex.activeEventRoster,
+      getLiquidationTargetFn: getLiquidationTarget,
+      getPaidGrossFromHostFn: (h) => getParticipantNetPaidFromHistory(h, computeNetAmountByMethod),
+      getPaidDisplayFn: (p) => getParticipantNetPaidFromHistory(p, computeNetAmountByMethod),
+    };
+  }, [isBautizos, bautizosRosterIndex, getLiquidationTarget, computeNetAmountByMethod]);
 
   /** Conteo por sede para la tabla «Cupo vs Espera»: misma lógica que columna Lista de espera del dashboard. */
   const waitlistCupoCountBySede = useMemo(() => {
@@ -34938,8 +34960,19 @@ function resolveEventName(eventId) {
   const renderRegistrationFinancesColumn = (person) => {
     const isBecado = isSiValue(person.isScholarship);
     const isBecaTotal = isBecado && person.scholarshipType !== 'partial';
-    const liquidationTarget = getLiquidationTarget(person);
-    const paidDisplay = getParticipantNetPaidFromHistory(person, computeNetAmountByMethod);
+    let liquidationTarget = getLiquidationTarget(person);
+    let paidDisplay = getParticipantNetPaidFromHistory(person, computeNetAmountByMethod);
+    if (isBautizos && person?.__globalRegistryCompanionRow && bautizosGlobalRegistryFinanceOpts) {
+      const host = resolveGlobalRegistryFinanceHost(person);
+      const finance = resolveBautizosGlobalRegistryRowFinances(
+        person,
+        host,
+        currentEvent,
+        bautizosGlobalRegistryFinanceOpts
+      );
+      liquidationTarget = finance.liquidationTarget;
+      paidDisplay = finance.paidDisplay;
+    }
     const manualSaldoFavor =
       person.registeredCostManual === true && liquidationTarget > 0.005
         ? Math.max(0, paidDisplay - liquidationTarget)
@@ -39616,8 +39649,18 @@ function resolveEventName(eventId) {
     });
     const activosTitularsInScope = locsInScope.flatMap((loc) => data[loc] || []);
     const grSortKey = String(globalRegistryListFilters.sortBy || 'registered-desc').trim();
-    const grSortDebt = (p) =>
-      getParticipantOutstandingGross(p, getLiquidationTarget, computeNetAmountByMethod);
+    const grSortDebt = (p) => {
+      if (isBautizos && p?.__globalRegistryCompanionRow && bautizosGlobalRegistryFinanceOpts) {
+        const host = resolveGlobalRegistryFinanceHost(p);
+        return getBautizosGlobalRegistryRowOutstandingGross(
+          p,
+          host,
+          currentEvent,
+          bautizosGlobalRegistryFinanceOpts
+        );
+      }
+      return getParticipantOutstandingGross(p, getLiquidationTarget, computeNetAmountByMethod);
+    };
     const filterGlobalRegistrySectionRows = (rows, preserveOrder = false) =>
       filterParticipantRows(rows, preserveOrder, globalRegistryListFilters, {
         expandBautizosCompanions: false,
