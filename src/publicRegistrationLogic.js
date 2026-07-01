@@ -281,7 +281,7 @@ export function buildEditorRegistrationFieldVisFromSnapshots(globalSnapshot, eve
 
 const SI = 'Si';
 const SI_LABEL = 'Sí';
-export const ATTENDANCE_SPECIAL = { ninguno: 'ninguno', empleado: 'empleado', cortesia: 'cortesia' };
+export const ATTENDANCE_SPECIAL = { ninguno: 'ninguno', empleado: 'empleado', cortesia: 'cortesia', pastor: 'pastor' };
 
 export const isSiValue = (v) => {
   const s = String(v ?? '').trim();
@@ -293,7 +293,9 @@ export const isSiValue = (v) => {
 
 export function normalizeAttendanceSpecial(personLike) {
   const t = personLike?.attendanceSpecialType;
-  if (t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia) return t;
+  if (t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia || t === ATTENDANCE_SPECIAL.pastor) {
+    return t;
+  }
   return ATTENDANCE_SPECIAL.ninguno;
 }
 
@@ -314,10 +316,14 @@ export function attendanceSpecialChoiceButtonClass(selectedId, optionId) {
   if (optionId === ATTENDANCE_SPECIAL.cortesia) {
     return `${base} bg-fuchsia-600 text-white border-fuchsia-500`;
   }
+  if (optionId === ATTENDANCE_SPECIAL.pastor) {
+    return `${base} bg-violet-700 text-white border-violet-600`;
+  }
   return `${base} border-slate-500 bg-slate-600 text-white hover:bg-slate-600 dark:border-slate-500 dark:bg-slate-700 dark:text-white`;
 }
 
-const isFreeAttendanceType = (t) => t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia;
+const isFreeAttendanceType = (t) =>
+  t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia || t === ATTENDANCE_SPECIAL.pastor;
 
 const digitsOnlyPhone = (phone) => (phone || '').replace(/\D/g, '');
 

@@ -2,7 +2,7 @@
  * Campos del formulario «Nuevo registro» que los administradores pueden ocultar a usuarios con rol Editor.
  * SuperUsuario y Administrador siempre ven el formulario completo.
  */
-import { ATTENDANCE_SPECIAL, isSiValue } from './publicRegistrationLogic.js';
+import { ATTENDANCE_SPECIAL, isSiValue, normalizeAttendanceSpecial } from './publicRegistrationLogic.js';
 import { BLOOD_TYPE_UNSPECIFIED } from './registrationFormShared.js';
 import { BAUTIZOS_ATTENDANCE, normalizeBautizosAttendanceType } from './bautizosParty.js';
 
@@ -56,7 +56,8 @@ export const EDITOR_REGISTRATION_FIELD_META = [
   { key: 'serverProfileExtra', label: 'Datos extra de servidor (pareja, hijos, áreas…)', group: 'asistencia', eventTypes: [T.campa, T.bautizos] },
   { key: 'willBeBaptized', label: 'Bautizo en el evento', group: 'asistencia', eventTypes: [T.campa] },
   { key: 'campAssignment', label: 'Asignación campista (Teens / Jóvenes)', group: 'asistencia', eventTypes: [T.campa] },
-  { key: 'attendanceSpecial', label: 'Asistencia empleado / cortesía', group: 'asistencia', eventTypes: [T.campa] },
+  { key: 'attendanceSpecial', label: 'Asistencia empleado / cortesía / pastor', group: 'asistencia', eventTypes: [T.campa, T.general] },
+  { key: 'pastorAttendance', label: 'Tipo de asistencia: Pastor (Campa / General)', group: 'asistencia', eventTypes: [T.campa, T.general] },
   { key: 'travelFrom', label: 'Sale de / origen', group: 'viaje', eventTypes: [T.campa, T.general, T.bautizos] },
   { key: 'travelTo', label: 'Regresa a / destino', group: 'viaje', eventTypes: [T.campa, T.general, T.bautizos] },
   { key: 'transportExtras', label: 'Llega/regresa en carro y tipo', group: 'viaje', eventTypes: [T.campa, T.general] },
@@ -85,14 +86,21 @@ export function mergeEditorRegistrationFieldVisibility(raw) {
   return { ...defaultEditorRegistrationFieldVisibility(), ...(raw && typeof raw === 'object' ? raw : {}) };
 }
 
-/** Administradores y SuperUsuario siempre; Editores solo si el campo «Pastor» está habilitado en su perfil. */
-export function canShowBautizosPastorAttendance({ role, visibility, hasAdminRights = false }) {
+/** Administradores y SuperUsuario siempre; Editores según permiso del tipo de evento. */
+export function canShowPastorAttendance({ role, visibility, hasAdminRights = false, eventType = '' }) {
   if (hasAdminRights) return true;
   const r = String(role || '').trim();
   if (r === 'SuperUsuario' || r === 'Administrador') return true;
   if (r !== 'Editor') return false;
   const vis = mergeEditorRegistrationFieldVisibility(visibility);
-  return vis.bautizosPastorAttendance !== false;
+  const et = String(eventType || '').trim();
+  if (et === 'Bautizos') return vis.bautizosPastorAttendance !== false;
+  return vis.pastorAttendance !== false;
+}
+
+/** @deprecated Usar canShowPastorAttendance */
+export function canShowBautizosPastorAttendance(opts) {
+  return canShowPastorAttendance({ ...opts, eventType: 'Bautizos' });
 }
 
 /**
@@ -171,6 +179,13 @@ export function applyEditorRegistrationDefaults(entry, visibility, eventType, lo
   }
   if (isCampa && !vis.campAssignment) out.campAssignment = '';
   if (!vis.attendanceSpecial) out.attendanceSpecialType = ATTENDANCE_SPECIAL.ninguno;
+  if (
+    !vis.pastorAttendance &&
+    normalizeBautizosAttendanceType(out.bautizosAttendanceType) !== BAUTIZOS_ATTENDANCE.pastor &&
+    normalizeAttendanceSpecial(out) === ATTENDANCE_SPECIAL.pastor
+  ) {
+    out.attendanceSpecialType = ATTENDANCE_SPECIAL.ninguno;
+  }
   if (!vis.travelFrom) out.travelFrom = loc || out.travelFrom || '';
   if (!vis.travelTo) out.travelTo = loc || out.travelTo || '';
   if (isBautizos) {

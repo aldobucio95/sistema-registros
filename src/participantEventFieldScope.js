@@ -46,6 +46,8 @@ const COMMON_FIELDS = new Set([
   'responsivaDigitalToken', 'responsivaDigitalRequestedAt',
   // Auditoría / debug interno
   '_isDebug', '_debugSessionId',
+  // Pastor (todos los tipos de evento)
+  'pastorRealCost', 'pastorStayStart', 'pastorStayEnd',
 ]);
 
 /** Campos exclusivos de Campa. */

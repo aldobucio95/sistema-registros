@@ -554,6 +554,29 @@ export default function EventWorkspaceScreen() {
               {shell.activeTab === 'Responsivas' && <div className={`${uiSidebar.activeDot} bg-emerald-400`} />}
             </button>
           )}
+          {shell.hasAdminRights && (
+            <button
+              type="button"
+              onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'PastoresPage')}
+              className={workspaceSidebarNavClassDesktop(shell.activeTab === 'PastoresPage')}
+            >
+              <div className={uiSidebar.navItemInnerNavDesktop}>
+                <Church size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'PastoresPage' ? 'text-violet-400' : '')} />
+                <span className="font-bold">Pastores</span>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {typeof shell.workspaceSidebarBadges?.pastores === 'number' ? (
+                  <div
+                    className={sidebarSedeStyleCountBadge(shell.activeTab === 'PastoresPage', true)}
+                    title="Pastores registrados en sedes visibles"
+                  >
+                    {shell.workspaceSidebarBadges.pastores}
+                  </div>
+                ) : null}
+                {shell.activeTab === 'PastoresPage' && <div className={`${uiSidebar.activeDot} bg-violet-400`} />}
+              </div>
+            </button>
+          )}
           {shell.isPanelNavSectionAllowed('transporte') && (
             <button
               type="button"
@@ -871,6 +894,7 @@ export default function EventWorkspaceScreen() {
             shell.isBautizos &&
             shell.renderBautizosCompanionsPage()}
           {shell.activeTab === 'Responsivas' && shell.hasAdminRights && shell.isCampa && shell.renderResponsivasPage()}
+          {shell.activeTab === 'PastoresPage' && shell.hasAdminRights && shell.renderPastoresPage()}
           {shell.activeTab === 'TransportPlanning' &&
             shell.isPanelNavSectionAllowed('transporte') &&
             shell.renderTransportPlanningPage()}

@@ -124,6 +124,7 @@ import {
   getEditorRegistrationFieldGroupOrderForEventType,
   EDITOR_REGISTRATION_FIELD_GROUP_LABELS,
   canShowBautizosPastorAttendance,
+  canShowPastorAttendance,
 } from './registrationFormEditorConfig.js';
 import {
   isParticipantFieldApplicableToEventType,
@@ -268,8 +269,13 @@ import {
   persistEventCarMetaPatches,
   resolveBautizosCarDataAnchor,
 } from './bautizosCarMeta.js';
+import PastoresPage from './screens/PastoresPage.jsx';
 import {
-  compareIsoDates,
+  countPastorParticipants,
+  isPastorParticipant,
+  sumPastorRealCostForParticipants,
+} from './pastorAttendance.js';
+import {
   getEventEffectiveEndDate,
   getEventEffectiveStartDate,
   getPhaseDateMaxCap,
@@ -1387,12 +1393,25 @@ const defaultLocations = ["Norte", "Sur", "Izcalli", "Coapa", "Acapulco", "Toluc
 const defaultRegStatus = defaultLocations.reduce((acc, loc) => ({ ...acc, [loc]: true }), {});
 
 /** Campa: asistencia sin cobro (sí cuentan en registro). Mutuamente excluyente con beca. */
-const ATTENDANCE_SPECIAL = { ninguno: 'ninguno', empleado: 'empleado', cortesia: 'cortesia' };
-const isFreeAttendanceType = (t) => t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia;
+const ATTENDANCE_SPECIAL = { ninguno: 'ninguno', empleado: 'empleado', cortesia: 'cortesia', pastor: 'pastor' };
+const isFreeAttendanceType = (t) =>
+  t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia || t === ATTENDANCE_SPECIAL.pastor;
 const normalizeAttendanceSpecial = (personLike) => {
   const t = personLike?.attendanceSpecialType;
-  if (t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia) return t;
+  if (t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia || t === ATTENDANCE_SPECIAL.pastor) {
+    return t;
+  }
   return ATTENDANCE_SPECIAL.ninguno;
+};
+
+const buildAttendanceSpecialFormOptions = (showPastor) => {
+  const options = [
+    { id: ATTENDANCE_SPECIAL.ninguno, label: 'Ninguno', Icon: null },
+    { id: ATTENDANCE_SPECIAL.empleado, label: 'Empleado', Icon: Briefcase },
+    { id: ATTENDANCE_SPECIAL.cortesia, label: 'Cortesía', Icon: Gift },
+  ];
+  if (showPastor) options.push({ id: ATTENDANCE_SPECIAL.pastor, label: 'Pastor', Icon: Church });
+  return options;
 };
 
 /** Restante por liquidar para filtros de lista (0 ⇒ liquidado: sin costo, beca total, cortesía/empleado o pagado al día). */
@@ -1811,6 +1830,7 @@ const SUMMARY_TABLE_COLUMN_DEFAULTS = {
   teens: true,
   jovenes: true,
   cortesia: false,
+  pastores: true,
   waitlist: true,
   cancelled: true,
   refund: true,
@@ -1833,6 +1853,7 @@ const SUMMARY_TABLE_COLUMN_DEFAULTS_BAUTIZOS = {
   serveYes: true,
   cortesia: true,
   empleadosBautizos: true,
+  pastores: true,
   waitlist: true,
   cancelled: true,
   refund: true,
@@ -1857,6 +1878,7 @@ const SUMMARY_TABLE_COLUMN_LABELS = {
   bautizosTransport: 'Transp. evento',
   bautizosCarro: 'Llevan carro',
   empleadosBautizos: 'Empleados',
+  pastores: 'Pastores',
   scholarship: 'Becados',
   serveYes: 'Servidores',
   serveNo: 'Camperos',
@@ -1876,7 +1898,7 @@ const SUMMARY_TABLE_COLUMN_LABELS = {
 };
 
 /** Orden de columnas en «Visualización de Datos Generales» (1 + columnas visibles). */
-const SUMMARY_TABLE_COLUMN_KEYS = ['count', 'scholarship', 'serveYes', 'serveNo', 'bautizos', 'teens', 'jovenes', 'waitlist', 'cancelled', 'refund', 'paid', 'donations', 'paidEfectivo', 'paidTarjeta', 'pending', 'cortesia', 'expected'];
+const SUMMARY_TABLE_COLUMN_KEYS = ['count', 'scholarship', 'serveYes', 'serveNo', 'bautizos', 'teens', 'jovenes', 'waitlist', 'cancelled', 'refund', 'paid', 'donations', 'paidEfectivo', 'paidTarjeta', 'pending', 'cortesia', 'pastores', 'expected'];
 
 /** Columnas y orden para eventos tipo Bautizos (sin Camperos/Becados/Teens/Jóvenes en tabla). */
 const SUMMARY_TABLE_COLUMN_KEYS_BAUTIZOS = [
@@ -1888,6 +1910,7 @@ const SUMMARY_TABLE_COLUMN_KEYS_BAUTIZOS = [
   'bautizosCarro',
   'serveYes',
   'empleadosBautizos',
+  'pastores',
   'cortesia',
   'waitlist',
   'cancelled',
@@ -4714,6 +4737,35 @@ const App = () => {
     },
     []
   );
+
+  const handleSavePastorFields = useCallback(
+    async (personId, fields) => {
+      const pid = String(personId || '').trim();
+      if (!pid || !currentEvent?.id) return;
+      const person = allParticipants.find((p) => String(p.id) === pid);
+      if (!person) {
+        showToast('No se encontró el registro del pastor.');
+        return;
+      }
+      setSavingPastorId(pid);
+      try {
+        const patch = {
+          pastorRealCost: Number.isFinite(fields?.pastorRealCost) ? fields.pastorRealCost : 0,
+          pastorStayStart: String(fields?.pastorStayStart || '').trim(),
+          pastorStayEnd: String(fields?.pastorStayEnd || '').trim(),
+        };
+        await updateDoc(getDocRef('app_participants', pid), patch);
+        refreshParticipantCache(person, 'Pastores — costo y fechas', { personId: pid, patch });
+        showToast('Datos del pastor guardados.');
+      } catch (err) {
+        console.error(err);
+        showToast('No se pudieron guardar los datos del pastor.');
+      } finally {
+        setSavingPastorId('');
+      }
+    },
+    [allParticipants, currentEvent?.id, refreshParticipantCache, showToast]
+  );
   /** Participantes de otros eventos (lotes `in`) para importar perfil sin suscribirse a toda la colección. */
   const [importProfileParticipants, setImportProfileParticipants] = useState([]);
   const archivedParticipantsForView = useMemo(
@@ -4987,6 +5039,7 @@ function resolveEventName(eventId) {
   /** Metadatos de carros en borrador (nuevo registro Bautizos). */
   const [newRegDraftCarMeta, setNewRegDraftCarMeta] = useState({});
   const [editRegDraftCarMeta, setEditRegDraftCarMeta] = useState({});
+  const [savingPastorId, setSavingPastorId] = useState('');
   const bautizosCarColorSuggestions = useMemo(
     () => collectCarColorSuggestions(currentEvent?.transportPlanning),
     [currentEvent?.transportPlanning]
@@ -6080,6 +6133,7 @@ function resolveEventName(eventId) {
         'Responsivas',
         'RegistroGlobal',
         'TransportPlanning',
+        'PastoresPage',
       ];
       if (view === 'events' && eventId && tab === 'Bautizados') {
         if (evForNav && evForNav.eventType !== 'Campa' && evForNav.eventType !== 'Bautizos') {
@@ -6096,6 +6150,13 @@ function resolveEventName(eventId) {
         }
         if (evForNav && !isResponsivaEventSectionVisible(evForNav)) {
           showToast('Responsivas no está activa para este evento (revisa la configuración por edad).');
+          setIsMobileMenuOpen(false);
+          return;
+        }
+      }
+      if (view === 'events' && eventId && tab === 'PastoresPage') {
+        if (!hasAdminRights) {
+          showToast('Solo administradores pueden acceder a Pastores.');
           setIsMobileMenuOpen(false);
           return;
         }
@@ -7684,6 +7745,7 @@ function resolveEventName(eventId) {
       'Responsivas',
       'RegistroGlobal',
       'TransportPlanning',
+      'PastoresPage',
     ];
     if (!selectedEventId || !currentEvent) return;
     if (activeTab === 'Bautizados' && currentEvent?.eventType !== 'Campa' && currentEvent?.eventType !== 'Bautizos') {
@@ -7703,6 +7765,10 @@ function resolveEventName(eventId) {
       return;
     }
     if (activeTab === 'Responsivas' && !isResponsivaEventSectionVisible(currentEvent)) {
+      if (activeTab !== 'Summary') setActiveTab('Summary');
+      return;
+    }
+    if (activeTab === 'PastoresPage' && !hasAdminRights) {
       if (activeTab !== 'Summary') setActiveTab('Summary');
       return;
     }
@@ -8728,6 +8794,7 @@ function resolveEventName(eventId) {
       bautizados: 0,
       servidores: 0,
       acompanantes: 0,
+      pastores: 0,
       sedeCounts: {},
       attendanceLines: [],
       waitlistLines: [],
@@ -8760,6 +8827,7 @@ function resolveEventName(eventId) {
     let cortesias = 0;
     let servidoresOnly = 0;
     let becados = 0;
+    let pastores = 0;
     let attendanceLines = [];
     let waitlistLines = [];
     let activeTotalDeduped = 0;
@@ -8775,6 +8843,10 @@ function resolveEventName(eventId) {
         !participantIsCancelled(p) &&
         scopeSet.has(String(p.location || '').trim())
     );
+
+    for (const p of rosterInScope) {
+      if (isPastorParticipant(p, et)) pastores += 1;
+    }
 
     for (const p of allParticipants || []) {
       if (String(p?.eventId || '') !== String(evId)) continue;
@@ -8884,6 +8956,7 @@ function resolveEventName(eventId) {
       bautizados,
       servidores,
       acompanantes,
+      pastores,
       sedeCounts,
       attendanceLines,
       waitlistLines,
@@ -11366,6 +11439,7 @@ function resolveEventName(eventId) {
         const att = normalizeAttendanceSpecial(p);
         if (att === ATTENDANCE_SPECIAL.empleado) return 'Empleado';
         if (att === ATTENDANCE_SPECIAL.cortesia) return 'Cortesía';
+        if (att === ATTENDANCE_SPECIAL.pastor) return 'Pastor';
         if (isCampa) {
           if (isSiValue(p?.isScholarship)) {
             return p?.scholarshipType === 'partial' ? 'Beca parcial' : 'Beca total';
@@ -19905,6 +19979,15 @@ function resolveEventName(eventId) {
     const compact = opts.compact === true;
     if (!editRegistryModal.data) return null;
     const editLoc = String(editRegistryModal.data.location || editRegistryModal.loc || '').trim();
+    const showPastorAttendanceOption = canShowPastorAttendance({
+      role: currentUser?.role,
+      visibility: editorRegistrationFieldVis,
+      hasAdminRights,
+      eventType: currentEvent?.eventType,
+    });
+    const attendanceSpecialGridClass = showPastorAttendanceOption
+      ? 'grid grid-cols-2 sm:grid-cols-4 gap-2'
+      : 'grid grid-cols-3 gap-2';
     const editFieldSuggestions = collectLocationSuggestionsFromRosterSources({
       eventId: currentEvent?.id,
       location: editLoc,
@@ -21101,14 +21184,10 @@ function resolveEventName(eventId) {
                         {!isSiValue(editRegistryModal.data.isScholarship) && (
                           <div className="p-4 rounded-xl mt-3 border border-teal-200 bg-teal-50/50 dark:border-slate-600 dark:bg-slate-800">
                             <p className="text-[10px] font-black text-teal-800 dark:text-teal-100 uppercase tracking-widest mb-2">
-                              Asistencia sin cobro (empleado / cortesía)
+                              Asistencia sin cobro (empleado / cortesía{showPastorAttendanceOption ? ' / pastor' : ''})
                             </p>
-                            <div className="grid grid-cols-3 gap-2">
-                              {[
-                                { id: ATTENDANCE_SPECIAL.ninguno, label: 'Ninguno', Icon: null },
-                                { id: ATTENDANCE_SPECIAL.empleado, label: 'Empleado', Icon: Briefcase },
-                                { id: ATTENDANCE_SPECIAL.cortesia, label: 'Cortesía', Icon: Gift },
-                              ].map(({ id, label, Icon }) => (
+                            <div className={attendanceSpecialGridClass}>
+                              {buildAttendanceSpecialFormOptions(showPastorAttendanceOption).map(({ id, label, Icon }) => (
                                 <button
                                   key={id}
                                   type="button"
@@ -21382,6 +21461,39 @@ function resolveEventName(eventId) {
                             </p>
                           </div>
                         )}
+                      </div>
+                    </div>
+                  )}
+
+                  {isGeneral && !isSiValue(editRegistryModal.data.isScholarship) && (
+                    <div className="p-4 rounded-xl mt-3 border border-teal-200 bg-teal-50/50 dark:border-slate-600 dark:bg-slate-800">
+                      <p className="text-[10px] font-black text-teal-800 dark:text-teal-100 uppercase tracking-widest mb-2">
+                        Asistencia sin cobro (empleado / cortesía{showPastorAttendanceOption ? ' / pastor' : ''})
+                      </p>
+                      <div className={attendanceSpecialGridClass}>
+                        {buildAttendanceSpecialFormOptions(showPastorAttendanceOption).map(({ id, label, Icon }) => (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() =>
+                              setEditRegistryModal({
+                                ...editRegistryModal,
+                                data: {
+                                  ...editRegistryModal.data,
+                                  attendanceSpecialType: id,
+                                  isScholarship: 'No',
+                                  scholarshipType: 'total',
+                                  scholarshipPartialAmount: '',
+                                  editApplyCampaignId: isFreeAttendanceType(id) ? '__none__' : editRegistryModal.data.editApplyCampaignId,
+                                },
+                              })
+                            }
+                            className={attendanceSpecialChoiceButtonClass(normalizeAttendanceSpecial(editRegistryModal.data), id)}
+                          >
+                            {Icon ? <Icon size={14} /> : null}
+                            {label}
+                          </button>
+                        ))}
                       </div>
                     </div>
                   )}
@@ -27443,6 +27555,17 @@ function resolveEventName(eventId) {
     />
   );
 
+  const renderPastoresPage = () => (
+    <PastoresPage
+      event={currentEvent}
+      participants={scopedEventParticipants}
+      visibleLocations={visibleLocations}
+      formatMoney={formatMoney}
+      onSavePastorFields={handleSavePastorFields}
+      savingPastorId={savingPastorId}
+    />
+  );
+
   const renderTransportPlanningPage = () => (
     <RosterSectionScrollWrap sectionId="transport-planning">
       <Suspense fallback={<ScreenLoadingFallback title="Cargando transporte…" />}>
@@ -28592,16 +28715,12 @@ function resolveEventName(eventId) {
     const cortesiaRows = eventRosterRows.filter((p) => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.cortesia);
     const cortesiaNonServerRows = cortesiaRows.filter((p) => !isSiValue(p.isServer));
     const empleadoRows = eventRosterRows.filter((p) => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.empleado);
-    const pastorRows = isBautizos
-      ? eventRosterRows.filter(
-          (p) => normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor
-        )
-      : [];
+    const pastorRows = eventRosterRows.filter((p) => isPastorParticipant(p, currentEvent?.eventType));
+    const totalPastorRealCost = sumPastorRealCostForParticipants(eventRosterRows, currentEvent?.eventType);
     const realCostExtraUnits =
       realCostX2Rows.length +
       (includeCortesiaInRealCost ? cortesiaNonServerRows.length : 0) +
-      (includeEmpleadoInRealCost ? empleadoRows.length : 0) +
-      (includePastorInRealCost && isBautizos ? pastorRows.length : 0);
+      (includeEmpleadoInRealCost ? empleadoRows.length : 0);
     const totalRealCostUnits = totalRegs + realCostExtraUnits;
     const cancelledRefundRows = allParticipants
       .filter((p) => p.eventId === eventId && participantIsCancelled(p))
@@ -28617,10 +28736,10 @@ function resolveEventName(eventId) {
     const recaudacionTotal = recaudacion;
     const recaudadoMenosListaGastos = recaudacionTotal - totalCost;
     /** Orden clásico (lista de gastos no resta aquí): recaudado − costo unitario×unidades − devoluciones. */
-    const balanceNetoSinListaGastos = recaudacionTotal - (realCostNum * totalRealCostUnits) - totalPendingRefund;
-    /** Lista de gastos se resta primero del recaudado total; luego costo unitario y devoluciones. */
+    const balanceNetoSinListaGastos = recaudacionTotal - (realCostNum * totalRealCostUnits) - totalPastorRealCost - totalPendingRefund;
+    /** Lista de gastos se resta primero del recaudado total; luego costo unitario, costos de pastores y devoluciones. */
     const balanceFinal =
-      recaudadoMenosListaGastos - (realCostNum * totalRealCostUnits) - totalPendingRefund;
+      recaudadoMenosListaGastos - (realCostNum * totalRealCostUnits) - totalPastorRealCost - totalPendingRefund;
 
     const campaBreakdownItems = Array.isArray(currentEvent?.campaRealCostBreakdownItems)
       ? currentEvent.campaRealCostBreakdownItems
@@ -28962,7 +29081,7 @@ function resolveEventName(eventId) {
               <p className={`text-[10px] font-black uppercase mb-1 ${balanceNetoSinListaGastos >= 0 ? 'text-indigo-600 dark:text-indigo-300' : 'text-red-600 dark:text-red-300'}`}>Balance inscripción (sin descontar lista de gastos aquí)</p>
               <p className={`text-2xl font-black ${balanceNetoSinListaGastos >= 0 ? 'text-indigo-700 dark:text-indigo-200' : 'text-red-700 dark:text-red-200'}`}>${balanceNetoSinListaGastos.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
               <p className={`text-[10px] mt-1 leading-snug ${balanceNetoSinListaGastos >= 0 ? 'text-indigo-600 dark:text-indigo-300' : 'text-red-600 dark:text-red-300'}`}>
-                {formatMoney(recaudacionTotal)} − ({formatMoney(realCostNum)} × {totalRealCostUnits}) − {formatMoney(totalPendingRefund)}
+                {formatMoney(recaudacionTotal)} − ({formatMoney(realCostNum)} × {totalRealCostUnits}) − {formatMoney(totalPastorRealCost)} pastores − {formatMoney(totalPendingRefund)}
               </p>
               {isCampa ? (
                 <p className={`text-[10px] mt-1 ${balanceNetoSinListaGastos >= 0 ? 'text-indigo-500 dark:text-indigo-300' : 'text-red-500 dark:text-red-300'}`}>
@@ -28971,20 +29090,10 @@ function resolveEventName(eventId) {
                   {includeEmpleadoInRealCost ? ` + Empleados ${empleadoRows.length}` : ''}
                 </p>
               ) : null}
-              {isBautizos ? (
-                <div className="mt-2 space-y-1" onClick={(e) => e.stopPropagation()}>
-                  <label className="flex items-center gap-2 text-[10px] font-semibold text-slate-600 dark:text-slate-300">
-                    <input
-                      type="checkbox"
-                      className="h-3.5 w-3.5 rounded accent-violet-600"
-                      checked={includePastorInRealCost}
-                      disabled={!hasAdminRights}
-                      onChange={(e) => void patchCampaRealCostCountOptions({ includePastorInRealCost: e.target.checked })}
-                    />
-                    Sumar pastores en costo unitario (+{pastorRows.length})
-                  </label>
-                  <p className="text-[9px] text-slate-500 dark:text-slate-400">Los pastores ya cuentan en registros activos; esta casilla agrega una unidad extra por pastor al multiplicar el costo real.</p>
-                </div>
+              {pastorRows.length > 0 ? (
+                <p className="text-[9px] mt-1 text-violet-700 dark:text-violet-300">
+                  Pastores ({pastorRows.length}): costo real individual {formatMoney(totalPastorRealCost)} — captúralo en la sección Pastores del menú.
+                </p>
               ) : null}
             </div>
             <div className={`rounded-2xl border shadow-sm p-5 bg-white dark:bg-slate-900 ${balanceFinal >= 0 ? 'border-emerald-200 dark:border-emerald-700' : 'border-red-200 dark:border-red-700'}`}>
@@ -29728,16 +29837,12 @@ function resolveEventName(eventId) {
     const rosterCortesiaList = eventRosterRows.filter((p) => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.cortesia);
     const rosterCortesiaNonServerList = rosterCortesiaList.filter((p) => !isSiValue(p.isServer));
     const rosterEmpleadoList = eventRosterRows.filter((p) => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.empleado);
-    const rosterPastorList = isBautizos
-      ? eventRosterRows.filter(
-          (p) => normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor
-        )
-      : [];
+    const rosterPastorList = eventRosterRows.filter((p) => isPastorParticipant(p, currentEvent?.eventType));
+    const totalPastorRealCostDashboard = sumPastorRealCostForParticipants(eventRosterRows, currentEvent?.eventType);
     const realCostExtraUnitsForCurrentEvent =
       rosterRealCostX2List.length +
       (includeCortesiaInRealCost ? rosterCortesiaNonServerList.length : 0) +
-      (includeEmpleadoInRealCost ? rosterEmpleadoList.length : 0) +
-      (includePastorInRealCost && isBautizos ? rosterPastorList.length : 0);
+      (includeEmpleadoInRealCost ? rosterEmpleadoList.length : 0);
     const sRealCostCard = getDashboardSummaryForCampaScope('dashRealCostX2');
     const totalRegsForRealCostCard = sRealCostCard.globalStats.all.count;
     const totalRealCostUnitsForCurrentEvent = totalRegsForRealCostCard + realCostExtraUnitsForCurrentEvent;
@@ -30056,6 +30161,7 @@ function resolveEventName(eventId) {
               if (bzAtt === BAUTIZOS_ATTENDANCE.servidor) acc.servers += allScopeDoubleWeight;
               if (bzAtt === BAUTIZOS_ATTENDANCE.asistente) acc.asistentesBautizos += allScopeDoubleWeight;
               if (bzAtt === BAUTIZOS_ATTENDANCE.cortesia) acc.cortesia += allScopeDoubleWeight;
+              if (bzAtt === BAUTIZOS_ATTENDANCE.pastor) acc.pastores += allScopeDoubleWeight;
             } else if (isSiValue(p.isServer)) {
               acc.servers += allScopeDoubleWeight;
             } else {
@@ -30075,6 +30181,9 @@ function resolveEventName(eventId) {
             }
             if (currentEvent?.eventType !== 'Bautizos' && normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.cortesia) {
               acc.cortesia += allScopeDoubleWeight;
+            }
+            if (currentEvent?.eventType !== 'Bautizos' && normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.pastor) {
+              acc.pastores += allScopeDoubleWeight;
             }
             if (currentEvent?.eventType === 'Campa' && isSiValue(p.willBeBaptized)) acc.bautizos += allScopeDoubleWeight;
           }
@@ -30122,6 +30231,7 @@ function resolveEventName(eventId) {
         bautizosCarro: 0,
         asistentesBautizos: 0,
         empleadosBautizos: 0,
+        pastores: 0,
         scholarship: 0,
         servers: 0,
         serveNo: 0,
@@ -30139,6 +30249,7 @@ function resolveEventName(eventId) {
         pending: 0,
         expected: 0,
         cortesia: 0,
+        pastores: 0,
       });
       if (currentEvent?.eventType === 'Bautizos' && bautizosCanonPlanForScope) {
         const locNorm = String(loc).trim();
@@ -30158,9 +30269,12 @@ function resolveEventName(eventId) {
         let transportN = 0;
         let carN = 0;
         let empleadosN = 0;
+        let pastoresN = 0;
         for (const p of filteredBzParty) {
           if (participantIsCancelled(p)) continue;
-          if (normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.empleado) empleadosN += 1;
+          const bzAtt = normalizeBautizosAttendanceType(p.bautizosAttendanceType);
+          if (bzAtt === BAUTIZOS_ATTENDANCE.empleado) empleadosN += 1;
+          if (bzAtt === BAUTIZOS_ATTENDANCE.pastor) pastoresN += 1;
           if (isSiValue(p.wantsBautizosTransport)) transportN += 1;
           if (bautizosLineGoesByCar(p)) carN += 1;
         }
@@ -30187,6 +30301,7 @@ function resolveEventName(eventId) {
         stats.bautizosTransport = transportN;
         stats.bautizosCarro = carN;
         stats.empleadosBautizos = empleadosN;
+        stats.pastores = pastoresN;
         let baptizedN = 0;
         for (const p of filteredBzParty) {
           if (participantIsCancelled(p)) continue;
@@ -30328,6 +30443,7 @@ function resolveEventName(eventId) {
         bautizosCarro: 0,
         asistentesBautizos: 0,
         empleadosBautizos: 0,
+        pastores: 0,
         scholarship: 0,
         servers: 0,
         serveNo: 0,
@@ -30412,16 +30528,18 @@ function resolveEventName(eventId) {
               campaAttendanceScopeMatches(isCampa, p, balScope) &&
               (!isBautizos || participantMatchesBautizosDashboardPartyScope(p, balBzScope))
           ).length
-        : 0) +
-      (includePastorInRealCost && isBautizos
-        ? rosterPastorList.filter(
-            (p) =>
-              campaAttendanceScopeMatches(isCampa, p, balScope) &&
-              (!isBautizos || participantMatchesBautizosDashboardPartyScope(p, balBzScope))
-          ).length
         : 0);
+    const totalPastorRealCostForBalance = sumPastorRealCostForParticipants(
+      rosterPastorList.filter(
+        (p) =>
+          campaAttendanceScopeMatches(isCampa, p, balScope) &&
+          (!isBautizos || participantMatchesBautizosDashboardPartyScope(p, balBzScope))
+      ),
+      currentEvent?.eventType
+    );
     const totalRealCostUnitsForBalance = totalRegsForBalanceCard + realCostExtraUnitsForBalance;
-    const balanceNeto = recaudadoAllForBalanceNeto + donationsInRecaudadoCard - realCostNum * totalRealCostUnitsForBalance;
+    const balanceNeto =
+      recaudadoAllForBalanceNeto + donationsInRecaudadoCard - realCostNum * totalRealCostUnitsForBalance - totalPastorRealCostForBalance;
     const summaryColumnKeysForEvent = getSummaryTableColumnKeysForEventType(currentEvent?.eventType);
     const isSummaryColHiddenForBautizos = (key) =>
       isBautizos && ['scholarship', 'serveNo', 'bautizos', 'teens', 'jovenes'].includes(key);
@@ -30599,6 +30717,8 @@ function resolveEventName(eventId) {
             currentEvent?.eventType === 'Bautizos' &&
             normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.empleado
           );
+        case 'pastores':
+          return !isCancelled && isPastorParticipant(p, currentEvent?.eventType);
         case 'asistentesBautizos':
           return (
             !isCancelled &&
@@ -35007,6 +35127,10 @@ function resolveEventName(eventId) {
                 <p className="mb-0.5 text-slate-600 dark:text-slate-200">
                   <strong>Asistencia especial:</strong> Cortesía (sin cobro)
                 </p>
+              ) : normalizeAttendanceSpecial(row) === ATTENDANCE_SPECIAL.pastor ? (
+                <p className="mb-0.5 text-slate-600 dark:text-slate-200">
+                  <strong>Asistencia especial:</strong> Pastor (sin cobro en lista)
+                </p>
               ) : null}
               <p className="text-slate-600 dark:text-slate-200 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                 <span>
@@ -36095,12 +36219,17 @@ function resolveEventName(eventId) {
     const isPastorNewReg =
       isBautizos &&
       normalizeBautizosAttendanceType(newEntry.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor;
-    const pastorOverCapAllowed = canShowBautizosPastorAttendance({
+    const pastorOverCapAllowed = canShowPastorAttendance({
       role: currentUser?.role,
       visibility: editorRegistrationFieldVis,
       hasAdminRights,
+      eventType: currentEvent?.eventType,
     });
     const canShowPastorAttendanceType = pastorOverCapAllowed;
+    const showPastorAttendanceNewReg = pastorOverCapAllowed;
+    const attendanceSpecialGridClassNewReg = showPastorAttendanceNewReg
+      ? 'grid grid-cols-2 sm:grid-cols-4 gap-2'
+      : 'grid grid-cols-3 gap-2';
     const newRegSubmitBlocked = newRegFormIssues.length > 0;
     const canSubmitNewRegistration = isLocOpen(loc) && !newRegSubmitBlocked;
     const newRegSubmitBlockedTooltip =
@@ -37343,12 +37472,8 @@ function resolveEventName(eventId) {
                   {!isSiValue(newEntry.isScholarship) && fv('attendanceSpecial') && (
                     <fieldset disabled={fieldBlocked('attendanceSpecial')} className={`sm:col-span-3 space-y-2 ${fieldBlocked('attendanceSpecial') ? 'opacity-70' : ''}`}>
                       <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Asistencia sin cobro (cuenta en registro)</p>
-                      <div className="grid grid-cols-3 gap-2">
-                        {[
-                          { id: ATTENDANCE_SPECIAL.ninguno, label: 'Ninguno', Icon: null },
-                          { id: ATTENDANCE_SPECIAL.empleado, label: 'Empleado', Icon: Briefcase },
-                          { id: ATTENDANCE_SPECIAL.cortesia, label: 'Cortesía', Icon: Gift },
-                        ].map(({ id, label, Icon }) => (
+                      <div className={attendanceSpecialGridClassNewReg}>
+                        {buildAttendanceSpecialFormOptions(showPastorAttendanceNewReg).map(({ id, label, Icon }) => (
                           <button
                             key={id}
                             type="button"
@@ -37372,6 +37497,38 @@ function resolveEventName(eventId) {
                     </fieldset>
                   )}
                 </div>
+              </section>
+            )}
+
+            {isGeneral && !restrictEditorForm && (fv('attendanceSpecial') || fv('pastorAttendance')) && (
+              <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3 dark:border-slate-600 dark:bg-slate-800">
+                <h4 className="mb-3 text-[10px] font-black uppercase tracking-[0.15em] text-slate-600 dark:text-slate-300 border-b border-slate-200 pb-1.5 dark:border-slate-600">
+                  {newRegSectionLabel('Asistencia sin cobro')}
+                </h4>
+                <fieldset disabled={fieldBlocked('attendanceSpecial')} className={fieldBlocked('attendanceSpecial') ? 'opacity-70' : ''}>
+                  <div className={attendanceSpecialGridClassNewReg}>
+                    {buildAttendanceSpecialFormOptions(showPastorAttendanceNewReg).map(({ id, label, Icon }) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() =>
+                          setNewEntry({
+                            ...newEntry,
+                            attendanceSpecialType: id,
+                            isScholarship: 'No',
+                            scholarshipType: 'total',
+                            scholarshipPartialAmount: '',
+                            selectedDiscountCampaignId: '',
+                          })
+                        }
+                        className={attendanceSpecialChoiceButtonClass(newEntry.attendanceSpecialType, id)}
+                      >
+                        {Icon ? <Icon size={14} /> : null}
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
               </section>
             )}
 
@@ -40230,6 +40387,7 @@ function resolveEventName(eventId) {
       renderBautizadosPage,
       renderBautizosCompanionsPage,
       renderResponsivasPage,
+      renderPastoresPage,
       renderTransportPlanningPage,
       renderCashCutPage,
       renderEditRegistryModalFormFields,

@@ -13,7 +13,7 @@ export const TAB_TO_ROUTE_SEGMENT = {
   BautizosCompanions: 'acompanantes',
   Responsivas: 'responsivas',
   RegistroGlobal: 'registro-global',
-  TransportPlanning: 'transporte',
+  PastoresPage: 'pastores',
   CashCut: 'corte-caja',
   ExpenseList: 'gastos',
 };
