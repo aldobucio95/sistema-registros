@@ -342,6 +342,12 @@ import {
 } from './registrationFormShared.js';
 import { donationAddsToRecaudacionBalance } from './donationHelpers.js';
 import {
+  CASH_CUT_NO_SERVICE_LABEL,
+  DEFAULT_SERVICE_SLOTS as CASH_CUT_DEFAULT_SERVICE_SLOTS,
+  getCashCutScheduleForLocation,
+  resolveCashCutServiceForTimestamp,
+} from './cashCutService.js';
+import {
   buildRefundDisbursementPaymentHistoryRow,
   buildParticipantPaidFieldsFromHistory,
   collectCashCutRefundDisbursements,
@@ -356,6 +362,7 @@ import {
   getRefundDisbursedGrossAmount,
   getRefundDisbursedNetAmount,
   parsePaymentHistoryRecordedAtMs,
+  participantIsCancelledForRefund,
   personHasRefundDisbursementPaymentHistoryRow,
   resolveRefundDisbursementTimestampMs,
   sumDisbursedRefundsGrossForEvent,
@@ -1247,50 +1254,7 @@ const campaAttendanceScopeMatches = (isCampaEvent, person, scope) => {
   return true;
 };
 
-const NO_SERVICE_LABEL = 'Fuera de servicios dominicales';
-
-/**
- * Horarios de servicio (Primero/Segundo/Tercero) por sede.
- * Prioridad: config global `cashCutScheduleByLocation` (única para todos los eventos) → evento → legado + `serviceSlots`.
- */
-const getCashCutScheduleForLocation = (
-  event,
-  locName,
-  globalSlots = DEFAULT_SERVICE_SLOTS,
-  globalScheduleByLocation = null,
-) => {
-  const scheduleFromRaw = (raw) => {
-    if (!raw || typeof raw !== 'object') return null;
-    const out = {};
-    for (const s of SERVICE_OPTIONS) {
-      const slot = raw[s];
-      if (slot && typeof slot.start === 'string' && typeof slot.end === 'string' && slot.start && slot.end) {
-        out[s] = { start: slot.start, end: slot.end };
-      }
-    }
-    return Object.keys(out).length > 0 ? out : null;
-  };
-
-  const fromGlobal = scheduleFromRaw(globalScheduleByLocation?.[locName]);
-  if (fromGlobal) return fromGlobal;
-
-  const fromEvent = scheduleFromRaw(event?.cashCutScheduleByLocation?.[locName]);
-  if (fromEvent) return fromEvent;
-
-  const legacy = event?.cashCutServicesByLocation?.[locName];
-  const list =
-    Array.isArray(legacy) && legacy.length
-      ? SERVICE_OPTIONS.filter((s) => legacy.includes(s))
-      : [...SERVICE_OPTIONS];
-  const out = {};
-  for (const s of list) {
-    out[s] = {
-      start: globalSlots[s]?.start || DEFAULT_SERVICE_SLOTS[s].start,
-      end: globalSlots[s]?.end || DEFAULT_SERVICE_SLOTS[s].end,
-    };
-  }
-  return out;
-};
+const NO_SERVICE_LABEL = CASH_CUT_NO_SERVICE_LABEL;
 
 /** Servicios de corte de caja por sede (subset ordenado de SERVICE_OPTIONS). */
 const getCashCutServicesForLocation = (
@@ -2177,13 +2141,16 @@ const formatPayHistoryRowDate = (pay) => {
 
 /** fallbackMs: p. ej. registeredAt del participante si recordedAt no parsea (evita usar Date.now() en cortes). */
 const getPaymentHistoryTimestamp = (h, fallbackMs = null) => {
+  const fromRecorded = parsePaymentHistoryRecordedAtMs(h);
+  if (fromRecorded != null) return fromRecorded;
   if (h?.recordedAt != null) {
     const t = parseFlexibleInstantMs(h.recordedAt);
     if (t != null) return t;
   }
-  if (typeof h?.id === 'number' && Number.isFinite(h.id)) return h.id;
-  const idStr = h?.id != null ? String(h.id).trim() : '';
-  if (/^\d{10,}$/.test(idStr)) return Number(idStr);
+  if (h?.date != null) {
+    const t = parseFlexibleInstantMs(h.date);
+    if (t != null) return t;
+  }
   if (fallbackMs != null && Number.isFinite(fallbackMs)) return fallbackMs;
   return null;
 };
@@ -2621,13 +2588,25 @@ function collectCashCutAllPayments(
     const paidGross = parseFloat(person.paid) || 0;
 
     historyRows.forEach((h) => {
+      if (h.kind === REFUND_DISBURSEMENT_PAYMENT_KIND && participantIsCancelledForRefund(person)) return;
       const ts = getPaymentHistoryTimestamp(h, fb);
       if (ts == null || Number.isNaN(ts)) return;
       const method = h.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
+      const locForService =
+        h.kind === REFUND_DISBURSEMENT_PAYMENT_KIND
+          ? resolveCancelledRefundSede(person) || loc
+          : loc;
+      const service =
+        typeof resolveServiceLabel === 'function'
+          ? resolveServiceLabel(person, ts, locForService)
+          : SERVICE_OPTIONS.includes(h.service)
+            ? h.service
+            : NO_SERVICE_LABEL;
       allPayments.push({
         ...h,
         netAmount: computeNetAmountByMethod(h.amount, method),
         method,
+        service,
         _ts: ts,
         _date: new Date(ts),
         _personName: person.name || '',
@@ -5842,25 +5821,12 @@ function resolveEventName(eventId) {
 
   const getAutoPaymentService = useCallback(
     (now = new Date(), locationName) => {
-      if (now.getDay() !== 0) return NO_SERVICE_LABEL;
-      const gs = globalConfig?.serviceSlots || DEFAULT_SERVICE_SLOTS;
       const loc = locationName ?? resolveRegistrationLocationForAutoService();
-      if (!loc || !currentEvent) return NO_SERVICE_LABEL;
-      const slotsMap = getCashCutScheduleForLocation(
-        currentEvent,
-        loc,
-        gs,
-        globalConfig?.cashCutScheduleByLocation,
-      );
-      const nowMin = now.getHours() * 60 + now.getMinutes();
-      for (const service of SERVICE_OPTIONS) {
-        const slot = slotsMap[service];
-        const start = parseHHMM(slot?.start);
-        const end = parseHHMM(slot?.end);
-        if (start == null || end == null) continue;
-        if (nowMin >= start && nowMin < end) return service;
-      }
-      return NO_SERVICE_LABEL;
+      return resolveCashCutServiceForTimestamp(now, loc, {
+        event: currentEvent,
+        globalSlots: globalConfig?.serviceSlots || CASH_CUT_DEFAULT_SERVICE_SLOTS,
+        globalScheduleByLocation: globalConfig?.cashCutScheduleByLocation,
+      });
     },
     [currentEvent, globalConfig?.serviceSlots, globalConfig?.cashCutScheduleByLocation, resolveRegistrationLocationForAutoService]
   );
@@ -24257,12 +24223,11 @@ function resolveEventName(eventId) {
         service: refundService,
         kind: REFUND_DISBURSEMENT_PAYMENT_KIND,
       };
-      const atMs = parseRefundDisbursedAtMs(person) ?? Date.now();
       const payload = {
         paymentHistory: hist,
         refundDisbursedAmount: newAmountAbs,
         refundDisbursedMethod: newMethod,
-        refundDisbursedAt: atMs,
+        refundDisbursedAt: refundAtMs,
         ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
       };
       await updateDoc(

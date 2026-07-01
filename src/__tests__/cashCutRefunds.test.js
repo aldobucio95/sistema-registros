@@ -5,6 +5,7 @@ import {
   getParticipantPhysicalRecaudadoGross,
   getRefundDisbursedGrossAmount,
   participantHasRefundDisbursement,
+  parsePaymentHistoryRecordedAtMs,
   REFUND_DISBURSEMENT_PAYMENT_KIND,
 } from '../cashCutRefunds.js';
 
@@ -73,5 +74,14 @@ describe('cashCutRefunds', () => {
     expect(row).not.toBeNull();
     expect(row.service).toBe('Primero');
     expect(row._ts).toBe(sundayMs);
+  });
+
+  it('parsePaymentHistoryRecordedAtMs reads recordedAt before legacy id', () => {
+    const sundayMs = new Date(2026, 5, 28, 10, 30, 0, 0).getTime();
+    const row = {
+      id: 'refund-disb-p1',
+      recordedAt: new Date(sundayMs).toISOString(),
+    };
+    expect(parsePaymentHistoryRecordedAtMs(row)).toBe(sundayMs);
   });
 });

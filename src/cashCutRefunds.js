@@ -8,6 +8,32 @@
 export const PARTICIPANT_CANCELLED_STATUS = 'cancelled';
 export const REFUND_DISBURSEMENT_PAYMENT_KIND = 'refund_disbursement';
 
+function parseInstantFieldMs(raw) {
+  if (raw == null || raw === '') return null;
+  if (typeof raw?.toDate === 'function') {
+    const d = raw.toDate();
+    const t = d.getTime();
+    return Number.isNaN(t) ? null : t;
+  }
+  if (typeof raw === 'object' && typeof raw.seconds === 'number') {
+    return raw.seconds * 1000 + Math.floor((raw.nanoseconds || 0) / 1e6);
+  }
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      const [yy, mm, dd] = s.split('-').map((n) => parseInt(n, 10));
+      const d = new Date(yy, mm - 1, dd, 12, 0, 0, 0);
+      const t = d.getTime();
+      return Number.isNaN(t) ? null : t;
+    }
+    const d = new Date(s);
+    const t = d.getTime();
+    return Number.isNaN(t) ? null : t;
+  }
+  return null;
+}
+
 export function refundDisbursementPaymentHistoryId(personId) {
   return `refund-disb-${String(personId)}`;
 }
@@ -94,16 +120,13 @@ export function findRefundPaymentHistoryRow(person) {
 /** Fecha/hora canónica de un movimiento en historial (prioriza `recordedAt` editado). */
 export function parsePaymentHistoryRecordedAtMs(row) {
   if (!row) return null;
-  const v = row.recordedAt;
-  if (v != null && v !== '') {
-    if (typeof v === 'number' && Number.isFinite(v)) return v;
-    const d = new Date(v);
-    const t = d.getTime();
-    if (!Number.isNaN(t)) return t;
-  }
+  const fromRec = parseInstantFieldMs(row.recordedAt);
+  if (fromRec != null) return fromRec;
   if (typeof row.id === 'number' && Number.isFinite(row.id)) return row.id;
   const idStr = row.id != null ? String(row.id).trim() : '';
   if (/^\d{10,}$/.test(idStr)) return Number(idStr);
+  const fromDate = parseInstantFieldMs(row.date);
+  if (fromDate != null) return fromDate;
   return null;
 }
 
@@ -199,7 +222,7 @@ export function buildCashCutRefundDisbursementRow(person, computeNetAmountByMeth
   const service =
     typeof resolveServiceLabel === 'function'
       ? resolveServiceLabel(person, ts, loc)
-      : histRow?.service || 'Devolución';
+      : String(histRow?.service || '').trim() || 'Devolución';
   return {
     id: `refund-disb-${person.id}`,
     amount: -gross,
