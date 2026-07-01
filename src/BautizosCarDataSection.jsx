@@ -14,6 +14,7 @@ export function BautizosCarDataSection({
   draftMetaByVehicleKey = {},
   onDraftMetaChange,
   canEdit = true,
+  eventLike = null,
   sectionClass = 'rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800/50 p-3',
   sectionTitle = 'Datos de carros',
   colorSuggestions = [],
@@ -23,7 +24,7 @@ export function BautizosCarDataSection({
   labelClasses = 'text-[10px] font-bold text-slate-600 dark:text-slate-300',
 }) {
   const [open, setOpen] = useState(true);
-  if (!familyHasAnyCarTransport(hostPerson, companions)) return null;
+  if (!familyHasAnyCarTransport(hostPerson, companions, eventLike)) return null;
 
   const requirePassengers = carCrewRequiresPassengerSelection(hostPerson, companions);
 

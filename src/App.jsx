@@ -5963,6 +5963,7 @@ function resolveEventName(eventId) {
     setSpouseLinkSearchNew('');
     setSendToWaitlist(false);
     setNewRegGeneralComment('');
+    setNewRegDraftCarMeta({});
     if (currentUser?.id && currentEvent?.id) clearRegistrationFormDraft(currentUser.id, currentEvent.id);
     showToast('Formulario limpiado.');
   }, [getAutoPaymentService, showToast, currentEvent?.eventType, currentUser?.id, currentEvent?.id]);
@@ -20843,6 +20844,7 @@ function resolveEventName(eventId) {
                         companions={editRegistryModal.data.bautizosCompanions || []}
                         plan={currentEvent?.transportPlanning}
                         hostSourceKey={`p:${String(editRegistryModal.data.id || '').trim()}`}
+                        eventLike={currentEvent}
                         draftMetaByVehicleKey={editRegDraftCarMeta}
                         onDraftMetaChange={(vehicleKey, patch) => {
                           setEditRegDraftCarMeta((prev) => ({
@@ -37017,24 +37019,6 @@ function resolveEventName(eventId) {
                             <p className="text-[10px] text-slate-500">
                               Si llega en carro, el costo de transporte es $0. Esta opción no se puede combinar con transporte organizado.
                             </p>
-                            {!!newEntry.llegaEnCarro && (
-                              <div className="mt-2 max-w-[220px]">
-                                <label className={labelClasses}>Cantidad de carros</label>
-                                <input
-                                  type="number"
-                                  min={1}
-                                  step={1}
-                                  className={inputClasses}
-                                  value={normalizeArrivalCarCount(newEntry.carrosLlegada)}
-                                  onChange={(e) =>
-                                    setNewEntry({
-                                      ...newEntry,
-                                      carrosLlegada: normalizeArrivalCarCount(e.target.value),
-                                    })
-                                  }
-                                />
-                              </div>
-                            )}
                           </div>
                           {isSiValue(newEntry.wantsBautizosTransport) &&
                             !newEntry.llegaEnCarro && (
@@ -37091,6 +37075,7 @@ function resolveEventName(eventId) {
                       bautizosTransport: fv('bautizosTransport'),
                       travelFrom: fv('travelFrom'),
                       travelTo: fv('travelTo'),
+                      hideCarCountInTransport: true,
                     }}
                     inputClasses={inputClasses}
                     labelClasses={labelClasses}
@@ -37119,6 +37104,48 @@ function resolveEventName(eventId) {
                     disabled={fieldBlocked('bautizosCompanions')}
                   />
                 )}
+                {familyHasAnyCarTransport(newEntry, newEntry.bautizosCompanions || [], currentEvent) ? (
+                  <BautizosCarDataSection
+                    hostPerson={newEntry}
+                    companions={newEntry.bautizosCompanions || []}
+                    plan={currentEvent?.transportPlanning}
+                    hostSourceKey="p:draft-host"
+                    eventLike={currentEvent}
+                    draftMetaByVehicleKey={newRegDraftCarMeta}
+                    onDraftMetaChange={(vehicleKey, patch) => {
+                      setNewRegDraftCarMeta((prev) => ({
+                        ...prev,
+                        [vehicleKey]: { ...(prev[vehicleKey] || {}), ...patch },
+                      }));
+                    }}
+                    canEdit={!fieldBlocked('bautizosTransport')}
+                    sectionTitle={newRegSectionLabel('Datos de carros')}
+                    colorSuggestions={bautizosCarColorSuggestions}
+                    labelClasses={labelClasses}
+                    onHostCarCountChange={(count) =>
+                      setNewEntry({ ...newEntry, carrosLlegada: normalizeArrivalCarCount(count) })
+                    }
+                    onCompanionCarCountChange={(companionIndex, count) => {
+                      setNewEntry((prev) => {
+                        const comps = [...(prev.bautizosCompanions || [])];
+                        if (comps[companionIndex]) {
+                          comps[companionIndex] = {
+                            ...comps[companionIndex],
+                            carrosLlegada: normalizeArrivalCarCount(count),
+                          };
+                        }
+                        return { ...prev, bautizosCompanions: comps };
+                      });
+                    }}
+                    onDraftMetaPrune={(keys) => {
+                      setNewRegDraftCarMeta((prev) => {
+                        const next = { ...prev };
+                        for (const k of keys) delete next[k];
+                        return next;
+                      });
+                    }}
+                  />
+                ) : null}
               </>
             )}
 
