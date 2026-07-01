@@ -154,13 +154,9 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
 export async function refetchParticipantsForLocation(eventId, location, opts = {}) {
   const eid = String(eventId || '').trim();
   const loc = normalizeLocKey(location);
-  if (!eid || !loc) return [];
+  if (!eid || !loc) return { slice: [], versionWritten: 0 };
 
   const scope = scopeParticipantsLocation(eid, loc);
-  const remoteV =
-    opts.remoteV != null
-      ? normalizeCacheVersion(opts.remoteV)
-      : await fetchRemoteCacheVersion(scope, { preferServer: true });
 
   let slice;
   const runQuery = async (q) => {
@@ -186,10 +182,13 @@ export async function refetchParticipantsForLocation(eventId, location, opts = {
       .filter((p) => normalizeLocKey(p.location) === loc);
   }
 
-  const vToStore = await resolveVersionForStore(scope, remoteV);
-  await writeLocalVersionCache(scope, vToStore, slice, { eventId: eid, location: loc });
-  logCacheDecision(scope, { event: 'refetch', version: vToStore, rows: slice.length, sede: loc });
-  return stripCompanionWaitlistPhantomRows(slice);
+  const latestV = await fetchRemoteCacheVersion(scope, { preferServer: true });
+  const vToStore =
+    latestV > 0 ? latestV : await resolveVersionForStore(scope, normalizeCacheVersion(opts.remoteV));
+  const cleaned = stripCompanionWaitlistPhantomRows(slice);
+  await writeLocalVersionCache(scope, vToStore, cleaned, { eventId: eid, location: loc });
+  logCacheDecision(scope, { event: 'refetch', version: vToStore, rows: cleaned.length, sede: loc });
+  return { slice: cleaned, versionWritten: vToStore };
 }
 
 export function replaceParticipantsForLocation(prev, eventId, location, slice) {
@@ -201,18 +200,40 @@ export function replaceParticipantsForLocation(prev, eventId, location, slice) {
   return [...filtered, ...slice];
 }
 
+/** Suprime refetch del listener mientras esta pestaña escribe participantes en ráfaga (p. ej. backfill WA). */
+let participantVersionListenerSuppressDepth = 0;
+
+export function suppressParticipantVersionListeners() {
+  participantVersionListenerSuppressDepth += 1;
+  return () => {
+    participantVersionListenerSuppressDepth = Math.max(0, participantVersionListenerSuppressDepth - 1);
+  };
+}
+
+export function isParticipantVersionListenerSuppressed() {
+  return participantVersionListenerSuppressDepth > 0;
+}
+
 /**
  * Escucha cambios de versión por sede; si cambia, pide recargar esa sede.
+ * @returns {{ unsub: () => void, acknowledgeLocationVersion: (loc: string, remoteV: number) => void }}
  */
-export function subscribeParticipantsLocationVersions(eventId, locations, onLocationStale) {
+export function subscribeParticipantsLocationVersions(eventId, locations, onLocationStale, opts = {}) {
+  const shouldSuppressStale =
+    typeof opts.shouldSuppressStale === 'function' ? opts.shouldSuppressStale : () => false;
   const eid = String(eventId || '').trim();
   const locs = [...new Set((locations || []).map(normalizeLocKey).filter(Boolean))];
   const unsubs = [];
+  /** @type {Map<string, (remoteV: number) => void>} */
+  const ackByLoc = new Map();
 
   for (const loc of locs) {
     const scope = scopeParticipantsLocation(eid, loc);
     let isFirst = true;
     let lastRemoteV = null;
+    ackByLoc.set(loc, (remoteV) => {
+      lastRemoteV = normalizeCacheVersion(remoteV);
+    });
     const unsub = onSnapshot(
       getDocRef('app_cache_versions', scope),
       { includeMetadataChanges: false },
@@ -229,6 +250,8 @@ export function subscribeParticipantsLocationVersions(eventId, locations, onLoca
         if (remoteV === lastRemoteV) return;
         lastRemoteV = remoteV;
 
+        if (shouldSuppressStale()) return;
+
         const local = readLocalVersionCache(scope);
         if (local && participantCacheVersionsCompatible(local.version, remoteV)) return;
         logCacheDecision(scope, {
@@ -244,45 +267,91 @@ export function subscribeParticipantsLocationVersions(eventId, locations, onLoca
     unsubs.push(unsub);
   }
 
-  return () => {
-    for (const u of unsubs) u();
+  return {
+    unsub: () => {
+      for (const u of unsubs) u();
+    },
+    acknowledgeLocationVersion(loc, remoteV) {
+      const key = normalizeLocKey(loc);
+      const fn = ackByLoc.get(key);
+      if (fn) fn(remoteV);
+    },
   };
 }
 
+const DEFAULT_STALE_REFETCH_DEBOUNCE_MS = 1500;
+
 /**
- * Coalesce avisos de sedes obsoletas (evita N refetch seguidos al abrir un evento con muchas sedes).
- * @param {(eventId: string, staleItems: { loc: string, remoteV: number }[]) => void} onLocationsStale
+ * Coalesce avisos de sedes obsoletas (trailing debounce + un refetch a la vez).
+ * @param {(eventId: string, staleItems: { loc: string, remoteV: number }[]) => Promise<{ loc: string, versionWritten: number }[]|void>} onLocationsStale
  */
 export function subscribeParticipantsLocationVersionsDebounced(
   eventId,
   locations,
   onLocationsStale,
-  debounceMs = 400
+  debounceMs = DEFAULT_STALE_REFETCH_DEBOUNCE_MS
 ) {
   /** @type {Map<string, number>} */
   const pendingByLoc = new Map();
   let timer = null;
+  let inFlight = false;
+  let needsAnotherFlush = false;
   const eid = String(eventId || '').trim();
+  const waitMs = Math.max(500, Number(debounceMs) || DEFAULT_STALE_REFETCH_DEBOUNCE_MS);
 
-  const flush = () => {
+  const subscription = subscribeParticipantsLocationVersions(
+    eid,
+    locations,
+    (_ev, loc, remoteV) => {
+      if (isParticipantVersionListenerSuppressed()) return;
+      const key = normalizeLocKey(loc);
+      if (!key) return;
+      const prev = pendingByLoc.get(key) || 0;
+      pendingByLoc.set(key, Math.max(prev, normalizeCacheVersion(remoteV)));
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void runFlush(), waitMs);
+    },
+    { shouldSuppressStale: isParticipantVersionListenerSuppressed }
+  );
+
+  const runFlush = async () => {
     timer = null;
+    if (inFlight) {
+      needsAnotherFlush = true;
+      return;
+    }
     if (pendingByLoc.size === 0) return;
+    if (isParticipantVersionListenerSuppressed()) {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void runFlush(), waitMs);
+      return;
+    }
+
     const staleItems = [...pendingByLoc.entries()].map(([loc, remoteV]) => ({ loc, remoteV }));
     pendingByLoc.clear();
-    onLocationsStale(eid, staleItems);
+    inFlight = true;
+    try {
+      const acks = await onLocationsStale(eid, staleItems);
+      if (Array.isArray(acks)) {
+        for (const { loc, versionWritten } of acks) {
+          if (versionWritten != null) subscription.acknowledgeLocationVersion(loc, versionWritten);
+        }
+      }
+    } catch (err) {
+      console.error('[cache-version] refetch sede(s) debounced', err);
+    } finally {
+      inFlight = false;
+      if (needsAnotherFlush || pendingByLoc.size > 0) {
+        needsAnotherFlush = false;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => void runFlush(), waitMs);
+      }
+    }
   };
-
-  const unsub = subscribeParticipantsLocationVersions(eid, locations, (_ev, loc, remoteV) => {
-    const key = normalizeLocKey(loc);
-    if (!key) return;
-    pendingByLoc.set(key, normalizeCacheVersion(remoteV));
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(flush, Math.max(100, Number(debounceMs) || 400));
-  });
 
   return () => {
     if (timer) clearTimeout(timer);
-    unsub();
+    subscription.unsub();
   };
 }
 

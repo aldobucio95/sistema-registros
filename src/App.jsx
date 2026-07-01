@@ -572,6 +572,7 @@ import {
   scopeParticipantsLocation,
   resolveVersionForStore,
   subscribeLogsHeadVersionDebounced,
+  syncLocalVersionIndexFromIdb,
 } from './firestoreVersionCache.js';
 import {
   loadEventParticipantsWithVersionCache,
@@ -581,6 +582,7 @@ import {
   subscribeParticipantsLocationVersionsDebounced,
   loadArchivedParticipantsWithVersionCache,
   subscribeArchiveParticipantsVersion,
+  suppressParticipantVersionListeners,
 } from './participantsVersionCache.js';
 import {
   syncParticipantAfterWrite,
@@ -4673,77 +4675,98 @@ const App = () => {
     if (carDataWaBackfillDoneRef.current.has(eid)) return;
     carDataWaBackfillDoneRef.current.add(eid);
 
-    const run = async () => {
-      for (const p of allParticipants) {
-        if (String(p?.eventId || '') !== eid) continue;
-        if (!participantIsActiveInRoster(p)) continue;
-        const anchor = resolveBautizosCarDataAnchor(p, allParticipants, currentEvent);
-        if (!anchor.eligible || !anchor.waRecipient || !anchor.anchorPerson) continue;
-        if (String(anchor.waRecipient.id || '').trim() !== String(p.id || '').trim()) continue;
-        const inventory = buildBautizosFamilyCarInventory({
-          hostPerson: anchor.anchorPerson,
-          companions: anchor.inventoryCompanions,
-          plan: currentEvent.transportPlanning,
-          hostSourceKey: `p:${String(anchor.anchorPerson.id || '').trim()}`,
-        });
-        if (
-          !familyCarInventoryNeedsAttention(inventory, {
-            hostPerson: anchor.anchorPerson,
-            companions: anchor.companionsForCrew,
-          })
-        ) {
-          continue;
-        }
-        const existing = Array.isArray(p.whatsAppFinanceNotifications) ? p.whatsAppFinanceNotifications : [];
-        const existingCar = dedupeUnsentCarDataNotifications(existing).find(
-          (n) => n && !n.sent && String(n?.kind || '') === 'datos_carro'
-        );
-        if (existingCar && isCarDataNotificationSnoozed(existingCar)) continue;
-        const createdAt = Date.now();
-        const loc = String(p.location || '').trim();
-        const pid = String(p.id || '').trim();
-        const carDataSubjectContext = buildCarDataWaSubjectContext(
-          anchor.anchorPerson,
-          anchor.inventoryCompanions
-        );
-        const message = buildCarDataRequestWhatsAppMessage({
-          person: p,
-          loc,
-          eventSnapshot: currentEvent,
-          carSlots: inventory,
-          reportedAtMs: createdAt,
-          requiresPassengers: carCrewRequiresPassengerSelection(
-            anchor.anchorPerson,
-            anchor.companionsForCrew
-          ),
-          carDataSubjectContext,
-        });
-        const notification = {
-          id: buildCarDataWhatsAppNotificationId(pid, eid),
-          kind: 'datos_carro',
-          carSlots: inventory,
-          carDataSubjectContext,
-          message,
-          createdAt: existingCar?.createdAt ?? createdAt,
-          sent: false,
-          sentAt: null,
-        };
-        const nextNotifications = upsertCarDataWhatsAppNotification(existing, notification);
-        const unchanged =
-          existingCar &&
-          String(existingCar.message || '') === message &&
-          !isCarDataNotificationSnoozed(existingCar, createdAt);
-        if (unchanged) continue;
+    const deferMs = 4000;
+    const timer = setTimeout(() => {
+      const releaseSuppress = suppressParticipantVersionListeners();
+      const touchedLocs = new Set();
+
+      const run = async () => {
         try {
-          await updateDoc(getDocRef('app_participants', pid), {
-            whatsAppFinanceNotifications: nextNotifications,
-          });
-        } catch (err) {
-          console.warn('car data WA backfill', err);
+          for (const p of allParticipants) {
+            if (String(p?.eventId || '') !== eid) continue;
+            if (!participantIsActiveInRoster(p)) continue;
+            const anchor = resolveBautizosCarDataAnchor(p, allParticipants, currentEvent);
+            if (!anchor.eligible || !anchor.waRecipient || !anchor.anchorPerson) continue;
+            if (String(anchor.waRecipient.id || '').trim() !== String(p.id || '').trim()) continue;
+            const inventory = buildBautizosFamilyCarInventory({
+              hostPerson: anchor.anchorPerson,
+              companions: anchor.inventoryCompanions,
+              plan: currentEvent.transportPlanning,
+              hostSourceKey: `p:${String(anchor.anchorPerson.id || '').trim()}`,
+            });
+            if (
+              !familyCarInventoryNeedsAttention(inventory, {
+                hostPerson: anchor.anchorPerson,
+                companions: anchor.companionsForCrew,
+              })
+            ) {
+              continue;
+            }
+            const existing = Array.isArray(p.whatsAppFinanceNotifications)
+              ? p.whatsAppFinanceNotifications
+              : [];
+            const existingCar = dedupeUnsentCarDataNotifications(existing).find(
+              (n) => n && !n.sent && String(n?.kind || '') === 'datos_carro'
+            );
+            if (existingCar && isCarDataNotificationSnoozed(existingCar)) continue;
+            const createdAt = Date.now();
+            const loc = String(p.location || '').trim();
+            const pid = String(p.id || '').trim();
+            const carDataSubjectContext = buildCarDataWaSubjectContext(
+              anchor.anchorPerson,
+              anchor.inventoryCompanions
+            );
+            const message = buildCarDataRequestWhatsAppMessage({
+              person: p,
+              loc,
+              eventSnapshot: currentEvent,
+              carSlots: inventory,
+              reportedAtMs: createdAt,
+              requiresPassengers: carCrewRequiresPassengerSelection(
+                anchor.anchorPerson,
+                anchor.companionsForCrew
+              ),
+              carDataSubjectContext,
+            });
+            const notification = {
+              id: buildCarDataWhatsAppNotificationId(pid, eid),
+              kind: 'datos_carro',
+              carSlots: inventory,
+              carDataSubjectContext,
+              message,
+              createdAt: existingCar?.createdAt ?? createdAt,
+              sent: false,
+              sentAt: null,
+            };
+            const nextNotifications = upsertCarDataWhatsAppNotification(existing, notification);
+            const unchanged =
+              existingCar &&
+              String(existingCar.message || '') === message &&
+              JSON.stringify(existingCar.carSlots || null) === JSON.stringify(inventory || null) &&
+              !isCarDataNotificationSnoozed(existingCar, createdAt);
+            if (unchanged) continue;
+            try {
+              await updateDoc(getDocRef('app_participants', pid), {
+                whatsAppFinanceNotifications: nextNotifications,
+              });
+              if (loc) touchedLocs.add(loc);
+            } catch (err) {
+              console.warn('car data WA backfill', err);
+            }
+          }
+        } finally {
+          await Promise.all(
+            [...touchedLocs].map((loc) =>
+              syncLocalVersionIndexFromIdb(scopeParticipantsLocation(eid, loc))
+            )
+          );
+          releaseSuppress();
         }
-      }
-    };
-    void run();
+      };
+      void run();
+    }, deferMs);
+
+    return () => clearTimeout(timer);
   }, [isBautizos, currentEvent?.id, currentEvent?.transportPlanning, allParticipants]);
   /** Tras escribir en Firestore: parche en memoria + invalidar caché por sede (y sede anterior si cambió). */
   const refreshParticipantCache = useCallback(
@@ -8125,23 +8148,28 @@ function resolveEventName(eventId) {
             eid,
             locations,
             async (eventId, staleItems) => {
-              try {
-                const slices = await Promise.all(
-                  staleItems.map(({ loc, remoteV }) =>
-                    refetchParticipantsForLocation(eventId, loc, { remoteV })
-                  )
-                );
-                if (cancelled) return;
-                setAllParticipants((prev) => {
-                  let next = prev;
-                  staleItems.forEach(({ loc }, i) => {
-                    next = replaceParticipantsForLocation(next, eventId, loc, slices[i]);
-                  });
-                  return next;
-                });
-              } catch (err) {
-                console.error('[cache-version] refetch sede(s)', err);
+              const results = await Promise.all(
+                staleItems.map(({ loc, remoteV }) =>
+                  refetchParticipantsForLocation(eventId, loc, { remoteV })
+                )
+              );
+              if (cancelled) {
+                return staleItems.map(({ loc }, i) => ({
+                  loc,
+                  versionWritten: results[i]?.versionWritten ?? 0,
+                }));
               }
+              setAllParticipants((prev) => {
+                let next = prev;
+                staleItems.forEach(({ loc }, i) => {
+                  next = replaceParticipantsForLocation(next, eventId, loc, results[i]?.slice || []);
+                });
+                return next;
+              });
+              return staleItems.map(({ loc }, i) => ({
+                loc,
+                versionWritten: results[i]?.versionWritten ?? 0,
+              }));
             }
           );
         }

@@ -13,6 +13,16 @@ let logsHeadBumpTimer = null;
 let logsHeadBumpPending = false;
 let logsCountDeltaPending = 0;
 
+/** Coalesce bumps por sede/archivo (ráfagas de backfill WA, etc.). */
+const PARTICIPANT_BUMP_DEBOUNCE_MS = 1500;
+/** @type {Map<string, NodeJS.Timeout>} */
+const participantBumpTimers = new Map();
+/** @type {Map<string, { db: import('firebase-admin/firestore').Firestore, meta: object }>} */
+const participantBumpPending = new Map();
+
+/** Campos que no alteran el roster cacheado en el panel (no invalidar por ellos solos). */
+const CACHE_NO_INVALIDATE_KEYS = new Set(['whatsAppFinanceNotifications', 'whatsAppMessageHistory']);
+
 function nextCircularVersion(current) {
   const n = Math.floor(Number(current) || 0);
   if (n < 1) return 1;
@@ -48,6 +58,23 @@ function scopeLogsHead() {
   return 'logs_head';
 }
 
+function stripCacheIrrelevantFields(row) {
+  if (!row || typeof row !== 'object') return row;
+  const out = { ...row };
+  for (const k of CACHE_NO_INVALIDATE_KEYS) delete out[k];
+  return out;
+}
+
+/**
+ * ¿El write cambia datos de roster? Crear/borrar siempre; updates solo si cambia algo fuera de WA/cosmética.
+ */
+function participantWriteAffectsRosterCache(before, after) {
+  if (!before || !after) return true;
+  const a = stripCacheIrrelevantFields(before);
+  const b = stripCacheIrrelevantFields(after);
+  return JSON.stringify(a) !== JSON.stringify(b);
+}
+
 /**
  * @param {import('firebase-admin/firestore').Firestore} db
  */
@@ -73,12 +100,32 @@ async function bumpCacheVersionDoc(db, scope, meta = {}) {
   });
 }
 
+function scheduleParticipantCacheBump(db, scope, meta = {}) {
+  participantBumpPending.set(scope, { db, meta });
+  const prev = participantBumpTimers.get(scope);
+  if (prev) clearTimeout(prev);
+  participantBumpTimers.set(
+    scope,
+    setTimeout(() => {
+      participantBumpTimers.delete(scope);
+      const pending = participantBumpPending.get(scope);
+      participantBumpPending.delete(scope);
+      if (!pending) return;
+      bumpCacheVersionDoc(pending.db, scope, pending.meta).catch((e) => {
+        console.error('scheduleParticipantCacheBump', scope, e);
+      });
+    }, PARTICIPANT_BUMP_DEBOUNCE_MS)
+  );
+}
+
 /**
  * @param {import('firebase-admin/firestore').Firestore} db
  * @param {object|null|undefined} before
  * @param {object|null|undefined} after
  */
 async function bumpParticipantCacheVersionsFromWrite(db, before, after) {
+  if (!participantWriteAffectsRosterCache(before, after)) return;
+
   const locationScopes = new Set();
   let bumpArchive = false;
 
@@ -98,18 +145,15 @@ async function bumpParticipantCacheVersionsFromWrite(db, before, after) {
     if (String(row.status || '').trim() === PARTICIPANT_STATUS_ARCHIVED) bumpArchive = true;
   }
 
-  const tasks = [...locationScopes].map((scope) =>
-    bumpCacheVersionDoc(db, scope, { action: 'participant-write', source: 'cloud' })
-  );
-  if (bumpArchive) {
-    tasks.push(
-      bumpCacheVersionDoc(db, scopeParticipantsArchive(), {
-        action: 'participant-archived',
-        source: 'cloud',
-      })
-    );
+  for (const scope of locationScopes) {
+    scheduleParticipantCacheBump(db, scope, { action: 'participant-write', source: 'cloud' });
   }
-  await Promise.all(tasks);
+  if (bumpArchive) {
+    scheduleParticipantCacheBump(db, scopeParticipantsArchive(), {
+      action: 'participant-archived',
+      source: 'cloud',
+    });
+  }
 }
 
 /**
@@ -168,4 +212,7 @@ module.exports = {
   scopeParticipantsLocation,
   scopeParticipantsArchive,
   scopeLogsHead,
+  participantWriteAffectsRosterCache,
+  stripCacheIrrelevantFields,
+  CACHE_NO_INVALIDATE_KEYS,
 };
