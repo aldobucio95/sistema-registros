@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && node scripts/persist-vite-build-seq.mjs",
+    "build:prod": "node scripts/build-production.mjs",
     "check:utf8": "node scripts/validate-utf8.mjs",
     "check:invariants": "node scripts/check-regression-invariants.mjs",
     "snapshot:critical": "node scripts/snapshot-critical-files.mjs",
@@ -17,9 +18,10 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "generate:pwa-icon": "node scripts/generate-pwa-icon.mjs",
-    "deploy:firestore": "pnpm dlx firebase-tools@latest deploy --only firestore",
+    "deploy:firestore": "node scripts/deploy-firestore.mjs",
     "bump:client-reload": "node scripts/bump-client-reload-nonce.mjs",
-    "deploy:hosting": "pnpm run build && pnpm dlx firebase-tools@latest deploy --only hosting"
+    "deploy:hosting": "node scripts/deploy-hosting.mjs",
+    "deploy:hosting:skip-build": "node scripts/deploy-hosting.mjs --skip-build"
   },
   "dependencies": {
     "firebase": "^12.12.1",
@@ -40,6 +42,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "firebase-admin": "^13.8.0",
+    "firebase-tools": "^14.11.0",
     "globals": "^17.4.0",
     "postcss": "^8.5.8",
     "sharp": "^0.34.5",

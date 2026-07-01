@@ -34,7 +34,13 @@ Ejecutar `pnpm run snapshot:critical` antes de tocar:
 
 ## Al terminar una sesión con cambios
 
-Ejecutar `pnpm run agent:finish` (valida UTF-8, build, commit y push a `agent/auto`).
+Ejecutar `pnpm run agent:finish` (valida UTF-8, build si no hay lock ni build reciente, commit y push a `agent/auto`).
+
+## Build de verificación
+
+- **Un** `pnpm run build` o `pnpm run build:prod` al **final** de la tarea con cambios de código.
+- No repetir si `.agent/last-successful-build.json` tiene menos de **10 minutos**.
+- No compilar tras cada edición pequeña en `App.jsx`.
 
 ## Conteos canónicos en roster por sede (Bautizos)
 
@@ -44,4 +50,4 @@ Tras cambios en chips o resumen, ejecutar `pnpm run check:invariants`.
 
 ## Cierre de tarea
 
-Antes de dar por cerrado: `pnpm run check:utf8`, `pnpm run check:invariants`, `pnpm run build`.
+Antes de dar por cerrado: `pnpm run check:utf8`, `pnpm run check:invariants`, y **un** `pnpm run build` (solo si no hubo build exitoso en los últimos 10 min).

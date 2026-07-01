@@ -31,7 +31,19 @@ Si prefieres no usar el hook automático:
 pnpm run agent:finish
 ```
 
-## 4. Antes de editar App.jsx
+`agent:finish` omite el build si hay un deploy/build en curso (`.agent/heavy-task.lock`) o si hubo build exitoso en los últimos 10 min (`.agent/last-successful-build.json`).
+
+## 4. Deploy con candado de memoria
+
+```bash
+pnpm run build:prod          # build con lock + tope de heap
+pnpm run deploy:hosting      # build + firebase hosting (un proceso a la vez)
+pnpm run deploy:firestore    # solo reglas/índices
+```
+
+No ejecutar `deploy:hosting` en paralelo con otra terminal que corra `build` o `test`.
+
+## 5. Antes de editar App.jsx
 
 ```bash
 pnpm run snapshot:critical

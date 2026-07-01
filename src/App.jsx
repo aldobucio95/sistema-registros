@@ -204,6 +204,7 @@ import {
   resolveCompanionWaitlistVirtualLocation,
   resolveParticipantEffectiveLocation,
 } from './bautizosCompanionWaitlist.js';
+import { buildBautizosRosterIndex, getCompanionWaitlistVirtualFromIndex } from './bautizosRosterIndex.js';
 import {
   computeWaitlistCountsForEvent,
   participantCountsForCupoWaitlistColumn,
@@ -9007,6 +9008,11 @@ function resolveEventName(eventId) {
     return groupedData;
   }, [allParticipants, currentEvent, globalLocations]);
 
+  const bautizosRosterIndex = useMemo(
+    () => buildBautizosRosterIndex(allParticipants, currentEvent),
+    [allParticipants, currentEvent?.id, currentEvent?.eventType]
+  );
+
   /** Conteo por sede para la tabla «Cupo vs Espera»: misma lógica que columna Lista de espera del dashboard. */
   const waitlistCupoCountBySede = useMemo(() => {
     if (!currentEvent?.id) return {};
@@ -9169,7 +9175,7 @@ function resolveEventName(eventId) {
     const base = [...(waitlistData[loc] || [])];
     const virtual =
       currentEvent?.eventType === 'Bautizos'
-        ? collectCompanionWaitlistVirtualRows(allParticipants, currentEvent, loc)
+        ? getCompanionWaitlistVirtualFromIndex(bautizosRosterIndex, loc)
         : [];
     return [...base, ...virtual].sort((a, b) => {
       const ma = parseFlexibleInstantMs(a?.registeredAt);
@@ -9179,7 +9185,7 @@ function resolveEventName(eventId) {
       if (fa !== fb) return fa - fb;
       return String(a?.id ?? '').localeCompare(String(b?.id ?? ''), 'es');
     });
-  }, [waitlistData, allParticipants, currentEvent]);
+  }, [waitlistData, bautizosRosterIndex, currentEvent?.eventType]);
 
   const getSortedCancelledForLocation = useCallback((loc) => {
     return [...(cancelledData[loc] || [])].sort(compareParticipantsByRegisteredAtAsc);
@@ -27674,77 +27680,12 @@ function resolveEventName(eventId) {
       .map((l) => String(l).trim())
       .filter(Boolean)
       .filter((l) => visibleLocations.includes(l));
-    const allPayments = [];
-    const personFallbackMs = (person) =>
-      parseFlexibleInstantMs(person?.registeredAt)
-      ?? (typeof person?.id === 'number' && Number.isFinite(person.id) ? person.id : null)
-      ?? (() => {
-        const s = person?.id != null ? String(person.id).trim() : '';
-        return /^\d{10,}$/.test(s) ? Number(s) : null;
-      })();
-
-    const rosterForCashCut = allParticipants.filter(
-      (p) =>
-        p.eventId === currentEvent?.id &&
-        participantIsActiveInRoster(p) &&
-        cashCutLocationInScope(p.location, cashCutLocations)
-    );
-
-    rosterForCashCut.forEach((person) => {
-      const loc = person.location || '';
-      const fb = personFallbackMs(person);
-      const historyRows = (person.paymentHistory || []).filter((h) => h && h.kind !== 'comment');
-      const paidGross = parseFloat(person.paid) || 0;
-
-      historyRows.forEach((h) => {
-        const ts = getPaymentHistoryTimestamp(h, fb);
-        if (ts == null || Number.isNaN(ts)) return;
-        const method = h.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
-        allPayments.push({
-          ...h,
-          netAmount: computeNetAmountByMethod(h.amount, method),
-          method,
-          _ts: ts,
-          _date: new Date(ts),
-          _personName: person.name || '',
-          _personId: person.id,
-          _loc: loc,
-        });
-      });
-
-      if (paidGross > 0 && historyRows.length === 0 && fb != null && Number.isFinite(fb)) {
-        const paymentMethod = person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-        const paidNet = computeNetAmountByMethod(paidGross, paymentMethod);
-        const svc = SERVICE_OPTIONS.includes(person.paymentService) ? person.paymentService : NO_SERVICE_LABEL;
-        allPayments.push({
-          id: `legacy-paid-${person.id}`,
-          date: new Date(fb).toLocaleString('es-MX'),
-          recordedAt: new Date(fb).toISOString(),
-          amount: paidGross,
-          netAmount: paidNet,
-          method: paymentMethod,
-          service: svc,
-          reference: (person.cardReference || '').trim(),
-          registeredBy: person.registeredBy || '?',
-          _ts: fb,
-          _date: new Date(fb),
-          _personName: person.name || '',
-          _personId: person.id,
-          _loc: loc,
-          _syntheticLegacyPaid: true,
-        });
-      }
-    });
-
-    allPayments.push(
-      ...collectCashCutRefundDisbursements(
-        allParticipants,
-        currentEvent,
-        cashCutLocations,
-        cashCutLocationInScope,
-        computeNetAmountByMethod,
-        resolveCashCutRefundServiceLabel
-      )
+    const allPayments = collectCashCutAllPayments(
+      allParticipants,
+      currentEvent,
+      computeNetAmountByMethod,
+      cashCutLocations,
+      resolveCashCutRefundServiceLabel
     );
 
     const eventDonationsForCut = donations.filter(
@@ -34545,22 +34486,7 @@ function resolveEventName(eventId) {
    * - Excluye acompañantes que ya son registros activos del evento.
    * - Un acompañante vinculado se cuenta una sola vez (en su registro origen/canónico).
    */
-  const bautizosCompanionChipCountByRegistrant = (() => {
-    const out = new Map();
-    if (!isBautizos || !currentEvent?.id) return out;
-    const activeEventRoster = (allParticipants || []).filter(
-      (p) =>
-        String(p?.eventId) === String(currentEvent.id) &&
-        participantIsActiveOrWaitlistForCompanionDisplay(p)
-    );
-    for (const p of activeEventRoster) {
-      const pid = String(p?.id || '').trim();
-      if (!pid) continue;
-      const n = getBautizosCompanionsVisibleForRegistrant(pid, activeEventRoster).length;
-      if (n > 0) out.set(pid, n);
-    }
-    return out;
-  })();
+  const bautizosCompanionChipCountByRegistrant = bautizosRosterIndex.companionChipCountByRegistrant;
 
   const renderPublicLinkExtChip = (person) => {
     if (!participantRegisteredViaPublicLink(person)) return null;
@@ -35071,11 +34997,7 @@ function resolveEventName(eventId) {
     const payBoxPaidDisplay = payCostsDerivedSplit ? 0 : paidSummary;
     const payBoxPendingDisplay = payCostsDerivedSplit ? 0 : pendingSummary;
     const payBoxSaldoFavorDisplay = payCostsDerivedSplit ? 0 : saldoFavorSummary;
-    const rosterForCompanionDisplay = (allParticipants || []).filter(
-      (p) =>
-        String(p?.eventId) === String(currentEvent?.id || '') &&
-        participantIsActiveOrWaitlistForCompanionDisplay(p)
-    );
+    const rosterForCompanionDisplay = bautizosRosterIndex.activeEventRoster;
     const companionWaitlistVirtual = isCompanionWaitlistVirtualParticipant(row);
     const carDataAnchorPerson = (() => {
       if (!companionWaitlistVirtual) return row;
@@ -35087,10 +35009,9 @@ function resolveEventName(eventId) {
       return { ...(cached || {}), ...(live || {}) };
     })();
     const bautizosCompanionRows = isBautizos
-      ? getBautizosCompanionsVisibleForRegistrant(
-          String(carDataAnchorPerson?.id || row?.id || ''),
-          rosterForCompanionDisplay
-        )
+      ? (bautizosRosterIndex.visibleCompanionsByRegistrant.get(
+          String(carDataAnchorPerson?.id || row?.id || '')
+        ) || [])
       : [];
     const bautizosCompanionBaptizedRows = isBautizos
       ? getBautizosCompanionsArray(row).filter((c) => String(c?.name || '').trim() && isBautizosCompanionBaptized(c))
@@ -36336,6 +36257,7 @@ function resolveEventName(eventId) {
       }
       return flattened;
     };
+    const flattenedActiveRowsForLoc = buildFlattenedActiveRows(visibleParticipants);
     const renderActivosEmptyMessage = () => {
       if (filterWhatsAppPending === 'pending') {
         return `No hay inscritos con aviso de WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`;
@@ -38509,7 +38431,7 @@ function resolveEventName(eventId) {
           {visibleParticipants.length === 0 ? (
             <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">{renderActivosEmptyMessage()}</p>
           ) : (
-            buildFlattenedActiveRows(visibleParticipants).map((rowItem) => {
+            flattenedActiveRowsForLoc.map((rowItem) => {
               const rowDisplayIndex = rosterDisplayNum++;
               if (rowItem.kind === 'branch') {
                 const bp = rowItem.branchPerson;
@@ -38564,7 +38486,7 @@ function resolveEventName(eventId) {
                   return <tr><td colSpan="3" className="px-6 py-16 text-center text-slate-400 italic font-medium">{emptyMsg}</td></tr>;
                 }
 
-                const flattenedActiveRows = buildFlattenedActiveRows(visibleParticipants);
+                const flattenedActiveRows = flattenedActiveRowsForLoc;
                 return flattenedActiveRows.map((rowItem) => {
                   const rowDisplayIndex = rosterDisplayNum++;
                   if (rowItem.kind === 'branch') {

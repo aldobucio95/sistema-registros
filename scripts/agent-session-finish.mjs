@@ -4,11 +4,14 @@
  *      pnpm run agent:finish -- "mensaje opcional del commit"
  */
 import { execSync, spawnSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { isLocked } from './heavy-task-lock.mjs';
 
 const ROOT = process.cwd();
 const AGENT_BRANCH = 'agent/auto';
+const LAST_BUILD_FILE = join(ROOT, '.agent', 'last-successful-build.json');
+const BUILD_RECENT_MS = 10 * 60 * 1000;
 
 function run(cmd, opts = {}) {
   console.log(`\n> ${cmd}`);
@@ -22,6 +25,17 @@ function readBuildSeq() {
     return data?.buildSeq ?? data?.seq ?? '?';
   } catch {
     return '?';
+  }
+}
+
+function hasRecentSuccessfulBuild() {
+  if (!existsSync(LAST_BUILD_FILE)) return false;
+  try {
+    const data = JSON.parse(readFileSync(LAST_BUILD_FILE, 'utf8'));
+    const builtAt = Date.parse(data?.builtAt || '');
+    return Number.isFinite(builtAt) && Date.now() - builtAt < BUILD_RECENT_MS;
+  } catch {
+    return false;
   }
 }
 
@@ -39,7 +53,14 @@ function main() {
   const buildSeq = readBuildSeq();
 
   run('pnpm run check:utf8');
-  run('pnpm run build');
+
+  if (isLocked()) {
+    console.warn('\n[agent:finish] Hay build/deploy en curso; se omite compilación.');
+  } else if (hasRecentSuccessfulBuild()) {
+    console.log('\n[agent:finish] Build reciente detectado; se omite compilación.');
+  } else {
+    run('pnpm run build:prod');
+  }
 
   if (!hasChanges()) {
     console.log('\n[agent:finish] Sin cambios pendientes; no se hace commit.');

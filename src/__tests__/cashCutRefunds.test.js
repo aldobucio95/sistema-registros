@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildCashCutRefundDisbursementRow,
   getParticipantNetPaidFromHistory,
   getParticipantPhysicalRecaudadoGross,
   getRefundDisbursedGrossAmount,
   participantHasRefundDisbursement,
+  REFUND_DISBURSEMENT_PAYMENT_KIND,
 } from '../cashCutRefunds.js';
 
 const identityNet = (gross) => gross;
@@ -44,5 +46,32 @@ describe('cashCutRefunds', () => {
       refundDisbursedAmount: 150,
     };
     expect(getParticipantNetPaidFromHistory(person, identityNet)).toBe(0);
+  });
+
+  it('recomputes service from edited timestamp, not stale paymentHistory.service', () => {
+    const sundayMs = new Date(2026, 5, 28, 10, 30, 0, 0).getTime();
+    const person = {
+      id: 'p-ref',
+      status: 'cancelled',
+      location: 'Coapa',
+      cancelledFromLocation: 'Coapa',
+      refundDisbursedAt: sundayMs,
+      refundDisbursedAmount: 150,
+      refundDisbursedMethod: 'Efectivo',
+      paymentHistory: [
+        {
+          id: 'refund-disb-p-ref',
+          kind: REFUND_DISBURSEMENT_PAYMENT_KIND,
+          amount: -150,
+          method: 'Efectivo',
+          recordedAt: new Date(sundayMs).toISOString(),
+          service: 'Fuera de servicios dominicales',
+        },
+      ],
+    };
+    const row = buildCashCutRefundDisbursementRow(person, identityNet, () => 'Primero');
+    expect(row).not.toBeNull();
+    expect(row.service).toBe('Primero');
+    expect(row._ts).toBe(sundayMs);
   });
 });

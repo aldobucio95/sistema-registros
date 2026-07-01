@@ -1,0 +1,42 @@
+---
+description: Presupuesto de memoria — evitar OOM durante build, deploy y sesiones del agente
+alwaysApply: true
+---
+
+# Presupuesto de memoria (agente)
+
+## Una sola tarea pesada a la vez
+
+No ejecutar en paralelo ni en la misma ventana de tiempo:
+
+- `pnpm run build` / `pnpm run build:prod`
+- `pnpm run deploy:hosting` / `pnpm run deploy:firestore`
+- `pnpm run test` / `pnpm run check:invariants`
+- Subagentes en background (Multitask Mode)
+
+Si un deploy o build está en curso, **no** lanzar otro comando pesado ni subagentes.
+
+## Deploy
+
+- Solo reglas Firestore → `pnpm run deploy:firestore`
+- Solo hosting → `pnpm run deploy:hosting` (usa `scripts/deploy-hosting.mjs`)
+- **Nunca** `firebase deploy` completo sin pedido explícito del usuario
+- Preferir merge a `main` y dejar hosting a GitHub Actions
+- Para deploy local, sugerir terminal **fuera de Cursor** si hay riesgo de RAM
+
+## Build
+
+- **Un** build de verificación al **final** de la tarea; no tras cada edición pequeña
+- No repetir build si `.agent/last-successful-build.json` tiene menos de 10 min
+- Usar `pnpm run build:prod` (lock + tope de heap) en lugar de `vite build` directo cuando el agente compile
+
+## Lectura de archivos grandes
+
+- Mantener reglas de `anti-regression.mdc` para `App.jsx` (máx. 150 líneas por lectura, Grep para búsquedas)
+- No leer `pnpm-lock.yaml`, `dist/**` ni logs completos en contexto
+
+## Si el usuario reporta subida rápida de RAM
+
+1. Detener comandos y subagentes en curso
+2. No abrir otra conversación del agente hasta terminar
+3. Reportar qué comando estaba corriendo

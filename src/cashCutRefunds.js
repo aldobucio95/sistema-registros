@@ -197,9 +197,9 @@ export function buildCashCutRefundDisbursementRow(person, computeNetAmountByMeth
       ? Math.abs(Number(histRow.netAmount))
       : computeNetAmountByMethod(gross, method);
   const service =
-    (typeof resolveServiceLabel === 'function' ? resolveServiceLabel(person, ts, loc) : null) ||
-    histRow?.service ||
-    'Devolución';
+    typeof resolveServiceLabel === 'function'
+      ? resolveServiceLabel(person, ts, loc)
+      : histRow?.service || 'Devolución';
   return {
     id: `refund-disb-${person.id}`,
     amount: -gross,

@@ -21,6 +21,7 @@ credenciales.json
 
 # Snapshots locales del agente (no subir a GitHub)
 .local-snapshots/
+.agent/
 
 # Respaldos de texto sueltos en src (no versionar)
 src/app_respaldo.txt
