@@ -27504,7 +27504,8 @@ function resolveEventName(eventId) {
 
   // --- SCREEN 3: MAIN APP ---
   const renderBecadosPage = () => (
-    <BecadosPage
+    <Suspense fallback={<ScreenLoadingFallback title="Cargando becados…" />}>
+      <BecadosPageLazy
       currentEvent={currentEvent}
       allParticipants={scopedEventParticipants}
       participantIsActiveInEvent={participantIsActiveInEvent}
@@ -27524,10 +27525,12 @@ function resolveEventName(eventId) {
       scholarshipRealCostBaseEffective={Number(currentEvent?.scholarshipRealCostBase ?? currentEvent?.realCost ?? 0) || 0}
       canEditScholarshipRealCost={hasAdminRights && currentEvent?.eventType === 'Campa'}
     />
+    </Suspense>
   );
 
   const renderBautizosCompanionsPage = () => (
-    <BautizosCompanionsPage
+    <Suspense fallback={<ScreenLoadingFallback title="Cargando acompañantes…" />}>
+      <BautizosCompanionsPageLazy
       currentEvent={currentEvent}
       allParticipants={scopedEventParticipants}
       participantIsActiveInRoster={participantIsActiveInRoster}
@@ -27539,10 +27542,12 @@ function resolveEventName(eventId) {
       onRepairSplitPartyCompanionLinks={handleRepairBautizosSplitCompanionLinks}
       allParticipantsForRepairs={allParticipants}
     />
+    </Suspense>
   );
 
   const renderResponsivasPage = () => (
-    <ResponsivasPage
+    <Suspense fallback={<ScreenLoadingFallback title="Cargando responsivas…" />}>
+      <ResponsivasPageLazy
       currentEvent={currentEvent}
       allParticipants={scopedEventParticipants}
       getResponsivaCardUiState={getResponsivaCardUiState}
@@ -27553,6 +27558,7 @@ function resolveEventName(eventId) {
       onDeleteResponsiva={handleDeleteResponsivaManually}
       renderParticipantAssistanceBadges={renderParticipantAssistanceBadges}
     />
+    </Suspense>
   );
 
   const renderPastoresPage = () => (
@@ -39481,7 +39487,8 @@ function resolveEventName(eventId) {
   };
 
   const renderBautizadosPage = () => (
-    <BautizadosPage
+    <Suspense fallback={<ScreenLoadingFallback title="Cargando bautizados…" />}>
+      <BautizadosPageLazy
       currentEvent={currentEvent}
       allParticipants={scopedEventParticipants}
       visibleLocations={visibleLocations}
@@ -39496,6 +39503,7 @@ function resolveEventName(eventId) {
       onSaveBaptismShirtSize={handleSaveBaptismShirtSize}
       renderParticipantAssistanceBadges={renderParticipantAssistanceBadges}
     />
+    </Suspense>
   );
 
   const renderGlobalRegistryPage = () => {
