@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   countPastorParticipants,
   eventHasMultipleCalendarDays,
+  eventSupportsPastorStayDates,
   getPastorRealCostAmount,
   isPastorParticipant,
   normalizePastorStayDate,
@@ -42,5 +43,16 @@ describe('pastorAttendance', () => {
         dateEnd: '2026-06-01',
       })
     ).toBe(false);
+  });
+
+  it('eventSupportsPastorStayDates when start and end are configured', () => {
+    expect(
+      eventSupportsPastorStayDates({
+        dateStart: '2026-06-01',
+        dateEnd: '2026-06-01',
+      })
+    ).toBe(true);
+    expect(eventSupportsPastorStayDates({ date: '2026-06-01' })).toBe(true);
+    expect(eventSupportsPastorStayDates({})).toBe(false);
   });
 });

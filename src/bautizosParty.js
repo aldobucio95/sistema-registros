@@ -11,6 +11,11 @@ function isSiValue(v) {
   return false;
 }
 
+function normalizeOptionalIsoDate(raw) {
+  const s = String(raw ?? '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+}
+
 export const BAUTIZOS_ATTENDANCE = {
   bautizado: 'bautizado',
   /** Asiste al evento y paga lista como bautizado, pero no se bautiza en la ceremonia. */
@@ -2029,6 +2034,8 @@ export function normalizeBautizosCompanionsForPersist(personLike, loc = '', vnpC
       travelFrom: String(row?.travelFrom || safeLoc).trim() || safeLoc,
       travelTo: String(row?.travelTo || safeLoc).trim() || safeLoc,
       birthDate: normalizeBirthDateToIso(row?.birthDate) || '',
+      pastorStayStart: normalizeOptionalIsoDate(row?.pastorStayStart),
+      pastorStayEnd: normalizeOptionalIsoDate(row?.pastorStayEnd),
     };
     if (!baptized) {
       return appendCompanionWaitlistPersistFields(base, row);

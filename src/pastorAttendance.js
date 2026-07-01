@@ -34,6 +34,13 @@ export function eventHasMultipleCalendarDays(eventLike) {
   return compareIsoDates(start, end) < 0;
 }
 
+/** El evento tiene fechas de inicio y fin configuradas (permite capturar llegada/salida). */
+export function eventSupportsPastorStayDates(eventLike) {
+  const start = getEventEffectiveStartDate(eventLike);
+  const end = getEventEffectiveEndDate(eventLike);
+  return !!start && !!end;
+}
+
 export function sumPastorRealCostForParticipants(participants, eventType) {
   return (participants || [])
     .filter((p) => isPastorParticipant(p, eventType))

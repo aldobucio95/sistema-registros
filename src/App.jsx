@@ -4798,6 +4798,24 @@ const App = () => {
           pastorStayStart: String(fields?.pastorStayStart || '').trim(),
           pastorStayEnd: String(fields?.pastorStayEnd || '').trim(),
         };
+        const stayUpdates = Array.isArray(fields?.companionStayDates) ? fields.companionStayDates : [];
+        if (stayUpdates.length > 0 && Array.isArray(person.bautizosCompanions)) {
+          const byId = new Map(
+            stayUpdates
+              .map((row) => [String(row?.id || '').trim(), row])
+              .filter(([cid]) => cid)
+          );
+          patch.bautizosCompanions = person.bautizosCompanions.map((c) => {
+            const cid = String(c?.id || '').trim();
+            const upd = byId.get(cid);
+            if (!upd) return c;
+            return {
+              ...c,
+              pastorStayStart: String(upd.pastorStayStart || '').trim(),
+              pastorStayEnd: String(upd.pastorStayEnd || '').trim(),
+            };
+          });
+        }
         await updateDoc(getDocRef('app_participants', pid), patch);
         refreshParticipantCache(person, 'Pastores — costo y fechas', { personId: pid, patch });
         showToast('Datos del pastor guardados.');
@@ -27725,6 +27743,7 @@ function resolveEventName(eventId) {
     <PastoresPage
       event={currentEvent}
       participants={scopedEventParticipants}
+      roster={scopedEventParticipants}
       visibleLocations={visibleLocations}
       formatMoney={formatMoney}
       onSavePastorFields={handleSavePastorFields}
