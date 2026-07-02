@@ -16,7 +16,7 @@ import {
   classifyBloodTypeForStats,
 } from './registrationFormShared.js';
 import { personLikeIsPersonOfInterest } from './vnpPersonFlags.js';
-import { participantMatchesCarDataPendingFilter } from './carDataWhatsApp.js';
+import { participantMatchesCarDataFilter } from './carDataWhatsApp.js';
 
 /** Estado de registro (activo / lista de espera / cancelado) en filtros anidados. */
 export const REGISTRATION_STATUS_FILTER_OPTIONS = Object.freeze([
@@ -307,8 +307,10 @@ export function applyEventScopedRosterFilters(processedData, f, ctx) {
       const wantSi = f.filterBautizosTransport === 'Si' || f.filterBautizosTransport === 'Sí';
       rows = rows.filter((p) => isSiValue(p.wantsBautizosTransport) === wantSi);
     }
-    if (f.filterCarDataPending === 'pending') {
-      rows = rows.filter((p) => participantMatchesCarDataPendingFilter(p, eventSnapshot, roster));
+    if (filterOptionActive(f.filterCarDataPending)) {
+      rows = rows.filter((p) =>
+        participantMatchesCarDataFilter(p, f.filterCarDataPending, eventSnapshot, roster)
+      );
     }
   }
 

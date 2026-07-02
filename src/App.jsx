@@ -240,7 +240,7 @@ import {
   applyCarDataWaSnooze,
   buildCarDataPendingWhatsAppContext,
   buildCarDataWhatsAppNotificationId,
-  CAR_DATA_PENDING_FILTER_OPTIONS,
+  CAR_DATA_FILTER_OPTIONS,
   countUnsentWhatsAppNotificationsForQueue,
   dedupeUnsentCarDataNotifications,
   filterWhatsAppFinanceNotificationsForQueue,
@@ -38427,6 +38427,21 @@ function resolveEventName(eventId) {
                         )
                       )}
                     </div>
+                    <div>
+                      <p className={uiDropdown.sectionTitle}>Datos de carro</p>
+                      <p className="text-[9px] text-slate-400 dark:text-slate-500 mb-1.5 leading-snug">
+                        Solo quienes llegan en carro. Transporte del evento no cuenta como pendiente.
+                      </p>
+                      {CAR_DATA_FILTER_OPTIONS.map((op) =>
+                        rosterFilterOption(
+                          'filterCarDataPending',
+                          op.id,
+                          filterCarDataPending === op.id,
+                          () => setFilterCarDataPending(filterCarDataPending === op.id ? 'all' : op.id),
+                          op.label
+                        )
+                      )}
+                    </div>
                   </>
                 )}
                 {!isCampa && !isBautizos && (
@@ -39446,6 +39461,25 @@ function resolveEventName(eventId) {
                                 filterAge: prev.filterAge === op.id ? 'all' : op.id,
                               })),
                             <>{op.label}{' '}{cn(cfo('filterAge', op.id))}</>
+                          )
+                        )}
+                      </div>
+                      <div>
+                        <p className={uiDropdown.sectionTitle}>Datos de carro</p>
+                        <p className="text-[9px] text-slate-400 dark:text-slate-500 mb-1.5 leading-snug">
+                          Solo quienes llegan en carro. Transporte del evento no cuenta como pendiente.
+                        </p>
+                        {CAR_DATA_FILTER_OPTIONS.map((op) =>
+                          grFilterOption(
+                            'filterCarDataPending',
+                            op.id,
+                            globalRegistryListFilters.filterCarDataPending === op.id,
+                            () =>
+                              setGlobalRegistryListFilters((prev) => ({
+                                ...prev,
+                                filterCarDataPending: prev.filterCarDataPending === op.id ? 'all' : op.id,
+                              })),
+                            <>{op.label}{' '}{cn(cfo('filterCarDataPending', op.id))}</>
                           )
                         )}
                       </div>

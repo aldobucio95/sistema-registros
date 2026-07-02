@@ -7,10 +7,14 @@ import {
 } from './bautizosCarMeta.js';
 import { buildCarDataRequestWhatsAppMessage } from './whatsappFinanceMessages.js';
 
-export const CAR_DATA_PENDING_FILTER_OPTIONS = Object.freeze([
+export const CAR_DATA_FILTER_OPTIONS = Object.freeze([
   { id: 'all', label: 'Todos' },
-  { id: 'pending', label: 'Pendientes de datos de carro' },
+  { id: 'pending', label: 'Faltan datos de carro' },
+  { id: 'complete', label: 'Datos de carro completos' },
 ]);
+
+/** @deprecated usar CAR_DATA_FILTER_OPTIONS */
+export const CAR_DATA_PENDING_FILTER_OPTIONS = CAR_DATA_FILTER_OPTIONS;
 
 export const CAR_DATA_WA_SNOOZE_MS = 24 * 60 * 60 * 1000;
 
@@ -226,11 +230,41 @@ export function buildCarDataPendingWhatsAppContext({ titular, eventSnapshot, ros
   };
 }
 
+/**
+ * Persona que debe capturar datos de carro (llega en carro o tiene acompañante en carro).
+ * Quienes van solo en transporte del evento no aplican.
+ */
+export function personSubjectToCarDataProvision(person, eventSnapshot, roster) {
+  if (!person || !eventSnapshot) return false;
+  if (String(eventSnapshot.eventType || '') !== 'Bautizos') return false;
+  const anchor = resolveBautizosCarDataAnchor(person, roster, eventSnapshot);
+  if (!anchor.eligible || !anchor.anchorPerson || !anchor.waRecipient) return false;
+  return String(anchor.waRecipient?.id || '').trim() === String(person?.id || '').trim();
+}
+
 /** Filtro: fila con datos de carro visibles en cola WA (titular o subregistro bautizado elegible). */
 export function participantMatchesCarDataPendingFilter(person, eventSnapshot, roster, now = Date.now()) {
   if (!person || !eventSnapshot) return false;
   if (String(eventSnapshot.eventType || '') !== 'Bautizos') return false;
+  if (!personSubjectToCarDataProvision(person, eventSnapshot, roster)) return false;
   return titularCarDataVisibleInWhatsAppQueue(person, eventSnapshot, roster, now);
+}
+
+/** Filtro: debe capturar datos de carro y el inventario ya está completo (sin rubros faltantes). */
+export function participantMatchesCarDataCompleteFilter(person, eventSnapshot, roster) {
+  if (!person || !eventSnapshot) return false;
+  if (String(eventSnapshot.eventType || '') !== 'Bautizos') return false;
+  if (!personSubjectToCarDataProvision(person, eventSnapshot, roster)) return false;
+  return !personInventoryNeedsCarDataAttention(person, eventSnapshot, roster);
+}
+
+/** Filtros anidados: all | pending | complete */
+export function participantMatchesCarDataFilter(person, filterId, eventSnapshot, roster, now = Date.now()) {
+  const id = String(filterId || 'all').trim();
+  if (!id || id === 'all') return true;
+  if (id === 'pending') return participantMatchesCarDataPendingFilter(person, eventSnapshot, roster, now);
+  if (id === 'complete') return participantMatchesCarDataCompleteFilter(person, eventSnapshot, roster);
+  return true;
 }
 
 /**

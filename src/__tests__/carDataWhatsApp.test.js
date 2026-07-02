@@ -6,7 +6,11 @@ import {
   dedupeUnsentCarDataNotifications,
   filterWhatsAppFinanceNotificationsForQueue,
   isCarDataNotificationSnoozed,
+  participantMatchesCarDataCompleteFilter,
+  participantMatchesCarDataFilter,
+  participantMatchesCarDataPendingFilter,
   personInventoryNeedsCarDataAttention,
+  personSubjectToCarDataProvision,
   titularCarDataVisibleInWhatsAppQueue,
 } from '../carDataWhatsApp.js';
 import { buildCarDataWaSubjectContext } from '../bautizosCarMeta.js';
@@ -205,5 +209,71 @@ describe('filterWhatsAppFinanceNotificationsForQueue', () => {
     const out = filterWhatsAppFinanceNotificationsForQueue(person, person.whatsAppFinanceNotifications, event, []);
     expect(out).toHaveLength(0);
     expect(countUnsentWhatsAppNotificationsForQueue(person, event, [])).toBe(0);
+  });
+});
+
+describe('car data nested filters', () => {
+  const event = { eventType: 'Bautizos', transportPlanning: { carMetaBySource: {} } };
+
+  it('transporte del evento no aplica a pendiente ni a completo', () => {
+    const person = {
+      id: 'bus-1',
+      name: 'Ana',
+      llegaEnCarro: false,
+      wantsBautizosTransport: 'Si',
+      carrosLlegada: 1,
+    };
+    const roster = [person];
+    expect(personSubjectToCarDataProvision(person, event, roster)).toBe(false);
+    expect(participantMatchesCarDataPendingFilter(person, event, roster)).toBe(false);
+    expect(participantMatchesCarDataCompleteFilter(person, event, roster)).toBe(false);
+    expect(participantMatchesCarDataFilter(person, 'pending', event, roster)).toBe(false);
+    expect(participantMatchesCarDataFilter(person, 'complete', event, roster)).toBe(false);
+  });
+
+  it('llega en carro pendiente entra solo en filtro pending', () => {
+    const person = {
+      id: 'car-1',
+      name: 'Luis',
+      llegaEnCarro: true,
+      wantsBautizosTransport: 'No',
+      carrosLlegada: 1,
+    };
+    const roster = [person];
+    expect(personSubjectToCarDataProvision(person, event, roster)).toBe(true);
+    expect(participantMatchesCarDataPendingFilter(person, event, roster)).toBe(true);
+    expect(participantMatchesCarDataCompleteFilter(person, event, roster)).toBe(false);
+    expect(participantMatchesCarDataFilter(person, 'pending', event, roster)).toBe(true);
+    expect(participantMatchesCarDataFilter(person, 'complete', event, roster)).toBe(false);
+  });
+
+  it('llega en carro con metadatos completos entra solo en filtro complete', () => {
+    const person = {
+      id: 'car-2',
+      name: 'Rosa',
+      llegaEnCarro: true,
+      wantsBautizosTransport: 'No',
+      carrosLlegada: 1,
+    };
+    const eventComplete = {
+      eventType: 'Bautizos',
+      transportPlanning: {
+        carMetaBySource: {
+          'p:car-2|c1': {
+            brand: 'Toyota',
+            model: 'Corolla',
+            color: 'Blanco',
+            plates: 'ABC123',
+            driverSourceKey: 'p:car-2',
+            passengerSourceKeys: [],
+          },
+        },
+      },
+    };
+    const roster = [person];
+    expect(participantMatchesCarDataPendingFilter(person, eventComplete, roster)).toBe(false);
+    expect(participantMatchesCarDataCompleteFilter(person, eventComplete, roster)).toBe(true);
+    expect(participantMatchesCarDataFilter(person, 'complete', eventComplete, roster)).toBe(true);
+    expect(participantMatchesCarDataFilter(person, 'pending', eventComplete, roster)).toBe(false);
   });
 });
