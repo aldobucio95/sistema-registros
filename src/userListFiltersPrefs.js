@@ -169,6 +169,44 @@ export function migrateLegacyRosterRoleFilter(saved) {
   return 'all';
 }
 
+export function createEmptyPastoresUiPrefs() {
+  return {
+    /** IDs de pastores con tarjeta expandida (por defecto todas contraídas). */
+    expandedPastorIds: [],
+    /** Claves de subsecciones expandidas (`pastorId::section`). */
+    expandedSectionKeys: [],
+  };
+}
+
+export function normalizePastoresUiPrefs(raw) {
+  const empty = createEmptyPastoresUiPrefs();
+  if (!raw || typeof raw !== 'object') return empty;
+  const expandedPastorIds = Array.isArray(raw.expandedPastorIds)
+    ? raw.expandedPastorIds
+        .filter((x) => typeof x === 'string' && String(x).trim())
+        .map((x) => String(x).trim())
+    : [];
+  const expandedSectionKeys = Array.isArray(raw.expandedSectionKeys)
+    ? raw.expandedSectionKeys
+        .filter((x) => typeof x === 'string' && String(x).trim())
+        .map((x) => String(x).trim())
+    : [];
+  return { expandedPastorIds, expandedSectionKeys };
+}
+
+export function readPastoresUiFromPrefs(root, eventId) {
+  const ev = root?.events?.[String(eventId)];
+  return normalizePastoresUiPrefs(ev?.pastoresUi);
+}
+
+export function writePastoresUiToPrefs(root, eventId, snapshot) {
+  const next = normalizeListFiltersPrefsRoot(root);
+  const eid = String(eventId);
+  const ev = next.events[eid] && typeof next.events[eid] === 'object' ? { ...next.events[eid] } : {};
+  next.events[eid] = { ...ev, pastoresUi: normalizePastoresUiPrefs(snapshot) };
+  return next;
+}
+
 export function createEmptyListFiltersPrefsRoot() {
   return { v: 1, events: {}, transportUi: createEmptyTransportUiPrefs() };
 }

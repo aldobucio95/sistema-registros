@@ -612,16 +612,20 @@ import {
   captureLocationRosterFiltersFromState,
   createEmptyListFiltersPrefsRoot,
   createEmptyLocationRosterFilters,
+  createEmptyPastoresUiPrefs,
   createEmptyTransportUiPrefs,
   isLocationRosterTab,
   migrateLegacyLocalFiltersToPrefs,
   normalizeListFiltersPrefsRoot,
+  normalizePastoresUiPrefs,
   normalizeTransportUiPrefs,
   readGlobalRegistryFiltersFromPrefs,
   readLocationFiltersFromPrefs,
+  readPastoresUiFromPrefs,
   readTransportUiFromPrefs,
   writeGlobalRegistryFiltersToPrefs,
   writeLocationFiltersToPrefs,
+  writePastoresUiToPrefs,
   writeTransportUiToPrefs,
   listFiltersForEventApplication,
   countActiveDropdownListFilters,
@@ -5351,6 +5355,7 @@ function resolveEventName(eventId) {
   const [globalLocationsDropdownOpen, setGlobalLocationsDropdownOpen] = useState(false);
   const [globalLocationFilters, setGlobalLocationFilters] = useState([]);
   const [transportUiPrefs, setTransportUiPrefs] = useState(() => createEmptyTransportUiPrefs());
+  const [pastoresUiPrefs, setPastoresUiPrefs] = useState(() => createEmptyPastoresUiPrefs());
   const [rosterToolsMobileMenuOpen, setRosterToolsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
@@ -6839,6 +6844,9 @@ function resolveEventName(eventId) {
     listFiltersPrefsRef.current = remote;
     listFiltersPrefsRemoteMergedUidRef.current = uid;
     setTransportUiPrefs(readTransportUiFromPrefs(remote));
+    if (currentEvent?.id) {
+      setPastoresUiPrefs(readPastoresUiFromPrefs(remote, currentEvent.id));
+    }
     if (!remote.events || Object.keys(remote.events).length === 0) return;
     if (!currentEvent?.id) return;
     const eventId = String(currentEvent.id);
@@ -6953,6 +6961,33 @@ function resolveEventName(eventId) {
     },
     [scheduleListFiltersPrefsPersist]
   );
+
+  const onPastoresUiPrefsChange = useCallback(
+    (updater) => {
+      setPastoresUiPrefs((prev) => {
+        const draft = typeof updater === 'function' ? updater(prev) : updater;
+        const next = normalizePastoresUiPrefs(draft);
+        if (listFiltersPrefsHydratedUidRef.current && currentEvent?.id) {
+          listFiltersPrefsRef.current = writePastoresUiToPrefs(
+            listFiltersPrefsRef.current,
+            currentEvent.id,
+            next
+          );
+          scheduleListFiltersPrefsPersist();
+        }
+        return next;
+      });
+    },
+    [currentEvent?.id, scheduleListFiltersPrefsPersist]
+  );
+
+  useEffect(() => {
+    if (!listFiltersPrefsHydratedUidRef.current || !currentEvent?.id) {
+      setPastoresUiPrefs(createEmptyPastoresUiPrefs());
+      return;
+    }
+    setPastoresUiPrefs(readPastoresUiFromPrefs(listFiltersPrefsRef.current, currentEvent.id));
+  }, [currentEvent?.id]);
 
   // Load User Preferences
   useEffect(() => {
@@ -27713,6 +27748,8 @@ function resolveEventName(eventId) {
       formatMoney={formatMoney}
       onSavePastorFields={handleSavePastorFields}
       savingPastorId={savingPastorId}
+      pastoresUiPrefs={pastoresUiPrefs}
+      onPastoresUiPrefsChange={onPastoresUiPrefsChange}
     />
   );
 

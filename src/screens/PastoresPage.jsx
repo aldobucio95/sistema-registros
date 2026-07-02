@@ -1,5 +1,16 @@
 import React, { useMemo, useState } from 'react';
-import { Church, Link2, MapPin, Save, Users } from 'lucide-react';
+import {
+  CalendarRange,
+  ChevronDown,
+  Church,
+  DollarSign,
+  Link2,
+  Link2Off,
+  MapPin,
+  Save,
+  UserRound,
+  Users,
+} from 'lucide-react';
 import {
   eventSupportsPastorStayDates,
   getPastorRealCostAmount,
@@ -12,10 +23,29 @@ import { resolveBautizosCarDataAnchor } from '../bautizosCarMeta.js';
 import BautizosCarDataSummaryCard from '../components/transport/BautizosCarDataSummaryCard.jsx';
 import CopyButton from '../components/CopyButton.jsx';
 import { formatBirthDateExcelLabel } from '../birthDateIsoUtils.js';
-import { uiKbd, uiListMobile, uiRosterMobile } from '../ui/uiFormatClasses.js';
+import { createEmptyPastoresUiPrefs } from '../userListFiltersPrefs.js';
+import {
+  uiBadgeMini,
+  uiBadgeSoft,
+  uiControls,
+  uiEmptyState,
+  uiForm,
+  uiKbd,
+  uiListMobile,
+  uiPageHeader,
+  uiPageHeaderIcon,
+  uiRosterMobile,
+  uiSectionPanel,
+  uiShell,
+  uiStat,
+  uiStatTile,
+  uiTonalButton,
+  uiTonalSolid,
+  uiTypography,
+} from '../ui/uiFormatClasses.js';
 
-const inputSm =
-  'w-full min-w-0 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-[11px] font-semibold text-slate-800 dark:text-slate-100';
+const inputDateCompact = `${uiForm.inputCompact} w-[8.75rem] max-w-full py-1`;
+const inputMoneyCompact = `${uiForm.inputCompact} w-24 py-1`;
 
 function companionDraftKey(hostId, companionId) {
   return `${hostId}::${companionId}`;
@@ -50,11 +80,9 @@ function DetailRow({ label, value, copyLabel = null }) {
   const text = value == null ? '' : String(value).trim();
   if (!text || text === '—') return null;
   return (
-    <div className="flex items-start justify-between gap-2 min-w-0">
-      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide shrink-0">
-        {label}
-      </span>
-      <span className="text-[11px] font-semibold text-slate-800 dark:text-slate-100 text-right min-w-0 break-words leading-snug">
+    <div className="flex flex-wrap items-baseline gap-x-1.5 min-w-0 leading-snug">
+      <span className={`${uiForm.labelXs} shrink-0`}>{label}:</span>
+      <span className="text-[11px] font-semibold text-slate-800 dark:text-slate-100 min-w-0 break-words">
         {text}
         {copyLabel ? <CopyButton text={text} label={copyLabel} /> : null}
       </span>
@@ -85,7 +113,7 @@ function transportDetailRows(companion) {
 function PersonDetailsPanel({ person, isCompanion = false }) {
   const birth = formatBirthDateExcelLabel(person?.birthDate);
   return (
-    <div className="rounded-lg border border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/40 px-2.5 py-2 space-y-1">
+    <div className={`${uiSectionPanel('slate')} !p-2 !space-y-0.5 !shadow-none`}>
       {!isCompanion ? (
         <DetailRow label="Sede" value={displayLocation(person)} copyLabel="sede" />
       ) : null}
@@ -94,6 +122,48 @@ function PersonDetailsPanel({ person, isCompanion = false }) {
       <DetailRow label="Edad" value={person?.age != null && String(person.age).trim() !== '' ? String(person.age) : ''} />
       <DetailRow label="Género" value={person?.gender} />
       <DetailRow label="Nacimiento" value={birth && birth !== '—' ? birth : ''} copyLabel="fecha de nacimiento" />
+    </div>
+  );
+}
+
+function CollapsibleSection({
+  title,
+  icon: Icon = null,
+  open,
+  onToggle,
+  children,
+  tone = 'slate',
+}) {
+  const isViolet = tone === 'violet';
+  const wrapClass = isViolet
+    ? `${uiControls.collapsibleWrap} border-violet-200/90 dark:border-violet-500/45 bg-violet-50/25 dark:bg-violet-950/10`
+    : uiControls.collapsibleWrap;
+  const summaryClass = isViolet
+    ? `${uiControls.collapsibleSummary} text-violet-800 dark:text-violet-200 hover:bg-violet-100/70 dark:hover:bg-violet-950/35`
+    : uiControls.collapsibleSummary;
+  const bodyClass = isViolet
+    ? `${uiControls.collapsibleBody} border-violet-100/80 dark:border-violet-500/25 bg-violet-50/15 dark:bg-slate-900/80`
+    : uiControls.collapsibleBody;
+
+  return (
+    <div className={wrapClass}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className={summaryClass}
+        aria-expanded={open}
+      >
+        <span className="flex items-center gap-1.5 min-w-0">
+          <ChevronDown
+            size={14}
+            className={`shrink-0 text-slate-400 dark:text-slate-500 transition-transform ${open ? 'rotate-180' : ''}`}
+            aria-hidden
+          />
+          {Icon ? <Icon size={13} className="shrink-0 opacity-80" /> : null}
+          <span className="truncate">{title}</span>
+        </span>
+      </button>
+      {open ? <div className={`${bodyClass} !space-y-1.5`}>{children}</div> : null}
     </div>
   );
 }
@@ -110,6 +180,8 @@ export default function PastoresPage({
   formatMoney,
   onSavePastorFields,
   savingPastorId = '',
+  pastoresUiPrefs = createEmptyPastoresUiPrefs(),
+  onPastoresUiPrefsChange = null,
 }) {
   const eventType = event?.eventType;
   const isBautizos = eventType === 'Bautizos';
@@ -131,8 +203,48 @@ export default function PastoresPage({
       .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es'));
   }, [participants, eventType, visibleLocations]);
 
+  const expandedPastorIds = useMemo(
+    () => new Set(pastoresUiPrefs?.expandedPastorIds || []),
+    [pastoresUiPrefs?.expandedPastorIds]
+  );
+  const expandedSectionKeys = useMemo(
+    () => new Set(pastoresUiPrefs?.expandedSectionKeys || []),
+    [pastoresUiPrefs?.expandedSectionKeys]
+  );
+
   const [draftById, setDraftById] = useState({});
   const [companionDraftByKey, setCompanionDraftByKey] = useState({});
+  const [unsyncedCompanionKeys, setUnsyncedCompanionKeys] = useState(() => new Set());
+
+  const sectionKey = (pastorId, section) => `${pastorId}::${section}`;
+
+  const isSectionOpen = (pastorId, section) => expandedSectionKeys.has(sectionKey(pastorId, section));
+
+  const toggleSection = (pastorId, section) => {
+    if (typeof onPastoresUiPrefsChange !== 'function') return;
+    const key = sectionKey(pastorId, section);
+    onPastoresUiPrefsChange((prev) => {
+      const set = new Set(prev?.expandedSectionKeys || []);
+      if (set.has(key)) set.delete(key);
+      else set.add(key);
+      return { ...prev, expandedSectionKeys: [...set] };
+    });
+  };
+
+  const isPastorExpanded = (pastorId) => expandedPastorIds.has(pastorId);
+
+  const togglePastorExpanded = (pastorId) => {
+    if (typeof onPastoresUiPrefsChange !== 'function') return;
+    onPastoresUiPrefsChange((prev) => {
+      const set = new Set(prev?.expandedPastorIds || []);
+      if (set.has(pastorId)) set.delete(pastorId);
+      else set.add(pastorId);
+      return { ...prev, expandedPastorIds: [...set] };
+    });
+  };
+
+  const isCompanionSynced = (hostId, companionId) =>
+    !unsyncedCompanionKeys.has(companionDraftKey(hostId, companionId));
 
   const getDraft = (person) => {
     const id = String(person?.id || '').trim();
@@ -143,7 +255,16 @@ export default function PastoresPage({
     const hostId = String(hostPerson?.id || '').trim();
     const cid = String(companion?.id || '').trim();
     const key = companionDraftKey(hostId, cid);
-    return buildCompanionDraftFromRow(companion, companionDraftByKey[key]);
+    const base = buildCompanionDraftFromRow(companion, companionDraftByKey[key]);
+    if (showStayDates && isCompanionSynced(hostId, cid)) {
+      const hostDraft = getDraft(hostPerson);
+      return {
+        ...base,
+        pastorStayStart: hostDraft.pastorStayStart,
+        pastorStayEnd: hostDraft.pastorStayEnd,
+      };
+    }
+    return base;
   };
 
   const patchDraft = (person, patch) => {
@@ -153,6 +274,19 @@ export default function PastoresPage({
       ...prev,
       [id]: { ...buildDraftFromPerson(person, prev[id]), ...patch },
     }));
+    if (patch.pastorStayStart !== undefined || patch.pastorStayEnd !== undefined) {
+      const hostDraft = { ...getDraft(person), ...patch };
+      for (const c of listPastorCompanions(person)) {
+        const cid = String(c.id || '').trim();
+        const key = companionDraftKey(id, cid);
+        if (!unsyncedCompanionKeys.has(key)) {
+          patchCompanionDraft(person, c, {
+            pastorStayStart: hostDraft.pastorStayStart,
+            pastorStayEnd: hostDraft.pastorStayEnd,
+          });
+        }
+      }
+    }
   };
 
   const patchCompanionDraft = (hostPerson, companion, patch) => {
@@ -172,6 +306,22 @@ export default function PastoresPage({
       pastorStayStart: hostDraft.pastorStayStart,
       pastorStayEnd: hostDraft.pastorStayEnd,
     });
+  };
+
+  const toggleCompanionSync = (hostPerson, companion) => {
+    const hostId = String(hostPerson?.id || '').trim();
+    const cid = String(companion?.id || '').trim();
+    const key = companionDraftKey(hostId, cid);
+    if (unsyncedCompanionKeys.has(key)) {
+      setUnsyncedCompanionKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+      syncCompanionWithPastor(hostPerson, companion);
+    } else {
+      setUnsyncedCompanionKeys((prev) => new Set(prev).add(key));
+    }
   };
 
   const validateStayRange = (start, end) => {
@@ -247,44 +397,49 @@ export default function PastoresPage({
 
   const totalPastorCost = rows.reduce((s, p) => s + getPastorRealCostAmount(p), 0);
 
-  const renderStayDateFields = (draft, onPatch, idPrefix, compact = false) => {
+  const renderStayDateFields = (draft, onPatch, idPrefix, { disabled = false } = {}) => {
     if (!showStayDates) return null;
-    const labelClass = compact
-      ? 'text-[9px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wide'
-      : 'text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wide';
+    const inputClass = `${inputDateCompact}${disabled ? ' opacity-60 cursor-not-allowed' : ''}`;
     return (
       <>
-        <div className="space-y-0.5">
-          <label htmlFor={`${idPrefix}-stay-start`} className={labelClass}>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <label htmlFor={`${idPrefix}-stay-start`} className={uiForm.labelXs}>
             Llega
           </label>
           <input
             id={`${idPrefix}-stay-start`}
             type="date"
-            className={inputSm}
+            className={inputClass}
             min={eventStart || undefined}
             max={eventEnd || undefined}
             value={draft.pastorStayStart}
+            disabled={disabled}
             onChange={(e) => onPatch({ pastorStayStart: e.target.value })}
           />
         </div>
-        <div className="space-y-0.5">
-          <label htmlFor={`${idPrefix}-stay-end`} className={labelClass}>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <label htmlFor={`${idPrefix}-stay-end`} className={uiForm.labelXs}>
             Se va
           </label>
           <input
             id={`${idPrefix}-stay-end`}
             type="date"
-            className={inputSm}
+            className={inputClass}
             min={eventStart || undefined}
             max={eventEnd || undefined}
             value={draft.pastorStayEnd}
+            disabled={disabled}
             onChange={(e) => onPatch({ pastorStayEnd: e.target.value })}
           />
         </div>
       </>
     );
   };
+
+  const pastorCardShell = (mobileShell) =>
+    mobileShell
+      ? `${uiListMobile.itemViolet} ${uiListMobile.toneViolet} px-2.5 py-2 space-y-1.5`
+      : `${uiListMobile.itemViolet} ${uiListMobile.toneViolet} px-3 py-2.5 space-y-2 shadow-sm`;
 
   const renderPastorCard = (person, displayIndex, { mobileShell = false } = {}) => {
     const id = String(person.id || '').trim();
@@ -296,7 +451,9 @@ export default function PastoresPage({
         : { eligible: false };
     const companionDirty = companions.some((c) => {
       const key = companionDraftKey(id, String(c.id || '').trim());
-      if (companionDraftByKey[key] == null) return false;
+      if (companionDraftByKey[key] == null && isCompanionSynced(id, String(c.id || '').trim())) {
+        return false;
+      }
       const cd = getCompanionDraft(person, c);
       return (
         cd.pastorStayStart !== normalizePastorStayDate(c.pastorStayStart) ||
@@ -311,172 +468,264 @@ export default function PastoresPage({
       draft.pastorStayEnd !== normalizePastorStayDate(person.pastorStayEnd);
     const saving = savingPastorId === id;
     const locLabel = displayLocation(person);
-
-    const shellClass = mobileShell
-      ? `${uiListMobile.itemViolet} px-2.5 py-2 space-y-2`
-      : 'rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2.5 shadow-sm space-y-2';
+    const expanded = isPastorExpanded(id);
+    const costLabel =
+      draft.pastorRealCost !== ''
+        ? formatMoney(parseFloat(String(draft.pastorRealCost).replace(',', '.')) || 0)
+        : formatMoney(getPastorRealCostAmount(person));
 
     return (
-      <div key={id} className={shellClass}>
-        <div className="flex flex-wrap items-start gap-2 justify-between">
-          <div className="min-w-0 flex-1 space-y-1">
-            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-              <span className={`${uiKbd.base} min-w-[1.5rem] h-5 justify-center shrink-0 text-[10px]`}>
-                {displayIndex}
-              </span>
-              <span className="font-black text-slate-800 dark:text-slate-100 text-sm break-words min-w-0">
-                {person.name || '(sin nombre)'}
-              </span>
-              <CopyButton text={person.name} label="nombre" />
-            </div>
-            <span className={`${uiRosterMobile.sedeBadge} text-[10px] py-0.5`}>
+      <div key={id} className={pastorCardShell(mobileShell)}>
+        <div
+          className={`flex flex-wrap items-center gap-1.5 justify-between rounded-lg px-1.5 py-1 -mx-0.5 transition-colors ${
+            expanded
+              ? 'bg-violet-100/50 dark:bg-violet-950/25'
+              : 'hover:bg-violet-50/80 dark:hover:bg-violet-950/20'
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => togglePastorExpanded(id)}
+            className="min-w-0 flex-1 flex flex-wrap items-center gap-1.5 text-left"
+            aria-expanded={expanded}
+          >
+            <ChevronDown
+              size={15}
+              className={`shrink-0 text-violet-500 dark:text-violet-400 transition-transform ${expanded ? 'rotate-180' : ''}`}
+              aria-hidden
+            />
+            <span className={`${uiKbd.base} min-w-[1.5rem] h-5 justify-center shrink-0 text-[10px] bg-violet-100 dark:bg-violet-950/60 border-violet-200 dark:border-violet-600`}>
+              {displayIndex}
+            </span>
+            <span className="font-black text-slate-800 dark:text-slate-100 text-sm break-words min-w-0">
+              {person.name || '(sin nombre)'}
+            </span>
+            <CopyButton text={person.name} label="nombre" />
+            <span className={`${uiRosterMobile.sedeBadge} !text-[10px] !py-0.5 !px-1.5`}>
               <MapPin size={11} className="shrink-0" />
               {locLabel}
-              <CopyButton text={locLabel === 'Sin sede' ? '' : locLabel} label="sede" />
             </span>
-          </div>
+            {!expanded ? (
+              <>
+                <span className={uiBadgeMini('violet')}>{costLabel}</span>
+                {companions.length > 0 ? (
+                  <span className={`${uiBadgeMini('violet')} inline-flex items-center gap-0.5`}>
+                    <Users size={10} />
+                    {companions.length}
+                  </span>
+                ) : null}
+                {dirty ? (
+                  <span className={uiBadgeMini('amber', 'solid')}>Sin guardar</span>
+                ) : null}
+              </>
+            ) : null}
+          </button>
           <button
             type="button"
             disabled={saving}
             onClick={() => void handleSave(person)}
-            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold bg-violet-700 text-white hover:bg-violet-800 disabled:opacity-60 shrink-0"
+            className={`${uiTonalSolid('violet')} inline-flex items-center gap-1 !px-2.5 !py-1.5 !text-[9px]${
+              dirty ? ' ring-2 ring-violet-300 dark:ring-violet-400/70' : ''
+            }`}
           >
-            <Save size={13} />
-            {saving ? 'Guardando…' : dirty ? 'Guardar' : 'Guardar'}
+            <Save size={12} />
+            {saving ? '…' : 'Guardar'}
           </button>
         </div>
 
-        <PersonDetailsPanel person={person} />
+        {expanded ? (
+          <div className="space-y-1.5 pt-0.5">
+            <CollapsibleSection
+              title="Datos del pastor"
+              icon={UserRound}
+              open={isSectionOpen(id, 'details')}
+              onToggle={() => toggleSection(id, 'details')}
+            >
+              <PersonDetailsPanel person={person} />
+            </CollapsibleSection>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <div className="space-y-0.5 col-span-2 sm:col-span-1">
-            <label className="text-[9px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wide">
-              Costo real
-            </label>
-            <input
-              type="text"
-              inputMode="decimal"
-              className={inputSm}
-              placeholder="0"
-              value={draft.pastorRealCost}
-              onChange={(e) => patchDraft(person, { pastorRealCost: e.target.value })}
-            />
-          </div>
-          {renderStayDateFields(draft, (patch) => patchDraft(person, patch), `pastor-${id}`, true)}
-        </div>
-
-        {isBautizos && companions.length > 0 ? (
-          <div className="rounded-lg border border-violet-200/80 dark:border-violet-500/35 bg-violet-50/35 dark:bg-violet-950/15 px-2.5 py-2 space-y-2">
-            <p className="text-[9px] font-black text-violet-800 dark:text-violet-200 uppercase tracking-wider inline-flex items-center gap-1">
-              <Users size={11} />
-              Acompañantes ({companions.length})
-            </p>
-            <div className="space-y-2">
-              {companions.map((companion) => {
-                const cid = String(companion.id || '').trim();
-                const cd = getCompanionDraft(person, companion);
-                const transportRows = transportDetailRows(companion);
-                return (
-                  <div
-                    key={cid || companion.name}
-                    className="rounded-lg border border-violet-100 dark:border-violet-500/25 bg-white dark:bg-slate-900 px-2.5 py-2 space-y-1.5"
-                  >
-                    <div className="flex flex-wrap items-center gap-1 min-w-0">
-                      <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 break-words">
-                        {companion.name}
-                      </span>
-                      <CopyButton text={companion.name} label="nombre del acompañante" />
-                    </div>
-                    <div className="space-y-0.5">
-                      {transportRows.map((row) => (
-                        <DetailRow
-                          key={row.key}
-                          label={row.label}
-                          value={row.value}
-                          copyLabel={row.copyLabel}
-                        />
-                      ))}
-                    </div>
-                    <PersonDetailsPanel person={companion} isCompanion />
-                    {showStayDates ? (
-                      <>
-                        <div className="grid grid-cols-2 gap-2">
-                          {renderStayDateFields(
-                            cd,
-                            (patch) => patchCompanionDraft(person, companion, patch),
-                            `companion-${id}-${cid}`,
-                            true
-                          )}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => syncCompanionWithPastor(person, companion)}
-                          className="inline-flex items-center gap-1 text-[9px] font-bold text-violet-700 dark:text-violet-300 hover:text-violet-900 dark:hover:text-violet-100"
-                        >
-                          <Link2 size={11} />
-                          Igualar fechas del titular
-                        </button>
-                      </>
-                    ) : null}
+            <CollapsibleSection
+              title="Costo y fechas"
+              icon={CalendarRange}
+              open={isSectionOpen(id, 'cost')}
+              onToggle={() => toggleSection(id, 'cost')}
+            >
+              <div className={`${uiSectionPanel('violet')} !p-2.5 !space-y-0 !shadow-none`}>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <label className={`${uiForm.labelXs} inline-flex items-center gap-1`}>
+                      <DollarSign size={11} className="text-violet-600 dark:text-violet-400" />
+                      Costo real
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      className={inputMoneyCompact}
+                      placeholder="0"
+                      value={draft.pastorRealCost}
+                      onChange={(e) => patchDraft(person, { pastorRealCost: e.target.value })}
+                    />
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
+                  {renderStayDateFields(draft, (patch) => patchDraft(person, patch), `pastor-${id}`)}
+                </div>
+              </div>
+            </CollapsibleSection>
 
-        {isBautizos && carAnchor.eligible && carAnchor.anchorPerson ? (
-          <BautizosCarDataSummaryCard
-            hostPerson={carAnchor.anchorPerson}
-            companions={carAnchor.companionsForCrew}
-            plan={event?.transportPlanning}
-            roster={roster}
-            eventLike={event}
-            className="!p-2"
-          />
+            {isBautizos && companions.length > 0 ? (
+              <CollapsibleSection
+                title={`Acompañantes (${companions.length})`}
+                icon={Users}
+                tone="violet"
+                open={isSectionOpen(id, 'companions')}
+                onToggle={() => toggleSection(id, 'companions')}
+              >
+                <div className="space-y-1.5">
+                  {companions.map((companion) => {
+                    const cid = String(companion.id || '').trim();
+                    const cd = getCompanionDraft(person, companion);
+                    const transportRows = transportDetailRows(companion);
+                    const synced = isCompanionSynced(id, cid);
+                    return (
+                      <div
+                        key={cid || companion.name}
+                        className={`${uiSectionPanel('violet')} !p-2 !space-y-1 !shadow-none`}
+                      >
+                        <div className="flex flex-wrap items-baseline gap-x-1.5 min-w-0">
+                          <span className="text-[11px] font-black text-violet-900 dark:text-violet-100 break-words">
+                            {companion.name}
+                          </span>
+                          <CopyButton text={companion.name} label="nombre del acompañante" />
+                        </div>
+                        {transportRows.length > 0 ? (
+                          <div className="space-y-0.5 pl-0.5">
+                            {transportRows.map((row) => (
+                              <DetailRow
+                                key={row.key}
+                                label={row.label}
+                                value={row.value}
+                                copyLabel={row.copyLabel}
+                              />
+                            ))}
+                          </div>
+                        ) : null}
+                        <CollapsibleSection
+                          title="Datos"
+                          icon={UserRound}
+                          open={isSectionOpen(id, `companion-${cid}-details`)}
+                          onToggle={() => toggleSection(id, `companion-${cid}-details`)}
+                          tone="violet"
+                        >
+                          <PersonDetailsPanel person={companion} isCompanion />
+                        </CollapsibleSection>
+                        {showStayDates ? (
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 pt-0.5">
+                            {renderStayDateFields(
+                              cd,
+                              (patch) => patchCompanionDraft(person, companion, patch),
+                              `companion-${id}-${cid}`,
+                              { disabled: synced }
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => toggleCompanionSync(person, companion)}
+                              title={
+                                synced
+                                  ? 'Fechas sincronizadas con el titular. Clic para editar por separado.'
+                                  : 'Fechas independientes. Clic para volver a sincronizar.'
+                              }
+                              className={`${uiTonalButton(synced ? 'violet' : 'amber')} inline-flex items-center gap-1 !normal-case !tracking-normal !font-bold !text-[9px]`}
+                            >
+                              {synced ? (
+                                <Link2 size={11} aria-hidden />
+                              ) : (
+                                <Link2Off size={11} className="rotate-45" aria-hidden />
+                              )}
+                              {synced ? 'Sincronizado' : 'Independiente'}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </CollapsibleSection>
+            ) : null}
+
+            {isBautizos && carAnchor.eligible && carAnchor.anchorPerson ? (
+              <CollapsibleSection
+                title="Datos de carro"
+                open={isSectionOpen(id, 'car')}
+                onToggle={() => toggleSection(id, 'car')}
+              >
+                <BautizosCarDataSummaryCard
+                  hostPerson={carAnchor.anchorPerson}
+                  companions={carAnchor.companionsForCrew}
+                  plan={event?.transportPlanning}
+                  roster={roster}
+                  eventLike={event}
+                  className="!p-2"
+                />
+              </CollapsibleSection>
+            ) : null}
+          </div>
         ) : null}
       </div>
     );
   };
 
   return (
-    <div className="p-3 sm:p-4 space-y-3">
-      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-700 shadow-sm px-3 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="text-base font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
-            <Church className="text-violet-600 shrink-0" size={16} />
-            Pastores
-          </h3>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug mt-0.5">
-            Costo real, fechas de estancia
-            {isBautizos ? ' y grupo familiar' : ''}.
-          </p>
+    <div className={`${uiShell.pagePad} ${uiShell.pageStack} max-w-6xl mx-auto`}>
+      <div className={`${uiShell.card} p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4`}>
+        <div className="flex items-start gap-3 min-w-0">
+          <div className={uiPageHeaderIcon('violet')}>
+            <Church size={22} />
+          </div>
+          <div className="min-w-0">
+            <h2 className={uiPageHeader.title}>Pastores</h2>
+            <p className={`${uiPageHeader.subtitle} mt-1 max-w-2xl`}>
+              Costo real, fechas de estancia
+              {isBautizos ? ' y grupo familiar' : ''}. Expande cada tarjeta para editar; las secciones
+              recuerdan tu preferencia de apertura.
+            </p>
+          </div>
         </div>
-        <div className="text-right shrink-0">
-          <p className="text-[9px] font-black text-slate-500 uppercase tracking-wider">Pastores</p>
-          <p className="text-xl font-black text-violet-700 dark:text-violet-300 tabular-nums leading-tight">
-            {rows.length}
-          </p>
-          <p className="text-[9px] font-bold text-slate-500">
-            Capturado:{' '}
-            <span className="text-violet-700 dark:text-violet-300 tabular-nums">{formatMoney(totalPastorCost)}</span>
-          </p>
+        <div className="flex flex-wrap gap-2 shrink-0">
+          <div className={`${uiStatTile('violet')} min-w-[6.5rem]`}>
+            <p className={uiStat.label}>Pastores</p>
+            <p className={`${uiStat.value} text-violet-700 dark:text-violet-300`}>{rows.length}</p>
+          </div>
+          <div className={`${uiStatTile('emerald')} min-w-[7.5rem]`}>
+            <p className={uiStat.label}>Capturado</p>
+            <p className={`${uiStat.valueSm} ${uiTypography.moneyPositive}`}>{formatMoney(totalPastorCost)}</p>
+          </div>
         </div>
       </div>
 
       {rows.length === 0 ? (
-        <p className="text-sm text-slate-500 dark:text-slate-400 italic px-1">
-          No hay pastores registrados en las sedes visibles de este evento.
-        </p>
+        <div className={`${uiShell.card} p-6`}>
+          <div className={uiEmptyState.wrap}>
+            <Church size={36} className={uiEmptyState.icon} />
+            <p className={uiEmptyState.title}>Sin pastores en sedes visibles</p>
+            <p className={uiEmptyState.help}>
+              No hay pastores registrados en las sedes que tienes asignadas para este evento.
+            </p>
+          </div>
+        </div>
       ) : (
-        <>
+        <div className={`${uiShell.card} p-2 sm:p-3 space-y-1.5`}>
+          <div className="flex items-center justify-between gap-2 px-1 pb-1 border-b border-slate-100 dark:border-slate-800">
+            <p className="text-[10px] font-black uppercase tracking-[0.15em] text-violet-700 dark:text-violet-300">
+              Listado de pastores
+            </p>
+            <span className={uiBadgeSoft('violet')}>{rows.length} registros</span>
+          </div>
           <div className={uiRosterMobile.list}>
             {rows.map((person, i) => renderPastorCard(person, i + 1, { mobileShell: true }))}
           </div>
-          <div className="hidden md:block space-y-2">
+          <div className="hidden md:block space-y-1.5">
             {rows.map((person, i) => renderPastorCard(person, i + 1, { mobileShell: false }))}
           </div>
-        </>
+        </div>
       )}
     </div>
   );
