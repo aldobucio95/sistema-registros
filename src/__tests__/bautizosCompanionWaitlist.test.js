@@ -39,6 +39,31 @@ describe('bautizosCompanionWaitlist', () => {
     expect(participantHasBaptismChip(row, 'Bautizos')).toBe(false);
   });
 
+  it('buildCompanionWaitlistVirtualParticipant exposes servidor fields when companion is marked', () => {
+    const host = {
+      id: 'host1',
+      eventId: 'ev1',
+      location: 'Sede A',
+      status: 'active',
+      name: 'Titular Activo',
+      registeredAt: '2024-01-01T00:00:00.000Z',
+    };
+    const companion = {
+      id: 'c1',
+      name: 'Server en espera',
+      relationship: 'Hermano',
+      companionWaitlistPending: true,
+      isServer: 'Si',
+      preferredServeArea: 'Cocina',
+    };
+    const row = buildCompanionWaitlistVirtualParticipant(host, companion, { id: 'ev1', eventType: 'Bautizos' }, [
+      host,
+    ]);
+    expect(row.isServer).toBe('Si');
+    expect(row.serverAssignment).toBe('Servidor');
+    expect(row.preferredServeArea).toBe('Cocina');
+  });
+
   it('resolveCompanionWaitlistVirtualLocation falls back to host roster sede', () => {
     const host = {
       id: 'host1',

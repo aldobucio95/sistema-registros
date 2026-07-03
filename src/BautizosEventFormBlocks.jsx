@@ -272,6 +272,11 @@ export function BautizosCompanionServerParticipationFields({
       <p className="text-[10px] text-slate-500 leading-snug">
         Los acompañantes no heredan el rol de servidor del titular; marque solo quienes sirvan en el evento.
       </p>
+      {companion?.companionWaitlistPending === true ? (
+        <p className="text-[10px] font-semibold text-violet-800 dark:text-violet-200 leading-snug">
+          No contará en Servidores hasta promover a inscrito activo.
+        </p>
+      ) : null}
     </div>
   );
 }

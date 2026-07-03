@@ -396,10 +396,9 @@ export function bautizosShowsServerParticipation(personLike) {
   );
 }
 
-/** Toggle «Participa como servidor» en filas de acompañante (no waitlist). */
+/** Toggle «Participa como servidor» en filas de acompañante (incluye lista de espera; el conteo activo sigue al promover). */
 export function bautizosShowsCompanionServerParticipation(companionLike) {
   if (!companionLike || typeof companionLike !== 'object') return false;
-  if (companionLike?.companionWaitlistPending === true) return false;
   return true;
 }
 
@@ -421,7 +420,12 @@ function appendBautizosServerParticipationLabel(baseLabel, personLike) {
 
 /** Etiqueta legible del tipo de asistencia Bautizos (incluye filas virtuales de acompañante). */
 export function getBautizosAttendanceTypeLabel(personLike) {
-  if (personLike?.__virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companion) {
+  if (
+    personLike?.__virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companion ||
+    personLike?._isCompanionWaitlistVirtual === true ||
+    personLike?.__companionWaitlistPending === true ||
+    personLike?.__globalRegistryCompanionRow === true
+  ) {
     return appendBautizosServerParticipationLabel('Acompañante', personLike);
   }
   const t = normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType);

@@ -40269,7 +40269,12 @@ function resolveEventName(eventId) {
     const basePool = isBautizos
       ? collectBautizosParticipatingServerRows(activeRoster)
       : activeRoster.filter((p) => isSiValue(p.isServer));
-    let rows = applyGlobalRegistryLikeFilters(basePool);
+    let rows = filterParticipantRows(basePool, false, globalRegistryListFilters, {
+      expandBautizosCompanions: false,
+    });
+    if (isBautizos) {
+      rows = rows.filter((p) => bautizosParticipatesAsServer(p));
+    }
     const locationScopeSet = buildLocationScopeSet(visibleLocations);
     if (locationScopeSet) {
       rows = rows.filter((p) => participantInLocationScope(p, locationScopeSet));
@@ -40344,7 +40349,7 @@ function resolveEventName(eventId) {
             </h3>
             <p className="text-xs text-slate-500">
               {isBautizos
-                ? 'Personas activas que participan como servidor (tipo servidor, empleado/cortesía/asistente con participación marcada, o acompañante individual). Mismos filtros que Registro global.'
+                ? 'Solo quienes participan como servidor (titular o acompañante marcado individualmente). No se listan acompañantes del titular que no sirven. Mismos filtros que Registro global.'
                 : 'Solo servidores con inscripción activa (no dados de baja ni en lista de espera). Mismos filtros que Registro global.'}
             </p>
             {sedeScopeHint ? (

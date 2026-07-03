@@ -3,6 +3,8 @@
  * Permanecen en `bautizosCompanions` del host pero no consumen cupo ni precio hasta promoverse.
  */
 import {
+  BAUTIZOS_SERVER_ASSIGNMENT_LABEL,
+  bautizosCompanionParticipatesAsServer,
   getBautizosCompanionsArray,
   getBautizosLineListPrice,
   isBautizosCompanionBaptized,
@@ -251,6 +253,14 @@ export function buildCompanionWaitlistVirtualParticipant(host, companion, eventL
     registeredAt: companion?.[COMPANION_WAITLIST_CREATED_AT] || host?.registeredAt || null,
     willBeBaptized: companion?.willBeBaptized || 'No',
     wantsBautizosTransport: companion?.wantsBautizosTransport || 'No',
+    isServer: bautizosCompanionParticipatesAsServer(companion) ? 'Si' : 'No',
+    serverAssignment: bautizosCompanionParticipatesAsServer(companion)
+      ? String(companion?.serverAssignment || '').trim() || BAUTIZOS_SERVER_ASSIGNMENT_LABEL
+      : '',
+    assignedServeArea: String(companion?.assignedServeArea || '').trim(),
+    preferredServeArea: String(companion?.preferredServeArea || '').trim(),
+    servesInCongress: companion?.servesInCongress || 'No',
+    congressServeArea: companion?.congressServeArea || '',
     bautizosCompanions: [],
     paymentHistory: [],
     whatsAppFinanceNotifications: [],

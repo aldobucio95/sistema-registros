@@ -1,17 +1,21 @@
 import { describe, expect, it } from 'vitest';
+import { clearCompanionWaitlistFlags } from '../bautizosCompanionWaitlist.js';
 import {
   BAUTIZOS_ATTENDANCE,
   bautizosCompanionParticipatesAsServer,
   bautizosDashboardCompanionCountsForScope,
   bautizosDashboardTitularCountsForScope,
   bautizosParticipatesAsServer,
+  bautizosShowsCompanionServerParticipation,
   buildActiveRegistrantMetaForCompanionDedupe,
   buildBautizosCanonicalCompanionPlan,
+  collectBautizosParticipatingServerRows,
   countBautizosServersDeduped,
   getBautizosAttendanceTypeLabel,
   isFreeBautizosAttendance,
   syncBautizosAttendanceServerFields,
 } from '../bautizosParty.js';
+import { prepareBautizosRowsForRosterFilter } from '../rosterParticipantFilters.js';
 
 describe('bautizos server participation', () => {
   it('host servidor + companions without flag: only host in servidor scope', () => {
@@ -94,5 +98,101 @@ describe('bautizos server participation', () => {
     expect(bautizosParticipatesAsServer(person)).toBe(false);
     expect(bautizosDashboardTitularCountsForScope(person, BAUTIZOS_ATTENDANCE.empleado)).toBe(true);
     expect(bautizosDashboardTitularCountsForScope(person, BAUTIZOS_ATTENDANCE.servidor)).toBe(false);
+  });
+
+  it('collectBautizosParticipatingServerRows excludes non-server companions of servidor titular', () => {
+    const roster = [
+      {
+        id: 'h1',
+        name: 'Ana Servidor',
+        bautizosAttendanceType: BAUTIZOS_ATTENDANCE.servidor,
+        isServer: 'Si',
+        bautizosCompanions: [
+          { id: 'c1', name: 'Hijo Uno', relationship: 'Hijo', isServer: 'No' },
+          { id: 'c2', name: 'Tío Server', relationship: 'Tío', isServer: 'Si' },
+        ],
+      },
+    ];
+    const rows = collectBautizosParticipatingServerRows(roster);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.name).sort()).toEqual(['Ana Servidor', 'Tío Server']);
+  });
+
+  it('companion expansion would add non-server companions; servidores view must skip expansion', () => {
+    const roster = [
+      {
+        id: 'h1',
+        name: 'Ana Servidor',
+        status: 'active',
+        bautizosAttendanceType: BAUTIZOS_ATTENDANCE.servidor,
+        isServer: 'Si',
+        bautizosCompanions: [{ id: 'c1', name: 'Hijo Uno', relationship: 'Hijo', isServer: 'No' }],
+      },
+    ];
+    const basePool = collectBautizosParticipatingServerRows(roster);
+    expect(basePool).toHaveLength(1);
+    const expanded = prepareBautizosRowsForRosterFilter(basePool, { filterRegistrationStatus: 'active' }, {
+      roster,
+    });
+    expect(expanded.some((r) => r.name === 'Hijo Uno')).toBe(true);
+    const servidorRows = expanded.filter((p) => bautizosParticipatesAsServer(p));
+    expect(servidorRows).toHaveLength(1);
+    expect(servidorRows[0].name).toBe('Ana Servidor');
+  });
+
+  it('bautizosShowsCompanionServerParticipation is true for companionWaitlistPending', () => {
+    expect(
+      bautizosShowsCompanionServerParticipation({
+        id: 'c1',
+        name: 'En espera',
+        companionWaitlistPending: true,
+      })
+    ).toBe(true);
+  });
+
+  it('waitlist companion with isServer does not count until promoted', () => {
+    const roster = [
+      {
+        id: 'h1',
+        name: 'Titular',
+        status: 'active',
+        bautizosAttendanceType: BAUTIZOS_ATTENDANCE.bautizado,
+        bautizosCompanions: [
+          {
+            id: 'c1',
+            name: 'Server en espera',
+            relationship: 'Hermano',
+            isServer: 'Si',
+            companionWaitlistPending: true,
+          },
+        ],
+      },
+    ];
+    const meta = buildActiveRegistrantMetaForCompanionDedupe(roster);
+    const plan = buildBautizosCanonicalCompanionPlan(roster, meta, { includeBaptizedCompanions: true });
+    expect(collectBautizosParticipatingServerRows(roster)).toHaveLength(0);
+    expect(countBautizosServersDeduped(roster, plan)).toBe(0);
+
+    const promoted = {
+      ...roster[0],
+      bautizosCompanions: [clearCompanionWaitlistFlags(roster[0].bautizosCompanions[0])],
+    };
+    const rosterAfter = [promoted];
+    const metaAfter = buildActiveRegistrantMetaForCompanionDedupe(rosterAfter);
+    const planAfter = buildBautizosCanonicalCompanionPlan(rosterAfter, metaAfter, {
+      includeBaptizedCompanions: true,
+    });
+    expect(collectBautizosParticipatingServerRows(rosterAfter)).toHaveLength(1);
+    expect(collectBautizosParticipatingServerRows(rosterAfter)[0].name).toBe('Server en espera');
+    expect(countBautizosServersDeduped(rosterAfter, planAfter)).toBe(1);
+  });
+
+  it('getBautizosAttendanceTypeLabel shows servidor for waitlist virtual companion row', () => {
+    expect(
+      getBautizosAttendanceTypeLabel({
+        _isCompanionWaitlistVirtual: true,
+        isServer: 'Si',
+      })
+    ).toBe('Acompañante · Servidor');
   });
 });

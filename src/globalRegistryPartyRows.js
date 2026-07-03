@@ -3,6 +3,8 @@
  */
 import {
   BAUTIZOS_ATTENDANCE,
+  BAUTIZOS_SERVER_ASSIGNMENT_LABEL,
+  bautizosCompanionParticipatesAsServer,
   buildActiveRegistrantMetaForCompanionDedupe,
   buildBautizosCanonicalCompanionPlan,
   getBautizosCompanionsArray,
@@ -40,6 +42,14 @@ function buildCompanionPartyPerson(host, companion, index) {
       : String(companion?.bautizosAttendanceType || '').trim(),
     willBeBaptized: companion?.willBeBaptized,
     wantsBautizosTransport: companion?.wantsBautizosTransport,
+    isServer: bautizosCompanionParticipatesAsServer(companion) ? 'Si' : 'No',
+    serverAssignment: bautizosCompanionParticipatesAsServer(companion)
+      ? String(companion?.serverAssignment || '').trim() || BAUTIZOS_SERVER_ASSIGNMENT_LABEL
+      : '',
+    assignedServeArea: String(companion?.assignedServeArea || '').trim(),
+    preferredServeArea: String(companion?.preferredServeArea || '').trim(),
+    servesInCongress: companion?.servesInCongress || 'No',
+    congressServeArea: companion?.congressServeArea || '',
     registeredAt: companion?.registeredAt || host?.registeredAt,
     __globalRegistryCompanionRow: true,
     __hostRegistrantId: hostId,
