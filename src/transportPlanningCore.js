@@ -222,6 +222,47 @@ export function computeBautizosFamAutoCarGroups(bautizosCarDisplayGroups) {
     .filter((g) => g.memberKeys.length > 1);
 }
 
+/** Host ids válidos por grupo (familias + grupos manuales `cg-*`) para `bautizosGroupTitularByGroupId`. */
+export function buildValidBautizosGroupTitularHostIdsByGroupId(plan, bautizosCarDisplayGroups = []) {
+  const validHostsByGroup = new Map(
+    (bautizosCarDisplayGroups || []).map((grp) => [
+      String(grp?.groupId || ''),
+      new Set((grp?.hosts || []).map((h) => String(h?.hostId || '').trim()).filter(Boolean)),
+    ])
+  );
+  const normalized = normalizeTransportPlanning(plan);
+  for (const g of getManualCarPlanGroups(normalized)) {
+    const gid = String(g?.id || '').trim();
+    if (!gid) continue;
+    validHostsByGroup.set(
+      gid,
+      new Set(
+        manualGroupParticipantSourceKeys(g)
+          .map((sk) => sk.replace(/^p:/, ''))
+          .filter(Boolean)
+      )
+    );
+  }
+  return validHostsByGroup;
+}
+
+export function sanitizeBautizosGroupTitularByGroupId(plan, bautizosCarDisplayGroups = []) {
+  const normalized = normalizeTransportPlanning(plan);
+  const validHostsByGroup = buildValidBautizosGroupTitularHostIdsByGroupId(
+    normalized,
+    bautizosCarDisplayGroups
+  );
+  const current = normalized.bautizosGroupTitularByGroupId || {};
+  const cleaned = {};
+  for (const [gid, hidRaw] of Object.entries(current)) {
+    const hid = String(hidRaw || '').trim();
+    const valid = validHostsByGroup.get(String(gid || ''));
+    if (!valid || !valid.has(hid)) continue;
+    cleaned[gid] = hid;
+  }
+  return cleaned;
+}
+
 /**
  * Aplica normalizaciones automáticas (grupos fam-auto, titulares inválidos) antes de comparar o guardar.
  */
@@ -233,21 +274,8 @@ export function applyTransportPlanningAutoNormalization(plan, { isBautizos = fal
   const keep = (next.carGroups || []).filter((g) => !String(g?.id || '').startsWith('fam-auto-'));
   let merged = { ...next, carGroups: [...keep, ...autoGroups] };
 
-  const validHostsByGroup = new Map(
-    (bautizosCarDisplayGroups || []).map((grp) => [
-      String(grp?.groupId || ''),
-      new Set((grp?.hosts || []).map((h) => String(h?.hostId || '').trim()).filter(Boolean)),
-    ])
-  );
-  const current = merged.bautizosGroupTitularByGroupId || {};
-  const cleaned = {};
-  for (const [gid, hidRaw] of Object.entries(current)) {
-    const hid = String(hidRaw || '').trim();
-    const valid = validHostsByGroup.get(String(gid || ''));
-    if (!valid || !valid.has(hid)) continue;
-    cleaned[gid] = hid;
-  }
-  if (JSON.stringify(cleaned) !== JSON.stringify(current)) {
+  const cleaned = sanitizeBautizosGroupTitularByGroupId(merged, bautizosCarDisplayGroups);
+  if (JSON.stringify(cleaned) !== JSON.stringify(merged.bautizosGroupTitularByGroupId || {})) {
     merged = { ...merged, bautizosGroupTitularByGroupId: cleaned };
   }
   return merged;

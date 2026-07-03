@@ -273,7 +273,7 @@ describe('manual car groups', () => {
     expect(summary.manualGroupMemberCount).toBe(2);
   });
 
-  it('resolveBautizosCarDataAnchor marks non-anchor manual member as not eligible', () => {
+  it('resolveBautizosCarDataAnchor lets non-anchor manual member view anchor car data', () => {
     const hostA = { id: 'a1', name: 'Ana', llegaEnCarro: true, carrosLlegada: 1, bautizosCompanions: [] };
     const hostB = { id: 'b1', name: 'Bruno', llegaEnCarro: true, carrosLlegada: 1, bautizosCompanions: [] };
     const event = {
@@ -284,7 +284,10 @@ describe('manual car groups', () => {
       },
     };
     const roster = [hostA, hostB];
-    expect(resolveBautizosCarDataAnchor(hostB, roster, event).eligible).toBe(false);
+    const member = resolveBautizosCarDataAnchor(hostB, roster, event);
+    expect(member.eligible).toBe(true);
+    expect(member.manualGroupInherited).toBe(true);
+    expect(member.anchorPerson?.id).toBe('a1');
     expect(resolveBautizosCarDataAnchor(hostA, roster, event).eligible).toBe(true);
     expect(resolveBautizosCarDataAnchor(hostA, roster, event).manualGroupMemberCount).toBe(2);
   });
@@ -431,5 +434,27 @@ describe('resolveLinkedCompanionCarInheritance', () => {
     const patch = patches.find((p) => p.vehicleKey === `p:${andresId}|c1`)?.patch;
     expect(patch?.brand).toBe('Toyota');
     expect(patch?.driverSourceKey).toBe(`p:${pamelaId}`);
+  });
+});
+
+import {
+  applyTransportPlanningAutoNormalization,
+  sanitizeBautizosGroupTitularByGroupId,
+} from '../transportPlanningCore.js';
+
+describe('sanitizeBautizosGroupTitularByGroupId', () => {
+  it('preserves manual group titular on auto-normalization', () => {
+    const plan = {
+      carGroups: [{ id: 'cg-1', memberKeys: ['p:a', 'p:b'], cars: 1 }],
+      bautizosGroupTitularByGroupId: { 'cg-1': 'b' },
+    };
+    const cleaned = sanitizeBautizosGroupTitularByGroupId(plan, []);
+    expect(cleaned['cg-1']).toBe('b');
+
+    const normalized = applyTransportPlanningAutoNormalization(plan, {
+      isBautizos: true,
+      bautizosCarDisplayGroups: [],
+    });
+    expect(normalized.bautizosGroupTitularByGroupId['cg-1']).toBe('b');
   });
 });

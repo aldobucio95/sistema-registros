@@ -1268,11 +1268,12 @@ export function buildCarDataSummaryForRosterPerson({
   }
 
   const manualCarCount = manualCtx?.isAnchor ? manualCtx.effectiveCars : undefined;
+  const inventoryHostSk = manualCtx?.isAnchor ? manualCtx.anchorSk : personSk;
   const inventory = buildBautizosFamilyCarInventory({
     hostPerson: person,
     companions: comps,
     plan: normalizedPlan,
-    hostSourceKey: personSk,
+    hostSourceKey: inventoryHostSk,
     carCountOverride: manualCarCount,
   });
   if (inventory.length) {
@@ -1434,11 +1435,22 @@ export function resolveBautizosCarDataAnchor(person, roster, eventLike = null) {
   const manualCtx = resolveManualCarGroupContext(person, plan, roster);
   if (manualCtx && !manualCtx.isAnchor && manualCtx.anchorPerson) {
     const anchorResult = resolveBautizosCarDataAnchor(manualCtx.anchorPerson, roster, eventLike);
+    if (!anchorResult.eligible) {
+      return {
+        ...empty,
+        waRecipient: manualCtx.anchorPerson,
+        manualGroupInherited: true,
+      };
+    }
     return {
-      ...anchorResult,
-      eligible: false,
-      waRecipient: anchorResult.waRecipient || manualCtx.anchorPerson,
+      eligible: true,
+      anchorPerson: manualCtx.anchorPerson,
+      inventoryCompanions: anchorResult.inventoryCompanions,
+      companionsForCrew: anchorResult.companionsForCrew,
+      manualGroupMemberCount: manualCtx.memberKeys.length,
+      manualGroupEffectiveCars: manualCtx.effectiveCars,
       manualGroupInherited: true,
+      waRecipient: manualCtx.anchorPerson,
     };
   }
 

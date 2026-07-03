@@ -32,6 +32,7 @@ import {
   getTransportAttendanceEntry,
   applyTransportPlanningAutoNormalization,
   transportPlanningDirtySignature,
+  sanitizeBautizosGroupTitularByGroupId,
 } from '../transportPlanningCore.js';
 import CarVehicleMetaPanel from '../components/transport/CarVehicleMetaPanel.jsx';
 import { collectCarColorSuggestions, applyCarMetaPassengerInheritance } from '../bautizosCarMeta.js';
@@ -2011,42 +2012,13 @@ export default function TransportPlanningPage({
 
   React.useEffect(() => {
     if (!isBautizos) return;
-    const validHostsByGroup = new Map(
-      (bautizosCarDisplayGroups || []).map((grp) => [
-        String(grp?.groupId || ''),
-        new Set((grp?.hosts || []).map((h) => String(h?.hostId || '').trim()).filter(Boolean)),
-      ])
-    );
-    for (const view of manualCarGroupViews || []) {
-      const gid = String(view?.id || '').trim();
-      if (!gid) continue;
-      validHostsByGroup.set(
-        gid,
-        new Set(
-          (view.participantHosts || [])
-            .map((h) => String(h?.hostId || '').trim())
-            .filter(Boolean)
-        )
-      );
-    }
-    const current = plan?.bautizosGroupTitularByGroupId || {};
-    const cleaned = {};
-    let changed = false;
-    for (const [gid, hidRaw] of Object.entries(current)) {
-      const hid = String(hidRaw || '').trim();
-      const valid = validHostsByGroup.get(String(gid || ''));
-      if (!valid || !valid.has(hid)) {
-        changed = true;
-        continue;
-      }
-      cleaned[gid] = hid;
-    }
-    if (!changed) return;
+    const cleaned = sanitizeBautizosGroupTitularByGroupId(plan, bautizosCarDisplayGroups);
+    if (JSON.stringify(cleaned) === JSON.stringify(plan?.bautizosGroupTitularByGroupId || {})) return;
     setPlan((prev) => {
       const next = normalizeTransportPlanning(prev);
       return { ...next, bautizosGroupTitularByGroupId: cleaned };
     });
-  }, [isBautizos, bautizosCarDisplayGroups, manualCarGroupViews, plan?.bautizosGroupTitularByGroupId]);
+  }, [isBautizos, bautizosCarDisplayGroups, plan?.bautizosGroupTitularByGroupId, plan?.carGroups]);
 
   return (
     <div

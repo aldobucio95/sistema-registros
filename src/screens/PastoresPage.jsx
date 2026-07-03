@@ -661,6 +661,7 @@ export default function PastoresPage({
                   hostPerson={carAnchor.anchorPerson}
                   companions={carAnchor.companionsForCrew}
                   plan={event?.transportPlanning}
+                  eventId={event?.id}
                   roster={roster}
                   eventLike={event}
                   className="!p-2"

@@ -35253,6 +35253,7 @@ function resolveEventName(eventId) {
           hostPerson={carDataAnchor.anchorPerson}
           companions={carDataAnchor.companionsForCrew}
           plan={currentEvent?.transportPlanning}
+          eventId={currentEvent?.id}
           roster={rosterForCompanionDisplay}
           eventLike={currentEvent}
         />
