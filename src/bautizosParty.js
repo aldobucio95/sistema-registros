@@ -396,6 +396,51 @@ export function bautizosShowsServerParticipation(personLike) {
   );
 }
 
+const attendanceLabelsForCombination = {
+  [BAUTIZOS_ATTENDANCE.bautizado]: 'Bautizado',
+  [BAUTIZOS_ATTENDANCE.asistente]: 'Asistente',
+  [BAUTIZOS_ATTENDANCE.servidor]: 'Servidor',
+  [BAUTIZOS_ATTENDANCE.empleado]: 'Empleado',
+  [BAUTIZOS_ATTENDANCE.cortesia]: 'Cortesía',
+  [BAUTIZOS_ATTENDANCE.pastor]: 'Pastor',
+};
+
+/** Etiqueta de combinación tipo + participación servidor (para formularios). */
+export function bautizosAttendanceCombinationLabel(entryLike) {
+  const t = normalizeBautizosAttendanceType(entryLike?.bautizosAttendanceType);
+  const base = attendanceLabelsForCombination[t] || 'Inscrito';
+  if (t === BAUTIZOS_ATTENDANCE.servidor || t === BAUTIZOS_ATTENDANCE.pastor) return base;
+  if (t === BAUTIZOS_ATTENDANCE.empleado) {
+    return isSiValue(entryLike?.isServer) ? `${base} · participa como servidor` : `${base} (sin rol servidor)`;
+  }
+  if (isSiValue(entryLike?.isServer)) return `${base} · participa como servidor`;
+  return base;
+}
+
+/**
+ * Opciones de tipo de asistencia bloqueadas según reglas de negocio.
+ * Pastor no combina con participación como servidor.
+ */
+export function bautizosAttendanceOptionDisabled(attendanceId, entryLike) {
+  const id = normalizeBautizosAttendanceType(attendanceId);
+  if (id === BAUTIZOS_ATTENDANCE.pastor && isSiValue(entryLike?.isServer)) {
+    const cur = normalizeBautizosAttendanceType(entryLike?.bautizosAttendanceType);
+    if (cur !== BAUTIZOS_ATTENDANCE.servidor && cur !== BAUTIZOS_ATTENDANCE.empleado) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function bautizosAttendanceOptionDisabledTitle(attendanceId, entryLike) {
+  if (!bautizosAttendanceOptionDisabled(attendanceId, entryLike)) return '';
+  const id = normalizeBautizosAttendanceType(attendanceId);
+  if (id === BAUTIZOS_ATTENDANCE.pastor) {
+    return 'Desactive «Participa como servidor» antes de elegir Pastor.';
+  }
+  return 'Combinación no permitida.';
+}
+
 /** Toggle «Participa como servidor» en filas de acompañante (incluye lista de espera; el conteo activo sigue al promover). */
 export function bautizosShowsCompanionServerParticipation(companionLike) {
   if (!companionLike || typeof companionLike !== 'object') return false;
@@ -2210,9 +2255,8 @@ export function normalizeBautizosCompanionsForPersist(personLike, loc = '', vnpC
       pastorStayStart: normalizeOptionalIsoDate(row?.pastorStayStart),
       pastorStayEnd: normalizeOptionalIsoDate(row?.pastorStayEnd),
       isServer: row?.isServer,
-      serverAssignment: row?.serverAssignment,
-      assignedServeArea: row?.assignedServeArea,
-      preferredServeArea: row?.preferredServeArea,
+      assignedServeArea: String(row?.assignedServeArea ?? '').trim(),
+      preferredServeArea: String(row?.preferredServeArea ?? '').trim(),
     });
     if (!baptized) {
       return appendCompanionWaitlistPersistFields(base, row);

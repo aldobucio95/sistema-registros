@@ -34,9 +34,8 @@ import {
   DEFAULT_ALLERGY_OPTIONS,
   DEFAULT_SERVE_AREA_OPTIONS,
   SI_LABEL,
-  formatPreferredServeArea,
-  parsePreferredServeArea,
 } from './registrationFormShared.js';
+import ServeAreaMultiSelect from './components/ServeAreaMultiSelect.jsx';
 import PublicBirthDateField from './PublicBirthDateField.jsx';
 import GenderSelectButtons from './components/GenderSelectButtons.jsx';
 import SiNoFieldToggle from './components/SiNoFieldToggle.jsx';
@@ -53,6 +52,7 @@ import { familyHasAnyCarTransport, collectCarColorSuggestions } from './bautizos
 import { BAUTIZOS_UNDER_3_POLICY_NOTE, isBautizosUnder3YearsAtEvent, normalizeArrivalCarCount } from './bautizosParty.js';
 import {
   BAUTIZOS_ATTENDANCE,
+  bautizosParticipatesAsServer,
   bautizosWillBeBaptizedFromAttendance,
   bautizosShowsServerParticipation,
   normalizeBautizosAttendanceType,
@@ -531,6 +531,7 @@ export default function PublicRegistrationFormSections({
               </h4>
               <BautizosAttendanceTypeField
                 value={form.bautizosAttendanceType}
+                entry={form}
                 onChange={(v) => {
                   const t = normalizeBautizosAttendanceType(v);
                   setForm((prev) =>
@@ -556,7 +557,7 @@ export default function PublicRegistrationFormSections({
                 }
               />
               {optionalVisibility.serverProfileExtra !== false &&
-                isSiValue(form.isServer) &&
+                bautizosParticipatesAsServer(form) &&
                 bautizosShowsServerParticipation(form) && (
                 <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-600">
                   <p className="text-[10px] font-black uppercase tracking-widest text-amber-900 dark:text-amber-200 mb-1">
@@ -1167,8 +1168,6 @@ export default function PublicRegistrationFormSections({
                       value={form.servedAreas}
                       onChange={(next) => setField('servedAreas', next)}
                       opts={serveAreaOptionsList.length ? serveAreaOptionsList : DEFAULT_SERVE_AREA_OPTIONS}
-                      open={servedAreasMenuOpen}
-                      setOpen={setServedAreasMenuOpen}
                     />
                   </div>
                 )}
@@ -1179,8 +1178,6 @@ export default function PublicRegistrationFormSections({
                     value={form.preferredServeArea}
                     onChange={(next) => setField('preferredServeArea', next)}
                     opts={serveAreaOptionsList.length ? serveAreaOptionsList : DEFAULT_SERVE_AREA_OPTIONS}
-                    open={preferredServeMenuOpen}
-                    setOpen={setPreferredServeMenuOpen}
                   />
                 </div>
                 <div className={fieldStack}>
@@ -1410,55 +1407,4 @@ function formatPhoneInline(value) {
   if (digits.length > 2) formatted += '-' + digits.substring(2, 6);
   if (digits.length > 6) formatted += '-' + digits.substring(6, 10);
   return formatted;
-}
-
-function ServeAreaMultiSelect({ inputClasses, value, onChange, opts, open, setOpen }) {
-  const { selected, otroText } = parsePreferredServeArea(value || '', opts);
-  const toggle = (opt) => {
-    const next = new Set(selected);
-    if (next.has(opt)) next.delete(opt);
-    else next.add(opt);
-    const txt = opt === 'Otro' ? (next.has('Otro') ? otroText : '') : otroText;
-    onChange(formatPreferredServeArea(next, txt));
-  };
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className={`w-full ${inputClasses} text-left flex items-center justify-between`}
-      >
-        <span className="truncate text-sm">
-          {selected.size ? [...selected].map((s) => (s === 'Otro' && otroText ? `Otro: ${otroText}` : s)).join(', ') : 'Seleccionar...'}
-        </span>
-        {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-lg p-2 max-h-56 overflow-auto">
-            {opts.map((opt) => (
-              <div key={opt}>
-                <label className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700">
-                  <input type="checkbox" className="h-4 w-4 accent-indigo-600 rounded" checked={selected.has(opt)} onChange={() => toggle(opt)} />
-                  {opt}
-                </label>
-                {opt === 'Otro' && selected.has('Otro') && (
-                  <input
-                    type="text"
-                    placeholder="¿Cuál?"
-                    className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm"
-                    value={otroText}
-                    onChange={(e) => onChange(formatPreferredServeArea(selected, e.target.value))}
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                )}
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
 }

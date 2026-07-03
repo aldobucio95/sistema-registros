@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { clearCompanionWaitlistFlags } from '../bautizosCompanionWaitlist.js';
 import {
   BAUTIZOS_ATTENDANCE,
+  bautizosAttendanceCombinationLabel,
+  bautizosAttendanceOptionDisabled,
   bautizosCompanionParticipatesAsServer,
   bautizosDashboardCompanionCountsForScope,
   bautizosDashboardTitularCountsForScope,
@@ -194,5 +196,14 @@ describe('bautizos server participation', () => {
         isServer: 'Si',
       })
     ).toBe('Acompañante · Servidor');
+  });
+
+  it('blocks pastor attendance when servidor flag is active on non-empleado types', () => {
+    const entry = {
+      bautizosAttendanceType: BAUTIZOS_ATTENDANCE.bautizado,
+      isServer: 'Si',
+    };
+    expect(bautizosAttendanceOptionDisabled(BAUTIZOS_ATTENDANCE.pastor, entry)).toBe(true);
+    expect(bautizosAttendanceCombinationLabel(entry)).toBe('Bautizado · participa como servidor');
   });
 });

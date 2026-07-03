@@ -271,6 +271,7 @@ import {
 import { BautizosCarDataSection } from './BautizosCarDataSection.jsx';
 import BautizosCarDataPromptModal from './components/transport/BautizosCarDataPromptModal.jsx';
 import BautizosCarDataSummaryCard from './components/transport/BautizosCarDataSummaryCard.jsx';
+import ServeAreaMultiSelect from './components/ServeAreaMultiSelect.jsx';
 import {
   buildBautizosFamilyCarInventory,
   buildCarDataSummaryForRosterPerson,
@@ -4499,7 +4500,7 @@ const App = () => {
             : 'Jóvenes'
           : 'Jóvenes';
       const birthIsoOpen = normalizeBirthDateToIso(person.birthDate) || '';
-      return {
+      const base = {
         ...person,
         birthDate: birthIsoOpen,
         age: birthIsoOpen
@@ -4531,8 +4532,12 @@ const App = () => {
         bautizosCompanions: normalizeBautizosCompanionsForForm(person.bautizosCompanions),
         baptismShirtSize: normalizeBaptismShirtSize(person.baptismShirtSize),
       };
+      if (currentEvent?.eventType === 'Bautizos') {
+        return syncBautizosAttendanceServerFields(base);
+      }
+      return base;
     },
-    [currentPricing, resolveRegisteredCost]
+    [currentPricing, resolveRegisteredCost, currentEvent?.eventType]
   );
 
   /** Monto que debe liquidar la persona (0 = beca total cubierta). Beca parcial: lista menos monto becado (scholarshipPartialAmount). */
@@ -20175,6 +20180,10 @@ function resolveEventName(eventId) {
     const compact = opts.compact === true;
     if (!editRegistryModal.data) return null;
     const editLoc = String(editRegistryModal.data.location || editRegistryModal.loc || '').trim();
+    const restrictEditorForm = currentUser?.role === 'Editor';
+    const blockAdminInputs = currentUser?.role === 'Administrador';
+    const fv = (key) => !restrictEditorForm || editorRegistrationFieldVis[key] !== false;
+    const fieldBlocked = (key) => blockAdminInputs && editorRegistrationFieldVis[key] === false;
     const showPastorAttendanceOption = canShowPastorAttendance({
       role: currentUser?.role,
       visibility: editorRegistrationFieldVis,
@@ -20602,6 +20611,7 @@ function resolveEventName(eventId) {
                         </p>
                         <BautizosAttendanceTypeField
                           value={editRegistryModal.data.bautizosAttendanceType}
+                          entry={editRegistryModal.data}
                           onChange={(v) => {
                             const t = normalizeBautizosAttendanceType(v);
                             setEditRegistryModal({
@@ -20613,7 +20623,7 @@ function resolveEventName(eventId) {
                               }),
                             });
                           }}
-                          disabled={false}
+                          disabled={fieldBlocked('bautizosAttendanceType')}
                           labelClasses={labelClasses}
                           showPastor={canShowBautizosPastorAttendance({
                             role: currentUser?.role,
@@ -20626,7 +20636,7 @@ function resolveEventName(eventId) {
                           onEntryChange={(next) =>
                             setEditRegistryModal({ ...editRegistryModal, data: next })
                           }
-                          disabled={false}
+                          disabled={fieldBlocked('bautizosAttendanceType')}
                           labelClasses={labelClasses}
                           formatSiNo={formatSiNo}
                           choiceBtnClass={(on) =>
@@ -20634,7 +20644,8 @@ function resolveEventName(eventId) {
                           }
                         />
                       </div>
-                      {isSiValue(editRegistryModal.data.isServer) &&
+                      {fv('serverProfileExtra') &&
+                        bautizosParticipatesAsServer(editRegistryModal.data) &&
                         bautizosShowsServerParticipation(editRegistryModal.data) && (
                         <div className="mt-4 pt-4 border-t border-indigo-200 dark:border-indigo-500/50 md:col-span-2 space-y-3">
                           <p className="text-[10px] font-black uppercase tracking-widest text-amber-900 dark:text-amber-200">
@@ -20743,174 +20754,42 @@ function resolveEventName(eventId) {
                             {isSiValue(editRegistryModal.data.servedOtherCampa) && (
                               <div className={fieldStack}>
                                 <label className={labelClasses}>¿En qué áreas?</label>
-                                {(() => {
-                                  const opts = globalConfig?.serveAreaOptions?.length
-                                    ? globalConfig.serveAreaOptions
-                                    : DEFAULT_SERVE_AREA_OPTIONS;
-                                  const { selected, otroText } = parsePreferredServeArea(
-                                    editRegistryModal.data.servedAreas || '',
-                                    opts
-                                  );
-                                  const toggle = (opt) => {
-                                    const next = new Set(selected);
-                                    if (next.has(opt)) next.delete(opt);
-                                    else next.add(opt);
-                                    const txt = opt === 'Otro' ? (next.has('Otro') ? otroText : '') : otroText;
+                                <ServeAreaMultiSelect
+                                  inputClasses={inputClasses}
+                                  disabled={fieldBlocked('serverProfileExtra')}
+                                  opts={
+                                    globalConfig?.serveAreaOptions?.length
+                                      ? globalConfig.serveAreaOptions
+                                      : DEFAULT_SERVE_AREA_OPTIONS
+                                  }
+                                  value={editRegistryModal.data.servedAreas || ''}
+                                  onChange={(next) =>
                                     setEditRegistryModal({
                                       ...editRegistryModal,
-                                      data: {
-                                        ...editRegistryModal.data,
-                                        servedAreas: formatPreferredServeArea(next, txt),
-                                      },
-                                    });
-                                  };
-                                  return (
-                                    <div className="relative" data-dropdown-root="edit-bz-served-areas">
-                                      <button
-                                        type="button"
-                                        onClick={() => setEditServedAreasDropdownOpen(!editServedAreasDropdownOpen)}
-                                        className={`w-full ${inputClasses} text-left flex items-center justify-between`}
-                                      >
-                                        <span>
-                                          {selected.size
-                                            ? [...selected]
-                                                .map((s) => (s === 'Otro' && otroText ? `Otro: ${otroText}` : s))
-                                                .join(', ')
-                                            : 'Seleccionar...'}
-                                        </span>
-                                        {editServedAreasDropdownOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                                      </button>
-                                      {editServedAreasDropdownOpen && (
-                                        <>
-                                          <div
-                                            className="absolute inset-0 -inset-y-20 z-10"
-                                            onClick={() => setEditServedAreasDropdownOpen(false)}
-                                            aria-hidden
-                                          />
-                                          <div className="absolute top-full left-0 right-0 mt-1 z-20 rounded-lg border border-slate-200 bg-white p-2 shadow-lg max-h-56 overflow-auto dark:border-slate-600 dark:bg-slate-800">
-                                            {opts.map((opt) => (
-                                              <div key={opt}>
-                                                <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700/60">
-                                                  <input
-                                                    type="checkbox"
-                                                    className="h-4 w-4 accent-indigo-600 rounded"
-                                                    checked={selected.has(opt)}
-                                                    onChange={() => toggle(opt)}
-                                                  />
-                                                  {opt}
-                                                </label>
-                                                {opt === 'Otro' && selected.has('Otro') && (
-                                                  <input
-                                                    type="text"
-                                                    placeholder="¿Cuál?"
-                                                    className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm dark:border-slate-600 dark:bg-slate-900"
-                                                    value={otroText}
-                                                    onChange={(e) =>
-                                                      setEditRegistryModal({
-                                                        ...editRegistryModal,
-                                                        data: {
-                                                          ...editRegistryModal.data,
-                                                          servedAreas: formatPreferredServeArea(selected, e.target.value),
-                                                        },
-                                                      })
-                                                    }
-                                                    onClick={(e) => e.stopPropagation()}
-                                                  />
-                                                )}
-                                              </div>
-                                            ))}
-                                          </div>
-                                        </>
-                                      )}
-                                    </div>
-                                  );
-                                })()}
+                                      data: { ...editRegistryModal.data, servedAreas: next },
+                                    })
+                                  }
+                                />
                               </div>
                             )}
                             <div className="space-y-1 sm:col-span-2">
                               <label className={labelClasses}>¿En qué área les gustaría servir?</label>
-                              {(() => {
-                                const opts = globalConfig?.serveAreaOptions?.length
-                                  ? globalConfig.serveAreaOptions
-                                  : DEFAULT_SERVE_AREA_OPTIONS;
-                                const { selected, otroText } = parsePreferredServeArea(
-                                  editRegistryModal.data.preferredServeArea || '',
-                                  opts
-                                );
-                                const toggle = (opt) => {
-                                  const next = new Set(selected);
-                                  if (next.has(opt)) next.delete(opt);
-                                  else next.add(opt);
-                                  const txt = opt === 'Otro' ? (next.has('Otro') ? otroText : '') : otroText;
+                              <ServeAreaMultiSelect
+                                inputClasses={inputClasses}
+                                disabled={fieldBlocked('serverProfileExtra')}
+                                opts={
+                                  globalConfig?.serveAreaOptions?.length
+                                    ? globalConfig.serveAreaOptions
+                                    : DEFAULT_SERVE_AREA_OPTIONS
+                                }
+                                value={editRegistryModal.data.preferredServeArea || ''}
+                                onChange={(next) =>
                                   setEditRegistryModal({
                                     ...editRegistryModal,
-                                    data: {
-                                      ...editRegistryModal.data,
-                                      preferredServeArea: formatPreferredServeArea(next, txt),
-                                    },
-                                  });
-                                };
-                                return (
-                                  <div className="relative" data-dropdown-root="edit-bz-preferred-areas">
-                                    <button
-                                      type="button"
-                                      onClick={() => setEditPreferredServeDropdownOpen(!editPreferredServeDropdownOpen)}
-                                      className={`w-full ${inputClasses} text-left flex items-center justify-between`}
-                                    >
-                                      <span>
-                                        {selected.size
-                                          ? [...selected]
-                                              .map((s) => (s === 'Otro' && otroText ? `Otro: ${otroText}` : s))
-                                              .join(', ')
-                                          : 'Seleccionar...'}
-                                      </span>
-                                      {editPreferredServeDropdownOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                                    </button>
-                                    {editPreferredServeDropdownOpen && (
-                                      <>
-                                        <div
-                                          className="absolute inset-0 -inset-y-20 z-10"
-                                          onClick={() => setEditPreferredServeDropdownOpen(false)}
-                                          aria-hidden
-                                        />
-                                        <div className="absolute top-full left-0 right-0 mt-1 z-20 rounded-lg border border-slate-200 bg-white p-2 shadow-lg max-h-56 overflow-auto dark:border-slate-600 dark:bg-slate-800">
-                                          {opts.map((opt) => (
-                                            <div key={opt}>
-                                              <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700/60">
-                                                <input
-                                                  type="checkbox"
-                                                  className="h-4 w-4 accent-indigo-600 rounded"
-                                                  checked={selected.has(opt)}
-                                                  onChange={() => toggle(opt)}
-                                                />
-                                                {opt}
-                                              </label>
-                                              {opt === 'Otro' && selected.has('Otro') && (
-                                                <input
-                                                  type="text"
-                                                  placeholder="¿Cuál?"
-                                                  className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm dark:border-slate-600 dark:bg-slate-900"
-                                                  value={otroText}
-                                                  onChange={(e) =>
-                                                    setEditRegistryModal({
-                                                      ...editRegistryModal,
-                                                      data: {
-                                                        ...editRegistryModal.data,
-                                                        preferredServeArea: formatPreferredServeArea(selected, e.target.value),
-                                                      },
-                                                    })
-                                                  }
-                                                  onClick={(e) => e.stopPropagation()}
-                                                />
-                                              )}
-                                            </div>
-                                          ))}
-                                        </div>
-                                      </>
-                                    )}
-                                  </div>
-                                );
-                              })()}
+                                    data: { ...editRegistryModal.data, preferredServeArea: next },
+                                  })
+                                }
+                              />
                             </div>
                             <div className={fieldStack}>
                               <label className={labelClasses}>¿Sirve en su congre local?</label>
@@ -37145,6 +37024,7 @@ function resolveEventName(eventId) {
                     >
                       <BautizosAttendanceTypeField
                         value={newEntry.bautizosAttendanceType}
+                        entry={newEntry}
                         onChange={(v) => {
                           const t = normalizeBautizosAttendanceType(v);
                           setNewEntry(
@@ -37171,8 +37051,8 @@ function resolveEventName(eventId) {
                       }
                     />
                     {fv('serverProfileExtra') &&
-                      bautizosShowsServerParticipation(newEntry) &&
-                      isSiValue(newEntry.isServer) && (
+                      bautizosParticipatesAsServer(newEntry) &&
+                      bautizosShowsServerParticipation(newEntry) && (
                       <fieldset
                         disabled={fieldBlocked('serverProfileExtra')}
                         className={`mt-4 pt-4 border-t border-slate-200 dark:border-slate-600 ${fieldBlocked('serverProfileExtra') ? 'opacity-70' : ''}`}
@@ -37292,85 +37172,32 @@ function resolveEventName(eventId) {
                           {isSiValue(newEntry.servedOtherCampa) && (
                             <div className={fieldStack}>
                               <label className={labelClasses}>¿En qué áreas?</label>
-                              {(() => {
-                                const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
-                                const { selected, otroText } = parsePreferredServeArea(newEntry.servedAreas, opts);
-                                const isOpen = openServedAreasLoc === loc;
-                                const toggle = (opt) => {
-                                  const next = new Set(selected);
-                                  if (next.has(opt)) next.delete(opt); else next.add(opt);
-                                  const txt = opt === 'Otro' ? (next.has('Otro') ? otroText : '') : otroText;
-                                  setNewEntry({ ...newEntry, servedAreas: formatPreferredServeArea(next, txt) });
-                                };
-                                return (
-                                  <div className="relative" data-dropdown-root="new-served-areas">
-                                    <button type="button" onClick={() => setOpenServedAreasLoc(isOpen ? null : loc)} className={`w-full ${inputClasses} text-left flex items-center justify-between`}>
-                                      <span>{selected.size ? [...selected].map(s => s === 'Otro' && otroText ? `Otro: ${otroText}` : s).join(', ') : 'Seleccionar...'}</span>
-                                      {isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                                    </button>
-                                    {isOpen && (
-                                      <>
-                                        <div className="absolute inset-0 -inset-y-20 z-10" onClick={() => setOpenServedAreasLoc(null)} aria-hidden />
-                                        <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-lg p-2 max-h-56 overflow-auto dark:border-slate-600 dark:bg-slate-800">
-                                          {opts.map(opt => (
-                                            <div key={opt}>
-                                              <label className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700 dark:hover:bg-slate-700 dark:text-slate-100">
-                                                <input type="checkbox" className="h-4 w-4 accent-indigo-600 rounded" checked={selected.has(opt)} onChange={() => toggle(opt)} />
-                                                {opt}
-                                              </label>
-                                              {opt === 'Otro' && selected.has('Otro') && (
-                                                <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm dark:border-slate-600 dark:bg-slate-900" value={otroText} onChange={e => setNewEntry({ ...newEntry, servedAreas: formatPreferredServeArea(selected, e.target.value) })} onClick={e => e.stopPropagation()} />
-                                              )}
-                                            </div>
-                                          ))}
-                                        </div>
-                                      </>
-                                    )}
-                                  </div>
-                                );
-                              })()}
+                              <ServeAreaMultiSelect
+                                inputClasses={inputClasses}
+                                disabled={fieldBlocked('serverProfileExtra')}
+                                opts={
+                                  globalConfig?.serveAreaOptions?.length
+                                    ? globalConfig.serveAreaOptions
+                                    : DEFAULT_SERVE_AREA_OPTIONS
+                                }
+                                value={newEntry.servedAreas || ''}
+                                onChange={(next) => setNewEntry({ ...newEntry, servedAreas: next })}
+                              />
                             </div>
                           )}
                           <div className="space-y-1 sm:col-span-2">
                             <label className={labelClasses}>¿En qué área les gustaría servir?</label>
-                            {(() => {
-                              const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
-                              const { selected, otroText } = parsePreferredServeArea(newEntry.preferredServeArea, opts);
-                              const isOpen = openPreferredServeLoc === loc;
-                              const toggle = (opt) => {
-                                const next = new Set(selected);
-                                if (next.has(opt)) next.delete(opt);
-                                else next.add(opt);
-                                if (opt === 'Otro' && !next.has('Otro')) setNewEntry({ ...newEntry, preferredServeArea: formatPreferredServeArea(next, '') });
-                                else setNewEntry({ ...newEntry, preferredServeArea: formatPreferredServeArea(next, opt === 'Otro' ? otroText : '') });
-                              };
-                              return (
-                                <div className="relative" data-dropdown-root="new-preferred-areas">
-                                  <button type="button" onClick={() => setOpenPreferredServeLoc(isOpen ? null : loc)} className={`w-full ${inputClasses} text-left flex items-center justify-between`}>
-                                    <span>{selected.size ? [...selected].map(s => s === 'Otro' && otroText ? `Otro: ${otroText}` : s).join(', ') : 'Seleccionar...'}</span>
-                                    {isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                                  </button>
-                                  {isOpen && (
-                                    <>
-                                      <div className="absolute inset-0 -inset-y-20 z-10" onClick={() => setOpenPreferredServeLoc(null)} aria-hidden />
-                                      <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-lg p-2 max-h-56 overflow-auto dark:border-slate-600 dark:bg-slate-800">
-                                        {opts.map(opt => (
-                                          <div key={opt}>
-                                            <label className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700 dark:hover:bg-slate-700 dark:text-slate-100">
-                                              <input type="checkbox" className="h-4 w-4 accent-indigo-600 rounded" checked={selected.has(opt)} onChange={() => toggle(opt)} />
-                                              {opt}
-                                            </label>
-                                            {opt === 'Otro' && selected.has('Otro') && (
-                                              <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm dark:border-slate-600 dark:bg-slate-900" value={otroText} onChange={e => setNewEntry({ ...newEntry, preferredServeArea: formatPreferredServeArea(selected, e.target.value) })} onClick={e => e.stopPropagation()} />
-                                            )}
-                                          </div>
-                                        ))}
-                                      </div>
-                                    </>
-                                  )}
-                                </div>
-                              );
-                            })()}
+                            <ServeAreaMultiSelect
+                              inputClasses={inputClasses}
+                              disabled={fieldBlocked('serverProfileExtra')}
+                              opts={
+                                globalConfig?.serveAreaOptions?.length
+                                  ? globalConfig.serveAreaOptions
+                                  : DEFAULT_SERVE_AREA_OPTIONS
+                              }
+                              value={newEntry.preferredServeArea || ''}
+                              onChange={(next) => setNewEntry({ ...newEntry, preferredServeArea: next })}
+                            />
                           </div>
                           <div className={fieldStack}>
                             <label className={labelClasses}>¿Sirve en su congre local?</label>

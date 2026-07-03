@@ -3,6 +3,9 @@ import { AlertTriangle, Church, Link2, Trash2, Users } from 'lucide-react';
 import {
   BAUTIZOS_ATTENDANCE,
   BAUTIZOS_UNDER_3_POLICY_NOTE,
+  bautizosAttendanceCombinationLabel,
+  bautizosAttendanceOptionDisabled,
+  bautizosAttendanceOptionDisabledTitle,
   bautizosServerToggleLocked,
   bautizosShowsCompanionServerParticipation,
   bautizosShowsServerParticipation,
@@ -155,6 +158,7 @@ export function BautizosAttendanceTypeField({
   labelClasses,
   variant = 'panel',
   showPastor = false,
+  entry = null,
 }) {
   const cur = normalizeBautizosAttendanceType(value);
   let attendanceIds =
@@ -163,9 +167,15 @@ export function BautizosAttendanceTypeField({
       : Object.values(BAUTIZOS_ATTENDANCE).filter((id) => showPastor || id !== BAUTIZOS_ATTENDANCE.pastor);
   const pastorLocked =
     !showPastor && cur === BAUTIZOS_ATTENDANCE.pastor && variant !== 'public';
+  const entryLike = entry && typeof entry === 'object' ? entry : { bautizosAttendanceType: value };
   return (
     <div className="space-y-2">
       {labelClasses ? <label className={labelClasses}>Tipo de asistencia</label> : null}
+      <p className="text-[10px] text-slate-500 leading-snug">
+        Elija un tipo principal (solo uno). Para combinar —por ejemplo bautizado que también sirve— elija el tipo
+        principal y active «Participa como servidor» debajo. El botón «Servidor» es para quien asiste principalmente
+        como servidor del evento.
+      </p>
       <div className="flex flex-wrap gap-2">
         {pastorLocked ? (
           <span
@@ -175,18 +185,30 @@ export function BautizosAttendanceTypeField({
             {attendanceLabels[BAUTIZOS_ATTENDANCE.pastor]}
           </span>
         ) : null}
-        {attendanceIds.map((id) => (
-          <button
-            key={id}
-            type="button"
-            disabled={disabled}
-            onClick={() => onChange(id)}
-            className={attendanceBtnClass(cur, id, { variant })}
-          >
-            {attendanceLabels[id]}
-          </button>
-        ))}
+        {attendanceIds.map((id) => {
+          const optionDisabled =
+            disabled || bautizosAttendanceOptionDisabled(id, { ...entryLike, bautizosAttendanceType: cur });
+          const disabledTitle = bautizosAttendanceOptionDisabledTitle(id, { ...entryLike, bautizosAttendanceType: cur });
+          return (
+            <button
+              key={id}
+              type="button"
+              disabled={optionDisabled}
+              title={disabledTitle || undefined}
+              onClick={() => {
+                if (optionDisabled) return;
+                onChange(id);
+              }}
+              className={`${attendanceBtnClass(cur, id, { variant })} ${optionDisabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+            >
+              {attendanceLabels[id]}
+            </button>
+          );
+        })}
       </div>
+      <p className="text-[10px] font-semibold text-indigo-800 dark:text-indigo-200">
+        Combinación actual: {bautizosAttendanceCombinationLabel({ ...entryLike, bautizosAttendanceType: cur })}
+      </p>
     </div>
   );
 }
