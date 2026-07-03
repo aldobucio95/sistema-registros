@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildBautizosCarSlotsForTransport,
+  buildCarCrewMembersFromMeta,
   buildCarDataSummaryForRosterPerson,
+  buildRosterSourceKeyLabelIndex,
   buildTransportCarContextForHost,
+  dedupeCrewSourceKeys,
   familyHasAnyCarTransport,
+  buildCarMetaPatchesAfterSave,
+  resolveLinkedCompanionCarInheritance,
   resolveBautizosCarDataAnchor,
 } from '../bautizosCarMeta.js';
 import { bautizosLlegaEnCarroForTransportPricing } from '../bautizosParty.js';
@@ -282,5 +287,149 @@ describe('manual car groups', () => {
     expect(resolveBautizosCarDataAnchor(hostB, roster, event).eligible).toBe(false);
     expect(resolveBautizosCarDataAnchor(hostA, roster, event).eligible).toBe(true);
     expect(resolveBautizosCarDataAnchor(hostA, roster, event).manualGroupMemberCount).toBe(2);
+  });
+});
+
+describe('dedupeCrewSourceKeys', () => {
+  const andresId = 'host-andres';
+  const pamelaId = 'host-pamela';
+  const pamelaCompId = 'comp-pamela';
+
+  const roster = [
+    {
+      id: andresId,
+      name: 'Andres De La Cruz',
+      bautizosCompanions: [
+        {
+          id: pamelaCompId,
+          name: 'Pamela Palacios',
+          linkedCompanionSourceKey: `p:${pamelaId}`,
+        },
+      ],
+    },
+    { id: pamelaId, name: 'Pamela Palacios', bautizosCompanions: [] },
+  ];
+
+  it('colapsa pasajero duplicado p:<id> y c:<host>::<companionId> vinculado', () => {
+    const keys = [`p:${pamelaId}`, `c:${andresId}::${pamelaCompId}`];
+    expect(dedupeCrewSourceKeys(keys, roster)).toEqual([`p:${pamelaId}`]);
+    const labelIndex = buildRosterSourceKeyLabelIndex(roster);
+    const members = buildCarCrewMembersFromMeta(
+      {
+        driverSourceKey: `p:${andresId}`,
+        passengerSourceKeys: keys,
+      },
+      roster[0],
+      roster[0].bautizosCompanions,
+      labelIndex,
+      roster
+    );
+    const passengers = members.filter((m) => m.crewRole === 'passenger');
+    expect(passengers).toHaveLength(1);
+    expect(passengers[0].name).toBe('Pamela Palacios');
+  });
+
+  it('no elimina pasajeros distintos en el carro de Roberto', () => {
+    const robertoId = 'host-roberto';
+    const febeId = 'host-febe';
+    const normaCompanionId = 'comp-norma';
+    const robertoRoster = [
+      {
+        id: robertoId,
+        name: 'Roberto Rosas Vargas',
+        bautizosCompanions: [
+          { id: normaCompanionId, name: 'Norma Rosas Cruz', relationship: 'Hija' },
+        ],
+      },
+      { id: febeId, name: 'Febe Cruz Treviño', bautizosCompanions: [] },
+    ];
+    const labelIndex = buildRosterSourceKeyLabelIndex(robertoRoster);
+    const members = buildCarCrewMembersFromMeta(
+      {
+        driverSourceKey: `p:${robertoId}`,
+        passengerSourceKeys: [`p:${febeId}`, `c:${robertoId}::${normaCompanionId}`],
+      },
+      robertoRoster[0],
+      robertoRoster[0].bautizosCompanions,
+      labelIndex,
+      robertoRoster
+    );
+    expect(members.filter((m) => m.crewRole === 'passenger')).toHaveLength(2);
+    expect(members.map((m) => m.name)).toEqual(
+      expect.arrayContaining(['Roberto Rosas Vargas', 'Febe Cruz Treviño', 'Norma Rosas Cruz'])
+    );
+  });
+});
+
+describe('resolveLinkedCompanionCarInheritance', () => {
+  const pamelaId = 'host-pamela';
+  const andresId = 'host-andres';
+
+  const plan = {
+    carMetaBySource: {
+      [`p:${pamelaId}|c1`]: {
+        brand: 'Toyota',
+        model: 'RAV4',
+        color: 'Rojo',
+        plates: 'ABC-123',
+        driverSourceKey: `p:${pamelaId}`,
+        passengerSourceKeys: [],
+      },
+    },
+  };
+
+  const roster = [
+    {
+      id: andresId,
+      name: 'Andres De La Cruz',
+      status: 'active',
+      llegaEnCarro: true,
+      carrosLlegada: 1,
+      bautizosCompanions: [
+        {
+          id: 'comp-pam',
+          name: 'Pamela Palacios',
+          linkedCompanionSourceKey: `p:${pamelaId}`,
+        },
+      ],
+    },
+    {
+      id: pamelaId,
+      name: 'Pamela Palacios',
+      status: 'active',
+      llegaEnCarro: true,
+      carrosLlegada: 1,
+      bautizosCompanions: [],
+    },
+  ];
+
+  it('hereda por defecto cuando hay registro vinculado con datos de carro', () => {
+    const inherit = resolveLinkedCompanionCarInheritance(roster[0], roster, plan);
+    expect(inherit.eligible).toBe(true);
+    expect(inherit.active).toBe(true);
+    expect(inherit.linkedName).toBe('Pamela Palacios');
+    expect(inherit.inventory.length).toBeGreaterThan(0);
+  });
+
+  it('respeta bautizosInheritLinkedCompanionCarData: false', () => {
+    const host = { ...roster[0], bautizosInheritLinkedCompanionCarData: false };
+    const inherit = resolveLinkedCompanionCarInheritance(host, roster, plan);
+    expect(inherit.eligible).toBe(true);
+    expect(inherit.active).toBe(false);
+  });
+
+  it('buildCarMetaPatchesAfterSave copia metadatos del vinculado cuando hereda', () => {
+    const patches = buildCarMetaPatchesAfterSave({
+      hostPerson: roster[0],
+      companions: roster[0].bautizosCompanions,
+      plan,
+      draftMetaByVehicleKey: {},
+      hostId: andresId,
+      roster,
+    });
+    expect(patches.some((p) => p.vehicleKey === `p:${andresId}|c1`)).toBe(true);
+    const patch = patches.find((p) => p.vehicleKey === `p:${andresId}|c1`)?.patch;
+    expect(patch?.brand).toBe('Toyota');
+    expect(patch?.driverSourceKey).toBe(`p:${pamelaId}`);
   });
 });

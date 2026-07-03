@@ -50,8 +50,8 @@ import {
   buildMergedFamilyCarInventory,
   familyHasAnyCarTransport,
   getFamilyCarInventoryValidationIssues,
-  persistEventCarMetaPatches,
 } from './bautizosCarMeta.js';
+import { persistEventCarMetaPatches } from './transportCarMetaStore.js';
 import { applyParticipantNameFormattingForSave } from './participantNameFormat.js';
 import { isCardPaymentAllowedForLocation } from './cardPaymentEligibility.js';
 import { appendParticipantActivityEntry } from './participantActivityLog.js';
@@ -63,8 +63,8 @@ import {
   participantHasSensitiveHealthData,
   shouldBlockSensitiveHealthWithoutConsent,
   buildRegistrationPrivacyActivityMessage,
-  sanitizeParticipantConsentForFirestoreWrite,
 } from './privacyNotice.js';
+import { prepareParticipantDocForFirestore } from './firestorePayloadSanitize.js';
 import {
   buildCapSimulationRows,
   computeEventCapUsedUnits,
@@ -2156,7 +2156,7 @@ async function submitPublicBautizosSplitRegistration({
       }
       await setDoc(
         getDocRef('app_participants', docIdW),
-        sanitizeParticipantConsentForFirestoreWrite(personDataH)
+        prepareParticipantDocForFirestore(personDataH)
       );
       hostPersonDataForWa = personDataH;
 
@@ -2236,7 +2236,7 @@ async function submitPublicBautizosSplitRegistration({
       applyParticipantNameFormattingForSave(personDataS);
       await setDoc(
         getDocRef('app_participants', docIdW),
-        sanitizeParticipantConsentForFirestoreWrite(personDataS)
+        prepareParticipantDocForFirestore(personDataS)
       );
     }
   }
@@ -2710,7 +2710,7 @@ export async function submitPublicRegistration({
   personData.whatsAppFinanceNotifications = [...prevWaPub, registerNotification];
   await setDoc(
     getDocRef('app_participants', docId),
-    sanitizeParticipantConsentForFirestoreWrite(personData)
+    prepareParticipantDocForFirestore(personData)
   );
   if (evType === 'Bautizos' && familyHasAnyCarTransport(personData, personData.bautizosCompanions)) {
     const carPatches = buildCarMetaPatchesAfterSave({
@@ -3050,7 +3050,7 @@ async function submitWaitlist({
   }
   await setDoc(
     getDocRef('app_participants', docId),
-    sanitizeParticipantConsentForFirestoreWrite(personData)
+    prepareParticipantDocForFirestore(personData)
   );
   if (evType === 'Bautizos' && familyHasAnyCarTransport(personData, personData.bautizosCompanions)) {
     const carPatches = buildCarMetaPatchesAfterSave({

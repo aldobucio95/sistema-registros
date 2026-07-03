@@ -34,6 +34,13 @@ export const getColRef = (colName) => collection(db, colName);
 
 export const getDocRef = (colName, docId) => doc(db, colName, docId);
 
+/** Subcolección de metadatos de carro por evento (`app_events/{eventId}/transport_car_meta`). */
+export const getTransportCarMetaColRef = (eventId) =>
+  collection(db, 'app_events', String(eventId || '').trim(), 'transport_car_meta');
+
+export const getTransportCarMetaDocRef = (eventId, vehicleDocId) =>
+  doc(db, 'app_events', String(eventId || '').trim(), 'transport_car_meta', String(vehicleDocId || '').trim());
+
 export const getPublicColRef = (colName) => collection(publicDb, colName);
 
 export const getPublicDocRef = (colName, docId) => doc(publicDb, colName, docId);

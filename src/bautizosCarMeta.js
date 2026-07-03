@@ -13,9 +13,11 @@ import {
   normalizeArrivalCarCount,
   bautizosLlegaEnCarroForTransportPricing,
   bautizosLineUsesEventTransportOnly,
+  buildBautizosSourceLinkMap,
   companionRowIsEffectivelyEmpty,
   getBautizosCompanionsArray,
   isBautizosCompanionBaptized,
+  resolveBautizosUltimateSourceKey,
 } from './bautizosParty.js';
 
 export const CAR_META_VEHICLE_FIELDS = ['brand', 'model', 'color', 'plates'];
@@ -26,6 +28,62 @@ const PENDING_FIELD_BY_VEHICLE_FIELD = {
   color: 'pendingColor',
   plates: 'pendingPlates',
 };
+
+/**
+ * Clave canónica de persona para tripulación (evita duplicar `p:<id>` y `c:<host>::<cid>` vinculados).
+ */
+export function resolveCrewCanonicalPersonKey(sourceKey, roster, sourceLinkMap) {
+  const sk = String(sourceKey || '').trim();
+  if (!sk) return '';
+  if (sk.startsWith('p:')) return sk;
+  const linkMap = sourceLinkMap || buildBautizosSourceLinkMap(roster);
+  if (sk.startsWith('c:')) {
+    const ultimate = resolveBautizosUltimateSourceKey(sk, linkMap);
+    if (ultimate.startsWith('p:')) return ultimate;
+    return ultimate || sk;
+  }
+  return sk;
+}
+
+/** Elimina pasajeros/conductores duplicados por persona; prefiere `p:<id>` sobre `c:…`. */
+export function dedupeCrewSourceKeys(keys, roster, sourceLinkMap) {
+  const linkMap = sourceLinkMap || buildBautizosSourceLinkMap(roster);
+  const items = (Array.isArray(keys) ? keys : [])
+    .map((k) => String(k || '').trim())
+    .filter(Boolean);
+  if (!items.length) return [];
+
+  const canonicalToPreferred = new Map();
+  for (const sk of items) {
+    const canon = resolveCrewCanonicalPersonKey(sk, roster, linkMap);
+    const prev = canonicalToPreferred.get(canon);
+    if (!prev) {
+      canonicalToPreferred.set(canon, sk);
+    } else if (sk.startsWith('p:') && !prev.startsWith('p:')) {
+      canonicalToPreferred.set(canon, sk);
+    }
+  }
+
+  const seen = new Set();
+  const out = [];
+  for (const sk of items) {
+    const canon = resolveCrewCanonicalPersonKey(sk, roster, linkMap);
+    if (seen.has(canon)) continue;
+    seen.add(canon);
+    out.push(canonicalToPreferred.get(canon) || sk);
+  }
+  return out;
+}
+
+/** Normaliza metadatos de carro y deduplica pasajeros cuando hay roster disponible. */
+export function normalizeCarMetaWithCrewDedupe(raw, roster) {
+  const m = normalizeCarVehicleMeta(raw);
+  if (!roster?.length) return m;
+  return {
+    ...m,
+    passengerSourceKeys: dedupeCrewSourceKeys(m.passengerSourceKeys, roster),
+  };
+}
 
 /** Re-export con el esquema extendido (pending*, tripulación, owner). */
 export { normalizeCarVehicleMeta };
@@ -665,8 +723,21 @@ export function buildClearPersonFromOtherCarsCrewPatches(inventory, excludeVehic
 }
 
 /** Parche del carro actual + limpieza de esas personas en los demás carros del grupo. */
-export function buildCarCrewAssignmentPatches({ inventory, vehicleKey, patch, exclusivePersonKeys = [] }) {
-  const patches = [{ vehicleKey, patch }];
+export function buildCarCrewAssignmentPatches({
+  inventory,
+  vehicleKey,
+  patch,
+  exclusivePersonKeys = [],
+  roster = null,
+}) {
+  let normalizedPatch = patch;
+  if (patch && Array.isArray(patch.passengerSourceKeys) && roster?.length) {
+    normalizedPatch = {
+      ...patch,
+      passengerSourceKeys: dedupeCrewSourceKeys(patch.passengerSourceKeys, roster),
+    };
+  }
+  const patches = [{ vehicleKey, patch: normalizedPatch }];
   const keys = (exclusivePersonKeys || []).map((k) => String(k || '').trim()).filter(Boolean);
   if (keys.length) {
     patches.push(...buildClearPersonFromOtherCarsCrewPatches(inventory, vehicleKey, keys));
@@ -969,6 +1040,80 @@ export function findTitularParticipantForCarPassenger(plan, passengerSk, roster)
 }
 
 /**
+ * Fuentes de datos de carro en registros activos vinculados por `linkedCompanionSourceKey`.
+ */
+export function findLinkedCompanionCarSources(person, roster, plan) {
+  const sources = [];
+  const rosterList = Array.isArray(roster) ? roster : [];
+  const activeIds = new Set(
+    rosterList
+      .filter((p) => {
+        const st = String(p?.status || 'active').trim();
+        return st !== 'cancelled' && st !== 'archived' && String(p?.id || '').trim();
+      })
+      .map((p) => String(p.id).trim())
+  );
+
+  for (const c of getBautizosCompanionsArray(person)) {
+    if (companionRowIsEffectivelyEmpty(c)) continue;
+    const sk = String(c?.linkedCompanionSourceKey || '').trim();
+    if (!sk.startsWith('p:')) continue;
+    const linkedId = sk.slice(2);
+    if (!linkedId || !activeIds.has(linkedId)) continue;
+    const linkedPerson = rosterList.find((p) => String(p?.id || '').trim() === linkedId);
+    if (!linkedPerson) continue;
+
+    const inventory = buildBautizosFamilyCarInventory({
+      hostPerson: linkedPerson,
+      companions: getBautizosCompanionsArray(linkedPerson),
+      plan,
+      hostSourceKey: `p:${linkedId}`,
+    });
+    const hasData = inventory.some((slot) => {
+      const m = normalizeCarVehicleMeta(slot?.meta);
+      if (m.maybeAbsent) return false;
+      return vehicleMetaHasCapturedValues(m) || carMetaHasCrewAssignments(m);
+    });
+    if (!hasData) continue;
+
+    sources.push({
+      linkedName: String(linkedPerson?.name || c?.name || '').trim() || 'Registro vinculado',
+      sourceSk: `p:${linkedId}`,
+      linkedPerson,
+      inventory,
+    });
+  }
+  return sources;
+}
+
+/**
+ * Herencia opcional de datos de carro desde acompañante vinculado a otro registro activo.
+ * `inheritFlag` undefined o true → heredar (por defecto); false → datos propios.
+ */
+export function resolveLinkedCompanionCarInheritance(person, roster, plan, opts = {}) {
+  const empty = { eligible: false, active: false, linkedName: '', sourceSk: '', inventory: [], linkedPerson: null };
+  const sources = findLinkedCompanionCarSources(person, roster, plan);
+  if (!sources.length) return empty;
+  const primary = sources[0];
+  const inheritFlag = opts.inheritFlag ?? person?.bautizosInheritLinkedCompanionCarData;
+  const active = inheritFlag !== false;
+  return {
+    eligible: true,
+    active,
+    linkedName: primary.linkedName,
+    sourceSk: primary.sourceSk,
+    linkedPerson: primary.linkedPerson,
+    inventory: primary.inventory,
+    sources,
+  };
+}
+
+/** Parches para copiar carro del registro vinculado al titular actual. */
+export function buildLinkedCompanionCarInheritPatches(plan, fromTitularSk, toTitularSk, carCount) {
+  return buildCopyTitularCarMetaPatches(plan, fromTitularSk, toTitularSk, carCount);
+}
+
+/**
  * Inventario y contexto de la tarjeta «Datos de carros» en el resumen expandido del roster.
  * Pasajeros (bautizados derivados, grupo manual) heredan la vista del titular del carro.
  */
@@ -979,6 +1124,7 @@ export function buildCarDataSummaryForRosterPerson({
   roster,
   eventLike = null,
   forRosterDisplay = false,
+  _skipLinkedInherit = false,
 }) {
   const normalizedPlan = applyCarMetaPassengerInheritance(normalizeTransportPlanning(plan));
   const personSk = `p:${String(person?.id || '').trim()}`;
@@ -1028,6 +1174,31 @@ export function buildCarDataSummaryForRosterPerson({
       }
     }
     if (host) return buildCarSummaryFromTitular(host, normalizedPlan, roster, { inherited: true });
+  }
+
+  if (!_skipLinkedInherit) {
+    const linkedInherit = resolveLinkedCompanionCarInheritance(person, roster, normalizedPlan);
+    if (linkedInherit.active && linkedInherit.linkedPerson) {
+      const fromLinked = buildCarDataSummaryForRosterPerson({
+        person: linkedInherit.linkedPerson,
+        companions: getBautizosCompanionsArray(linkedInherit.linkedPerson),
+        plan: normalizedPlan,
+        roster,
+        eventLike,
+        forRosterDisplay,
+        _skipLinkedInherit: true,
+      });
+      if ((fromLinked.inventory || []).length) {
+        return {
+          ...fromLinked,
+          hostPerson: person,
+          hostSourceKey: personSk,
+          companions: comps,
+          inheritedFromTitular: true,
+          titularName: linkedInherit.linkedName,
+        };
+      }
+    }
   }
 
   const manualCtx = resolveManualCarGroupContext(person, normalizedPlan, roster);
@@ -1274,22 +1445,6 @@ export function familyHasAnyCarTransport(hostPerson, companions, eventLike = nul
   return anyCompanionByCar;
 }
 
-/** Aplica parches de carMeta al plan del evento y persiste en Firestore. */
-export async function persistEventCarMetaPatches({
-  eventId,
-  patches,
-  currentPlan,
-  getDocRef,
-  updateDoc,
-}) {
-  const eid = String(eventId || '').trim();
-  if (!eid || !patches?.length) return normalizeTransportPlanning(currentPlan);
-  const mergedPlan = mergeCarMetaPatchesIntoPlan(currentPlan, patches);
-  const nextPlan = applyCarMetaPassengerInheritance(mergedPlan);
-  await updateDoc(getDocRef('app_events', eid), { transportPlanning: nextPlan });
-  return nextPlan;
-}
-
 /** Convierte inventario con meta editada a parches para persistir. */
 export function inventoryToCarMetaPatches(inventory) {
   return (inventory || []).map((slot) => ({
@@ -1312,11 +1467,16 @@ export function translateDraftVehicleKeysToPersisted(patches, hostId) {
 
 /** Parches listos tras crear participante (inventario + borrador del formulario). */
 /** Tripulación capturada en metadatos del vehículo (conductor + pasajeros). */
-export function buildCarCrewMembersFromMeta(meta, hostPerson, companions, labelIndex) {
-  const m = normalizeCarVehicleMeta(meta);
+export function buildCarCrewMembersFromMeta(meta, hostPerson, companions, labelIndex, roster = null) {
+  const rosterList = roster?.length ? roster : Array.isArray(labelIndex) ? labelIndex : null;
+  const m = rosterList ? normalizeCarMetaWithCrewDedupe(meta, rosterList) : normalizeCarVehicleMeta(meta);
+  const linkMap = rosterList ? buildBautizosSourceLinkMap(rosterList) : null;
   const members = [];
   const driverSk = String(m.driverSourceKey || '').trim();
+  const driverCanon = driverSk && linkMap ? resolveCrewCanonicalPersonKey(driverSk, rosterList, linkMap) : driverSk;
+  const seenCanon = new Set();
   if (driverSk) {
+    if (driverCanon) seenCanon.add(driverCanon);
     members.push({
       sourceKey: driverSk,
       name: resolveMemberLabel(driverSk, hostPerson, companions, labelIndex) || '—',
@@ -1326,6 +1486,9 @@ export function buildCarCrewMembersFromMeta(meta, hostPerson, companions, labelI
   for (const psk of m.passengerSourceKeys || []) {
     const sk = String(psk || '').trim();
     if (!sk || sk === driverSk) continue;
+    const canon = linkMap ? resolveCrewCanonicalPersonKey(sk, rosterList, linkMap) : sk;
+    if (canon && seenCanon.has(canon)) continue;
+    if (canon) seenCanon.add(canon);
     members.push({
       sourceKey: sk,
       name: resolveMemberLabel(sk, hostPerson, companions, labelIndex) || '—',
@@ -1405,7 +1568,7 @@ export function buildBautizosCarSlotsForTransport({
   for (let i = 1; i <= K; i += 1) {
     const meta = getCarVehicleMetaFromPlan(normalizedPlan, ownerSk, i);
     if (carMetaHasCrewAssignments(meta)) anyCrew = true;
-    const crew = buildCarCrewMembersFromMeta(meta, hostPerson, companions, labelIndex);
+    const crew = buildCarCrewMembersFromMeta(meta, hostPerson, companions, labelIndex, roster);
     slots.push({
       carIndex: i,
       members: crew.map((m) => ({
@@ -1439,6 +1602,24 @@ export function buildCarMetaPatchesAfterSave({
   roster,
 }) {
   const hostSk = `p:${String(hostId || '').trim()}`;
+  const linkedInherit = resolveLinkedCompanionCarInheritance(
+    { ...hostPerson, id: hostId },
+    roster,
+    plan
+  );
+  if (linkedInherit.active && linkedInherit.sourceSk) {
+    const carCount = normalizeArrivalCarCount(hostPerson?.carrosLlegada);
+    const copyPatches = buildLinkedCompanionCarInheritPatches(
+      plan,
+      linkedInherit.sourceSk,
+      hostSk,
+      carCount
+    );
+    if (copyPatches.length) {
+      return translateDraftVehicleKeysToPersisted(copyPatches, hostId);
+    }
+  }
+
   const manualCtx = resolveManualCarGroupContext(
     { ...hostPerson, id: hostId },
     plan,
@@ -1454,14 +1635,20 @@ export function buildCarMetaPatchesAfterSave({
   });
   const patches = inventory.map((slot) => ({
     vehicleKey: slot.vehicleKey,
-    patch: normalizeCarVehicleMeta({
-      ...slot.meta,
-      ...(draftMetaByVehicleKey?.[slot.vehicleKey] || {}),
-      ownerSourceKey: slot.ownerSourceKey,
-    }),
+    patch: normalizeCarMetaWithCrewDedupe(
+      {
+        ...slot.meta,
+        ...(draftMetaByVehicleKey?.[slot.vehicleKey] || {}),
+        ownerSourceKey: slot.ownerSourceKey,
+      },
+      roster
+    ),
   }));
   const draftOnly = Object.entries(draftMetaByVehicleKey || {})
     .filter(([k]) => !inventory.some((s) => s.vehicleKey === k))
-    .map(([vehicleKey, meta]) => ({ vehicleKey, patch: normalizeCarVehicleMeta(meta) }));
+    .map(([vehicleKey, meta]) => ({
+      vehicleKey,
+      patch: normalizeCarMetaWithCrewDedupe(meta, roster),
+    }));
   return translateDraftVehicleKeysToPersisted([...patches, ...draftOnly], hostId);
 }

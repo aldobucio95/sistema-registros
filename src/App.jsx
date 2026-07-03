@@ -172,6 +172,7 @@ import {
   bautizosParticipatesAsServer,
   bautizosShowsServerProfileFields,
   collectBautizosServidoresYEmpleadosRows,
+  countBautizosServidoresYEmpleadosPeople,
   bautizosCompanionParticipatesAsServer,
   countBautizosServersDeduped,
   collectBautizosParticipatingServerRows,
@@ -285,9 +286,10 @@ import {
   familyCarInventoryNeedsAttention,
   familyHasAnyCarTransport,
   getFamilyCarInventoryValidationIssues,
-  persistEventCarMetaPatches,
   resolveBautizosCarDataAnchor,
+  resolveLinkedCompanionCarInheritance,
 } from './bautizosCarMeta.js';
+import { persistEventCarMetaPatches } from './transportCarMetaStore.js';
 import PastoresPage from './screens/PastoresPage.jsx';
 import {
   countPastorParticipants,
@@ -331,7 +333,6 @@ import {
   participantHasSensitiveHealthData,
   shouldBlockSensitiveHealthWithoutConsent,
   participantHasSensitiveHealthDataAddedBeyond,
-  sanitizeParticipantConsentForFirestoreWrite,
   participantConsentFirestoreRepairPatch,
   participantPatchForFirestoreWrite,
   buildPrivacyNoticePublicUrl,
@@ -524,7 +525,7 @@ import {
   normalizeAuthEmail,
 } from './firebaseConfig.js';
 import { auth, db, storage, getColRef, getDocRef } from "./firebaseRefs.js";
-import { sanitizeJsonForFirestore, patchForLocalParticipantCache } from './firestorePayloadSanitize.js';
+import { sanitizeJsonForFirestore, patchForLocalParticipantCache, prepareParticipantDocForFirestore } from './firestorePayloadSanitize.js';
 import { withLogVisibleInPanel, slimRevertInfoForLog, buildLogEntityFields } from './activityLogsMeta.js';
 import {
   buildLogId,
@@ -5141,11 +5142,12 @@ function resolveEventName(eventId) {
         currentPlan: normalizeTransportPlanning(currentEvent.transportPlanning),
         getDocRef,
         updateDoc,
+        roster: allParticipants || [],
       });
       patchEventTransportPlanning(nextPlan);
       return nextPlan;
     },
-    [currentEvent?.id, currentEvent?.transportPlanning, patchEventTransportPlanning]
+    [currentEvent?.id, currentEvent?.transportPlanning, patchEventTransportPlanning, getDocRef, updateDoc, allParticipants]
   );
 
   const promptBautizosCarDataIfNeeded = useCallback(
@@ -9007,8 +9009,8 @@ function resolveEventName(eventId) {
       const plan = buildBautizosCanonicalCompanionPlan(rosterForPlan, meta, { includeBaptizedCompanions: false });
       const planAll = buildBautizosCanonicalCompanionPlan(rosterForPlan, meta, { includeBaptizedCompanions: true });
       acompanantes = plan.size;
-      servidores = countBautizosServersDeduped(rosterForPlan, planAll);
-      servidoresOnly = servidores;
+      servidoresOnly = countBautizosServersDeduped(rosterForPlan, planAll);
+      servidores = countBautizosServidoresYEmpleadosPeople(rosterForPlan);
 
       for (const p of rosterForPlan) {
         const att = normalizeBautizosAttendanceType(p.bautizosAttendanceType);
@@ -17714,19 +17716,27 @@ function resolveEventName(eventId) {
       currentEvent.eventType === 'Bautizos' &&
       familyHasAnyCarTransport(entryPayload, entryPayload.bautizosCompanions)
     ) {
-      const carIssues = getFamilyCarInventoryValidationIssues(
-        buildMergedFamilyCarInventory({
-          hostPerson: entryPayload,
-          companions: entryPayload.bautizosCompanions || [],
-          plan: currentEvent.transportPlanning,
-          hostSourceKey: 'p:draft-host',
-          draftMetaByVehicleKey: newRegDraftCarMeta,
-        }),
-        { hostPerson: entryPayload, companions: entryPayload.bautizosCompanions || [] }
+      const linkedCarInherit = resolveLinkedCompanionCarInheritance(
+        entryPayload,
+        allParticipants,
+        currentEvent.transportPlanning,
+        { inheritFlag: entryPayload.bautizosInheritLinkedCompanionCarData }
       );
-      if (carIssues.length) {
-        showRegistrationValidationIssues(carIssues);
-        return;
+      if (!linkedCarInherit.active) {
+        const carIssues = getFamilyCarInventoryValidationIssues(
+          buildMergedFamilyCarInventory({
+            hostPerson: entryPayload,
+            companions: entryPayload.bautizosCompanions || [],
+            plan: currentEvent.transportPlanning,
+            hostSourceKey: 'p:draft-host',
+            draftMetaByVehicleKey: newRegDraftCarMeta,
+          }),
+          { hostPerson: entryPayload, companions: entryPayload.bautizosCompanions || [] }
+        );
+        if (carIssues.length) {
+          showRegistrationValidationIssues(carIssues);
+          return;
+        }
       }
     }
     if (needsRegistrationConsentConfirmation(newRegPrivacyAccepted, newRegSensitiveConsent)) {
@@ -18017,7 +18027,7 @@ function resolveEventName(eventId) {
           applyParticipantNameFormattingForSave(personDataH);
           await setDoc(
             getDocRef('app_participants', docIdS),
-            sanitizeParticipantConsentForFirestoreWrite(personDataH)
+            prepareParticipantDocForFirestore(personDataH)
           );
           const _splitHostLog = `${prevS ? 'Actualizó registro de' : 'Inscribió a'} ${entryPayload.name} en la sede ${loc} (grupo partido: titular).`;
           addLog(
@@ -18089,7 +18099,7 @@ function resolveEventName(eventId) {
           applyParticipantNameFormattingForSave(personDataSat);
           await setDoc(
             getDocRef('app_participants', docIdS),
-            sanitizeParticipantConsentForFirestoreWrite(personDataSat)
+            prepareParticipantDocForFirestore(personDataSat)
           );
           const _splitSatLog = `${prevS ? 'Actualizó registro de' : 'Inscribió a'} ${plS.name} en la sede ${loc} (grupo partido: bautizado vinculado).`;
           addLog(
@@ -18437,7 +18447,7 @@ function resolveEventName(eventId) {
       loc,
       eventId: currentEvent?.id,
       eventName: currentEvent?.name,
-      participant: sanitizeParticipantConsentForFirestoreWrite(personData),
+      participant: prepareParticipantDocForFirestore(personData),
       bautizosCompanions: personData.bautizosCompanions || [],
       carDraftMeta: newRegDraftCarMeta || null,
     };
@@ -18445,7 +18455,7 @@ function resolveEventName(eventId) {
     try {
       await setDoc(
         getDocRef('app_participants', docId),
-        sanitizeParticipantConsentForFirestoreWrite(personData)
+        prepareParticipantDocForFirestore(personData)
       );
     } catch (e) {
       logAppError('handleAddPerson.setDoc', e, { docId, name: personData?.name, loc, eventId: currentEvent?.id });
@@ -18776,7 +18786,7 @@ function resolveEventName(eventId) {
           applyParticipantNameFormattingForSave(personDataWlH);
           await setDoc(
             getDocRef('app_participants', docIdWl),
-            sanitizeParticipantConsentForFirestoreWrite(personDataWlH)
+            prepareParticipantDocForFirestore(personDataWlH)
           );
           const _wlSplitHostLog = `${prevWlS ? 'Actualizó lista de espera de' : 'Añadió a'} ${entryPayload.name} a la lista de espera en la sede ${loc} (grupo partido: titular).`;
           addLog(
@@ -18849,7 +18859,7 @@ function resolveEventName(eventId) {
           applyParticipantNameFormattingForSave(personDataWlSat);
           await setDoc(
             getDocRef('app_participants', docIdWl),
-            sanitizeParticipantConsentForFirestoreWrite(personDataWlSat)
+            prepareParticipantDocForFirestore(personDataWlSat)
           );
           const _wlSplitSatLog = `${prevWlS ? 'Actualizó lista de espera de' : 'Añadió a'} ${plWl.name} a la lista de espera en la sede ${loc} (grupo partido: bautizado vinculado).`;
           addLog(
@@ -19114,7 +19124,7 @@ function resolveEventName(eventId) {
       loc,
       eventId: currentEvent?.id,
       eventName: currentEvent?.name,
-      participant: sanitizeParticipantConsentForFirestoreWrite(personData),
+      participant: prepareParticipantDocForFirestore(personData),
       bautizosCompanions: personData.bautizosCompanions || [],
       carDraftMeta: newRegDraftCarMeta || null,
     };
@@ -19122,7 +19132,7 @@ function resolveEventName(eventId) {
     try {
       await setDoc(
         getDocRef('app_participants', docId),
-        sanitizeParticipantConsentForFirestoreWrite(personData)
+        prepareParticipantDocForFirestore(personData)
       );
     } catch (e) {
       logAppError('handleAddToWaitlist.setDoc', e, { docId, name: personData?.name, loc, eventId: currentEvent?.id });
@@ -19346,19 +19356,27 @@ function resolveEventName(eventId) {
       currentEvent.eventType === 'Bautizos' &&
       familyHasAnyCarTransport(editedPerson, editedPerson.bautizosCompanions)
     ) {
-      const carIssues = getFamilyCarInventoryValidationIssues(
-        buildMergedFamilyCarInventory({
-          hostPerson: editedPerson,
-          companions: editedPerson.bautizosCompanions || [],
-          plan: currentEvent.transportPlanning,
-          hostSourceKey: `p:${String(editedPerson.id || '').trim()}`,
-          draftMetaByVehicleKey: editRegDraftCarMeta,
-        }),
-        { hostPerson: editedPerson, companions: editedPerson.bautizosCompanions || [] }
+      const linkedCarInherit = resolveLinkedCompanionCarInheritance(
+        editedPerson,
+        allParticipants,
+        currentEvent.transportPlanning,
+        { inheritFlag: editedPerson.bautizosInheritLinkedCompanionCarData }
       );
-      if (carIssues.length) {
-        showRegistrationValidationIssues(carIssues);
-        return;
+      if (!linkedCarInherit.active) {
+        const carIssues = getFamilyCarInventoryValidationIssues(
+          buildMergedFamilyCarInventory({
+            hostPerson: editedPerson,
+            companions: editedPerson.bautizosCompanions || [],
+            plan: currentEvent.transportPlanning,
+            hostSourceKey: `p:${String(editedPerson.id || '').trim()}`,
+            draftMetaByVehicleKey: editRegDraftCarMeta,
+          }),
+          { hostPerson: editedPerson, companions: editedPerson.bautizosCompanions || [] }
+        );
+        if (carIssues.length) {
+          showRegistrationValidationIssues(carIssues);
+          return;
+        }
       }
     }
 
@@ -19937,8 +19955,9 @@ function resolveEventName(eventId) {
       payloadWithPrivacy.sensitiveDataConsent = deleteField();
       payloadWithPrivacy.sensitiveDataConsentAt = deleteField();
     }
-    payloadWithPrivacy = sanitizeParticipantConsentForFirestoreWrite(payloadWithPrivacy);
+    payloadWithPrivacy = prepareParticipantDocForFirestore(payloadWithPrivacy);
     Object.assign(payloadWithPrivacy, participantConsentFirestoreRepairPatch(originalPerson, deleteField));
+    payloadWithPrivacy = prepareParticipantDocForFirestore(payloadWithPrivacy);
     // Respaldo-primero: snapshot del payload de edición ANTES del write principal.
     const _editLogId = buildLogId();
     await logSnapshotBackup(_editLogId, {
@@ -21018,6 +21037,7 @@ function resolveEventName(eventId) {
                         hostPerson={editRegistryModal.data}
                         companions={editRegistryModal.data.bautizosCompanions || []}
                         plan={currentEvent?.transportPlanning}
+                        eventId={currentEvent?.id}
                         hostSourceKey={`p:${String(editRegistryModal.data.id || '').trim()}`}
                         eventLike={currentEvent}
                         roster={allParticipants}
@@ -21056,6 +21076,17 @@ function resolveEventName(eventId) {
                             return next;
                           });
                         }}
+                        inheritLinkedCarData={editRegistryModal.data.bautizosInheritLinkedCompanionCarData}
+                        onInheritLinkedCarDataChange={(checked) =>
+                          setEditRegistryModal((prev) =>
+                            prev.isOpen
+                              ? {
+                                  ...prev,
+                                  data: { ...prev.data, bautizosInheritLinkedCompanionCarData: checked },
+                                }
+                              : prev
+                          )
+                        }
                       />
                     ) : null}
                     </>
@@ -37412,6 +37443,7 @@ function resolveEventName(eventId) {
                     hostPerson={newEntry}
                     companions={newEntry.bautizosCompanions || []}
                     plan={currentEvent?.transportPlanning}
+                    eventId={currentEvent?.id}
                     hostSourceKey="p:draft-host"
                     eventLike={currentEvent}
                     draftMetaByVehicleKey={newRegDraftCarMeta}
@@ -37447,6 +37479,14 @@ function resolveEventName(eventId) {
                         return next;
                       });
                     }}
+                    roster={allParticipants}
+                    inheritLinkedCarData={newEntry.bautizosInheritLinkedCompanionCarData}
+                    onInheritLinkedCarDataChange={(checked) =>
+                      setNewEntry((prev) => ({
+                        ...prev,
+                        bautizosInheritLinkedCompanionCarData: checked,
+                      }))
+                    }
                   />
                 ) : null}
               </>

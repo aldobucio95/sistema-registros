@@ -31,6 +31,10 @@ export default function BautizosCarCrewFields({
   const passengerOptions = passengerPool.filter((m) => String(m.sourceKey) !== driverSk);
   const crewOpts = { requiresPassengers: requirePassengers };
 
+  const showDriverPendingToggle = !driverSk || pendingDriver;
+  const showPassengersPendingToggle =
+    requirePassengers && (!passengers.length || pendingPassengers);
+
   if (!canEdit) {
     const driverLabel = memberOptions.find((m) => m.sourceKey === driverSk)?.label || '—';
     const passengerLabels = passengers
@@ -63,16 +67,18 @@ export default function BautizosCarCrewFields({
       <div className={uiFormField.stack}>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className={labelCls}>Conductor</span>
-          <label className="inline-flex items-center gap-1.5 text-[10px] font-bold text-amber-700 dark:text-amber-300 cursor-pointer">
-            <input
-              type="checkbox"
-              className="rounded border-amber-400 accent-amber-600"
-              checked={pendingDriver}
-              disabled={!canEdit}
-              onChange={(e) => onPendingDriverChange?.(e.target.checked)}
-            />
-            Pendiente
-          </label>
+          {showDriverPendingToggle ? (
+            <label className="inline-flex items-center gap-1.5 text-[10px] font-bold text-amber-700 dark:text-amber-300 cursor-pointer">
+              <input
+                type="checkbox"
+                className="rounded border-amber-400 accent-amber-600"
+                checked={pendingDriver}
+                disabled={!canEdit}
+                onChange={(e) => onPendingDriverChange?.(e.target.checked)}
+              />
+              Pendiente
+            </label>
+          ) : null}
         </div>
         <select
           className={selectSm}
@@ -93,16 +99,18 @@ export default function BautizosCarCrewFields({
       <div className={uiFormField.stack}>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className={labelCls}>Pasajeros</span>
-          <label className="inline-flex items-center gap-1.5 text-[10px] font-bold text-amber-700 dark:text-amber-300 cursor-pointer">
-            <input
-              type="checkbox"
-              className="rounded border-amber-400 accent-amber-600"
-              checked={pendingPassengers}
-              disabled={!canEdit}
-              onChange={(e) => onPendingPassengersChange?.(e.target.checked)}
-            />
-            Pendiente
-          </label>
+          {showPassengersPendingToggle ? (
+            <label className="inline-flex items-center gap-1.5 text-[10px] font-bold text-amber-700 dark:text-amber-300 cursor-pointer">
+              <input
+                type="checkbox"
+                className="rounded border-amber-400 accent-amber-600"
+                checked={pendingPassengers}
+                disabled={!canEdit}
+                onChange={(e) => onPendingPassengersChange?.(e.target.checked)}
+              />
+              Pendiente
+            </label>
+          ) : null}
         </div>
         <div
           className={`rounded-lg border border-slate-200 dark:border-slate-600 bg-white/80 dark:bg-slate-900/50 p-2 space-y-1 ${

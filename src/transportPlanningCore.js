@@ -170,6 +170,13 @@ export function defaultTransportPlanningState() {
     /** Metadatos opcionales del carro por `sourceKey` (persona registrada/acompañante). */
     carMetaBySource: {},
     /**
+     * Resumen liviano por titular para UI colapsada (sin leer subcolección transport_car_meta).
+     * Clave: `p:<hostId>`.
+     */
+    bautizosCarMetaSummaryByTitular: {},
+    /** >= 1 cuando carMeta vive en subcolección `transport_car_meta`. */
+    transportCarMetaStorageVersion: 0,
+    /**
      * Campa con x2 (Ambos): preferencias de traslados por persona.
      * Clave: sourceKey `p:<id>`.
      */
@@ -274,6 +281,14 @@ export function normalizeTransportPlanning(raw) {
           Object.entries(raw.carMetaBySource).map(([k, v]) => [k, normalizeCarVehicleMeta(v)])
         )
       : {};
+  const bautizosCarMetaSummaryByTitular =
+    raw.bautizosCarMetaSummaryByTitular && typeof raw.bautizosCarMetaSummaryByTitular === 'object'
+      ? { ...raw.bautizosCarMetaSummaryByTitular }
+      : {};
+  const transportCarMetaStorageVersion = Math.max(
+    0,
+    parseInt(raw.transportCarMetaStorageVersion, 10) || 0
+  );
   const campaAmbosTransitBySource =
     raw.campaAmbosTransitBySource && typeof raw.campaAmbosTransitBySource === 'object'
       ? { ...raw.campaAmbosTransitBySource }
@@ -299,6 +314,8 @@ export function normalizeTransportPlanning(raw) {
     familyCarOverride,
     bautizosGroupTitularByGroupId,
     carMetaBySource,
+    bautizosCarMetaSummaryByTitular,
+    transportCarMetaStorageVersion,
     campaAmbosTransitBySource,
     transportAttendanceBySource,
   };

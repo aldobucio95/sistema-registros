@@ -813,6 +813,7 @@ export default function PublicRegistrationFormSections({
               hostPerson={form}
               companions={form.bautizosCompanions || []}
               plan={eventSnapshot?.transportPlanning}
+              eventId={eventSnapshot?.id}
               hostSourceKey="p:draft-host"
               draftMetaByVehicleKey={form.draftCarMetaByVehicleKey || {}}
               onDraftMetaChange={(vehicleKey, patch) =>

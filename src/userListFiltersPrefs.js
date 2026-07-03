@@ -218,9 +218,13 @@ export function createEmptyTransportUiPrefs() {
     /** Bloque «Detalle fila a fila». */
     rowByRowOpen: false,
     /** Sección «Carros compartidos (grupos manuales)». */
-    manualCarGroupsOpen: true,
+    manualCarGroupsOpen: false,
     /** Claves de filas con datos de carro expandidos en detalle fila a fila. */
     expandedCarDetailKeys: [],
+    /** Tarjetas familia/manual expandidas (nivel 1: resumen + lista tripulación). */
+    expandedFamilyCardKeys: [],
+    /** Cuadros de datos de carro/tripulación expandidos (nivel 2). */
+    expandedCarFormKeys: [],
   };
 }
 
@@ -232,11 +236,23 @@ export function normalizeTransportUiPrefs(raw) {
         .filter((x) => typeof x === 'string' && String(x).trim())
         .map((x) => String(x).trim())
     : [];
+  const expandedFamilyCardKeys = Array.isArray(raw.expandedFamilyCardKeys)
+    ? raw.expandedFamilyCardKeys
+        .filter((x) => typeof x === 'string' && String(x).trim())
+        .map((x) => String(x).trim())
+    : [];
+  const expandedCarFormKeys = Array.isArray(raw.expandedCarFormKeys)
+    ? raw.expandedCarFormKeys
+        .filter((x) => typeof x === 'string' && String(x).trim())
+        .map((x) => String(x).trim())
+    : [];
   return {
     bautizosCarCardsOpen: raw.bautizosCarCardsOpen === true,
     rowByRowOpen: raw.rowByRowOpen === true,
-    manualCarGroupsOpen: raw.manualCarGroupsOpen !== false,
+    manualCarGroupsOpen: raw.manualCarGroupsOpen === true,
     expandedCarDetailKeys,
+    expandedFamilyCardKeys,
+    expandedCarFormKeys,
   };
 }
 

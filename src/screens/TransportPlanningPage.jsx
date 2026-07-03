@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Bus, Car, ChevronDown, FileDown, MessageCircle, Plus, Save, Trash2, X } from 'lucide-react';
 import {
   assignBautizosMembersToCarSlots,
@@ -36,6 +36,7 @@ import {
 import CarVehicleMetaPanel from '../components/transport/CarVehicleMetaPanel.jsx';
 import { collectCarColorSuggestions, applyCarMetaPassengerInheritance } from '../bautizosCarMeta.js';
 import BautizosCarCrewFields from '../components/transport/BautizosCarCrewFields.jsx';
+import TransportBautizosCarCard from '../components/transport/TransportBautizosCarCard.jsx';
 import {
   buildBautizosFamilyMemberOptions,
   buildBautizosCarSlotsForTransport,
@@ -65,6 +66,15 @@ import {
 } from '../data/carBrandModelsCatalog.js';
 import { buildLocationScopeSet, participantInLocationScope } from '../rbac/permissions.js';
 import { uiPageHeader, uiModal, uiButtons } from '../ui/uiFormatClasses.js';
+import {
+  fetchCarMetaForTitular,
+  mergeCarMetaCacheIntoPlan,
+  migrateInlineCarMetaToSubcollection,
+  persistTransportPlanWithCarMeta,
+  slotsFromTitularCarMetaSummary,
+  transportPlanningFromEventDoc,
+  vehicleKeysForTitular,
+} from '../transportCarMetaStore.js';
 
 const btnPrimary =
   'inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black bg-indigo-600 hover:bg-indigo-700 text-white border border-indigo-500/30 transition-colors disabled:opacity-50 disabled:pointer-events-none';
@@ -179,18 +189,39 @@ export default function TransportPlanningPage({
     };
   }, [evRosterFiltered, eventType, locations, currentEvent]);
 
-  const [plan, setPlan] = useState(() => normalizeTransportPlanning(currentEvent?.transportPlanning));
+  const [plan, setPlan] = useState(() =>
+    transportPlanningFromEventDoc(currentEvent?.transportPlanning)
+  );
   const [saving, setSaving] = useState(false);
   const [mergeConflictModal, setMergeConflictModal] = useState(null);
+  /** Meta de carro cargada bajo demanda desde subcolección (no está en app_events). */
+  const [loadedCarMetaByKey, setLoadedCarMetaByKey] = useState({});
+  const [loadingTitularSks, setLoadingTitularSks] = useState(() => new Set());
+  /** Titulares cuya subcolección ya se consultó (aunque no haya docs). */
+  const [fetchedTitularSks, setFetchedTitularSks] = useState(() => new Set());
+  const carMetaMigrationStartedRef = useRef(false);
+
+  const mergedCarMetaByKey = useMemo(
+    () => ({ ...(plan.carMetaBySource || {}), ...loadedCarMetaByKey }),
+    [plan.carMetaBySource, loadedCarMetaByKey]
+  );
 
   const planForCarMetaRead = useMemo(
-    () => applyCarMetaPassengerInheritance(normalizeTransportPlanning(plan)),
-    [plan]
+    () =>
+      applyCarMetaPassengerInheritance(
+        mergeCarMetaCacheIntoPlan(plan, loadedCarMetaByKey)
+      ),
+    [plan, loadedCarMetaByKey]
   );
 
   const resolveHostCarContext = useCallback(
-    (hostId) => buildTransportCarContextForHost({ hostId, plan, roster: evRosterFiltered }),
-    [plan, evRosterFiltered]
+    (hostId) =>
+      buildTransportCarContextForHost({
+        hostId,
+        plan: planForCarMetaRead,
+        roster: evRosterFiltered,
+      }),
+    [planForCarMetaRead, evRosterFiltered]
   );
 
   const buildCrewMemberOptions = useCallback(
@@ -206,12 +237,73 @@ export default function TransportPlanningPage({
   const canSaveTransport = canEdit || canEditTransportOps;
 
   React.useEffect(() => {
-    const next = normalizeTransportPlanning(currentEvent?.transportPlanning);
+    const next = transportPlanningFromEventDoc(currentEvent?.transportPlanning);
     setPlan((prev) => {
       if (transportPlanningSignature(prev) === transportPlanningSignature(next)) return prev;
       return next;
     });
   }, [currentEvent?.id, currentEvent?.transportPlanning]);
+
+  React.useEffect(() => {
+    if (!isBautizos || !eventId || carMetaMigrationStartedRef.current) return;
+    const raw = currentEvent?.transportPlanning;
+    const normalized = normalizeTransportPlanning(raw);
+    const inlineKeys = Object.keys(normalized.carMetaBySource || {});
+    if (!inlineKeys.length) return;
+    carMetaMigrationStartedRef.current = true;
+    migrateInlineCarMetaToSubcollection(
+      eventId,
+      normalized,
+      evRosterFiltered,
+      updateDoc,
+      getDocRef
+    )
+      .then(({ migrated, plan: migratedPlan }) => {
+        if (migrated) {
+          setPlan(migratedPlan);
+          setLoadedCarMetaByKey({});
+          setFetchedTitularSks(new Set());
+        }
+      })
+      .catch((e) => {
+        console.error(e);
+        carMetaMigrationStartedRef.current = false;
+      });
+  }, [isBautizos, eventId, currentEvent?.transportPlanning, evRosterFiltered, updateDoc, getDocRef]);
+
+  const titularCarMetaIsLoaded = useCallback(
+    (titularSk, effectiveCars) => {
+      const owner = String(titularSk || '').trim();
+      if (!owner) return false;
+      const inlineKeys = vehicleKeysForTitular(owner, effectiveCars);
+      if (inlineKeys.some((k) => Boolean(plan.carMetaBySource?.[k]))) return true;
+      return fetchedTitularSks.has(owner);
+    },
+    [plan.carMetaBySource, fetchedTitularSks]
+  );
+
+  const loadCarMetaForTitular = useCallback(
+    async (titularSk, effectiveCars = 1) => {
+      const owner = String(titularSk || '').trim();
+      if (!eventId || !owner) return;
+      if (titularCarMetaIsLoaded(owner, effectiveCars)) return;
+      setLoadingTitularSks((prev) => new Set(prev).add(owner));
+      try {
+        const fetched = await fetchCarMetaForTitular(eventId, owner);
+        if (Object.keys(fetched).length) {
+          setLoadedCarMetaByKey((prev) => ({ ...prev, ...fetched }));
+        }
+      } finally {
+        setFetchedTitularSks((prev) => new Set(prev).add(owner));
+        setLoadingTitularSks((prev) => {
+          const next = new Set(prev);
+          next.delete(owner);
+          return next;
+        });
+      }
+    },
+    [eventId, titularCarMetaIsLoaded]
+  );
 
   const busSectionsBase = useMemo(
     () => buildBusGroupSections(busLines, locations, isCampa, splitCampaBySubevent),
@@ -378,7 +470,9 @@ export default function TransportPlanningPage({
   };
 
   const cancelPendingChanges = useCallback(() => {
-    setPlan(normalizeTransportPlanning(currentEvent?.transportPlanning));
+    setPlan(transportPlanningFromEventDoc(currentEvent?.transportPlanning));
+    setLoadedCarMetaByKey({});
+    setFetchedTitularSks(new Set());
     setCarPick(new Set());
     showToast('Cambios descartados.');
   }, [currentEvent?.transportPlanning, showToast]);
@@ -386,6 +480,16 @@ export default function TransportPlanningPage({
   const expandedCarDetailKeys = useMemo(
     () => new Set(transportUiPrefs?.expandedCarDetailKeys || []),
     [transportUiPrefs?.expandedCarDetailKeys]
+  );
+
+  const expandedFamilyCardKeys = useMemo(
+    () => new Set(transportUiPrefs?.expandedFamilyCardKeys || []),
+    [transportUiPrefs?.expandedFamilyCardKeys]
+  );
+
+  const expandedCarFormKeys = useMemo(
+    () => new Set(transportUiPrefs?.expandedCarFormKeys || []),
+    [transportUiPrefs?.expandedCarFormKeys]
   );
 
   const patchTransportUiPrefs = useCallback(
@@ -408,6 +512,80 @@ export default function TransportPlanningPage({
       });
     },
     [onTransportUiPrefsChange]
+  );
+
+  const toggleFamilyCardKey = useCallback(
+    (cardKey) => {
+      const key = String(cardKey || '').trim();
+      if (!key || typeof onTransportUiPrefsChange !== 'function') return;
+      onTransportUiPrefsChange((prev) => {
+        const set = new Set(prev.expandedFamilyCardKeys || []);
+        if (set.has(key)) set.delete(key);
+        else set.add(key);
+        return { ...prev, expandedFamilyCardKeys: [...set] };
+      });
+    },
+    [onTransportUiPrefsChange]
+  );
+
+  const toggleCarFormKey = useCallback(
+    (formKey) => {
+      const key = String(formKey || '').trim();
+      if (!key || typeof onTransportUiPrefsChange !== 'function') return;
+      onTransportUiPrefsChange((prev) => {
+        const set = new Set(prev.expandedCarFormKeys || []);
+        if (set.has(key)) set.delete(key);
+        else set.add(key);
+        return { ...prev, expandedCarFormKeys: [...set] };
+      });
+    },
+    [onTransportUiPrefsChange]
+  );
+
+  const handleToggleFamilyCard = useCallback(
+    async (cardKey, titularSk, effectiveCars) => {
+      const key = String(cardKey || '').trim();
+      const willExpand = !expandedFamilyCardKeys.has(key);
+      toggleFamilyCardKey(key);
+      if (willExpand && titularSk) {
+        await loadCarMetaForTitular(titularSk, effectiveCars);
+      }
+    },
+    [expandedFamilyCardKeys, toggleFamilyCardKey, loadCarMetaForTitular]
+  );
+
+  const handleToggleCarForm = useCallback(
+    async (formKey, titularSk, effectiveCars) => {
+      const key = String(formKey || '').trim();
+      const willExpand = !expandedCarFormKeys.has(key);
+      toggleCarFormKey(key);
+      if (willExpand && titularSk) {
+        await loadCarMetaForTitular(titularSk, effectiveCars);
+      }
+    },
+    [expandedCarFormKeys, toggleCarFormKey, loadCarMetaForTitular]
+  );
+
+  const resolveSlotsForTitular = useCallback(
+    (titularSk, effectiveCars, cardExpanded, hostPerson, companions, fallbackLines) => {
+      const summaryEntry = plan.bautizosCarMetaSummaryByTitular?.[titularSk];
+      const metaLoaded = titularCarMetaIsLoaded(titularSk, effectiveCars);
+      if ((!cardExpanded || !metaLoaded) && summaryEntry) {
+        return slotsFromTitularCarMetaSummary(summaryEntry);
+      }
+      return buildBautizosCarSlotsForTransport({
+        plan: planForCarMetaRead,
+        hostSourceKey: titularSk,
+        effectiveCars,
+        hostPerson,
+        companions,
+        labelIndex: buildRosterSourceKeyLabelIndex(evRosterFiltered),
+        fallbackLines,
+        roster: evRosterFiltered,
+        seatsPerCar: plan.bautizosCarCapacity,
+      });
+    },
+    [plan, planForCarMetaRead, evRosterFiltered, titularCarMetaIsLoaded]
   );
 
   const renderCarDetailToggle = (detailKey, label = 'Datos de carro', extra = '') => {
@@ -436,13 +614,22 @@ export default function TransportPlanningPage({
     try {
       const previousPlan = normalizeTransportPlanning(currentEvent?.transportPlanning);
       const nextPlan = applyCarMetaPassengerInheritance(
-        applyTransportPlanningAutoNormalization(normalizeTransportPlanning(plan), planDirtyContext)
+        applyTransportPlanningAutoNormalization(
+          mergeCarMetaCacheIntoPlan(plan, loadedCarMetaByKey),
+          planDirtyContext
+        )
       );
-      await updateDoc(getDocRef('app_events', String(eventId)), {
-        transportPlanning: nextPlan,
+      const savedPlan = await persistTransportPlanWithCarMeta({
+        eventId: String(eventId),
+        plan: nextPlan,
+        roster: evRosterFiltered,
+        updateDoc,
+        getDocRef,
       });
 
-      const catalogEntries = collectCarMetaCatalogEntries(nextPlan.carMetaBySource);
+      const catalogEntries = collectCarMetaCatalogEntries(
+        mergeCarMetaCacheIntoPlan(savedPlan, loadedCarMetaByKey).carMetaBySource
+      );
       const nextCustomCatalog = upsertCustomCarCatalog(customCarCatalog, catalogEntries);
       if (!customCarCatalogsEqual(customCarCatalog, nextCustomCatalog)) {
         await updateDoc(getDocRef('app_data', 'config'), {
@@ -502,7 +689,9 @@ export default function TransportPlanningPage({
           }
         );
       }
-      setPlan(nextPlan);
+      setPlan(savedPlan);
+      setLoadedCarMetaByKey({});
+      setFetchedTitularSks(new Set());
       showToast('Plan de transporte guardado.');
     } catch (e) {
       console.error(e);
@@ -510,7 +699,7 @@ export default function TransportPlanningPage({
     } finally {
       setSaving(false);
     }
-  }, [canSaveTransport, eventId, getDocRef, plan, planDirtyContext, showToast, updateDoc, addLog, currentEvent, isCampa, customCarCatalog]);
+  }, [canSaveTransport, eventId, getDocRef, plan, planDirtyContext, loadedCarMetaByKey, evRosterFiltered, showToast, updateDoc, addLog, currentEvent, isCampa, customCarCatalog]);
 
   const getPassengersForSection = (section) => {
     const passengersBase = passengersForBusGroup(busLines, section);
@@ -1614,6 +1803,7 @@ export default function TransportPlanningPage({
                     passengerSourceKeys: (meta.passengerSourceKeys || []).filter((p) => p !== sk),
                   },
                   exclusivePersonKeys: sk ? [sk] : [],
+                  roster: evRosterFiltered,
                 })
               )
             }
@@ -1624,6 +1814,7 @@ export default function TransportPlanningPage({
                   vehicleKey,
                   patch: { passengerSourceKeys: keys, pendingPassengers: false },
                   exclusivePersonKeys: keys,
+                  roster: evRosterFiltered,
                 })
               )
             }
@@ -2243,13 +2434,42 @@ export default function TransportPlanningPage({
             <div className="p-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
               {manualCarGroupViews.map((view) => {
                 const savings = view.carsBeforeMerge > view.effectiveCars;
+                const manualSlots = resolveSlotsForTitular(
+                  view.titularSk,
+                  view.effectiveCars,
+                  expandedFamilyCardKeys.has(view.id),
+                  evRosterFiltered.find(
+                    (p) => String(p?.id || '').trim() === String(view.titularSk || '').replace(/^p:/, '')
+                  ),
+                  [],
+                  view.memberLines
+                );
+                const manualCrewOpts = {
+                  requiresPassengers: manualGroupCrewRequiresPassengers(view.memberLines.length),
+                };
                 return (
-                  <div
+                  <TransportBautizosCarCard
                     key={view.id}
-                    className="rounded-xl border border-indigo-200 dark:border-indigo-600/50 bg-white dark:bg-slate-900 p-4 flex flex-col gap-3 shadow-sm"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div className="min-w-0">
+                    cardKey={view.id}
+                    cardExpanded={expandedFamilyCardKeys.has(view.id)}
+                    onToggleCard={() =>
+                      void handleToggleFamilyCard(view.id, view.titularSk, view.effectiveCars)
+                    }
+                    expandedCarFormKeys={expandedCarFormKeys}
+                    onToggleCarForm={(formKey) =>
+                      void handleToggleCarForm(formKey, view.titularSk, view.effectiveCars)
+                    }
+                    titularSk={view.titularSk}
+                    effectiveCars={view.effectiveCars}
+                    seatsPerCar={plan.bautizosCarCapacity}
+                    slots={manualSlots}
+                    titularSummary={plan.bautizosCarMetaSummaryByTitular?.[view.titularSk]}
+                    isLoadingMeta={loadingTitularSks.has(view.titularSk)}
+                    getSlotMeta={(carIndex) => getCarMeta(view.titularSk, carIndex)}
+                    crewOpts={manualCrewOpts}
+                    className="rounded-xl border border-indigo-200 dark:border-indigo-600/50 bg-white dark:bg-slate-900 p-4 shadow-sm"
+                    header={
+                      <>
                         <p className="text-sm font-black text-indigo-800 dark:text-indigo-200">{view.label}</p>
                         <p className="text-[10px] font-bold text-indigo-600 dark:text-indigo-300 mt-1">
                           {view.memberLines.length} persona{view.memberLines.length !== 1 ? 's' : ''} ·{' '}
@@ -2267,8 +2487,12 @@ export default function TransportPlanningPage({
                             {view.inheritedCars !== 1 ? 's' : ''} (incluye «quizá no vaya»)
                           </p>
                         ) : null}
+                      </>
+                    }
+                    toolbar={
+                      <>
                         {canEdit && (view.participantHosts || []).length > 1 ? (
-                          <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex flex-col gap-0.5 mt-2">
+                          <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex flex-col gap-0.5">
                             Titular del grupo (datos de carro)
                             <select
                               className={`${inputSm} max-w-[14rem]`}
@@ -2283,103 +2507,64 @@ export default function TransportPlanningPage({
                             </select>
                           </label>
                         ) : null}
-                      </div>
-                      {canEdit ? (
-                        <div className="flex flex-wrap gap-2 shrink-0">
-                          <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex flex-col gap-0.5">
-                            Carros del grupo
-                            <input
-                              type="number"
-                              min={1}
-                              className={`${inputSm} w-20`}
-                              value={view.effectiveCars}
-                              onChange={(e) => setGroupCars(view.id, e.target.value)}
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            className={btnSecondary}
-                            onClick={() => unmergeManualCarGroup(view.id)}
-                          >
-                            Separar grupo
-                          </button>
-                        </div>
-                      ) : null}
-                      {renderCarDataWhatsAppButton(
-                        String(view.titularSk || '').replace(/^p:/, ''),
-                        view.memberLines?.[0]?.location,
-                        true
-                      )}
-                    </div>
-                    <ul className="flex flex-wrap gap-1.5">
-                      {view.memberLines.map((line) => (
-                        <li
-                          key={line.sourceKey}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-indigo-100/90 dark:bg-indigo-900/50 text-[10px] font-bold text-indigo-900 dark:text-indigo-100 border border-indigo-200/80 dark:border-indigo-600/40"
-                        >
-                          <span className="truncate max-w-[12rem]" title={line.name}>
-                            {line.name}
-                          </span>
-                          {line.kind === 'companion' ? (
-                            <span className="text-indigo-500 dark:text-indigo-300 font-semibold">Acomp.</span>
-                          ) : (
-                            <span className="text-indigo-600 dark:text-indigo-300 font-black uppercase text-[9px]">
-                              Titular
-                            </span>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 border-t border-indigo-100 dark:border-indigo-800/60 pt-3">
-                      {buildBautizosCarSlotsForTransport({
-                        plan: planForCarMetaRead,
-                        hostSourceKey: view.titularSk,
-                        effectiveCars: view.effectiveCars,
-                        hostPerson: evRosterFiltered.find(
-                          (p) => String(p?.id || '').trim() === String(view.titularSk || '').replace(/^p:/, '')
-                        ),
-                        companions: [],
-                        labelIndex: buildRosterSourceKeyLabelIndex(evRosterFiltered),
-                        fallbackLines: view.memberLines,
-                        roster: evRosterFiltered,
-                        seatsPerCar: plan.bautizosCarCapacity,
-                      }).map((slot) => (
-                        <div
-                          key={`${view.id}-slot-${slot.carIndex}`}
-                          className="rounded-lg border border-indigo-100 dark:border-indigo-800/60 bg-slate-50/80 dark:bg-slate-800/40 p-2"
-                        >
-                          <p className="text-[9px] font-black uppercase text-indigo-600 dark:text-indigo-300 mb-1">
-                            Carro {slot.carIndex} · conductor y pasajeros
-                          </p>
-                          <ul className="space-y-0.5 text-[10px] font-semibold text-slate-800 dark:text-slate-100">
-                            {slot.members.map((m) => (
-                              <li key={m.sourceKey}>
-                                {m.name}
-                                <span className="ml-1 text-[9px] font-bold uppercase text-indigo-500 dark:text-indigo-300">
-                                  {formatTransportCarMemberRole(m)}
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="border-t border-indigo-100 dark:border-indigo-800/60 pt-3 space-y-2">
-                      <p className="text-[9px] font-black uppercase text-indigo-600 dark:text-indigo-300">
-                        Datos del vehículo y tripulación (compartidos con Registro)
-                      </p>
-                      {renderCarVehicleBulkActions(view.titularSk, view.effectiveCars)}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {Array.from({ length: view.effectiveCars }, (_, i) =>
-                          renderCarVehicleMetaBlock(view.titularSk, i + 1, view.effectiveCars, {
-                            compact: true,
-                            memberOptions: buildMemberOptionsFromLines(view.memberLines),
-                            requirePassengers: manualGroupCrewRequiresPassengers(view.memberLines.length),
-                          })
+                        {canEdit ? (
+                          <>
+                            <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex flex-col gap-0.5">
+                              Carros del grupo
+                              <input
+                                type="number"
+                                min={1}
+                                className={`${inputSm} w-20`}
+                                value={view.effectiveCars}
+                                onChange={(e) => setGroupCars(view.id, e.target.value)}
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              className={btnSecondary}
+                              onClick={() => unmergeManualCarGroup(view.id)}
+                            >
+                              Separar grupo
+                            </button>
+                          </>
+                        ) : null}
+                        {renderCarDataWhatsAppButton(
+                          String(view.titularSk || '').replace(/^p:/, ''),
+                          view.memberLines?.[0]?.location,
+                          true
                         )}
-                      </div>
-                    </div>
-                  </div>
+                      </>
+                    }
+                    expandedPrefix={
+                      <ul className="flex flex-wrap gap-1.5">
+                        {view.memberLines.map((line) => (
+                          <li
+                            key={line.sourceKey}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-indigo-100/90 dark:bg-indigo-900/50 text-[10px] font-bold text-indigo-900 dark:text-indigo-100 border border-indigo-200/80 dark:border-indigo-600/40"
+                          >
+                            <span className="truncate max-w-[12rem]" title={line.name}>
+                              {line.name}
+                            </span>
+                            {line.kind === 'companion' ? (
+                              <span className="text-indigo-500 dark:text-indigo-300 font-semibold">Acomp.</span>
+                            ) : (
+                              <span className="text-indigo-600 dark:text-indigo-300 font-black uppercase text-[9px]">
+                                Titular
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    }
+                    bulkActions={renderCarVehicleBulkActions(view.titularSk, view.effectiveCars)}
+                    renderCarForm={(carIndex, eff) =>
+                      renderCarVehicleMetaBlock(view.titularSk, carIndex, eff, {
+                        compact: true,
+                        memberOptions: buildMemberOptionsFromLines(view.memberLines),
+                        requirePassengers: manualGroupCrewRequiresPassengers(view.memberLines.length),
+                      })
+                    }
+                  />
                 );
               })}
             </div>
@@ -2465,103 +2650,114 @@ export default function TransportPlanningPage({
                         const eff = grp.isFamily
                           ? groupEff
                           : bautizosFamilyEffectiveCarCount(host.hostId, fam, plan, keyToGroup);
-                        const slots = buildBautizosCarSlotsForTransport({
-                          plan,
-                          hostSourceKey: titularSk,
-                          effectiveCars: eff,
-                          hostPerson: carCtx.hostPerson,
-                          companions: carCtx.companions,
-                          labelIndex: carCtx.labelIndex,
-                          fallbackLines: cardLines,
-                          roster: evRosterFiltered,
-                          seatsPerCar: plan.bautizosCarCapacity,
-                        });
+                        const slots = resolveSlotsForTitular(
+                          titularSk,
+                          eff,
+                          expandedFamilyCardKeys.has(host.hostId),
+                          carCtx.hostPerson,
+                          carCtx.companions,
+                          cardLines
+                        );
                         const crewMemberOptions = buildCrewMemberOptions(carCtx);
                         const confirmedCars = countConfirmedCarsInSet(planForCarMetaRead, titularSk, eff);
+                        const familyCrewOpts = {
+                          requiresPassengers:
+                            crewMemberOptions.length > 1 ||
+                            crewMemberOptions.some((m) => m.kind === 'companion'),
+                        };
                         return (
-                          <div key={host.hostId} className="rounded-xl border border-slate-200 dark:border-slate-700 p-3">
-                            <div className="flex flex-wrap items-start justify-between gap-2">
-                              <div className="min-w-0">
-                                <p className="text-sm font-black text-slate-900 dark:text-slate-100 truncate" title={host.hostName}>
+                          <TransportBautizosCarCard
+                            key={host.hostId}
+                            cardKey={host.hostId}
+                            cardExpanded={expandedFamilyCardKeys.has(host.hostId)}
+                            onToggleCard={() =>
+                              void handleToggleFamilyCard(host.hostId, titularSk, eff)
+                            }
+                            expandedCarFormKeys={expandedCarFormKeys}
+                            onToggleCarForm={(formKey) =>
+                              void handleToggleCarForm(formKey, titularSk, eff)
+                            }
+                            titularSk={titularSk}
+                            effectiveCars={eff}
+                            seatsPerCar={plan.bautizosCarCapacity}
+                            slots={slots}
+                            titularSummary={plan.bautizosCarMetaSummaryByTitular?.[titularSk]}
+                            isLoadingMeta={loadingTitularSks.has(titularSk)}
+                            getSlotMeta={(carIndex) => getCarMeta(titularSk, carIndex)}
+                            crewOpts={familyCrewOpts}
+                            header={
+                              <>
+                                <p
+                                  className="text-sm font-black text-slate-900 dark:text-slate-100 truncate"
+                                  title={host.hostName}
+                                >
                                   {host.hostName}
                                 </p>
                                 <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
-                                  Sede {host.location} · {cardLines.length} persona{cardLines.length !== 1 ? 's' : ''} en carro
+                                  Sede {host.location} · {cardLines.length} persona
+                                  {cardLines.length !== 1 ? 's' : ''} en carro
                                   {grp.isFamily ? ' · titular familiar' : ''}
                                   {carCtx.inheritedFromTitular && carCtx.titularName
                                     ? ` · datos del titular ${carCtx.titularName}`
                                     : ''}
                                 </p>
                                 <p className="text-[10px] text-slate-600 dark:text-slate-300 mt-1">
-                                  Carros en registro: <span className="font-black tabular-nums text-indigo-600 dark:text-indigo-400">{host.hostCarros}</span>
-                                  {' · '}Carros efectivos: <span className="font-black tabular-nums text-indigo-600 dark:text-indigo-400">{eff}</span>
+                                  Carros en registro:{' '}
+                                  <span className="font-black tabular-nums text-indigo-600 dark:text-indigo-400">
+                                    {host.hostCarros}
+                                  </span>
+                                  {' · '}Carros efectivos:{' '}
+                                  <span className="font-black tabular-nums text-indigo-600 dark:text-indigo-400">
+                                    {eff}
+                                  </span>
                                   {eff >= 2 ? (
                                     <>
                                       {' · '}
-                                      <span className="font-black tabular-nums text-emerald-700 dark:text-emerald-400">{confirmedCars} confirmados</span>
+                                      <span className="font-black tabular-nums text-emerald-700 dark:text-emerald-400">
+                                        {confirmedCars} confirmados
+                                      </span>
                                     </>
+                                  ) : null}
+                                </p>
+                              </>
+                            }
+                            toolbar={
+                              <>
+                                {renderCarDataWhatsAppButton(host.hostId, host.location, true)}
+                                {canEdit ? (
+                                  <label className="flex flex-col gap-0.5 text-[10px] font-bold text-slate-600 dark:text-slate-300 shrink-0">
+                                    Cantidad carros por familia
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      className={`${inputSm} w-20`}
+                                      placeholder="1"
+                                      title="Sobrescribe el total de carros de este registro/familia"
+                                      value={famOverride === '' ? '' : famOverride}
+                                      onChange={(e) => {
+                                        const v = e.target.value;
+                                        if (v === '') {
+                                          setPlan((prev) => {
+                                            const next = normalizeTransportPlanning(prev);
+                                            const o = { ...(next.familyCarOverride || {}) };
+                                            delete o[host.hostId];
+                                            return { ...next, familyCarOverride: o };
+                                          });
+                                        } else setFamilyOverride(host.hostId, v);
+                                      }}
+                                    />
+                                  </label>
                                 ) : null}
-                              </p>
-                            </div>
-                            <div className="flex flex-wrap items-center gap-2 shrink-0">
-                              {renderCarDataWhatsAppButton(host.hostId, host.location, true)}
-                              {canEdit ? (
-                                <label className="flex flex-col gap-0.5 text-[10px] font-bold text-slate-600 dark:text-slate-300 shrink-0">
-                                  Cantidad carros por familia
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    className={`${inputSm} w-20`}
-                                    placeholder="1"
-                                    title="Sobrescribe el total de carros de este registro/familia"
-                                    value={famOverride === '' ? '' : famOverride}
-                                    onChange={(e) => {
-                                      const v = e.target.value;
-                                      if (v === '') {
-                                        setPlan((prev) => {
-                                          const next = normalizeTransportPlanning(prev);
-                                          const o = { ...(next.familyCarOverride || {}) };
-                                          delete o[host.hostId];
-                                          return { ...next, familyCarOverride: o };
-                                        });
-                                      } else setFamilyOverride(host.hostId, v);
-                                    }}
-                                  />
-                                </label>
-                              ) : null}
-                            </div>
-                            </div>
-                            {renderCarVehicleBulkActions(titularSk, eff)}
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
-                              {slots.map((slot) => (
-                                <div
-                                  key={`${host.hostId}-${slot.carIndex}`}
-                                  className="rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/80 dark:bg-slate-800/50 p-3 flex flex-col gap-2"
-                                >
-                                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                                    Carro {slot.carIndex}{' '}
-                                    <span className="font-bold normal-case text-slate-400">
-                                      (hasta {plan.bautizosCarCapacity} plazas)
-                                    </span>
-                                  </p>
-                                  {renderCarVehicleMetaBlock(titularSk, slot.carIndex, eff, {
-                                    compact: true,
-                                    memberOptions: crewMemberOptions,
-                                  })}
-                                  <ul className="space-y-1 text-xs font-semibold text-slate-800 dark:text-slate-100 border-t border-slate-200/80 dark:border-slate-600/80 pt-2">
-                                    {slot.members.map((m) => (
-                                      <li key={m.sourceKey} className="flex items-center gap-2">
-                                        <span className="truncate">{m.name || '—'}</span>
-                                        <span className="text-[10px] font-bold text-slate-400 shrink-0">
-                                          {formatTransportCarMemberRole(m)}
-                                        </span>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
+                              </>
+                            }
+                            bulkActions={renderCarVehicleBulkActions(titularSk, eff)}
+                            renderCarForm={(carIndex, effective) =>
+                              renderCarVehicleMetaBlock(titularSk, carIndex, effective, {
+                                compact: true,
+                                memberOptions: crewMemberOptions,
+                              })
+                            }
+                          />
                         );
                       })}
                     </div>

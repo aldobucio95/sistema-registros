@@ -37,8 +37,10 @@ export default function CarVehicleMetaPanel({
   const pendingColor = meta?.pendingColor === true;
   const pendingPlates = meta?.pendingPlates === true;
 
-  const pendingToggle = (field, pending, label) =>
-    showPendingToggles ? (
+  const pendingToggle = (field, pending, fieldValue) => {
+    const hasValue = String(fieldValue || '').trim();
+    if (!showPendingToggles || (hasValue && !pending)) return null;
+    return (
       <label className="inline-flex items-center gap-1 text-[9px] font-bold text-amber-700 dark:text-amber-300 cursor-pointer shrink-0">
         <input
           type="checkbox"
@@ -49,12 +51,13 @@ export default function CarVehicleMetaPanel({
         />
         Pendiente
       </label>
-    ) : null;
+    );
+  };
 
-  const fieldLabel = (text, field, pending) => (
+  const fieldLabel = (text, field, pending, fieldValue) => (
     <div className="flex flex-wrap items-center justify-between gap-1">
       <span className={labelCls}>{text}</span>
-      {pendingToggle(field, pending, text)}
+      {pendingToggle(field, pending, fieldValue)}
     </div>
   );
 
@@ -140,7 +143,7 @@ export default function CarVehicleMetaPanel({
       ) : (
         <div className={`grid gap-2 ${compact ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'}`}>
           <div className="flex flex-col gap-1">
-            {fieldLabel('Marca', 'brand', pendingBrand)}
+            {fieldLabel('Marca', 'brand', pendingBrand, b)}
             <select
               className={inputSm}
               value={pendingBrand ? '' : brandSelectVal}
@@ -178,7 +181,7 @@ export default function CarVehicleMetaPanel({
             ) : null}
           </div>
           <div className="flex flex-col gap-1">
-            {fieldLabel('Modelo', 'model', pendingModel)}
+            {fieldLabel('Modelo', 'model', pendingModel, m)}
             {!knownBrand || pendingModel ? (
               <input
                 type="text"
@@ -228,7 +231,7 @@ export default function CarVehicleMetaPanel({
             )}
           </div>
           <div className="flex flex-col gap-1">
-            {fieldLabel('Color', 'color', pendingColor)}
+            {fieldLabel('Color', 'color', pendingColor, color)}
             <SedeAutocompleteInput
               type="text"
               className={inputSm}
@@ -241,7 +244,7 @@ export default function CarVehicleMetaPanel({
             />
           </div>
           <div className="flex flex-col gap-1">
-            {fieldLabel('Placas', 'plates', pendingPlates)}
+            {fieldLabel('Placas', 'plates', pendingPlates, plates)}
             <input
               type="text"
               className={inputSm}

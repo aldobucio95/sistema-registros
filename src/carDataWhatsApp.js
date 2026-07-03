@@ -5,6 +5,7 @@ import {
   familyCarInventoryNeedsAttention,
   resolveBautizosCarDataAnchor,
 } from './bautizosCarMeta.js';
+import { titularSummaryNeedsAttention } from './transportCarMetaStore.js';
 import { buildCarDataRequestWhatsAppMessage } from './whatsappFinanceMessages.js';
 
 export const CAR_DATA_FILTER_OPTIONS = Object.freeze([
@@ -140,6 +141,9 @@ export function personInventoryNeedsCarDataAttention(person, eventSnapshot, rost
   const anchor = resolveBautizosCarDataAnchor(person, roster, eventSnapshot);
   if (!anchor.eligible || !anchor.anchorPerson) return false;
   if (String(anchor.waRecipient?.id || '').trim() !== String(person?.id || '').trim()) return false;
+  const anchorSk = `p:${String(anchor.anchorPerson?.id || '').trim()}`;
+  const summary = eventSnapshot?.transportPlanning?.bautizosCarMetaSummaryByTitular?.[anchorSk];
+  if (summary) return titularSummaryNeedsAttention(summary);
   const inventory = buildCarDataInventoryForAnchor(anchor, eventSnapshot);
   return familyCarInventoryNeedsAttention(inventory, {
     hostPerson: anchor.anchorPerson,

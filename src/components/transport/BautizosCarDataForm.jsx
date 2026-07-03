@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import CarVehicleMetaPanel from './CarVehicleMetaPanel.jsx';
 import BautizosCarCrewFields from './BautizosCarCrewFields.jsx';
 import { createCarCatalogView } from '../../data/carBrandModelsCatalog.js';
@@ -8,9 +9,13 @@ import {
   buildBautizosFamilyMemberOptions,
   buildManualGroupMemberOptions,
   buildCarCrewAssignmentPatches,
+  buildCarCrewMembersFromMeta,
+  carMetaNeedsAttention,
   collectAssignedCrewSourceKeysOnOtherCars,
   familyHasAnyCarTransport,
   filterDriverMemberOptions,
+  formatCarMetaDisplayValue,
+  formatTransportCarMemberRole,
   manualGroupCrewRequiresPassengers,
   normalizeCarVehicleMeta,
   resolveManualCarGroupContext,
@@ -46,8 +51,12 @@ export default function BautizosCarDataForm({
   colorSuggestions = [],
   labelClasses = 'text-[10px] font-bold text-slate-600 dark:text-slate-300',
   roster = null,
+  inheritLinkedCarData = false,
+  inheritedCarSummary = null,
+  onInheritLinkedCarDataChange,
 }) {
   const catalog = carCatalogView || createCarCatalogView();
+  const [expandedSlotKeys, setExpandedSlotKeys] = useState(() => new Set());
   const manualCtx = useMemo(
     () => resolveManualCarGroupContext(hostPerson, plan, roster),
     [hostPerson, plan, roster]
@@ -113,6 +122,18 @@ export default function BautizosCarDataForm({
   const requirePassengers = manualCtx?.isAnchor
     ? manualGroupCrewRequiresPassengers(manualCtx.memberKeys.length)
     : memberOptions.some((m) => m.kind === 'companion');
+  const crewOpts = { requiresPassengers: requirePassengers };
+
+  const toggleSlotExpanded = (vehicleKey) => {
+    const vk = String(vehicleKey || '').trim();
+    if (!vk) return;
+    setExpandedSlotKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(vk)) next.delete(vk);
+      else next.add(vk);
+      return next;
+    });
+  };
 
   const commitHostCarCount = (nextCount) => {
     const next = normalizeArrivalCarCount(nextCount);
@@ -196,10 +217,29 @@ export default function BautizosCarDataForm({
       patchSlot(vehicleKey, { [pendingKey]: checked });
     };
 
+    const formOpen = expandedSlotKeys.has(vehicleKey);
+    const slotPending = carMetaNeedsAttention(meta, crewOpts);
+    const crewMembers = buildCarCrewMembersFromMeta(meta, hostPerson, companions, null, roster);
+
+    const renderFieldSummary = (label, field) => {
+      const v = formatCarMetaDisplayValue(meta, field);
+      const isPending = v === 'Pendiente';
+      return (
+        <p className="text-[10px] text-slate-600 dark:text-slate-300">
+          <strong>{label}:</strong>{' '}
+          {isPending ? (
+            <span className="text-amber-700 dark:text-amber-300 font-bold">Pendiente</span>
+          ) : (
+            <span className="font-semibold text-slate-800 dark:text-slate-100">{v}</span>
+          )}
+        </p>
+      );
+    };
+
     return (
       <div
         key={vehicleKey}
-        className="rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800/30 p-3 space-y-3"
+        className="rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800/30 p-3 space-y-2"
       >
         <div className="flex flex-wrap items-center gap-2">
           <span
@@ -210,73 +250,149 @@ export default function BautizosCarDataForm({
           <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
             Carro {carIndex}
           </span>
+          {!formOpen && slotPending ? (
+            <span className="text-[9px] font-black uppercase text-amber-700 dark:text-amber-300">Pendiente</span>
+          ) : null}
         </div>
 
-        <CarVehicleMetaPanel
-          carIndex={carIndex}
-          meta={meta}
-          canEdit={canEdit}
-          showMaybeAbsent={showMaybeAbsent}
-          showPendingToggles={canEdit}
-          carCatalogView={catalog}
-          colorSuggestions={colorSuggestions}
-          onFieldChange={onFieldChange}
-          onPendingFieldChange={onPendingFieldChange}
-          onMaybeAbsentChange={(checked) => patchSlot(vehicleKey, { maybeAbsent: checked })}
-        />
+        {!formOpen ? (
+          <>
+            {meta.maybeAbsent ? (
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 italic">
+                Tal vez no asista con este vehículo
+              </p>
+            ) : (
+              <div className="space-y-0.5">
+                {renderFieldSummary('Marca', 'brand')}
+                {renderFieldSummary('Modelo', 'model')}
+                {renderFieldSummary('Color', 'color')}
+                {renderFieldSummary('Placas', 'plates')}
+                <ul className="space-y-0.5 text-[10px] font-semibold text-slate-800 dark:text-slate-100 pt-1 border-t border-slate-200/80 dark:border-slate-600/60">
+                  {crewMembers.map((m) => (
+                    <li key={`${m.sourceKey}-${m.crewRole}`}>
+                      {m.name || '—'}
+                      <span className="ml-1 text-[9px] font-bold uppercase text-slate-400">
+                        {formatTransportCarMemberRole(m)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </>
+        ) : null}
 
-        {!meta.maybeAbsent ? (
-          <BautizosCarCrewFields
-            meta={meta}
-            memberOptions={memberOptions}
-            driverMemberOptions={driverMemberOptions}
-            passengerMemberOptions={passengerMemberOptions}
-            requirePassengers={requirePassengers}
-            canEdit={canEdit}
-            onDriverChange={(sk) =>
-              applyCrewPatches(
-                buildCarCrewAssignmentPatches({
-                  inventory,
-                  vehicleKey,
-                  patch: {
-                    driverSourceKey: sk,
-                    pendingDriver: false,
-                    passengerSourceKeys: (meta.passengerSourceKeys || []).filter((p) => p !== sk),
-                  },
-                  exclusivePersonKeys: sk ? [sk] : [],
-                })
-              )
-            }
-            onPassengersChange={(keys) =>
-              applyCrewPatches(
-                buildCarCrewAssignmentPatches({
-                  inventory,
-                  vehicleKey,
-                  patch: { passengerSourceKeys: keys, pendingPassengers: false },
-                  exclusivePersonKeys: keys,
-                })
-              )
-            }
-            onPendingDriverChange={(checked) =>
-              patchSlot(vehicleKey, {
-                pendingDriver: checked,
-                ...(checked ? { driverSourceKey: '' } : {}),
-              })
-            }
-            onPendingPassengersChange={(checked) =>
-              patchSlot(vehicleKey, {
-                pendingPassengers: checked,
-                ...(checked ? { passengerSourceKeys: [] } : {}),
-              })
-            }
-          />
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300"
+          onClick={() => toggleSlotExpanded(vehicleKey)}
+          aria-expanded={formOpen}
+          disabled={inheritLinkedCarData}
+        >
+          <ChevronDown size={14} className={`transition-transform ${formOpen ? 'rotate-180' : ''}`} aria-hidden />
+          Datos de carro y tripulación
+          {!formOpen && slotPending ? (
+            <span className="text-amber-700 dark:text-amber-300">· Pendiente</span>
+          ) : null}
+        </button>
+
+        {formOpen && !inheritLinkedCarData ? (
+          <div className="space-y-3 border-t border-slate-200/80 dark:border-slate-600/60 pt-2">
+            <CarVehicleMetaPanel
+              carIndex={carIndex}
+              meta={meta}
+              canEdit={canEdit}
+              showMaybeAbsent={showMaybeAbsent}
+              showPendingToggles={canEdit}
+              carCatalogView={catalog}
+              colorSuggestions={colorSuggestions}
+              onFieldChange={onFieldChange}
+              onPendingFieldChange={onPendingFieldChange}
+              onMaybeAbsentChange={(checked) => patchSlot(vehicleKey, { maybeAbsent: checked })}
+            />
+
+            {!meta.maybeAbsent ? (
+              <BautizosCarCrewFields
+                meta={meta}
+                memberOptions={memberOptions}
+                driverMemberOptions={driverMemberOptions}
+                passengerMemberOptions={passengerMemberOptions}
+                requirePassengers={requirePassengers}
+                canEdit={canEdit}
+                onDriverChange={(sk) =>
+                  applyCrewPatches(
+                    buildCarCrewAssignmentPatches({
+                      inventory,
+                      vehicleKey,
+                      patch: {
+                        driverSourceKey: sk,
+                        pendingDriver: false,
+                        passengerSourceKeys: (meta.passengerSourceKeys || []).filter((p) => p !== sk),
+                      },
+                      exclusivePersonKeys: sk ? [sk] : [],
+                      roster,
+                    })
+                  )
+                }
+                onPassengersChange={(keys) =>
+                  applyCrewPatches(
+                    buildCarCrewAssignmentPatches({
+                      inventory,
+                      vehicleKey,
+                      patch: { passengerSourceKeys: keys, pendingPassengers: false },
+                      exclusivePersonKeys: keys,
+                      roster,
+                    })
+                  )
+                }
+                onPendingDriverChange={(checked) =>
+                  patchSlot(vehicleKey, {
+                    pendingDriver: checked,
+                    ...(checked ? { driverSourceKey: '' } : {}),
+                  })
+                }
+                onPendingPassengersChange={(checked) =>
+                  patchSlot(vehicleKey, {
+                    pendingPassengers: checked,
+                    ...(checked ? { passengerSourceKeys: [] } : {}),
+                  })
+                }
+              />
+            ) : null}
+          </div>
         ) : null}
       </div>
     );
   };
 
+  const showInheritToggle =
+    inheritedCarSummary?.eligible &&
+    typeof onInheritLinkedCarDataChange === 'function';
+
   return (
     <div className="space-y-4">
+      {showInheritToggle ? (
+        <label className="inline-flex items-start gap-2 text-[10px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer">
+          <input
+            type="checkbox"
+            className="mt-0.5 rounded border-indigo-400 accent-indigo-600"
+            checked={inheritLinkedCarData !== false}
+            disabled={!canEdit}
+            onChange={(e) => onInheritLinkedCarDataChange(e.target.checked)}
+          />
+          <span>
+            Heredar datos de carro de{' '}
+            <span className="font-bold">{inheritedCarSummary.linkedName || 'registro vinculado'}</span>
+          </span>
+        </label>
+      ) : null}
+      {inheritLinkedCarData && inheritedCarSummary?.inventory?.length ? (
+        <p className="text-[10px] text-indigo-800 dark:text-indigo-200 leading-relaxed rounded-lg border border-indigo-200 dark:border-indigo-600/50 bg-indigo-50/60 dark:bg-indigo-950/30 px-3 py-2">
+          Los datos de vehículo, conductor y pasajeros se tomarán del registro vinculado de{' '}
+          <span className="font-bold">{inheritedCarSummary.linkedName}</span>. Desmarque la casilla para capturar
+          datos propios.
+        </p>
+      ) : null}
       {showFamilyCarCount
         ? renderCarCountField(
             'Cantidad de carros (familia)',
@@ -286,7 +402,7 @@ export default function BautizosCarDataForm({
             'bautizos-host-car-count'
           )
         : null}
-      {familySlots.length > 0 ? (
+      {familySlots.length > 0 && !inheritLinkedCarData ? (
         <div className="space-y-2">
           <p className="text-[10px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-400">
             Carro familiar
@@ -294,7 +410,7 @@ export default function BautizosCarDataForm({
           <div className="space-y-3">{familySlots.map(renderSlot)}</div>
         </div>
       ) : null}
-      {additionalSlots.length > 0 ? (
+      {additionalSlots.length > 0 && !inheritLinkedCarData ? (
         <div className="space-y-3">
           <p className="text-[10px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-400">
             Carros adicionales
