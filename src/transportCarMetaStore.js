@@ -9,11 +9,13 @@ import { db, getTransportCarMetaColRef, getTransportCarMetaDocRef } from './fire
 import {
   applyCarMetaPassengerInheritance,
   buildCarCrewMembersFromMeta,
+  buildCrewOptsByTitularFromPlan,
+  buildCarMetaCrewOptsForTitular,
   buildRosterSourceKeyLabelIndex,
-  carMetaNeedsAttention,
   mergeCarMetaPatchesIntoPlan,
   normalizeCarMetaWithCrewDedupe,
   normalizeCarVehicleMeta,
+  vehicleMetaFieldsAndDriverComplete,
 } from './bautizosCarMeta.js';
 import {
   carVehicleMetaStorageKey,
@@ -87,10 +89,18 @@ export function buildCarMetaSummaryCarEntry(meta, roster, crewOpts = {}) {
   const labelIndex = buildRosterSourceKeyLabelIndex(roster);
   const hostPerson = (roster || []).find((p) => `p:${String(p?.id || '').trim()}` === ownerSk);
   const crew = buildCarCrewMembersFromMeta(m, hostPerson, [], labelIndex, roster);
+  const requiresPassengers = crewOpts.requiresPassengers !== false;
+  const vehicleFieldsComplete = vehicleMetaFieldsAndDriverComplete(m);
+  const hasPassengers = Array.isArray(m.passengerSourceKeys) && m.passengerSourceKeys.length > 0;
+  const vehiclePending =
+    !m.maybeAbsent &&
+    (!vehicleFieldsComplete || (requiresPassengers && !hasPassengers));
   return {
     carIndex: parsed?.carIndex || 1,
     maybeAbsent: m.maybeAbsent === true,
-    vehiclePending: !m.maybeAbsent && carMetaNeedsAttention(m, crewOpts),
+    vehicleFieldsComplete,
+    hasPassengers,
+    vehiclePending,
     crewPreview: crew.map((c) => ({ name: c.name || '—', crewRole: c.crewRole })),
   };
 }
@@ -107,12 +117,47 @@ export function buildTitularCarMetaSummaryEntry(titularSk, metaByVehicleKey, ros
     );
   }
   cars.sort((a, b) => a.carIndex - b.carIndex);
-  const needsAttention = cars.some((c) => c.vehiclePending);
-  return { needsAttention, cars };
+  const requiresPassengers = crewOpts.requiresPassengers !== false;
+  const needsAttention = cars.some((c) => carSummaryEntryNeedsAttention(c, requiresPassengers));
+  return { needsAttention, requiresPassengers, cars };
 }
 
-export function buildCarMetaSummaryByTitularFromPlan(plan, roster, crewOptsByTitular = {}) {
+function carSummaryEntryNeedsAttention(car, requiresPassengers) {
+  if (car?.maybeAbsent) return false;
+  if (typeof car.vehicleFieldsComplete === 'boolean') {
+    if (!car.vehicleFieldsComplete) return true;
+    if (requiresPassengers && !car.hasPassengers) return true;
+    return false;
+  }
+  if (!car.vehiclePending) return false;
+  if (requiresPassengers === false) {
+    const preview = car.crewPreview || [];
+    const hasDriver = preview.some((m) => m.crewRole === 'driver');
+    if (!hasDriver) return true;
+    return false;
+  }
+  return true;
+}
+
+export function titularSummaryNeedsAttention(summaryEntry, crewOpts = {}) {
+  if (!summaryEntry) return false;
+  const requiresPassengers =
+    typeof crewOpts.requiresPassengers === 'boolean'
+      ? crewOpts.requiresPassengers
+      : summaryEntry.requiresPassengers !== false;
+  const cars = summaryEntry.cars || [];
+  if (cars.length) {
+    return cars.some((car) => carSummaryEntryNeedsAttention(car, requiresPassengers));
+  }
+  return summaryEntry.needsAttention === true;
+}
+
+export function buildCarMetaSummaryByTitularFromPlan(plan, roster, crewOptsByTitular = null) {
   const normalized = normalizeTransportPlanning(plan);
+  const resolvedCrewOpts =
+    crewOptsByTitular && typeof crewOptsByTitular === 'object'
+      ? crewOptsByTitular
+      : buildCrewOptsByTitularFromPlan(normalized, roster);
   const byOwner = {};
   for (const [vehicleKey, rawMeta] of Object.entries(normalized.carMetaBySource || {})) {
     const parsed = parseVehicleMetaKey(vehicleKey);
@@ -123,7 +168,7 @@ export function buildCarMetaSummaryByTitularFromPlan(plan, roster, crewOptsByTit
   }
   const summary = {};
   for (const [ownerSk, metaMap] of Object.entries(byOwner)) {
-    const crewOpts = crewOptsByTitular[ownerSk] || {};
+    const crewOpts = resolvedCrewOpts[ownerSk] || buildCarMetaCrewOptsForTitular(ownerSk, normalized, roster);
     summary[ownerSk] = buildTitularCarMetaSummaryEntry(ownerSk, metaMap, roster, crewOpts);
   }
   return summary;
@@ -141,10 +186,6 @@ export function slotsFromTitularCarMetaSummary(summaryEntry) {
       crewRole: p.crewRole,
     })),
   }));
-}
-
-export function titularSummaryNeedsAttention(summaryEntry) {
-  return summaryEntry?.needsAttention === true;
 }
 
 /**

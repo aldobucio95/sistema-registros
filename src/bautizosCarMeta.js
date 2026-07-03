@@ -256,6 +256,59 @@ export function resolveCarCrewRequiresPassengers(hostPerson, companions, plan, r
   return carCrewRequiresPassengerSelection(hostPerson, companions);
 }
 
+/** Misma regla que Transporte: pasajeros obligatorios si hay más de un integrante en tripulación. */
+export function buildCarMetaCrewOptsForTitular(titularSk, plan, roster) {
+  const owner = String(titularSk || '').trim();
+  const hostId = owner.replace(/^p:/, '');
+  const hostPerson = (roster || []).find((p) => String(p?.id || '').trim() === hostId);
+  if (!hostPerson) return { requiresPassengers: true };
+
+  const normalizedPlan = normalizeTransportPlanning(plan);
+  const manualCtx = resolveManualCarGroupContext(hostPerson, normalizedPlan, roster);
+  if (manualCtx?.isAnchor) {
+    return {
+      requiresPassengers: manualGroupCrewRequiresPassengers(manualCtx.memberKeys.length),
+    };
+  }
+
+  const carCtx = buildTransportCarContextForHost({ hostId, plan: normalizedPlan, roster });
+  const crewMemberOptions = buildBautizosFamilyMemberOptions({
+    hostPerson: carCtx.hostPerson,
+    companions: carCtx.companions,
+    hostSourceKey: carCtx.hostSourceKey,
+  });
+  return {
+    requiresPassengers:
+      crewMemberOptions.length > 1 ||
+      crewMemberOptions.some((m) => m.kind === 'companion'),
+  };
+}
+
+/** Mapa titularSk → crewOpts para resúmenes de car meta. */
+export function buildCrewOptsByTitularFromPlan(plan, roster) {
+  const normalized = normalizeTransportPlanning(plan);
+  const owners = new Set();
+  for (const vehicleKey of Object.keys(normalized.carMetaBySource || {})) {
+    const owner = String(vehicleKey || '').split('|c')[0].trim();
+    if (owner) owners.add(owner);
+  }
+  const out = {};
+  for (const ownerSk of owners) {
+    out[ownerSk] = buildCarMetaCrewOptsForTitular(ownerSk, normalized, roster);
+  }
+  return out;
+}
+
+/** Rubros del vehículo + conductor capturados (sin evaluar pasajeros). */
+export function vehicleMetaFieldsAndDriverComplete(meta) {
+  const m = normalizeCarVehicleMeta(meta);
+  if (m.maybeAbsent) return false;
+  for (const field of CAR_META_VEHICLE_FIELDS) {
+    if (!String(m[field] || '').trim()) return false;
+  }
+  return Boolean(String(m.driverSourceKey || '').trim());
+}
+
 function vehicleMetaHasCapturedValues(meta) {
   const m = normalizeCarVehicleMeta(meta);
   if (m.maybeAbsent) return false;

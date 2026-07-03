@@ -1,6 +1,7 @@
 import {
   buildBautizosFamilyCarInventory,
   buildCarDataWaSubjectContext,
+  buildCarMetaCrewOptsForTitular,
   carCrewRequiresPassengerSelection,
   familyCarInventoryNeedsAttention,
   resolveBautizosCarDataAnchor,
@@ -143,7 +144,14 @@ export function personInventoryNeedsCarDataAttention(person, eventSnapshot, rost
   if (String(anchor.waRecipient?.id || '').trim() !== String(person?.id || '').trim()) return false;
   const anchorSk = `p:${String(anchor.anchorPerson?.id || '').trim()}`;
   const summary = eventSnapshot?.transportPlanning?.bautizosCarMetaSummaryByTitular?.[anchorSk];
-  if (summary) return titularSummaryNeedsAttention(summary);
+  if (summary) {
+    const crewOpts = buildCarMetaCrewOptsForTitular(
+      anchorSk,
+      eventSnapshot.transportPlanning,
+      roster
+    );
+    return titularSummaryNeedsAttention(summary, crewOpts);
+  }
   const inventory = buildCarDataInventoryForAnchor(anchor, eventSnapshot);
   return familyCarInventoryNeedsAttention(inventory, {
     hostPerson: anchor.anchorPerson,

@@ -69,15 +69,54 @@ describe('buildCarMetaSummaryByTitularFromPlan', () => {
         'p:h1|c1': {
           ownerSourceKey: 'p:h1',
           brand: 'Nissan',
+          model: 'March',
+          color: 'Blanco',
+          plates: '030BNN',
           driverSourceKey: 'p:h1',
         },
       },
-      [{ id: 'h1', name: 'Ana' }]
+      [{ id: 'h1', name: 'Ana' }],
+      { requiresPassengers: false }
     );
     const slots = slotsFromTitularCarMetaSummary(entry);
     expect(slots).toHaveLength(1);
     expect(slots[0].members.some((m) => m.crewRole === 'driver')).toBe(true);
-    expect(titularSummaryNeedsAttention(entry)).toBe(true);
+    expect(entry.needsAttention).toBe(false);
+    expect(titularSummaryNeedsAttention(entry, { requiresPassengers: false })).toBe(false);
+  });
+
+  it('solo titular sin pasajeros no queda pendiente en resumen', () => {
+    const plan = normalizeTransportPlanning({
+      carMetaBySource: {
+        'p:h1|c1': {
+          ownerSourceKey: 'p:h1',
+          brand: 'Nissan',
+          model: 'March',
+          color: 'Blanco',
+          plates: '030BNN',
+          driverSourceKey: 'p:h1',
+          passengerSourceKeys: [],
+        },
+      },
+    });
+    const roster = [{ id: 'h1', name: 'Itzel', llegaEnCarro: true, wantsBautizosTransport: 'No' }];
+    const summary = buildCarMetaSummaryByTitularFromPlan(plan, roster);
+    expect(summary['p:h1'].needsAttention).toBe(false);
+    expect(summary['p:h1'].requiresPassengers).toBe(false);
+  });
+
+  it('legacy summary con pasajeros no requeridos no marca pendiente colapsado', () => {
+    const legacy = {
+      needsAttention: true,
+      cars: [
+        {
+          carIndex: 1,
+          vehiclePending: true,
+          crewPreview: [{ name: 'Itzel', crewRole: 'driver' }],
+        },
+      ],
+    };
+    expect(titularSummaryNeedsAttention(legacy, { requiresPassengers: false })).toBe(false);
   });
 });
 

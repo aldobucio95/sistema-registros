@@ -37,7 +37,7 @@ export default function TransportBautizosCarCard({
   const formKeys = expandedCarFormKeys instanceof Set ? expandedCarFormKeys : new Set();
   const anyPending = !cardExpanded
     ? titularSummary
-      ? titularSummaryNeedsAttention(titularSummary)
+      ? titularSummaryNeedsAttention(titularSummary, crewOpts)
       : slots.some((slot) => {
           const meta = getSlotMeta?.(slot.carIndex);
           return meta && carMetaNeedsAttention(meta, crewOpts);

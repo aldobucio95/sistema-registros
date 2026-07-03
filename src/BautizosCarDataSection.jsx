@@ -130,7 +130,7 @@ export function BautizosCarDataSection({
   const sectionNeedsAttention =
     !linkedInherit.active &&
     (summaryEntry
-      ? titularSummaryNeedsAttention(summaryEntry)
+      ? titularSummaryNeedsAttention(summaryEntry, { requiresPassengers: requirePassengers })
       : familyCarInventoryNeedsAttention(inventoryForAttention, {
           hostPerson,
           companions,
