@@ -341,10 +341,48 @@ export function subscribeParticipantsLocationVersionsDebounced(
     }
   };
 
-  return () => {
-    if (timer) clearTimeout(timer);
-    subscription.unsub();
+  return {
+    unsub: () => {
+      if (timer) clearTimeout(timer);
+      subscription.unsub();
+    },
+    acknowledgeLocationVersion: subscription.acknowledgeLocationVersion,
   };
+}
+
+/**
+ * Relee participantes de Firestore por sede, actualiza IndexedDB y fusiona en el estado en memoria.
+ * @param {(updater: (prev: object[]) => object[]) => void} applyToState
+ */
+export async function refetchAndMergeParticipantLocations(eventId, locations, applyToState, opts = {}) {
+  const eid = String(eventId || '').trim();
+  const locs = [...new Set((locations || []).map(normalizeLocKey).filter(Boolean))];
+  if (!eid || locs.length === 0) return [];
+
+  const results = await Promise.all(
+    locs.map((loc) => refetchParticipantsForLocation(eid, loc, { remoteV: opts.remoteV }))
+  );
+
+  applyToState((prev) => {
+    let next = prev || [];
+    locs.forEach((loc, i) => {
+      next = replaceParticipantsForLocation(next, eid, loc, results[i]?.slice || []);
+    });
+    return next;
+  });
+
+  const acks = locs.map((loc, i) => ({
+    loc,
+    versionWritten: results[i]?.versionWritten ?? 0,
+  }));
+
+  if (typeof opts.acknowledgeLocationVersion === 'function') {
+    for (const { loc, versionWritten } of acks) {
+      if (versionWritten != null) opts.acknowledgeLocationVersion(loc, versionWritten);
+    }
+  }
+
+  return acks;
 }
 
 export async function loadArchivedParticipantsWithVersionCache() {

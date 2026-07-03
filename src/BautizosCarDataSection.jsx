@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp, Car, Loader2 } from 'lucide-react';
 import BautizosCarDataForm from './components/transport/BautizosCarDataForm.jsx';
 import {
@@ -40,8 +40,12 @@ export function BautizosCarDataSection({
   roster = null,
   inheritLinkedCarData,
   onInheritLinkedCarDataChange,
+  /** Si true, la sección se muestra expandida (p. ej. modal nuevo registro). */
+  alwaysExpanded = false,
+  /** Si true, cada vehículo muestra el formulario completo sin colapsar. */
+  slotsDefaultExpanded = false,
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(alwaysExpanded);
   const [loadedMetaByKey, setLoadedMetaByKey] = useState({});
   const [loadingMeta, setLoadingMeta] = useState(false);
   const [metaFetched, setMetaFetched] = useState(false);
@@ -67,7 +71,12 @@ export function BautizosCarDataSection({
     }
   }, [eventId, hostSourceKey, metaFetched]);
 
+  useEffect(() => {
+    if (alwaysExpanded) void loadCarMetaIfNeeded();
+  }, [alwaysExpanded, loadCarMetaIfNeeded]);
+
   const handleToggleOpen = () => {
+    if (alwaysExpanded) return;
     const willOpen = !open;
     setOpen(willOpen);
     if (willOpen) void loadCarMetaIfNeeded();
@@ -137,8 +146,24 @@ export function BautizosCarDataSection({
           requiresPassengers: requirePassengers,
         }));
 
+  const isOpen = alwaysExpanded || open;
+
   return (
     <section className={sectionClass}>
+      {alwaysExpanded ? (
+        <div className="mb-3 pb-1.5 border-b border-slate-200 dark:border-slate-600">
+          <h4 className="text-[10px] font-black text-slate-600 dark:text-slate-300 uppercase tracking-[0.15em] inline-flex items-center gap-1.5 flex-wrap">
+            <Car size={12} className="opacity-80" aria-hidden />
+            {sectionTitle}
+            <span className="text-rose-600 normal-case font-bold">*</span>
+            {sectionNeedsAttention ? (
+              <span className="text-[9px] font-black uppercase text-amber-700 dark:text-amber-300 normal-case tracking-normal">
+                · Pendiente
+              </span>
+            ) : null}
+          </h4>
+        </div>
+      ) : (
       <button
         type="button"
         className="w-full flex items-center justify-between gap-2 text-left mb-3 pb-1.5 border-b border-slate-200 dark:border-slate-600"
@@ -148,15 +173,16 @@ export function BautizosCarDataSection({
           <Car size={12} className="opacity-80" aria-hidden />
           {sectionTitle}
           <span className="text-rose-600 normal-case font-bold">*</span>
-          {!open && sectionNeedsAttention ? (
+          {!isOpen && sectionNeedsAttention ? (
             <span className="text-[9px] font-black uppercase text-amber-700 dark:text-amber-300 normal-case tracking-normal">
               · Pendiente
             </span>
           ) : null}
         </h4>
-        {open ? <ChevronUp size={14} className="text-slate-400 shrink-0" /> : <ChevronDown size={14} className="text-slate-400 shrink-0" />}
+        {isOpen ? <ChevronUp size={14} className="text-slate-400 shrink-0" /> : <ChevronDown size={14} className="text-slate-400 shrink-0" />}
       </button>
-      {open ? (
+      )}
+      {isOpen ? (
         <>
           {loadingMeta ? (
             <p className="inline-flex items-center gap-2 text-[10px] font-bold text-slate-500 dark:text-slate-400 mb-3">
@@ -191,6 +217,7 @@ export function BautizosCarDataSection({
               onCompanionCarCountChange={onCompanionCarCountChange}
               onDraftMetaPrune={onDraftMetaPrune}
               onSlotMetaChange={handleSlotMetaChange}
+              slotsDefaultExpanded={slotsDefaultExpanded}
             />
           ) : null}
         </>

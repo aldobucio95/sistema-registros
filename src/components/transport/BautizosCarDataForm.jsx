@@ -54,6 +54,8 @@ export default function BautizosCarDataForm({
   inheritLinkedCarData = false,
   inheritedCarSummary = null,
   onInheritLinkedCarDataChange,
+  /** Si true, cada vehículo muestra el formulario completo sin colapsar. */
+  slotsDefaultExpanded = false,
 }) {
   const catalog = carCatalogView || createCarCatalogView();
   const [expandedSlotKeys, setExpandedSlotKeys] = useState(() => new Set());
@@ -105,6 +107,12 @@ export default function BautizosCarDataForm({
   useEffect(() => {
     setCarCountInput(String(committedCarCount));
   }, [committedCarCount]);
+
+  useEffect(() => {
+    if (!slotsDefaultExpanded) return;
+    const keys = inventory.map((s) => String(s.vehicleKey || '').trim()).filter(Boolean);
+    setExpandedSlotKeys(new Set(keys));
+  }, [slotsDefaultExpanded, inventory]);
 
   if (!inventory.length) {
     return (
@@ -217,7 +225,7 @@ export default function BautizosCarDataForm({
       patchSlot(vehicleKey, { [pendingKey]: checked });
     };
 
-    const formOpen = expandedSlotKeys.has(vehicleKey);
+    const formOpen = slotsDefaultExpanded || expandedSlotKeys.has(vehicleKey);
     const slotPending = carMetaNeedsAttention(meta, crewOpts);
     const crewMembers = buildCarCrewMembersFromMeta(meta, hostPerson, companions, null, roster);
 
@@ -255,7 +263,7 @@ export default function BautizosCarDataForm({
           ) : null}
         </div>
 
-        {!formOpen ? (
+        {!formOpen && !slotsDefaultExpanded ? (
           <>
             {meta.maybeAbsent ? (
               <p className="text-[10px] text-slate-500 dark:text-slate-400 italic">
@@ -282,6 +290,7 @@ export default function BautizosCarDataForm({
           </>
         ) : null}
 
+        {!slotsDefaultExpanded ? (
         <button
           type="button"
           className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300"
@@ -295,9 +304,12 @@ export default function BautizosCarDataForm({
             <span className="text-amber-700 dark:text-amber-300">· Pendiente</span>
           ) : null}
         </button>
+        ) : null}
 
         {formOpen && !inheritLinkedCarData ? (
-          <div className="space-y-3 border-t border-slate-200/80 dark:border-slate-600/60 pt-2">
+          <div
+            className={`space-y-3 ${slotsDefaultExpanded ? '' : 'border-t border-slate-200/80 dark:border-slate-600/60 pt-2'}`}
+          >
             <CarVehicleMetaPanel
               carIndex={carIndex}
               meta={meta}

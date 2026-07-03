@@ -619,6 +619,7 @@ import {
 import {
   loadEventParticipantsWithVersionCache,
   refetchParticipantsForLocation,
+  refetchAndMergeParticipantLocations,
   replaceParticipantsForLocation,
   stripCompanionWaitlistPhantomRows,
   subscribeParticipantsLocationVersionsDebounced,
@@ -1741,13 +1742,24 @@ const stripEntrySnapshotForNewRegistrationDraft = (entry) => {
   return o;
 };
 
-const persistLastSuccessfulRegistrationSnapshot = (userId, eventId, entryPayload) => {
+const persistLastSuccessfulRegistrationSnapshot = (userId, eventId, entryPayload, extras = {}) => {
   if (typeof window === 'undefined' || !userId || !eventId || !entryPayload) return;
   try {
     const stripped = stripEntrySnapshotForNewRegistrationDraft(entryPayload);
     window.localStorage.setItem(
       lastSuccessfulRegFormStorageKey(userId, eventId),
-      JSON.stringify({ savedAt: Date.now(), entry: stripped })
+      JSON.stringify({
+        savedAt: Date.now(),
+        entry: stripped,
+        newRegGeneralComment:
+          typeof extras.newRegGeneralComment === 'string' ? extras.newRegGeneralComment : '',
+        newRegDraftCarMeta:
+          extras.newRegDraftCarMeta &&
+          typeof extras.newRegDraftCarMeta === 'object' &&
+          !Array.isArray(extras.newRegDraftCarMeta)
+            ? extras.newRegDraftCarMeta
+            : {},
+      })
     );
   } catch {
     /* ignore quota / private mode */
@@ -4685,6 +4697,7 @@ const App = () => {
   const [logRecentBaseLimit, setLogRecentBaseLimit] = useState(20);
   const logsOldestCursorRef = useRef(null);
   const participantsVersionUnsubRef = useRef(null);
+  const participantsVersionAckRef = useRef(null);
   const logsVersionUnsubRef = useRef(null);
   const staffSnapshotUnsubsRef = useRef([]);
 
@@ -4693,6 +4706,7 @@ const App = () => {
       participantsVersionUnsubRef.current();
       participantsVersionUnsubRef.current = null;
     }
+    participantsVersionAckRef.current = null;
     if (logsVersionUnsubRef.current) {
       logsVersionUnsubRef.current();
       logsVersionUnsubRef.current = null;
@@ -4859,12 +4873,29 @@ const App = () => {
 
     return () => clearTimeout(timer);
   }, [isBautizos, currentEvent?.id, currentEvent?.transportPlanning, allParticipants]);
-  /** Tras escribir en Firestore: parche en memoria + invalidar caché por sede (y sede anterior si cambió). */
+  const refetchParticipantLocationsAfterWrite = useCallback((eventId, locations) => {
+    return refetchAndMergeParticipantLocations(eventId, locations, setAllParticipants, {
+      acknowledgeLocationVersion: (loc, remoteV) =>
+        participantsVersionAckRef.current?.(loc, remoteV),
+    });
+  }, []);
+
+  /** Tras escribir en Firestore: parche optimista + refetch de sede(s) para alinear caché y roster. */
   const refreshParticipantCache = useCallback(
     (person, action, opts = {}) => {
       syncParticipantAfterWrite(setAllParticipants, person, action, opts);
+      if (opts.skipRefetch === true) return;
+      const eid = String(opts.eventId || person?.eventId || currentEvent?.id || '').trim();
+      const prevLoc = String(opts.previousLocation || '').trim();
+      const curLoc = String(opts.location || opts.patch?.location || person?.location || prevLoc).trim();
+      const locs = [...new Set([prevLoc, curLoc].filter(Boolean))];
+      if (eid && locs.length) {
+        void refetchParticipantLocationsAfterWrite(eid, locs).catch((err) => {
+          console.error('[cache-version] refetch tras escritura', action, err);
+        });
+      }
     },
-    []
+    [currentEvent?.id, refetchParticipantLocationsAfterWrite]
   );
 
   const handleSavePastorFields = useCallback(
@@ -6161,6 +6192,27 @@ function resolveEventName(eventId) {
     showToast('Formulario limpiado.');
   }, [getAutoPaymentService, showToast, currentEvent?.eventType, currentUser?.id, currentEvent?.id]);
 
+  const resetRegistrationFormAfterSuccess = useCallback(
+    (loc) => {
+      if (currentUser?.id && currentEvent?.id) clearRegistrationFormDraft(currentUser.id, currentEvent.id);
+      setNewRegModalOpen(false);
+      setNewEntry({
+        ...EMPTY_ENTRY,
+        ...getDefaultTransportFieldsForEventType(currentEvent?.eventType),
+        ...(currentEvent?.eventType === 'Bautizos' ? { willBeBaptized: SI } : {}),
+        paymentMethod: 'Efectivo',
+        paymentService: getAutoPaymentService(new Date(), loc),
+        cardReference: '',
+      });
+      setNewRegProfileSearch('');
+      setNewRegDraftCarMeta({});
+      setNewRegGeneralComment('');
+      setSpouseLinkSearchNew('');
+      setSendToWaitlist(false);
+    },
+    [currentUser?.id, currentEvent?.eventType, currentEvent?.id, getAutoPaymentService]
+  );
+
   const handleLoadLastSuccessfulRegistrationForm = useCallback(() => {
     if (!currentUser?.id || !currentEvent?.id) {
       showToast('No hay usuario o evento activo para cargar el respaldo.');
@@ -6181,6 +6233,16 @@ function resolveEventName(eventId) {
       const merged = stripEntrySnapshotForNewRegistrationDraft(entry);
       setNewEntry((prev) => mergeNewRegistrationWithImport(merged, prev));
       setNewRegProfileSearch('');
+      setNewRegGeneralComment(
+        typeof parsed.newRegGeneralComment === 'string' ? parsed.newRegGeneralComment : ''
+      );
+      setNewRegDraftCarMeta(
+        parsed.newRegDraftCarMeta &&
+          typeof parsed.newRegDraftCarMeta === 'object' &&
+          !Array.isArray(parsed.newRegDraftCarMeta)
+          ? parsed.newRegDraftCarMeta
+          : {}
+      );
       showToast('Último formulario enviado cargado. Revisa teléfono, datos y abono antes de guardar.');
     } catch {
       showToast('No se pudo leer el último formulario.');
@@ -7625,7 +7687,6 @@ function resolveEventName(eventId) {
     let profSearch = '';
     let spouseNew = '';
     let waitlist = false;
-    let genComment = '';
     if (currentUser?.id) {
       try {
         const raw = window.localStorage.getItem(registrationFormDraftStorageKey(currentUser.id, currentEvent.id));
@@ -7637,7 +7698,6 @@ function resolveEventName(eventId) {
           if (typeof parsed.newRegProfileSearch === 'string') profSearch = parsed.newRegProfileSearch;
           if (typeof parsed.spouseLinkSearchNew === 'string') spouseNew = parsed.spouseLinkSearchNew;
           if (typeof parsed.sendToWaitlist === 'boolean') waitlist = parsed.sendToWaitlist;
-          if (typeof parsed.newRegGeneralComment === 'string') genComment = parsed.newRegGeneralComment;
         }
       } catch {
         /* borrador inválido */
@@ -7647,7 +7707,8 @@ function resolveEventName(eventId) {
     setNewRegProfileSearch(profSearch);
     setSpouseLinkSearchNew(spouseNew);
     setSendToWaitlist(waitlist);
-    setNewRegGeneralComment(genComment);
+    setNewRegGeneralComment('');
+    setNewRegDraftCarMeta({});
     // Sin `getAutoPaymentService` en deps: evita reinicializar el borrador al mutar slots/config global.
   }, [currentEvent?.id, currentEvent?.eventType, currentUser?.id]);
 
@@ -7659,7 +7720,6 @@ function resolveEventName(eventId) {
         newRegProfileSearch,
         spouseLinkSearchNew,
         sendToWaitlist,
-        newRegGeneralComment,
       });
     }, 450);
     return () => window.clearTimeout(t);
@@ -7668,7 +7728,6 @@ function resolveEventName(eventId) {
     newRegProfileSearch,
     spouseLinkSearchNew,
     sendToWaitlist,
-    newRegGeneralComment,
     currentUser?.id,
     currentEvent?.id,
   ]);
@@ -8257,6 +8316,7 @@ function resolveEventName(eventId) {
         participantsVersionUnsubRef.current();
         participantsVersionUnsubRef.current = null;
       }
+      participantsVersionAckRef.current = null;
     };
 
     const run = async () => {
@@ -8274,7 +8334,7 @@ function resolveEventName(eventId) {
           if (!cancelled) setAllParticipants([]);
         }
         if (!cancelled) {
-          participantsVersionUnsubRef.current = subscribeParticipantsLocationVersionsDebounced(
+          const participantsVersionSub = subscribeParticipantsLocationVersionsDebounced(
             eid,
             locations,
             async (eventId, staleItems) => {
@@ -8302,6 +8362,8 @@ function resolveEventName(eventId) {
               }));
             }
           );
+          participantsVersionUnsubRef.current = participantsVersionSub.unsub;
+          participantsVersionAckRef.current = participantsVersionSub.acknowledgeLocationVersion;
         }
       } else if (systemView === 'archive') {
         try {
@@ -15937,6 +15999,7 @@ function resolveEventName(eventId) {
         if (person) {
           refreshParticipantCache(person, 'Historial WhatsApp', {
             personId,
+            skipRefetch: true,
             patch: {
               whatsAppMessageHistory: [
                 ...(Array.isArray(person.whatsAppMessageHistory) ? person.whatsAppMessageHistory : []),
@@ -16026,6 +16089,7 @@ function resolveEventName(eventId) {
         await updateDoc(getDocRef('app_participants', String(person.id)), payload);
         refreshParticipantCache(person, 'Eliminar historial WhatsApp', {
           personId: person.id,
+          skipRefetch: true,
           patch: payload,
         });
         addLog(
@@ -16782,6 +16846,7 @@ function resolveEventName(eventId) {
         await updateDoc(getDocRef('app_participants', String(person.id)), { whatsAppFinanceNotifications: updated });
         refreshParticipantCache(person, 'WhatsApp exportado (pendientes)', {
           personId: person.id,
+          skipRefetch: true,
           patch: { whatsAppFinanceNotifications: updated },
         });
       } catch {
@@ -16956,6 +17021,7 @@ function resolveEventName(eventId) {
           }
           refreshParticipantCache(person, 'WhatsApp envío automático', {
             personId: person.id,
+            skipRefetch: true,
             patch: localWaPatch,
           });
         } catch {
@@ -17013,7 +17079,7 @@ function resolveEventName(eventId) {
           eventId: personSnapData?.eventId,
           location: waLoc || personSnapData?.location,
         };
-        refreshParticipantCache(bumpPerson, 'WhatsApp enviado', { personId, patch });
+        refreshParticipantCache(bumpPerson, 'WhatsApp enviado', { personId, skipRefetch: true, patch });
       };
       if (hasPendingQueue) {
         try {
@@ -17125,7 +17191,7 @@ function resolveEventName(eventId) {
           eventId: titularSnapData?.eventId,
           location: waLoc || titularSnapData?.location,
         };
-        refreshParticipantCache(bumpPerson, 'WhatsApp datos de carro', { personId: tid, patch });
+        refreshParticipantCache(bumpPerson, 'WhatsApp datos de carro', { personId: tid, skipRefetch: true, patch });
       };
 
       const now = Date.now();
@@ -17205,6 +17271,7 @@ function resolveEventName(eventId) {
           if (companionInMemory) {
             refreshParticipantCache(companionInMemory, 'WhatsApp datos de carro (vía titular)', {
               personId: cid,
+              skipRefetch: true,
               patch: {
                 whatsAppMessageHistory: [
                   ...(Array.isArray(companionInMemory.whatsAppMessageHistory)
@@ -18308,19 +18375,16 @@ function resolveEventName(eventId) {
         }
       }
 
-      persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload);
-      if (currentUser?.id && currentEvent?.id) clearRegistrationFormDraft(currentUser.id, currentEvent.id);
-      setNewRegModalOpen(false);
-      setNewEntry({
-        ...EMPTY_ENTRY,
-        ...getDefaultTransportFieldsForEventType(currentEvent.eventType),
-        ...(currentEvent.eventType === 'Bautizos' ? { willBeBaptized: SI } : {}),
-        paymentMethod: 'Efectivo',
-        paymentService: getAutoPaymentService(new Date(), loc),
-        cardReference: '',
+      persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload, {
+        newRegGeneralComment,
+        newRegDraftCarMeta,
       });
-      setSpouseLinkSearchNew('');
-      setSendToWaitlist(false);
+      resetRegistrationFormAfterSuccess(loc);
+      refreshParticipantCache(
+        { id: hostDocIdSp, eventId: currentEvent.id, location: loc },
+        'Nuevo registro grupo partido',
+        { eventId: currentEvent.id, location: loc }
+      );
       showToast(`Registro añadido: ${splitDesc.length} persona(s) del grupo (cada bautizado como registro propio).`);
       return;
     }
@@ -18735,20 +18799,17 @@ function resolveEventName(eventId) {
     );
     logParticipantActivity(docId, 'registro', _newRegLog);
 
-    persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload);
-    if (currentUser?.id && currentEvent?.id) clearRegistrationFormDraft(currentUser.id, currentEvent.id);
-    setNewRegModalOpen(false);
-    setNewEntry({
-      ...EMPTY_ENTRY,
-      ...getDefaultTransportFieldsForEventType(currentEvent.eventType),
-      ...(currentEvent.eventType === 'Bautizos' ? { willBeBaptized: SI } : {}),
-      paymentMethod: 'Efectivo',
-      paymentService: getAutoPaymentService(new Date(), loc),
-      cardReference: ''
+    persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload, {
+      newRegGeneralComment,
+      newRegDraftCarMeta,
     });
-    setNewRegDraftCarMeta({});
-    setSpouseLinkSearchNew('');
-    setSendToWaitlist(false);
+    resetRegistrationFormAfterSuccess(loc);
+    refreshParticipantCache(personData, previousParticipantData ? 'Actualizar registro' : 'Nuevo registro', {
+      eventId: currentEvent.id,
+      location: loc,
+      personId: docId,
+      patch: personData,
+    });
     showToast("Registro añadido exitosamente.");
     } finally {
       isRegisteringRef.current = false;
@@ -19088,21 +19149,11 @@ function resolveEventName(eventId) {
           await persistBautizosCarMetaPatches(carPatches);
         }
       }
-      setNewRegDraftCarMeta({});
-
-      persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload);
-      if (currentUser?.id && currentEvent?.id) clearRegistrationFormDraft(currentUser.id, currentEvent.id);
-      setNewRegModalOpen(false);
-      setNewEntry({
-        ...EMPTY_ENTRY,
-        ...getDefaultTransportFieldsForEventType(currentEvent.eventType),
-        ...(currentEvent.eventType === 'Bautizos' ? { willBeBaptized: SI } : {}),
-        paymentMethod: 'Efectivo',
-        paymentService: getAutoPaymentService(new Date(), loc),
-        cardReference: '',
+      persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload, {
+        newRegGeneralComment,
+        newRegDraftCarMeta,
       });
-      setSpouseLinkSearchNew('');
-      setSendToWaitlist(false);
+      resetRegistrationFormAfterSuccess(loc);
       showToast(`Lista de espera: ${splitDescWl.length} persona(s) del grupo (cada bautizado como registro propio).`);
       return;
     }
@@ -19400,6 +19451,7 @@ function resolveEventName(eventId) {
       });
       refreshParticipantCache(personData, 'Aviso beca en espera', {
         personId: docId,
+        skipRefetch: true,
         patch: {
           whatsAppFinanceNotifications: [...prevWlWaNotifications, pendingApprovalNotification],
         },
@@ -19435,19 +19487,16 @@ function resolveEventName(eventId) {
       }
     );
     logParticipantActivity(docId, 'lista_espera', _wlLog);
-    persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload);
-    if (currentUser?.id && currentEvent?.id) clearRegistrationFormDraft(currentUser.id, currentEvent.id);
-    setNewRegModalOpen(false);
-    setNewEntry({
-      ...EMPTY_ENTRY,
-      ...getDefaultTransportFieldsForEventType(currentEvent.eventType),
-      ...(currentEvent.eventType === 'Bautizos' ? { willBeBaptized: SI } : {}),
-      paymentMethod: 'Efectivo',
-      paymentService: getAutoPaymentService(new Date(), loc),
-      cardReference: ''
+    persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload, {
+      newRegGeneralComment,
+      newRegDraftCarMeta,
     });
-    setSpouseLinkSearchNew('');
-    setSendToWaitlist(false);
+    resetRegistrationFormAfterSuccess(loc);
+    refreshParticipantCache(
+      personData,
+      previousWlData ? 'Actualizar lista de espera' : 'Nueva lista de espera',
+      { eventId: currentEvent.id, location: loc, personId: docId, patch: personData }
+    );
     showToast(
       currentEvent.eventType === 'Campa' && isSiValue(entryPayload.isScholarship)
         ? 'Solicitud de beca enviada a lista de espera (aprobación al promover).'
@@ -37669,6 +37718,59 @@ function resolveEventName(eventId) {
                     </fieldset>
                   </section>
                 )}
+                {familyHasAnyCarTransport(newEntry, newEntry.bautizosCompanions || [], currentEvent) ? (
+                  <BautizosCarDataSection
+                    hostPerson={newEntry}
+                    companions={newEntry.bautizosCompanions || []}
+                    plan={currentEvent?.transportPlanning}
+                    eventId={currentEvent?.id}
+                    hostSourceKey="p:draft-host"
+                    eventLike={currentEvent}
+                    draftMetaByVehicleKey={newRegDraftCarMeta}
+                    onDraftMetaChange={(vehicleKey, patch) => {
+                      setNewRegDraftCarMeta((prev) => ({
+                        ...prev,
+                        [vehicleKey]: { ...(prev[vehicleKey] || {}), ...patch },
+                      }));
+                    }}
+                    canEdit={!fieldBlocked('bautizosTransport')}
+                    sectionTitle={newRegSectionLabel('Datos de carros')}
+                    colorSuggestions={bautizosCarColorSuggestions}
+                    labelClasses={labelClasses}
+                    alwaysExpanded
+                    slotsDefaultExpanded
+                    onHostCarCountChange={(count) =>
+                      setNewEntry({ ...newEntry, carrosLlegada: normalizeArrivalCarCount(count) })
+                    }
+                    onCompanionCarCountChange={(companionIndex, count) => {
+                      setNewEntry((prev) => {
+                        const comps = [...(prev.bautizosCompanions || [])];
+                        if (comps[companionIndex]) {
+                          comps[companionIndex] = {
+                            ...comps[companionIndex],
+                            carrosLlegada: normalizeArrivalCarCount(count),
+                          };
+                        }
+                        return { ...prev, bautizosCompanions: comps };
+                      });
+                    }}
+                    onDraftMetaPrune={(keys) => {
+                      setNewRegDraftCarMeta((prev) => {
+                        const next = { ...prev };
+                        for (const k of keys) delete next[k];
+                        return next;
+                      });
+                    }}
+                    roster={allParticipants}
+                    inheritLinkedCarData={newEntry.bautizosInheritLinkedCompanionCarData}
+                    onInheritLinkedCarDataChange={(checked) =>
+                      setNewEntry((prev) => ({
+                        ...prev,
+                        bautizosInheritLinkedCompanionCarData: checked,
+                      }))
+                    }
+                  />
+                ) : null}
                 {fv('bautizosCompanions') && (
                   <BautizosCompanionsField
                     registrantAge={newEntry.age}
@@ -37712,57 +37814,6 @@ function resolveEventName(eventId) {
                     disabled={fieldBlocked('bautizosCompanions')}
                   />
                 )}
-                {familyHasAnyCarTransport(newEntry, newEntry.bautizosCompanions || [], currentEvent) ? (
-                  <BautizosCarDataSection
-                    hostPerson={newEntry}
-                    companions={newEntry.bautizosCompanions || []}
-                    plan={currentEvent?.transportPlanning}
-                    eventId={currentEvent?.id}
-                    hostSourceKey="p:draft-host"
-                    eventLike={currentEvent}
-                    draftMetaByVehicleKey={newRegDraftCarMeta}
-                    onDraftMetaChange={(vehicleKey, patch) => {
-                      setNewRegDraftCarMeta((prev) => ({
-                        ...prev,
-                        [vehicleKey]: { ...(prev[vehicleKey] || {}), ...patch },
-                      }));
-                    }}
-                    canEdit={!fieldBlocked('bautizosTransport')}
-                    sectionTitle={newRegSectionLabel('Datos de carros')}
-                    colorSuggestions={bautizosCarColorSuggestions}
-                    labelClasses={labelClasses}
-                    onHostCarCountChange={(count) =>
-                      setNewEntry({ ...newEntry, carrosLlegada: normalizeArrivalCarCount(count) })
-                    }
-                    onCompanionCarCountChange={(companionIndex, count) => {
-                      setNewEntry((prev) => {
-                        const comps = [...(prev.bautizosCompanions || [])];
-                        if (comps[companionIndex]) {
-                          comps[companionIndex] = {
-                            ...comps[companionIndex],
-                            carrosLlegada: normalizeArrivalCarCount(count),
-                          };
-                        }
-                        return { ...prev, bautizosCompanions: comps };
-                      });
-                    }}
-                    onDraftMetaPrune={(keys) => {
-                      setNewRegDraftCarMeta((prev) => {
-                        const next = { ...prev };
-                        for (const k of keys) delete next[k];
-                        return next;
-                      });
-                    }}
-                    roster={allParticipants}
-                    inheritLinkedCarData={newEntry.bautizosInheritLinkedCompanionCarData}
-                    onInheritLinkedCarDataChange={(checked) =>
-                      setNewEntry((prev) => ({
-                        ...prev,
-                        bautizosInheritLinkedCompanionCarData: checked,
-                      }))
-                    }
-                  />
-                ) : null}
               </>
             )}
 
