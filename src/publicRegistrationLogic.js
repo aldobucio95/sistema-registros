@@ -60,6 +60,7 @@ import { assertRegistrationNotPersonOfInterest } from './vnpPersonFlags.js';
 import {
   applyRegistrationConsentPolicy,
   mergePrivacyNoticeConfig,
+  buildPrivacyNoticePublicUrl,
   participantHasSensitiveHealthData,
   shouldBlockSensitiveHealthWithoutConsent,
   buildRegistrationPrivacyActivityMessage,
@@ -2056,6 +2057,8 @@ async function submitPublicBautizosSplitRegistration({
       : [];
 
   let hostPersonDataForWa = null;
+  const avisoUrlSplit = buildPrivacyNoticePublicUrl('');
+  const paymentDeadlineSplit = String(eventSnapshot?.paymentDeadlineDate || '').trim();
 
   for (let i = 0; i < splitDesc.length; i++) {
     const d = splitDesc[i];
@@ -2150,6 +2153,8 @@ async function submitPublicBautizosSplitRegistration({
               liquidationTarget: liqPub,
               eventSnapshot,
               rosterParticipants: participants,
+              avisoUrl: avisoUrlSplit,
+              paymentDeadlineDate: paymentDeadlineSplit,
             }),
           },
         ];
@@ -2681,6 +2686,8 @@ export async function submitPublicRegistration({
   const isLiquidado = personData.isScholarship === 'No' && initialPaidGross >= liqPub;
   const registerCreatedAt = Date.now();
   const pendingAfterReg = Math.max(liqPub - initialPaidGross, 0);
+  const avisoUrl = buildPrivacyNoticePublicUrl('');
+  const paymentDeadlinePub = String(eventSnapshot?.paymentDeadlineDate || '').trim();
   const registerNotification = {
     id: `wa-reg-${registerCreatedAt}`,
     kind: 'registro',
@@ -2702,6 +2709,8 @@ export async function submitPublicRegistration({
       liquidationTarget: liqPub,
       eventSnapshot,
       rosterParticipants: participants,
+      avisoUrl,
+      paymentDeadlineDate: paymentDeadlinePub,
     }),
   };
   const prevWaPub = Array.isArray(personData.whatsAppFinanceNotifications)

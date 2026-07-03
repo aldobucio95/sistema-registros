@@ -11,6 +11,7 @@ import {
   vehicleKeyToDocId,
 } from '../transportCarMetaStore.js';
 import { normalizeTransportPlanning } from '../transportPlanningCore.js';
+import { collectCarColorSuggestions } from '../bautizosCarMeta.js';
 
 describe('transportCarMetaStore encode/decode', () => {
   it('round-trips vehicle keys with pipe and colon', () => {
@@ -127,5 +128,55 @@ describe('mergeCarMetaCacheIntoPlan', () => {
       'p:h1|c1': { brand: 'Honda', ownerSourceKey: 'p:h1' },
     });
     expect(merged.carMetaBySource['p:h1|c1'].brand).toBe('Honda');
+  });
+
+  it('plan edits win over stale lazy-loaded cache (manual group car save)', () => {
+    const base = transportPlanningFromEventDoc({ transportCarMetaStorageVersion: 1 });
+    const planWithEdit = {
+      ...base,
+      carMetaBySource: {
+        'p:h1|c1': {
+          ownerSourceKey: 'p:h1',
+          brand: 'Toyota',
+          driverSourceKey: 'p:h2',
+          passengerSourceKeys: ['p:h3'],
+        },
+      },
+    };
+    const staleCache = {
+      'p:h1|c1': {
+        ownerSourceKey: 'p:h1',
+        brand: 'Honda',
+        driverSourceKey: 'p:h1',
+        passengerSourceKeys: [],
+      },
+    };
+    const merged = mergeCarMetaCacheIntoPlan(planWithEdit, staleCache);
+    expect(merged.carMetaBySource['p:h1|c1'].brand).toBe('Toyota');
+    expect(merged.carMetaBySource['p:h1|c1'].driverSourceKey).toBe('p:h2');
+    expect(merged.carMetaBySource['p:h1|c1'].passengerSourceKeys).toEqual(['p:h3']);
+  });
+
+  it('collectCarColorSuggestions reads colors from merged lazy-load plan', () => {
+    const base = transportPlanningFromEventDoc({ transportCarMetaStorageVersion: 1 });
+    const merged = mergeCarMetaCacheIntoPlan(base, {
+      'p:h1|c1': { color: 'Rojo', ownerSourceKey: 'p:h1' },
+      'p:h2|c1': { color: 'Azul', ownerSourceKey: 'p:h2' },
+    });
+    expect(collectCarColorSuggestions(merged)).toEqual(['Azul', 'Rojo']);
+  });
+});
+
+describe('transportPlanningStructureSignature', () => {
+  it('ignora carMetaBySource al comparar estructura', async () => {
+    const { transportPlanningStructureSignature } = await import('../transportPlanningCore.js');
+    const base = { carGroups: [{ id: 'g1', memberKeys: ['p:a'], cars: 1 }], carMetaBySource: {} };
+    const withMeta = {
+      ...base,
+      carMetaBySource: { 'p:a|c1': { brand: 'Toyota', color: 'Rojo' } },
+    };
+    expect(transportPlanningStructureSignature(base, { isBautizos: true, bautizosCarDisplayGroups: [] })).toBe(
+      transportPlanningStructureSignature(withMeta, { isBautizos: true, bautizosCarDisplayGroups: [] })
+    );
   });
 });

@@ -4,6 +4,9 @@
 const WA_NOTE =
   '¡Por favor revisa que TODA la información sea correcta y no falte nada! Cualquier duda contáctanos por este medio.';
 
+const VN_OFFICE_SUR_SEDES = new Set(['sur', 'neza', 'coapa']);
+const VN_OFFICE_NORTE_SEDES = new Set(['norte', 'izcalli']);
+
 function formatMoneyMx(n) {
   return Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -16,6 +19,56 @@ function formatDateTimeWithLoc(reportedAtMs, loc) {
 
 function isCampaEventType(eventSnapshot) {
   return String(eventSnapshot?.eventType || '') === 'Campa';
+}
+
+function resolveWaOrgContactLabel(loc, eventSnapshot) {
+  if (isCampaEventType(eventSnapshot)) return 'Tribu Norte';
+  const key = String(loc || '')
+    .trim()
+    .toLocaleLowerCase('es');
+  if (VN_OFFICE_SUR_SEDES.has(key)) return 'la Oficina VN Sur';
+  if (VN_OFFICE_NORTE_SEDES.has(key)) return 'la Oficina VN Norte';
+  return 'la Oficina VN Norte';
+}
+
+function formatPaymentDeadlineLabel(paymentDeadlineDate) {
+  const dl = String(paymentDeadlineDate || '').trim();
+  if (dl && /^\d{4}-\d{2}-\d{2}$/.test(dl)) {
+    return new Date(`${dl}T12:00:00`).toLocaleDateString('es-MX', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  }
+  return 'la fecha acordada con la oficina';
+}
+
+function getBautizosCompanionsArray(personLike) {
+  const raw = personLike?.bautizosCompanions;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((c) => c && typeof c === 'object');
+}
+
+function isCompanionWaitlistPending(c) {
+  return c?.companionWaitlistPending === true;
+}
+
+function buildBautizosPartyDetailedLines(person, eventSnapshot) {
+  if (String(eventSnapshot?.eventType || '') !== 'Bautizos') return [];
+  const lines = [];
+  const titularName = String(person?.name || '').trim();
+  if (titularName) {
+    lines.push(`    🆔 Titular: ${titularName} — Bautizado · Activo · — · $0.00 lista`);
+  }
+  getBautizosCompanionsArray(person)
+    .filter((c) => String(c?.name || '').trim())
+    .forEach((c, idx) => {
+      const name = String(c.name || '').trim();
+      const status = isCompanionWaitlistPending(c) ? 'En espera' : 'Activo';
+      lines.push(`    🆔 Acomp. ${idx + 1}: ${name} — Acompañante · ${status} · — · $0.00 lista`);
+    });
+  return lines;
 }
 
 function buildPaymentReminderWhatsAppMessage({
@@ -31,33 +84,27 @@ function buildPaymentReminderWhatsAppMessage({
   const personName = String(person?.name || '').trim() || '';
   const vnpId = String(person?.vnpPersonId || '').trim() || 'N/A';
   const repLoc = formatDateTimeWithLoc(reportedAtMs, loc);
-  const campa = isCampaEventType(ev);
-  const org = campa ? 'Tribu Norte' : 'la oficina de VN Norte';
+  const org = resolveWaOrgContactLabel(loc, ev);
   const debtTxt = formatMoneyMx(Math.max(0, Number(pendingDebt) || 0));
-
-  const dl = String(paymentDeadlineDate || '').trim();
-  const deadlineLabel =
-    dl && /^\d{4}-\d{2}-\d{2}$/.test(dl)
-      ? new Date(`${dl}T12:00:00`).toLocaleDateString('es-MX', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-        })
-      : 'la fecha acordada con la oficina';
+  const deadlineLabel = formatPaymentDeadlineLabel(paymentDeadlineDate || ev?.paymentDeadlineDate);
 
   const lines = [
     `👋 ¡Hola! ${personName}, te contactamos de ${org} con un recordatorio para liquidar tu lugar en ${eventName}. 💳`,
     '',
     `    📅 Fecha del aviso: ${repLoc}`,
     `    🆔 Tu ID único es: ${vnpId}`,
+  ];
+  lines.push(...buildBautizosPartyDetailedLines(person, ev));
+  lines.push(
     `    📊 Monto pendiente por liquidar: $${debtTxt}`,
     `    📆 Fecha límite de pago: ${deadlineLabel}`,
     '',
     'Por favor realiza tu pago a tiempo para conservar tu lugar. Si ya liquidaste, ignora este mensaje o envíanos tu comprobante por este medio.',
     '',
-    WA_NOTE,
-  ];
+    'Debes liquidar tu registro antes de esa fecha. Si no se liquida a tiempo, no se garantiza la devolución del dinero abonado.',
+    '',
+    WA_NOTE
+  );
   return lines.join('\n');
 }
 

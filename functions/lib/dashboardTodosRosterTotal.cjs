@@ -289,6 +289,88 @@ function computeDashboardTodosRosterTotal(participantRows, eventRow) {
   return rosterBase.length;
 }
 
+function buildVirtualBaptizedCompanionGlobalRow(host, companion, index, meta) {
+  const nm = String(companion?.name || '').trim();
+  if (!nm) return null;
+  if (
+    bautizosCompanionIsAlsoBautizadoRegistrant(
+      companion,
+      meta.bautizadoIdSet,
+      meta.bautizadoNameSet,
+      meta.vnpToBautizadoId
+    )
+  ) {
+    return null;
+  }
+  const hostId = String(host?.id || '').trim();
+  const cid = String(companion?.id || index).trim();
+  return {
+    id: `virt-bautizado:${hostId}:${cid}`,
+    location: String(host?.location || '').trim(),
+    status: host?.status || 'active',
+  };
+}
+
+function buildVirtualCompanionGlobalRow(planEntry, canonKey) {
+  const host = planEntry?.sourceRegistrant;
+  const companion = planEntry?.sourceCompanion;
+  const nm = String(companion?.name || companion?.linkedCompanionName || '').trim();
+  if (!host || !nm) return null;
+  return {
+    id: `virt-acompanante:${canonKey}`,
+    location: String(host?.location || '').trim(),
+    status: host?.status || 'active',
+    __globalRegistryVirtual: true,
+  };
+}
+
+function expandBautizosGlobalRegistryRows(titularRows, rosterForPlan) {
+  const titulars = Array.isArray(titularRows) ? titularRows : [];
+  const roster = Array.isArray(rosterForPlan) ? rosterForPlan : titulars;
+  const titularIdSet = new Set(titulars.map((p) => String(p?.id || '').trim()).filter(Boolean));
+  const meta = buildBautizadoMetaForCanonical(roster.filter((p) => (p?.status || 'active') !== 'cancelled'));
+  const out = [...titulars];
+  const seenVirtual = new Set();
+
+  for (const host of titulars) {
+    const comps = getBautizosCompanionsArray(host);
+    for (let i = 0; i < comps.length; i++) {
+      const c = comps[i] || {};
+      if (!String(c?.name || '').trim() || !isBautizosCompanionBaptized(c)) continue;
+      if (c?.companionWaitlistPending === true) continue;
+      const row = buildVirtualBaptizedCompanionGlobalRow(host, c, i, meta);
+      if (!row || seenVirtual.has(row.id)) continue;
+      seenVirtual.add(row.id);
+      out.push(row);
+    }
+  }
+
+  const plan = buildBautizosCanonicalCompanionPlan(roster, meta, { includeBaptizedCompanions: false });
+  for (const [canonKey, entry] of plan) {
+    const hostId = String(entry?.registrantId || entry?.sourceRegistrant?.id || '').trim();
+    if (!titularIdSet.has(hostId)) continue;
+    const row = buildVirtualCompanionGlobalRow(entry, canonKey);
+    if (!row || seenVirtual.has(row.id)) continue;
+    seenVirtual.add(row.id);
+    out.push(row);
+  }
+
+  return out;
+}
+
+function computeBautizosActiveBreakdown(rosterBase) {
+  const activeBautizadoRoster = rosterBase.filter(
+    (p) => normalizeBautizosAttendanceType(p?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado
+  );
+  const meta = buildBautizadoMetaForCanonical(activeBautizadoRoster);
+  const plan = buildBautizosCanonicalCompanionPlan(rosterBase, meta, { includeBaptizedCompanions: true });
+  return {
+    titulares: rosterBase.length,
+    acompanantesCanonicos: plan.size,
+    total: rosterBase.length + plan.size,
+  };
+}
+
 /** @returns {number|null} null = requiere recálculo completo (Bautizos) */
 function computeRowTodosUnitContribution(personRow, eventRow) {
   if (!personRow || !eventRow || typeof eventRow !== 'object') return 0;
@@ -310,4 +392,7 @@ module.exports = {
   computeDashboardTodosRosterTotal,
   filterDashboardTodosRosterRows,
   computeRowTodosUnitContribution,
+  expandBautizosGlobalRegistryRows,
+  computeBautizosActiveBreakdown,
+  getBautizosCompanionsArray,
 };

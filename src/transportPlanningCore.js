@@ -290,6 +290,17 @@ export function transportPlanningDirtySignature(plan, context = {}) {
   }
 }
 
+/** Firma del plan sin `carMetaBySource` (meta vive en subcolección). */
+export function transportPlanningStructureSignature(plan, context = {}) {
+  try {
+    const normalized = applyTransportPlanningAutoNormalization(plan, context);
+    const { carMetaBySource: _omit, ...structure } = normalizeTransportPlanning(normalized);
+    return JSON.stringify(structure);
+  } catch {
+    return '';
+  }
+}
+
 export function normalizeTransportPlanning(raw) {
   const base = defaultTransportPlanningState();
   if (!raw || typeof raw !== 'object') return base;

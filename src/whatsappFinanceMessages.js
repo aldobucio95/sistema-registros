@@ -4,7 +4,24 @@ import { WA_EMOJI as E } from './whatsappEmojiConstants.js';
 import { getBautizosCompanionsArray } from './bautizosParty.js';
 import { getBautizosCompanionInformativeListPrice, getBautizosTitularListPrice } from './publicRegistrationLogic.js';
 import { dedupeUnsentCarDataNotifications } from './carDataWhatsApp.js';
-import { buildCarDataWaSubjectContext, carCrewRequiresPassengerSelection } from './bautizosCarMeta.js';
+import {
+  buildCarDataWaSubjectContext,
+  carCrewRequiresPassengerSelection,
+} from './bautizosCarMeta.js';
+import {
+  buildBautizosPartyDetailedLines,
+  buildBautizosTransportSummaryLines,
+  buildBautizosFinanceStatusLines,
+  buildBautizosPerLineLiquidationLines,
+  buildPaymentDeadlineAndRefundBlock,
+  buildCarDataStatusLines,
+  buildWaMessageHeader,
+  resolveWaOrgContactLabel,
+  resolvePromotedCompanionNames,
+  formatPaymentDeadlineLabel,
+} from './whatsappBautizosStatusBlocks.js';
+
+export { resolveVnOfficeContactLabel } from './whatsappBautizosStatusBlocks.js';
 
 const SI_CANON = 'Si';
 
@@ -72,19 +89,6 @@ export function isBautizosEventType(eventSnapshot) {
   return String(eventSnapshot?.eventType || '') === 'Bautizos';
 }
 
-const VN_OFFICE_SUR_SEDES = new Set(['sur', 'neza', 'coapa']);
-const VN_OFFICE_NORTE_SEDES = new Set(['norte', 'izcalli']);
-
-/** Etiqueta de contacto según sede inscrita (mensajes WA de oficina). */
-export function resolveVnOfficeContactLabel(loc) {
-  const key = String(loc || '')
-    .trim()
-    .toLocaleLowerCase('es');
-  if (VN_OFFICE_SUR_SEDES.has(key)) return 'Oficina VN Sur';
-  if (VN_OFFICE_NORTE_SEDES.has(key)) return 'Oficina VN Norte';
-  return 'Oficina VN Norte';
-}
-
 /**
  * Líneas de desglose de lista para el registro raíz (titular + cada acompañante con nombre).
  * @param {object} person
@@ -145,9 +149,29 @@ export function buildBautizosPartyRosterLines(person, eventSnapshot) {
   return lines;
 }
 
-function appendBautizosPartyRosterLines(lines, person, eventSnapshot) {
-  const rosterLines = buildBautizosPartyRosterLines(person, eventSnapshot);
+function appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants = null, opts = {}) {
+  const rosterLines = buildBautizosPartyDetailedLines(person, eventSnapshot, rosterParticipants, opts);
   if (rosterLines.length) lines.push(...rosterLines);
+}
+
+function appendBautizosTransportIfAny(lines, person, eventSnapshot, rosterParticipants = null) {
+  const transportLines = buildBautizosTransportSummaryLines(
+    person,
+    eventSnapshot,
+    eventSnapshot?.transportPlanning,
+    rosterParticipants
+  );
+  if (transportLines.length) {
+    lines.push('');
+    lines.push(...transportLines);
+  }
+}
+
+function resolvePaymentDeadlineFromContext(p, eventSnapshot) {
+  return (
+    String(p?.paymentDeadlineDate || '').trim() ||
+    String(eventSnapshot?.paymentDeadlineDate || '').trim()
+  );
 }
 
 /**
@@ -192,6 +216,7 @@ export function buildFinanceWhatsAppMessage(p) {
     eventSnapshot,
     rosterParticipants = null,
     avisoUrl = '',
+    paymentDeadlineDate = '',
   } = p;
 
   const ev = eventSnapshot || {};
@@ -207,19 +232,25 @@ export function buildFinanceWhatsAppMessage(p) {
   const amtTxt = formatFinanceMoneyMx(amount);
   const pendTxt = formatFinanceMoneyMx(pendingAmount);
   const nosVemos = isLiquidado ? eventDateLabelForNosVemos(ev, person) : '';
-  const campa = isCampaEventType(ev);
+  const org = resolveWaOrgContactLabel(loc, ev);
+  const deadline = resolvePaymentDeadlineFromContext({ paymentDeadlineDate }, ev);
+  const hasDebt = !isLiquidado && Number(pendingAmount) > 0.005;
 
   const lines = [];
 
   if (kind === 'registro') {
-    const org = campa ? 'Tribu Norte' : 'la oficina de VN Norte';
     lines.push(
-      `${E.wave} ¡Hola! ${personName}, te contactamos de ${org} para notificarte que tu registro en ${eventName} ha sido exitoso. ${E.whiteCheck}`
+      buildWaMessageHeader({
+        personName,
+        officeLabel: org,
+        purposeLine: `para notificarte que tu registro en ${eventName} ha sido exitoso. ${E.whiteCheck}`,
+      })
     );
     lines.push('');
     lines.push(`    ${E.calendar} Fecha de registro: ${repLoc}`);
     lines.push(`    ${E.idBadge} Tu ID único es: ${vnpId}`);
-    appendBautizosPartyRosterLines(lines, person, eventSnapshot);
+    appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
+    appendBautizosTransportIfAny(lines, person, eventSnapshot, rosterParticipants);
     if (showMoney) {
       lines.push(`    ${E.dollarBanknote} Abono: $${amtTxt}`);
       lines.push(`    ${E.barChart} Saldo pendiente: ${isLiquidado ? `Liquidado ${E.checkMark}` : `$${pendTxt}`}`);
@@ -229,6 +260,10 @@ export function buildFinanceWhatsAppMessage(p) {
         lines.push(`    ${E.card} Desglose de costos de lista:`);
         lines.push(...breakdown);
       }
+      if (hasDebt) {
+        lines.push(...buildBautizosPerLineLiquidationLines(person, eventSnapshot, amount, liq));
+        lines.push(...buildPaymentDeadlineAndRefundBlock(ev, true, deadline));
+      }
     }
     lines.push('');
     if (isLiquidado && nosVemos) {
@@ -237,14 +272,19 @@ export function buildFinanceWhatsAppMessage(p) {
     }
     lines.push(WA_FINANCE_REGISTRATION_REVIEW_NOTE);
   } else if (kind === 'abono') {
-    lines.push(`${E.wave} ¡Hola! ${personName}, se registró tu abono en ${eventName}. ${E.dollarBanknote}`);
+    lines.push(
+      `${E.wave} ¡Hola! ${personName}, se registró tu abono en ${eventName}. ${E.dollarBanknote}`
+    );
     lines.push('');
     lines.push(`    ${E.calendar} Fecha y hora de abono: ${repLoc}`);
     lines.push(`    ${E.idBadge} Tu ID único es: ${vnpId}`);
-    appendBautizosPartyRosterLines(lines, person, eventSnapshot);
+    appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
     lines.push(`    ${E.dollarBanknote} Abono aplicado: $${amtTxt}`);
     if (showMoney) {
       lines.push(`    ${E.barChart} Saldo pendiente: ${isLiquidado ? `Liquidado ${E.checkMark}` : `$${pendTxt}`}`);
+      if (hasDebt) {
+        lines.push(...buildBautizosPerLineLiquidationLines(person, eventSnapshot, liq - pendingAmount, liq));
+      }
     }
     lines.push('');
     if (isLiquidado && nosVemos) {
@@ -258,7 +298,7 @@ export function buildFinanceWhatsAppMessage(p) {
     lines.push(`${E.wave} ¡Hola! ${personName}, movimiento registrado en ${eventName}.`);
     lines.push(`    ${E.calendar} Fecha: ${repLoc}`);
     lines.push(`    ${E.idBadge} Tu ID único es: ${vnpId}`);
-    appendBautizosPartyRosterLines(lines, person, eventSnapshot);
+    appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
     lines.push(`    ${E.dollarBanknote} Monto: $${amt}`);
     lines.push(`    ${E.barChart} Saldo pendiente: ${isLiquidado ? `Liquidado ${E.checkMark}` : `$${pend}`}`);
     lines.push('');
@@ -288,6 +328,8 @@ export function buildGenericManualWhatsAppMessage(p) {
     eventSnapshot,
     reportedAtMs = Date.now(),
     sentByLabel = '',
+    rosterParticipants = null,
+    paymentDeadlineDate = '',
   } = p || {};
 
   const ev = eventSnapshot || {};
@@ -295,37 +337,41 @@ export function buildGenericManualWhatsAppMessage(p) {
   const personName = String(person?.name || '').trim() || '';
   const vnpId = String(person?.vnpPersonId || '').trim() || 'N/A';
   const repLoc = formatFinanceDateTimeWithLocation(reportedAtMs, loc);
-  const campa = isCampaEventType(ev);
-  const org = campa ? 'Tribu Norte' : 'la oficina de VN Norte';
+  const org = resolveWaOrgContactLabel(loc, ev);
 
   const paid = Math.max(0, parseFloat(person?.paid || 0) || 0);
   const target = Math.max(0, Number(liquidationTarget) || 0);
   const debt = Math.max(target - paid, 0);
-
-  const paidTxt = formatFinanceMoneyMx(paid);
-  const debtTxt = formatFinanceMoneyMx(debt);
-  const isBecado = isSiStored(person?.isScholarship);
+  const deadline = resolvePaymentDeadlineFromContext({ paymentDeadlineDate }, ev);
 
   const lines = [];
   lines.push(
-    `${E.wave} ¡Hola! ${personName}, te contactamos de ${org} con un mensaje respecto a tu participación en ${eventName}.`
+    buildWaMessageHeader({
+      personName,
+      officeLabel: org,
+      purposeLine: `con un mensaje respecto a tu participación en ${eventName}.`,
+    })
   );
   lines.push('');
   lines.push(`    ${E.calendar} Fecha y hora del mensaje: ${repLoc}`);
   lines.push(`    ${E.idBadge} Tu ID único es: ${vnpId}`);
-  appendBautizosPartyRosterLines(lines, person, eventSnapshot);
+  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
+  appendBautizosTransportIfAny(lines, person, eventSnapshot, rosterParticipants);
 
-  if (target <= 0.005) {
-    if (isBecado) {
-      lines.push(`    ${E.graduationCap} Tu registro está marcado como becado (cobertura total).`);
-    } else {
-      lines.push(`    ${E.barChart} Sin saldo por liquidar según la lista de costos de tu registro.`);
-    }
-  } else {
-    lines.push(`    ${E.dollarBanknote} Abonos registrados: $${paidTxt}`);
-    lines.push(
-      `    ${E.barChart} Saldo pendiente: ${debt <= 0.005 ? `Liquidado ${E.checkMark}` : `$${debtTxt}`}`
-    );
+  lines.push(
+    ...buildBautizosFinanceStatusLines({
+      target,
+      paid,
+      debt,
+      isScholarship: isSiStored(person?.isScholarship),
+      scholarshipType: person?.scholarshipType,
+      scholarshipPartialAmount: person?.scholarshipPartialAmount,
+    })
+  );
+
+  if (debt > 0.005) {
+    lines.push(...buildBautizosPerLineLiquidationLines(person, eventSnapshot, paid, target));
+    lines.push(...buildPaymentDeadlineAndRefundBlock(ev, true, deadline));
   }
 
   const who = String(sentByLabel || '').trim();
@@ -341,22 +387,25 @@ export function buildGenericManualWhatsAppMessage(p) {
 /**
  * Baja de inscripción (mismo tono que avisos financieros: sin markdown de Telegram).
  */
-export function buildBajaWhatsAppMessage({ person, loc, reportedAtMs = Date.now(), eventSnapshot }) {
+export function buildBajaWhatsAppMessage({ person, loc, reportedAtMs = Date.now(), eventSnapshot, rosterParticipants = null }) {
   const ev = eventSnapshot || {};
   const eventName = String(ev?.name || '').trim() || 'el evento';
   const name = String(person?.name || '').trim() || '';
   const vnpId = String(person?.vnpPersonId || '').trim() || 'N/A';
   const repLoc = formatFinanceDateTimeWithLocation(reportedAtMs, loc);
-  const campa = isCampaEventType(ev);
-  const org = campa ? 'Tribu Norte' : 'la oficina de VN Norte';
+  const org = resolveWaOrgContactLabel(loc, ev);
 
   const lines = [
-    `${E.wave} ¡Hola! ${name}, te contactamos de ${org} para notificarte que tu inscripción en ${eventName} ha sido dada de baja.`,
+    buildWaMessageHeader({
+      personName: name,
+      officeLabel: org,
+      purposeLine: `para notificarte que tu inscripción en ${eventName} ha sido dada de baja.`,
+    }),
     '',
     `    ${E.calendar} Fecha y sede del movimiento: ${repLoc}`,
     `    ${E.idBadge} Tu ID único es: ${vnpId}`,
   ];
-  appendBautizosPartyRosterLines(lines, person, eventSnapshot);
+  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
   lines.push(
     '',
     `${E.warning} Si esto fue un error, contáctanos de inmediato.`,
@@ -369,14 +418,19 @@ export function buildBajaWhatsAppMessage({ person, loc, reportedAtMs = Date.now(
 /**
  * Solicitud de beca en lista de espera (pendiente de aprobación).
  */
-export function buildScholarshipPendingWhatsAppMessage({ person, loc, reportedAtMs = Date.now(), eventSnapshot }) {
+export function buildScholarshipPendingWhatsAppMessage({
+  person,
+  loc,
+  reportedAtMs = Date.now(),
+  eventSnapshot,
+  rosterParticipants = null,
+}) {
   const ev = eventSnapshot || {};
   const eventName = String(ev?.name || '').trim() || 'el evento';
   const name = String(person?.name || '').trim() || '';
   const vnpId = String(person?.vnpPersonId || '').trim() || 'N/A';
   const repLoc = formatFinanceDateTimeWithLocation(reportedAtMs, loc);
-  const campa = isCampaEventType(ev);
-  const org = campa ? 'Tribu Norte' : 'la oficina de VN Norte';
+  const org = resolveWaOrgContactLabel(loc, ev);
   const isPartial = String(person?.scholarshipType || '') === 'partial';
   const partialAmount = Number(person?.scholarshipPartialAmount || 0);
   const partialLine =
@@ -385,12 +439,16 @@ export function buildScholarshipPendingWhatsAppMessage({ person, loc, reportedAt
       : '';
 
   const lines = [
-    `${E.wave} ¡Hola! ${name}, te contactamos de ${org} respecto a tu registro en ${eventName} (lista de espera). ${E.hourglassDone}`,
+    buildWaMessageHeader({
+      personName: name,
+      officeLabel: org,
+      purposeLine: `respecto a tu registro en ${eventName} (lista de espera). ${E.hourglassDone}`,
+    }),
     '',
     `    ${E.calendar} Fecha y sede del reporte: ${repLoc}`,
     `    ${E.idBadge} Tu ID único es: ${vnpId}`,
   ];
-  appendBautizosPartyRosterLines(lines, person, eventSnapshot);
+  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
   lines.push(
     `    ${E.graduationCap} Solicitud de beca ${isPartial ? 'parcial' : 'total'} registrada; está pendiente de aprobación administrativa.`,
     ...(partialLine ? [`    ${E.dollarBanknote} ${partialLine}`] : []),
@@ -415,14 +473,16 @@ export function buildPromoteWaitlistWhatsAppMessage({
   reportedAtMs = Date.now(),
   eventSnapshot,
   financeSnapshot,
+  rosterParticipants = null,
+  paymentDeadlineDate = '',
 }) {
   const ev = eventSnapshot || {};
   const eventName = String(ev?.name || '').trim() || 'el evento';
   const name = String(person?.name || '').trim() || '';
   const vnpId = String(person?.vnpPersonId || '').trim() || 'N/A';
   const repLoc = formatFinanceDateTimeWithLocation(reportedAtMs, loc);
-  const campa = isCampaEventType(ev);
-  const org = campa ? 'Tribu Norte' : 'la oficina de VN Norte';
+  const org = resolveWaOrgContactLabel(loc, ev);
+  const deadline = resolvePaymentDeadlineFromContext({ paymentDeadlineDate }, ev);
 
   const fs = financeSnapshot || {};
   const target = Math.max(0, Number(fs.target) || 0);
@@ -433,12 +493,17 @@ export function buildPromoteWaitlistWhatsAppMessage({
   const partialAmt = Math.max(0, Number(fs.scholarshipPartialAmount) || 0);
 
   const lines = [
-    `${E.wave} ¡Hola! ${name}, te contactamos de ${org} para notificarte que tu registro en ${eventName} pasó de lista de espera a inscrito(a) (confirmado). ${E.partyPopper}`,
+    buildWaMessageHeader({
+      personName: name,
+      officeLabel: org,
+      purposeLine: `para notificarte que tu registro en ${eventName} fue promovido de lista de espera a inscrito(a) confirmado. ${E.partyPopper}`,
+    }),
     '',
     `    ${E.calendar} Fecha y hora del movimiento: ${repLoc}`,
     `    ${E.idBadge} Tu ID único es: ${vnpId}`,
   ];
-  appendBautizosPartyRosterLines(lines, person, eventSnapshot);
+  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
+  appendBautizosTransportIfAny(lines, person, eventSnapshot, rosterParticipants);
 
   if (isBecado && st === 'partial' && partialAmt > 0.005) {
     lines.push(
@@ -451,7 +516,84 @@ export function buildPromoteWaitlistWhatsAppMessage({
   }
 
   if (target > 0.005) {
-    lines.push(`    ${E.barChart} Saldo pendiente: ${debt <= 0.005 ? `Liquidado ${E.checkMark}` : `$${formatFinanceMoneyMx(debt)}`}`);
+    lines.push(
+      `    ${E.barChart} Saldo pendiente: ${debt <= 0.005 ? `Liquidado ${E.checkMark}` : `$${formatFinanceMoneyMx(debt)}`}`
+    );
+    if (debt > 0.005) {
+      lines.push(...buildBautizosPerLineLiquidationLines(person, eventSnapshot, paid, target));
+      lines.push(...buildPaymentDeadlineAndRefundBlock(ev, true, deadline));
+    }
+  }
+
+  lines.push('');
+  const nosVemos = debt <= 0.005 ? eventDateLabelForNosVemos(ev, person) : '';
+  if (nosVemos) {
+    lines.push(`${E.partyPopper} ¡Nos vemos el ${nosVemos}! ${E.sparkles} ¡No faltes!`);
+    lines.push('');
+  }
+  lines.push(WA_FINANCE_REGISTRATION_REVIEW_NOTE);
+  return lines.join('\n');
+}
+
+/**
+ * Promoción parcial de acompañante(s) de lista de espera — aviso al titular.
+ */
+export function buildPromoteCompanionWaitlistWhatsAppMessage({
+  person,
+  loc,
+  reportedAtMs = Date.now(),
+  eventSnapshot,
+  financeSnapshot,
+  promotedCompanionIds = [],
+  rosterParticipants = null,
+  paymentDeadlineDate = '',
+}) {
+  const ev = eventSnapshot || {};
+  const eventName = String(ev?.name || '').trim() || 'el evento';
+  const name = String(person?.name || '').trim() || '';
+  const vnpId = String(person?.vnpPersonId || '').trim() || 'N/A';
+  const repLoc = formatFinanceDateTimeWithLocation(reportedAtMs, loc);
+  const org = resolveWaOrgContactLabel(loc, ev);
+  const deadline = resolvePaymentDeadlineFromContext({ paymentDeadlineDate }, ev);
+  const promotedNames = resolvePromotedCompanionNames(person, promotedCompanionIds);
+  const promotedLabel = promotedNames.length ? promotedNames.join(', ') : 'tu acompañante';
+
+  const fs = financeSnapshot || {};
+  const target = Math.max(0, Number(fs.target) || 0);
+  const paid = Math.max(0, Number(fs.paid) || 0);
+  const debt = Math.max(target - paid, 0);
+
+  const lines = [
+    buildWaMessageHeader({
+      personName: name,
+      officeLabel: org,
+      purposeLine: `para informarte sobre la confirmación de acompañante(s) en ${eventName}. ${E.whiteCheck}`,
+    }),
+    '',
+    `    ${E.calendar} Fecha y hora del movimiento: ${repLoc}`,
+    `    ${E.idBadge} Tu ID único es: ${vnpId}`,
+    `    ${E.megaphone} Se confirmó en la lista de inscritos a: ${promotedLabel}.`,
+  ];
+  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants, {
+    promotedCompanionIds,
+  });
+  appendBautizosTransportIfAny(lines, person, eventSnapshot, rosterParticipants);
+
+  lines.push(
+    ...buildBautizosFinanceStatusLines({
+      target,
+      paid,
+      debt,
+      showBreakdown: true,
+      person,
+      eventSnapshot,
+      rosterParticipants,
+    })
+  );
+
+  if (debt > 0.005) {
+    lines.push(...buildBautizosPerLineLiquidationLines(person, eventSnapshot, paid, target));
+    lines.push(...buildPaymentDeadlineAndRefundBlock(ev, true, deadline));
   }
 
   lines.push('');
@@ -483,6 +625,7 @@ export function buildPaymentReminderWhatsAppMessage(p) {
     paymentDeadlineDate,
     reportedAtMs = Date.now(),
     eventSnapshot,
+    rosterParticipants = null,
   } = p;
 
   const ev = eventSnapshot || {};
@@ -490,33 +633,28 @@ export function buildPaymentReminderWhatsAppMessage(p) {
   const personName = String(person?.name || '').trim() || '';
   const vnpId = String(person?.vnpPersonId || '').trim() || 'N/A';
   const repLoc = formatFinanceDateTimeWithLocation(reportedAtMs, loc);
-  const campa = isCampaEventType(ev);
-  const org = campa ? 'Tribu Norte' : 'la oficina de VN Norte';
+  const org = resolveWaOrgContactLabel(loc, ev);
   const debtTxt = formatFinanceMoneyMx(Math.max(0, Number(pendingDebt) || 0));
-
-  const dl = String(paymentDeadlineDate || '').trim();
-  const deadlineLabel =
-    dl && /^\d{4}-\d{2}-\d{2}$/.test(dl)
-      ? new Date(`${dl}T12:00:00`).toLocaleDateString('es-MX', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-        })
-      : 'la fecha acordada con la oficina';
+  const deadlineLabel = formatPaymentDeadlineLabel(paymentDeadlineDate || ev?.paymentDeadlineDate);
 
   const lines = [
-    `${E.wave} ¡Hola! ${personName}, te contactamos de ${org} con un recordatorio para liquidar tu lugar en ${eventName}. ${E.card}`,
+    buildWaMessageHeader({
+      personName,
+      officeLabel: org,
+      purposeLine: `con un recordatorio para liquidar tu lugar en ${eventName}. ${E.card}`,
+    }),
     '',
     `    ${E.calendar} Fecha del aviso: ${repLoc}`,
     `    ${E.idBadge} Tu ID único es: ${vnpId}`,
   ];
-  appendBautizosPartyRosterLines(lines, person, eventSnapshot);
+  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
   lines.push(
     `    ${E.barChart} Monto pendiente por liquidar: $${debtTxt}`,
     `    ${E.tearOffCalendar} Fecha límite de pago: ${deadlineLabel}`,
     '',
     'Por favor realiza tu pago a tiempo para conservar tu lugar. Si ya liquidaste, ignora este mensaje o envíanos tu comprobante por este medio.',
+    '',
+    'Debes liquidar tu registro antes de esa fecha. Si no se liquida a tiempo, no se garantiza la devolución del dinero abonado.',
     '',
     WA_FINANCE_REGISTRATION_REVIEW_NOTE
   );
@@ -545,16 +683,19 @@ export function buildCarDataRequestWhatsAppMessage(p) {
     person,
     loc,
     eventSnapshot,
+    carSlots,
     reportedAtMs = Date.now(),
     requiresPassengers,
     carDataSubjectContext,
+    rosterParticipants = null,
+    avisoUrl = '',
   } = p;
   const ev = eventSnapshot || {};
   const eventName = String(ev?.name || '').trim() || 'el evento';
   const personName = String(person?.name || '').trim() || '';
   const vnpId = String(person?.vnpPersonId || '').trim() || 'N/A';
   const sede = String(loc || person?.location || '').trim();
-  const office = resolveVnOfficeContactLabel(sede);
+  const office = resolveWaOrgContactLabel(sede, ev);
   const sedeRegistrationLabel = sede ? `sede ${sede}` : 'sede de inscripción';
   const repLoc = formatFinanceDateTimeWithLocation(reportedAtMs, sede || loc);
   const crewOpts = {
@@ -566,12 +707,34 @@ export function buildCarDataRequestWhatsAppMessage(p) {
   const subject =
     carDataSubjectContext || buildCarDataWaSubjectContext(person, getBautizosCompanionsArray(person));
   const lines = [
-    `${E.wave} ¡Hola! ${personName}, te contactamos de ${office} respecto al evento ${eventName}. ${E.car || '🚗'}`,
+    buildWaMessageHeader({
+      personName,
+      officeLabel: office,
+      purposeLine: `respecto al evento ${eventName}. 🚗`,
+    }),
     '',
     `${E.calendar} Fecha del aviso: ${repLoc}`,
     `${E.idBadge} Tu ID único es: ${vnpId}`,
   ];
-  appendBautizosPartyRosterLines(lines, person, eventSnapshot);
+  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
+  const transportLines = buildBautizosTransportSummaryLines(
+    person,
+    eventSnapshot,
+    eventSnapshot?.transportPlanning,
+    rosterParticipants
+  );
+  if (transportLines.length) {
+    lines.push('');
+    lines.push(...transportLines);
+  }
+  const carStatusLines = buildCarDataStatusLines({
+    inventory: carSlots,
+    requiresPassengers: crewOpts.requiresPassengers,
+  });
+  if (carStatusLines.length) {
+    lines.push('');
+    lines.push(...carStatusLines);
+  }
   lines.push(
     '',
     subject.requestIntro,
@@ -579,9 +742,9 @@ export function buildCarDataRequestWhatsAppMessage(p) {
     '',
     `Por favor envíanos esta información lo antes posible. También puedes actualizar el registro en ${sedeRegistrationLabel}.`,
     '',
-    `${E.speechBalloon} Cualquier duda, estamos para servirte.`
+    WA_FINANCE_REGISTRATION_REVIEW_NOTE
   );
-  return lines.join('\n');
+  return appendPrivacyFooter(lines.join('\n'), avisoUrl);
 }
 
 /**
@@ -619,6 +782,7 @@ const STRUCTURED_QUEUE_KINDS = new Set([
   'registro',
   'abono',
   'promocion_espera',
+  'promocion_acompanante',
   'beca_aprobada',
   'baja',
   'beca_pendiente_aprobacion',
@@ -630,6 +794,7 @@ const STRUCTURED_KINDS_WITH_REVIEW_NOTE = new Set([
   'registro',
   'abono',
   'promocion_espera',
+  'promocion_acompanante',
   'beca_aprobada',
   'beca_pendiente_aprobacion',
   'recordatorio_pago',
@@ -666,7 +831,8 @@ export function buildMergedFinanceWhatsAppMessage(
     return { text: '', mergeMarkKeys: [] };
   }
 
-  const onlyStructured = sorted.every((n) => STRUCTURED_QUEUE_KINDS.has(String(n?.kind || '')));
+  const mergeableKinds = new Set([...STRUCTURED_QUEUE_KINDS, 'datos_carro']);
+  const unifiedMerge = sorted.every((n) => mergeableKinds.has(String(n?.kind || '')));
 
   const blocks = sorted
     .map((n, i) => {
@@ -685,6 +851,7 @@ export function buildMergedFinanceWhatsAppMessage(
           liquidationTarget: n.liquidationTarget,
           eventSnapshot,
           rosterParticipants,
+          paymentDeadlineDate: n.paymentDeadlineDate,
         });
       } else if (k === 'promocion_espera' || k === 'beca_aprobada') {
         const financeSnapshot = resolveWaFinanceSnapshotFromNotification(n, person, getLiquidationTarget);
@@ -694,15 +861,36 @@ export function buildMergedFinanceWhatsAppMessage(
           reportedAtMs: n.createdAt,
           eventSnapshot,
           financeSnapshot,
+          rosterParticipants,
+          paymentDeadlineDate: n.paymentDeadlineDate,
+        });
+      } else if (k === 'promocion_acompanante') {
+        const financeSnapshot = resolveWaFinanceSnapshotFromNotification(n, person, getLiquidationTarget);
+        block = buildPromoteCompanionWaitlistWhatsAppMessage({
+          person,
+          loc,
+          reportedAtMs: n.createdAt,
+          eventSnapshot,
+          financeSnapshot,
+          promotedCompanionIds: n.promotedCompanionIds,
+          rosterParticipants,
+          paymentDeadlineDate: n.paymentDeadlineDate,
         });
       } else if (k === 'baja') {
-        block = buildBajaWhatsAppMessage({ person, loc, reportedAtMs: n.createdAt, eventSnapshot });
+        block = buildBajaWhatsAppMessage({
+          person,
+          loc,
+          reportedAtMs: n.createdAt,
+          eventSnapshot,
+          rosterParticipants,
+        });
       } else if (k === 'beca_pendiente_aprobacion') {
         block = buildScholarshipPendingWhatsAppMessage({
           person,
           loc,
           reportedAtMs: n.createdAt,
           eventSnapshot,
+          rosterParticipants,
         });
       } else if (k === 'recordatorio_pago') {
         block = buildPaymentReminderWhatsAppMessage({
@@ -712,6 +900,7 @@ export function buildMergedFinanceWhatsAppMessage(
           paymentDeadlineDate: String(n.paymentDeadlineDate || '').trim(),
           reportedAtMs: n.createdAt,
           eventSnapshot,
+          rosterParticipants,
         });
       } else if (k === 'datos_carro') {
         block = buildCarDataRequestWhatsAppMessage({
@@ -721,6 +910,7 @@ export function buildMergedFinanceWhatsAppMessage(
           carSlots: n.carSlots,
           reportedAtMs: n.createdAt,
           carDataSubjectContext: n.carDataSubjectContext,
+          rosterParticipants,
         });
       } else {
         block = String(n.message || '').trim();
@@ -728,11 +918,12 @@ export function buildMergedFinanceWhatsAppMessage(
 
       if (!block) return '';
 
-      if (!onlyStructured) {
+      if (!unifiedMerge) {
         return block;
       }
 
       let trimmed = block.replace(RE_CLOSING_UNIFIED, '').trim();
+      trimmed = trimmed.replace(/\n*Este mensaje contiene datos de registro del evento\. Consulte nuestro aviso de privacidad:.*$/s, '').trim();
       if (i > 0) {
         trimmed = trimmed.replace(/^(\u{1F44B}\s*)?¡Hola![^\n]+\n+/u, '').trim();
         trimmed = trimmed.replace(/^Hola[^\n]+\n+/u, '').trim();
@@ -745,10 +936,14 @@ export function buildMergedFinanceWhatsAppMessage(
     return { text: '', mergeMarkKeys: [] };
   }
 
-  const mergedNeedsReviewNote = sorted.some((n) => STRUCTURED_KINDS_WITH_REVIEW_NOTE.has(String(n?.kind || '')));
+  const mergedNeedsReviewNote = sorted.some(
+    (n) =>
+      STRUCTURED_KINDS_WITH_REVIEW_NOTE.has(String(n?.kind || '')) ||
+      String(n?.kind || '') === 'datos_carro'
+  );
 
   const text =
-    onlyStructured && blocks.length > 0
+    unifiedMerge && blocks.length > 0
       ? `${blocks.join(MERGE_RULE)}\n\n${
           mergedNeedsReviewNote
             ? WA_FINANCE_REGISTRATION_REVIEW_NOTE

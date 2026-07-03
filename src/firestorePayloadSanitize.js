@@ -1,6 +1,28 @@
 /**
  * Elimina `undefined` y normaliza valores no soportados antes de escribir en Firestore.
  */
+import { sanitizeParticipantConsentForFirestoreWrite } from './privacyNotice.js';
+
+const isPlainObject = (v) =>
+  v !== null && typeof v === 'object' && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
+
+/** Firestore rechaza `undefined`; preserva FieldValue, Timestamp, etc. */
+export function omitUndefinedDeep(input) {
+  if (input === undefined) return undefined;
+  if (input === null || typeof input !== 'object') return input;
+  if (Array.isArray(input)) {
+    return input.map(omitUndefinedDeep).filter((x) => x !== undefined);
+  }
+  if (!isPlainObject(input)) return input;
+  const out = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (v === undefined) continue;
+    const next = omitUndefinedDeep(v);
+    if (next !== undefined) out[k] = next;
+  }
+  return out;
+}
+
 export function sanitizeJsonForFirestore(value) {
   if (value === undefined) return undefined;
   if (value === null) return null;
@@ -29,6 +51,11 @@ export function isFirestoreDeleteFieldValue(value) {
     typeof value._methodName === 'string' &&
     value._methodName.toLowerCase().includes('delete')
   );
+}
+
+/** Documento completo de `app_participants` listo para `setDoc` / `batch.set`. */
+export function prepareParticipantDocForFirestore(payload) {
+  return omitUndefinedDeep(sanitizeParticipantConsentForFirestoreWrite(payload));
 }
 
 /** Parche seguro para estado local tras `setDoc`/`updateDoc` (sin FieldValue ni undefined). */

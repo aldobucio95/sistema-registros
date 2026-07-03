@@ -1,29 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import {
-  isParticipantVersionListenerSuppressed,
-  suppressParticipantVersionListeners,
-} from '../participantsVersionCache.js';
+import { isParticipantSliceHit } from '../participantsVersionCache.js';
 
-describe('suppressParticipantVersionListeners', () => {
-  it('empieza sin supresión', () => {
-    expect(isParticipantVersionListenerSuppressed()).toBe(false);
+describe('isParticipantSliceHit', () => {
+  const localData = { version: 3, data: [{ id: 'p1', name: 'Ana' }] };
+
+  it('acepta caché cuando hay versión remota y coincide', () => {
+    expect(isParticipantSliceHit(localData, 3)).toBe(true);
   });
 
-  it('suprime mientras el contador es > 0', () => {
-    const releaseA = suppressParticipantVersionListeners();
-    expect(isParticipantVersionListenerSuppressed()).toBe(true);
-    const releaseB = suppressParticipantVersionListeners();
-    expect(isParticipantVersionListenerSuppressed()).toBe(true);
-    releaseB();
-    expect(isParticipantVersionListenerSuppressed()).toBe(true);
-    releaseA();
-    expect(isParticipantVersionListenerSuppressed()).toBe(false);
+  it('rechaza caché cuando la versión remota avanzó', () => {
+    expect(isParticipantSliceHit(localData, 7)).toBe(false);
   });
 
-  it('no deja contador negativo al liberar de más', () => {
-    const release = suppressParticipantVersionListeners();
-    release();
-    release();
-    expect(isParticipantVersionListenerSuppressed()).toBe(false);
+  it('rechaza caché local aunque participantCacheVersionsCompatible(3,0) sea true', () => {
+    expect(isParticipantSliceHit(localData, 0)).toBe(false);
+  });
+
+  it('rechaza sin datos locales', () => {
+    expect(isParticipantSliceHit({ version: 1, data: [] }, 1)).toBe(false);
+    expect(isParticipantSliceHit(null, 1)).toBe(false);
   });
 });

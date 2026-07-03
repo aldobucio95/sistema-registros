@@ -220,6 +220,7 @@ export function buildCarDataPendingWhatsAppContext({ titular, eventSnapshot, ros
         anchor.companionsForCrew
       ),
       carDataSubjectContext,
+      rosterParticipants: roster,
     }) || ''
   ).trim();
 

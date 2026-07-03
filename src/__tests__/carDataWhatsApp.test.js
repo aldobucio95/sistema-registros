@@ -125,8 +125,31 @@ describe('buildCarDataRequestWhatsAppMessage', () => {
     expect(text).toContain('Titular');
     expect(text).toContain('María');
     expect(text).toContain('Pedro');
-    expect(text).toContain('Pedro');
     expect(text).toMatch(/acompañante/i);
+    expect(text).toMatch(/revisa que TODA la información/i);
+  });
+
+  it('muestra inventario de carros cuando hay carSlots', () => {
+    const text = buildCarDataRequestWhatsAppMessage({
+      person: {
+        name: 'María',
+        vnpPersonId: 'VNPM-1',
+        llegaEnCarro: true,
+        carrosLlegada: 2,
+      },
+      loc: 'Sur',
+      eventSnapshot: { name: 'Bautizos 2026', eventType: 'Bautizos' },
+      carSlots: [
+        {
+          carIndex: 1,
+          meta: { brand: 'Toyota', model: 'Corolla', color: 'Blanco', plates: '', driverSourceKey: 'p:1' },
+        },
+        { carIndex: 2, meta: { brand: '', model: '', color: '', plates: '', driverSourceKey: '' } },
+      ],
+    });
+    expect(text).toMatch(/Estado de vehículos/i);
+    expect(text).toContain('Toyota');
+    expect(text).toMatch(/Carro 2.*sin datos/is);
   });
 });
 
@@ -146,6 +169,38 @@ describe('buildMergedFinanceWhatsAppMessage datos_carro', () => {
     );
     expect((text.match(/¡Hola!/g) || []).length).toBe(1);
     expect(mergeMarkKeys).toContain('2');
+  });
+
+  it('fusiona registro + datos_carro con un solo saludo y footer', () => {
+    const person = {
+      name: 'Ana',
+      vnpPersonId: 'VNPM-1',
+      bautizosCompanions: [],
+      wantsBautizosTransport: 'Si',
+    };
+    const unsent = [
+      {
+        id: 'r1',
+        kind: 'registro',
+        sent: false,
+        createdAt: 100,
+        amount: 0,
+        pendingAmount: 500,
+        isLiquidado: false,
+        liquidationTarget: 500,
+      },
+      { id: 'c1', kind: 'datos_carro', sent: false, createdAt: 200 },
+    ];
+    const { text } = buildMergedFinanceWhatsAppMessage(
+      person,
+      'Norte',
+      unsent,
+      { name: 'Bautizos 2026', eventType: 'Bautizos', paymentDeadlineDate: '2026-08-15' },
+      getMarkKey
+    );
+    expect((text.match(/¡Hola!/g) || []).length).toBe(1);
+    expect(text).toContain('────────────────');
+    expect(text).toMatch(/revisa que TODA la información/i);
   });
 });
 

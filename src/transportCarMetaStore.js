@@ -78,8 +78,14 @@ export function mergeCarMetaCacheIntoPlan(plan, carMetaCacheByKey) {
   if (!Object.keys(cache).length) return normalizeTransportPlanning(plan);
   return normalizeTransportPlanning({
     ...plan,
-    carMetaBySource: { ...(plan?.carMetaBySource || {}), ...cache },
+    // Plan edits (pending save) must win over lazy-loaded Firestore cache.
+    carMetaBySource: { ...cache, ...(plan?.carMetaBySource || {}) },
   });
+}
+
+/** Copia meta lazy-loaded al plan editable (una sola fuente de verdad en memoria). */
+export function materializeCarMetaCacheIntoPlan(plan, carMetaCacheByKey) {
+  return mergeCarMetaCacheIntoPlan(plan, carMetaCacheByKey);
 }
 
 export function buildCarMetaSummaryCarEntry(meta, roster, crewOpts = {}) {
@@ -208,6 +214,20 @@ export async function fetchCarMetaForTitular(eventId, titularSk) {
   return out;
 }
 
+/** Toda la meta de carro del evento (subcolección); para sugerencias de color y lectura inicial. */
+export async function fetchAllCarMetaForEvent(eventId) {
+  const eid = String(eventId || '').trim();
+  if (!eid) return {};
+
+  const snap = await getDocs(getTransportCarMetaColRef(eid));
+  const out = {};
+  for (const d of snap.docs) {
+    const vehicleKey = docIdToVehicleKey(d.id);
+    out[vehicleKey] = normalizeCarVehicleMeta(d.data());
+  }
+  return out;
+}
+
 export async function fetchCarMetaForVehicleKeys(eventId, vehicleKeys) {
   const eid = String(eventId || '').trim();
   const keys = (Array.isArray(vehicleKeys) ? vehicleKeys : [])
@@ -229,6 +249,24 @@ export async function fetchCarMetaForVehicleKeys(eventId, vehicleKeys) {
   return out;
 }
 
+const CAR_META_FIRESTORE_FIELDS = new Set([
+  'brand',
+  'model',
+  'color',
+  'plates',
+  'maybeAbsent',
+  'pendingBrand',
+  'pendingModel',
+  'pendingColor',
+  'pendingPlates',
+  'driverSourceKey',
+  'passengerSourceKeys',
+  'pendingDriver',
+  'pendingPassengers',
+  'ownerSourceKey',
+  'inheritsFromVehicleKey',
+]);
+
 function carMetaDocPayload(vehicleKey, meta) {
   const m = normalizeCarVehicleMeta(meta);
   const parsed = parseVehicleMetaKey(vehicleKey);
@@ -241,23 +279,48 @@ function carMetaDocPayload(vehicleKey, meta) {
   };
 }
 
-/** Escribe parches en subcolección (batch). */
-export async function upsertCarMetaDocs(eventId, patches, roster = null) {
+/** Solo incluye campos presentes en `patch` para no borrar datos existentes en Firestore. */
+function carMetaPartialFirestorePayload(vehicleKey, patch, roster = null) {
+  if (!patch || typeof patch !== 'object') return null;
+  const parsed = parseVehicleMetaKey(vehicleKey);
+  const normalized = roster?.length
+    ? normalizeCarMetaWithCrewDedupe({ ...normalizeCarVehicleMeta(null), ...patch }, roster)
+    : normalizeCarVehicleMeta({ ...normalizeCarVehicleMeta(null), ...patch });
+  const out = {
+    vehicleKey: String(vehicleKey || '').trim(),
+    ownerSourceKey: String(normalized.ownerSourceKey || parsed?.ownerSourceKey || '').trim(),
+    carIndex: parsed?.carIndex || 1,
+    updatedAt: Date.now(),
+  };
+  for (const key of Object.keys(patch)) {
+    if (CAR_META_FIRESTORE_FIELDS.has(key)) {
+      out[key] = normalized[key];
+    }
+  }
+  return out;
+}
+
+/** Escribe parches en subcolección (batch). `fullDocument: true` reemplaza el doc completo normalizado. */
+export async function upsertCarMetaDocs(eventId, patches, roster = null, opts = {}) {
   const eid = String(eventId || '').trim();
   if (!eid || !patches?.length) return;
+  const fullDocument = opts.fullDocument === true;
 
   const batch = writeBatch(db);
   for (const item of patches) {
     const vehicleKey = String(item?.vehicleKey || '').trim();
     const patch = item?.patch;
     if (!vehicleKey || !patch || typeof patch !== 'object') continue;
-    const normalized = roster?.length
-      ? normalizeCarMetaWithCrewDedupe(patch, roster)
-      : normalizeCarVehicleMeta(patch);
     const docId = vehicleKeyToDocId(vehicleKey);
-    batch.set(getTransportCarMetaDocRef(eid, docId), carMetaDocPayload(vehicleKey, normalized), {
-      merge: true,
-    });
+    const ref = getTransportCarMetaDocRef(eid, docId);
+    const payload = fullDocument
+      ? carMetaDocPayload(
+          vehicleKey,
+          roster?.length ? normalizeCarMetaWithCrewDedupe(patch, roster) : normalizeCarVehicleMeta(patch)
+        )
+      : carMetaPartialFirestorePayload(vehicleKey, patch, roster);
+    if (!payload) continue;
+    batch.set(ref, payload, { merge: true });
   }
   await batch.commit();
 }
@@ -279,7 +342,7 @@ export async function migrateInlineCarMetaToSubcollection(eventId, plan, roster,
     vehicleKey,
     patch: inline[vehicleKey],
   }));
-  await upsertCarMetaDocs(eid, patches, roster);
+  await upsertCarMetaDocs(eid, patches, roster, { fullDocument: true });
 
   const fullPlan = normalizeTransportPlanning({ ...normalized, carMetaBySource: inline });
   const summary = buildCarMetaSummaryByTitularFromPlan(fullPlan, roster);
@@ -296,6 +359,69 @@ export async function migrateInlineCarMetaToSubcollection(eventId, plan, roster,
     plan: transportPlanningFromEventDoc(eventPlan),
     summary,
   };
+}
+
+export async function saveCarMetaVehicleToFirestore({
+  eventId,
+  vehicleKey,
+  meta,
+  currentPlan,
+  roster,
+  getDocRef,
+  updateDoc,
+}) {
+  const eid = String(eventId || '').trim();
+  const vk = String(vehicleKey || '').trim();
+  if (!eid || !vk || !meta) return normalizeTransportPlanning(currentPlan);
+
+  await upsertCarMetaDocs(eid, [{ vehicleKey: vk, patch: meta }], roster, { fullDocument: true });
+
+  const mergedPlan = mergeCarMetaPatchesIntoPlan(currentPlan, [{ vehicleKey: vk, patch: meta }]);
+  const nextPlan = applyCarMetaPassengerInheritance(mergedPlan);
+  const summary = buildCarMetaSummaryByTitularFromPlan(nextPlan, roster);
+  const eventPlan = transportPlanningForEventDoc({
+    ...nextPlan,
+    bautizosCarMetaSummaryByTitular: summary,
+  });
+
+  await updateDoc(getDocRef('app_events', eid), {
+    transportPlanning: eventPlan,
+  });
+
+  return transportPlanningFromEventDoc({
+    ...nextPlan,
+    bautizosCarMetaSummaryByTitular: summary,
+    transportCarMetaStorageVersion: TRANSPORT_CAR_META_STORAGE_VERSION,
+  });
+}
+
+export async function saveTransportPlanStructure({
+  eventId,
+  plan,
+  roster,
+  getDocRef,
+  updateDoc,
+  crewOptsByTitular = {},
+}) {
+  const eid = String(eventId || '').trim();
+  if (!eid) return normalizeTransportPlanning(plan);
+
+  const normalized = applyCarMetaPassengerInheritance(normalizeTransportPlanning(plan));
+  const summary = buildCarMetaSummaryByTitularFromPlan(normalized, roster, crewOptsByTitular);
+  const eventPlan = transportPlanningForEventDoc({
+    ...normalized,
+    bautizosCarMetaSummaryByTitular: summary,
+  });
+
+  await updateDoc(getDocRef('app_events', eid), {
+    transportPlanning: eventPlan,
+  });
+
+  return transportPlanningFromEventDoc({
+    ...normalized,
+    bautizosCarMetaSummaryByTitular: summary,
+    transportCarMetaStorageVersion: TRANSPORT_CAR_META_STORAGE_VERSION,
+  });
 }
 
 /**
@@ -317,7 +443,7 @@ export async function persistTransportPlanWithCarMeta({
   }));
 
   if (patches.length) {
-    await upsertCarMetaDocs(eid, patches, roster);
+    await upsertCarMetaDocs(eid, patches, roster, { fullDocument: true });
   }
 
   const summary = buildCarMetaSummaryByTitularFromPlan(normalized, roster, crewOptsByTitular);

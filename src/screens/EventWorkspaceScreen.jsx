@@ -499,7 +499,7 @@ export default function EventWorkspaceScreen() {
                   className={sidebarSedeStyleCountBadge(shell.activeTab === 'ServersPage', true)}
                   title={
                     shell.isBautizos
-                      ? 'Servidores y empleados activos en sedes visibles'
+                      ? 'Servidores y empleados activos en sedes visibles (misma regla que la página)'
                       : 'Servidores activos en sedes visibles para tu usuario'
                   }
                 >

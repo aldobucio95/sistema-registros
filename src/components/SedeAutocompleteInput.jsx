@@ -43,6 +43,7 @@ export default function SedeAutocompleteInput({
   disabled = false,
   onBlur,
   onFocus,
+  listId,
   ...rest
 }) {
   const [open, setOpen] = useState(false);
@@ -101,6 +102,7 @@ export default function SedeAutocompleteInput({
         value={value ?? ''}
         autoComplete="off"
         aria-autocomplete="list"
+        aria-controls={showList && listId ? listId : undefined}
         aria-expanded={showList}
         onChange={(e) => {
           onChange?.(e);
@@ -117,6 +119,7 @@ export default function SedeAutocompleteInput({
       />
       {showList ? (
         <ul
+          id={listId}
           role="listbox"
           className="absolute left-0 right-0 top-full z-40 mt-1 max-h-48 overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-600 dark:bg-slate-900"
         >

@@ -13,6 +13,7 @@ import {
   buildBautizosCanonicalCompanionPlan,
   collectBautizosParticipatingServerRows,
   collectBautizosServidoresYEmpleadosRows,
+  countBautizosServidoresYEmpleadosPeople,
   countBautizosServersDeduped,
   getBautizosAttendanceTypeLabel,
   isFreeBautizosAttendance,
@@ -131,6 +132,29 @@ describe('bautizos server participation', () => {
     ];
     const rows = collectBautizosServidoresYEmpleadosRows(roster);
     expect(rows.map((r) => r.name).sort()).toEqual(['Bautizado Server', 'Empleado Sin Servidor']);
+  });
+
+  it('countBautizosServidoresYEmpleadosPeople matches collect rows length and exceeds servidor-only dedupe when empleado sin rol', () => {
+    const roster = [
+      {
+        id: 'e1',
+        name: 'Empleado Sin Servidor',
+        bautizosAttendanceType: BAUTIZOS_ATTENDANCE.empleado,
+        isServer: 'No',
+      },
+      {
+        id: 's1',
+        name: 'Servidor',
+        bautizosAttendanceType: BAUTIZOS_ATTENDANCE.servidor,
+        isServer: 'Si',
+      },
+    ];
+    const rows = collectBautizosServidoresYEmpleadosRows(roster);
+    const meta = buildActiveRegistrantMetaForCompanionDedupe(roster);
+    const plan = buildBautizosCanonicalCompanionPlan(roster, meta, { includeBaptizedCompanions: true });
+    expect(countBautizosServidoresYEmpleadosPeople(roster)).toBe(rows.length);
+    expect(countBautizosServidoresYEmpleadosPeople(roster)).toBe(2);
+    expect(countBautizosServersDeduped(roster, plan)).toBe(1);
   });
 
   it('bautizosShowsServerProfileFields for empleado even when isServer is No', () => {

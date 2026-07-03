@@ -310,12 +310,19 @@ import {
   buildMergedFinanceWhatsAppMessage,
   buildBajaWhatsAppMessage,
   buildPromoteWaitlistWhatsAppMessage,
+  buildPromoteCompanionWaitlistWhatsAppMessage,
   buildScholarshipPendingWhatsAppMessage,
   buildCarDataRequestWhatsAppMessage,
   buildGenericManualWhatsAppMessage,
   WA_FINANCE_REGISTRATION_REVIEW_NOTE,
   appendPrivacyFooter,
 } from './whatsappFinanceMessages.js';
+import {
+  countReactivatedUnsentNotifications,
+  reactivateQueueFromHistoryToken,
+  removeWhatsAppHistoryEntry,
+  whatsAppHistoryEntryId,
+} from './whatsappHistoryQueue.js';
 import PrivacyConsentBlock from './components/PrivacyConsentBlock.jsx';
 import PrivacyConsentConfirmModal from './components/PrivacyConsentConfirmModal.jsx';
 import UserAccountModalShell from './components/UserAccountModalShell.jsx';
@@ -413,6 +420,12 @@ import {
   EXCEL_ROSTER_FINANCE_COL_COUNT,
 } from './excelExportRosterHelpers.js';
 import { buildClientVersionPatch } from './appVersion.js';
+import {
+  buildPreRestoreBackupId,
+  formatLocalDateId,
+  isDailyBackupDue,
+  msUntilNextLocalMidnight,
+} from './appBackupSchedule.js';
 import {
   getClientDeviceSnapshot,
   getClientRuntimeDisplayInfo,
@@ -745,6 +758,16 @@ const debugRevertStorageKey = (sessionId) => `vnpm_debug_revert_${String(session
  * de que el snapshot actualizara el estado puede omitir sedes añadidas al evento (p. ej. Querétaro/Neza).
  * Se conserva la unión de sedes entre el snapshot revertido y el documento actual.
  */
+function isPartialAppEventRevertData(previousData) {
+  if (!previousData || typeof previousData !== 'object') return false;
+  const keys = Object.keys(previousData).filter((k) => k !== 'id');
+  if (!keys.length) return false;
+  const hasCoreEventFields = keys.some((k) =>
+    ['name', 'eventType', 'startDate', 'endDate', 'paymentDeadlineDate'].includes(k)
+  );
+  return !hasCoreEventFields;
+}
+
 function mergeAppEventDocForRevert(previousData, currentData, docId) {
   const prev = previousData && typeof previousData === 'object' ? { ...previousData } : {};
   const cur = currentData && typeof currentData === 'object' ? currentData : {};
@@ -993,7 +1016,11 @@ const commitSetPayloadsInBatches = async (entries) => {
 };
 
 /** Copia automática: JSON en Storage (`app_auto_backups/{id}.json`) y manifest en `app_backups/{id}` (`formatVersion: 3`). */
-const writeAppBackupToStorage = async (backupId, { date, timestamp, participants, events, users }) => {
+const writeAppBackupToStorage = async (
+  backupId,
+  { date, timestamp, participants, events, users },
+  { backupKind = 'daily' } = {}
+) => {
   await deleteAllDocsInCollection(getBackupChunksColRef(backupId));
   const payload = omitUndefinedDeep({
     date,
@@ -1015,8 +1042,62 @@ const writeAppBackupToStorage = async (backupId, { date, timestamp, participants
       formatVersion: 3,
       storagePath: path,
       storageSizeUtf8: new TextEncoder().encode(jsonStr).length,
+      backupKind,
     })
   );
+};
+
+/**
+ * Copia completa participantes + eventos (+ usuarios enmascarados) desde el servidor.
+ * @returns {{ backupId: string, participantCount: number, eventCount: number }}
+ */
+const performAppFullBackup = async ({
+  backupId,
+  date,
+  usersForBackup,
+  backupKind = 'daily',
+  updateLastBackupDate = false,
+  pruneRetentionMonths = null,
+}) => {
+  const [participantsSnap, eventsSnap] = await Promise.all([
+    getDocsFromServer(getColRef('app_participants')),
+    getDocsFromServer(getColRef('app_events')),
+  ]);
+  const participantsFull = participantsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  if (participantsFull.length === 0) {
+    throw new Error('BACKUP_EMPTY_PARTICIPANTS');
+  }
+  const eventsFull = eventsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const usersSanitized = (usersForBackup || []).map((u) => ({
+    ...u,
+    password: '***',
+    plainPasswordBackup: u.plainPasswordBackup ? '***' : undefined,
+  }));
+
+  await writeAppBackupToStorage(
+    backupId,
+    {
+      date,
+      timestamp: Date.now(),
+      participants: participantsFull,
+      events: eventsFull,
+      users: usersSanitized,
+    },
+    { backupKind }
+  );
+
+  if (updateLastBackupDate) {
+    await updateDoc(getDocRef('app_data', 'config'), { lastBackupDate: backupId });
+  }
+  if (typeof pruneRetentionMonths === 'number') {
+    await pruneAppBackupsOlderThanRetention(new Date(), pruneRetentionMonths);
+  }
+
+  return {
+    backupId,
+    participantCount: participantsFull.length,
+    eventCount: eventsFull.length,
+  };
 };
 
 /** Elimina copias con id de fecha anterior al corte (mismo esquema `YYYY-MM-DD`). */
@@ -1042,9 +1123,6 @@ const pruneAppBackupsOlderThanRetention = async (nowDate, monthsToKeep) => {
     }
   }
 };
-
-/** Martes en hora local (0=dom … 2=martes). */
-const isTuesdayLocal = (d) => d.getDay() === 2;
 
 /** Lee copia: Storage (`formatVersion: 3`), trozos Firestore (`formatVersion: 2`) o doc único legado. */
 const loadAppBackupMerged = async (backupId) => {
@@ -3218,6 +3296,10 @@ const compactWhatsAppNotificationToken = (n) => {
     base.reminderWeekKey = n.reminderWeekKey != null ? String(n.reminderWeekKey) : undefined;
     base.paymentDeadlineDate = n.paymentDeadlineDate != null ? String(n.paymentDeadlineDate) : undefined;
     base.pendingDebt = Number(n.pendingDebt) || 0;
+  }
+  if (String(n?.kind || '') === 'promocion_acompanante' && Array.isArray(n.promotedCompanionIds)) {
+    base.promotedCompanionIds = n.promotedCompanionIds.map((id) => String(id || '').trim()).filter(Boolean);
+    if (n.paymentDeadlineDate != null) base.paymentDeadlineDate = String(n.paymentDeadlineDate);
   }
   return base;
 };
@@ -7379,12 +7461,14 @@ function resolveEventName(eventId) {
         if (previousData) {
           if (collectionName === 'app_events') {
             const snap = await getDoc(getDocRef(collectionName, docId));
-            const payload = mergeAppEventDocForRevert(
-              previousData,
-              snap.exists() ? snap.data() : {},
-              docId
-            );
-            await setDoc(getDocRef(collectionName, docId), payload);
+            const current = snap.exists() ? snap.data() : {};
+            if (isPartialAppEventRevertData(previousData)) {
+              const { id: _dropId, ...patch } = previousData;
+              await updateDoc(getDocRef(collectionName, docId), omitUndefinedDeep(patch));
+            } else {
+              const payload = mergeAppEventDocForRevert(previousData, current, docId);
+              await setDoc(getDocRef(collectionName, docId), payload);
+            }
           } else {
             await setDoc(getDocRef(collectionName, docId), previousData);
           }
@@ -12802,6 +12886,44 @@ function resolveEventName(eventId) {
       return rawTs || 'fecha/hora no disponible';
     };
 
+    const needsPreRestoreBackup = type === 'single' || type === 'rollback' || type === 'backup';
+    if (needsPreRestoreBackup) {
+      if (!fbUser || fbUser.isAnonymous) {
+        showToast('Inicia sesión con cuenta del panel para restaurar (se requiere copia previa en Storage).');
+        setRestoreModal({ isOpen: false, log: null, type: 'single' });
+        return;
+      }
+      try {
+        const now = new Date();
+        const preId = buildPreRestoreBackupId(now);
+        await performAppFullBackup({
+          backupId: preId,
+          date: formatLocalDateId(now),
+          usersForBackup: users,
+          backupKind: 'pre-restore',
+        });
+        await addLog(
+          'Sistema',
+          `Copia de seguridad automática previa a restauración (${preId}).`,
+          'Sistema',
+          { id: 'Global', name: 'Sistema' },
+          { isBackup: true, backupId: preId, backupKind: 'pre-restore' }
+        );
+      } catch (e) {
+        console.error('Copia previa a restaurar falló', e);
+        const code = e?.code || '';
+        if (code === 'storage/unauthorized') {
+          showToast('No se pudo crear la copia previa (permisos en Storage). Restauración cancelada.');
+        } else if (e?.message === 'BACKUP_EMPTY_PARTICIPANTS') {
+          showToast('No hay participantes en el servidor; no se creó copia previa. Restauración cancelada.');
+        } else {
+          showToast('Error al crear copia previa a restaurar. Restauración cancelada.');
+        }
+        setRestoreModal({ isOpen: false, log: null, type: 'single' });
+        return;
+      }
+    }
+
     if (type === 'single') {
       await applyRevert(log.revertInfo, log.id);
       const revertedAt = formatRevertedLogDateTime(log);
@@ -13525,61 +13647,76 @@ function resolveEventName(eventId) {
       </div>
     ) : null;
 
-  // Copia automática: solo martes (hora local), JSON en Storage + manifest en Firestore; poda > 3 meses.
-  useEffect(() => {
-    const performScheduledBackup = async () => {
-      if (!globalConfig || !hasAdminRights || events.length === 0 || !fbUser) return;
-      /** Storage `app_auto_backups/*` rechaza sesión anónima por reglas (`isStaffAuth`). */
-      if (fbUser.isAnonymous) return;
+  // Copia automática: cada día a las 12:00 a.m. (hora local) si hay sesión admin; también al abrir si faltó la de hoy.
+  const runDailyScheduledBackupIfDue = useCallback(async () => {
+    if (!globalConfig || !hasAdminRights || !fbUser) return;
+    if (fbUser.isAnonymous) return;
 
-      const now = new Date();
-      if (!isTuesdayLocal(now)) return;
+    const now = new Date();
+    const today = formatLocalDateId(now);
+    if (!isDailyBackupDue(globalConfig.lastBackupDate, now)) return;
+    if (scheduledBackupAsyncLock) return;
+    scheduledBackupAsyncLock = true;
 
-      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    try {
+      const cfgSnap = await getDocFromServer(getDocRef('app_data', 'config'));
+      if (cfgSnap.exists() && cfgSnap.data()?.lastBackupDate === today) return;
 
-      if (globalConfig.lastBackupDate === today) return;
-      if (scheduledBackupAsyncLock) return;
-      scheduledBackupAsyncLock = true;
+      await performAppFullBackup({
+        backupId: today,
+        date: today,
+        usersForBackup: users,
+        backupKind: 'daily',
+        updateLastBackupDate: true,
+        pruneRetentionMonths: BACKUP_RETENTION_MONTHS,
+      });
 
-      try {
-        const cfgSnap = await getDocFromServer(getDocRef('app_data', 'config'));
-        if (cfgSnap.exists() && cfgSnap.data()?.lastBackupDate === today) return;
-
-        const participantsSnap = await getDocsFromServer(getColRef('app_participants'));
-        const participantsFull = participantsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        if (participantsFull.length === 0) return;
-        await writeAppBackupToStorage(today, {
-          date: today,
-          timestamp: Date.now(),
-          participants: participantsFull,
-          events,
-          users: users.map((u) => ({ ...u, password: '***', plainPasswordBackup: u.plainPasswordBackup ? '***' : undefined })),
-        });
-        await updateDoc(getDocRef('app_data', 'config'), { lastBackupDate: today });
-        addLog(
-          'Sistema',
-          `Copia de seguridad automática (${today}, martes) guardada en Storage.`,
-          'Sistema',
-          { id: 'Global', name: 'Sistema' },
-          { isBackup: true, backupId: today }
+      addLog(
+        'Sistema',
+        `Copia de seguridad automática (${today}, 12:00 a.m. hora local) guardada en Storage.`,
+        'Sistema',
+        { id: 'Global', name: 'Sistema' },
+        { isBackup: true, backupId: today, backupKind: 'daily' }
+      );
+    } catch (e) {
+      const code = e?.code || '';
+      if (code === 'storage/unauthorized') {
+        console.warn(
+          'Backup automático sin permisos en Storage. Verifica sesión no anónima y despliegue de `storage.rules` (ruta app_auto_backups/*).',
+          e
         );
-        await pruneAppBackupsOlderThanRetention(now, BACKUP_RETENTION_MONTHS);
-      } catch (e) {
-        const code = e?.code || '';
-        if (code === 'storage/unauthorized') {
-          console.warn(
-            'Backup automático sin permisos en Storage. Verifica sesión no anónima y despliegue de `storage.rules` (ruta app_auto_backups/*).',
-            e
-          );
-        } else {
-          console.error('Backup automático falló', e);
-        }
-      } finally {
-        scheduledBackupAsyncLock = false;
+      } else {
+        console.error('Backup automático falló', e);
       }
+    } finally {
+      scheduledBackupAsyncLock = false;
+    }
+  }, [globalConfig, users, hasAdminRights, addLog, fbUser]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let midnightTimeoutId;
+
+    const run = () => {
+      if (cancelled) return;
+      void runDailyScheduledBackupIfDue();
     };
-    performScheduledBackup();
-  }, [globalConfig, events, users, hasAdminRights, addLog, fbUser]);
+
+    run();
+
+    const scheduleMidnight = () => {
+      midnightTimeoutId = setTimeout(() => {
+        run();
+        scheduleMidnight();
+      }, msUntilNextLocalMidnight());
+    };
+    scheduleMidnight();
+
+    return () => {
+      cancelled = true;
+      if (midnightTimeoutId) clearTimeout(midnightTimeoutId);
+    };
+  }, [runDailyScheduledBackupIfDue]);
 
   // Activity Watcher and Session Logout Logic
   useEffect(() => {
@@ -15766,8 +15903,9 @@ function resolveEventName(eventId) {
         eventSnapshot: currentEvent,
         reportedAtMs: Date.now(),
         sentByLabel: currentUser?.username || '',
+        rosterParticipants: allParticipants,
       }),
-    [currentEvent, currentUser?.username]
+    [currentEvent, currentUser?.username, allParticipants]
   );
 
   const buildArchiveWhatsAppMessage = useCallback((person, reportedAtMs = Date.now()) => {
@@ -15856,6 +15994,58 @@ function resolveEventName(eventId) {
       return 'Mensaje personalizado enviado manualmente desde el modal de WhatsApp.';
     },
     [buildGenericManualWhatsAppMessage, currentEvent, getLiquidationTarget]
+  );
+
+  const deleteWhatsAppHistoryEntryForSuperUser = useCallback(
+    async (person, token) => {
+      if (!isSuperUser || !person?.id || !token) return;
+      const tokenId = whatsAppHistoryEntryId(token);
+      if (!tokenId) return;
+      const personName = String(person?.name || '').trim() || 'participante';
+      const reactivated = countReactivatedUnsentNotifications(
+        person.whatsAppFinanceNotifications,
+        token
+      );
+      const confirmMsg =
+        reactivated > 0
+          ? `¿Eliminar este registro del historial de WhatsApp de ${personName}? Se reactivarán ${reactivated} aviso(s) en la cola pendiente.`
+          : `¿Eliminar este registro del historial de WhatsApp de ${personName}?`;
+      if (!window.confirm(confirmMsg)) return;
+
+      const prevHist = getWhatsAppMessageHistoryRows(person);
+      const nextHist = removeWhatsAppHistoryEntry(prevHist, tokenId);
+      const nextNotifications = reactivateQueueFromHistoryToken(
+        person.whatsAppFinanceNotifications,
+        token
+      );
+      const payload = {
+        whatsAppMessageHistory: nextHist,
+        whatsAppFinanceNotifications: nextNotifications,
+      };
+      try {
+        await updateDoc(getDocRef('app_participants', String(person.id)), payload);
+        refreshParticipantCache(person, 'Eliminar historial WhatsApp', {
+          personId: person.id,
+          patch: payload,
+        });
+        addLog(
+          'WhatsApp',
+          `SuperUsuario eliminó entrada del historial WA de ${personName}${reactivated ? ` y reactivó ${reactivated} aviso(s) en cola` : ''}.`,
+          null,
+          null,
+          { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
+        );
+        showToast(
+          reactivated > 0
+            ? `Historial eliminado. ${reactivated} aviso(s) pendiente(s) reactivado(s) en la cola.`
+            : 'Entrada del historial de WhatsApp eliminada.'
+        );
+      } catch (err) {
+        console.error(err);
+        showToast('No se pudo eliminar la entrada del historial de WhatsApp.');
+      }
+    },
+    [isSuperUser, refreshParticipantCache, addLog, showToast]
   );
   
   const upsertMergedArchiveProfile = useCallback(async (person, archivedAt, loc, sourceKind, eventNameOverride) => {
@@ -23170,6 +23360,7 @@ function resolveEventName(eventId) {
       scholarshipType: person.scholarshipType || 'none',
       scholarshipPartialAmount: Number(person.scholarshipPartialAmount || 0) || 0,
     };
+    const paymentDeadline = String(currentEvent?.paymentDeadlineDate || '').trim();
     const promoteNotification = {
       id: `wa-prm-${promoteAt}`,
       kind: isSiValue(person.isScholarship) ? 'beca_aprobada' : 'promocion_espera',
@@ -23179,6 +23370,7 @@ function resolveEventName(eventId) {
       createdAt: promoteAt,
       sent: false,
       sentAt: null,
+      paymentDeadlineDate: paymentDeadline,
       waFinanceSnapshot,
       message: buildPromoteWaitlistWhatsAppMessage({
         person,
@@ -23186,6 +23378,8 @@ function resolveEventName(eventId) {
         reportedAtMs: promoteAt,
         eventSnapshot: currentEvent,
         financeSnapshot: waFinanceSnapshot,
+        rosterParticipants: allParticipants,
+        paymentDeadlineDate: paymentDeadline,
       }),
     };
     const participantRef = getDocRef('app_participants', String(id));
@@ -23280,7 +23474,51 @@ function resolveEventName(eventId) {
     if (!host.registeredCostManual) {
       payload.registeredCost = getPersonCost(mergedHost, currentPricing, currentEvent);
     }
+    const promoteAt = Date.now();
+    const liqAfter = getLiquidationTarget(mergedHost);
+    const paidHost = parseFloat(host.paid || 0);
+    const pendingAfter = Math.max((Number(liqAfter) || 0) - paidHost, 0);
+    const isLiquidadoAfter = paidHost >= liqAfter;
+    const paymentDeadline = String(currentEvent?.paymentDeadlineDate || '').trim();
+    const waFinanceSnapshot = {
+      target: Number(liqAfter) || 0,
+      paid: paidHost,
+      isScholarship: isSiValue(host.isScholarship),
+      scholarshipType: host.scholarshipType || 'none',
+      scholarshipPartialAmount: Number(host.scholarshipPartialAmount || 0) || 0,
+    };
+    const companionPromoteNotification = {
+      id: `wa-prc-${promoteAt}`,
+      kind: 'promocion_acompanante',
+      amount: 0,
+      pendingAmount: pendingAfter,
+      isLiquidado: isLiquidadoAfter,
+      createdAt: promoteAt,
+      sent: false,
+      sentAt: null,
+      promotedCompanionIds: [parsed.companionId],
+      paymentDeadlineDate: paymentDeadline,
+      waFinanceSnapshot,
+      message: buildPromoteCompanionWaitlistWhatsAppMessage({
+        person: mergedHost,
+        loc,
+        reportedAtMs: promoteAt,
+        eventSnapshot: currentEvent,
+        financeSnapshot: waFinanceSnapshot,
+        promotedCompanionIds: [parsed.companionId],
+        rosterParticipants: allParticipants,
+        paymentDeadlineDate: paymentDeadline,
+      }),
+    };
     const participantRef = getDocRef('app_participants', String(host.id));
+    const serverSnap = await getDoc(participantRef);
+    const serverWa = serverSnap.exists()
+      ? serverSnap.data()?.whatsAppFinanceNotifications
+      : undefined;
+    const mergedWa = Array.isArray(serverWa)
+      ? [...serverWa, companionPromoteNotification]
+      : [...(host.whatsAppFinanceNotifications || []), companionPromoteNotification];
+    payload.whatsAppFinanceNotifications = mergedWa;
     await updateDoc(
       participantRef,
       participantPatchForFirestoreWrite(host, payload, deleteField)
@@ -25962,14 +26200,14 @@ function resolveEventName(eventId) {
                       isOpen: true,
                       type: 'backup',
                       log: {
-                        action: 'Copia de seguridad automática (martes)',
+                        action: 'Copia de seguridad automática (diaria, 12:00 a.m.)',
                         timestamp: lastAutoBackupId,
                         revertInfo: { isBackup: true, backupId: lastAutoBackupId },
                       },
                     })
                   }
                   className={`${uiActivityLogAdmin.btnViolet} whitespace-normal text-center leading-tight max-w-[11rem] sm:max-w-[14rem]`}
-                  title="Restaurar la última copia de seguridad guardada (JSON en Storage; manifest en Firestore). Las copias automáticas se ejecutan los martes en hora local."
+                  title="Restaurar la última copia de seguridad guardada (JSON en Storage; manifest en Firestore). Copia automática diaria a las 12:00 a.m. (hora local). Antes de cualquier restauración se crea una copia previa."
                 >
                   <Database size={12} className="shrink-0" />
                   <span>Restaurar última copia de seguridad</span>
@@ -26272,14 +26510,14 @@ function resolveEventName(eventId) {
                       isOpen: true,
                       type: 'backup',
                       log: {
-                        action: 'Copia de seguridad automática (martes)',
+                        action: 'Copia de seguridad automática (diaria, 12:00 a.m.)',
                         timestamp: lastAutoBackupId,
                         revertInfo: { isBackup: true, backupId: lastAutoBackupId },
                       },
                     })
                   }
                   className={`${uiActivityLogAdmin.btnViolet} whitespace-normal text-center leading-tight max-w-[11rem] sm:max-w-[14rem] max-md:max-w-none max-md:col-span-2 ${uiMobileMenu.btnCompact}`}
-                  title="Restaurar la última copia de seguridad guardada (JSON en Storage; manifest en Firestore). Las copias automáticas se ejecutan los martes en hora local."
+                  title="Restaurar la última copia de seguridad guardada (JSON en Storage; manifest en Firestore). Copia automática diaria a las 12:00 a.m. (hora local). Antes de cualquier restauración se crea una copia previa."
                 >
                   <Database size={12} className="shrink-0 max-md:w-3 max-md:h-3" />
                   <span className="max-md:hidden">Restaurar última copia de seguridad</span>
@@ -35151,12 +35389,20 @@ function resolveEventName(eventId) {
   };
 
   const renderExpandedRosterDetailTableRow = (person, loc, opts = {}) => {
+    const asPanel = opts.asPanel === true;
     const principalDisplayIndex =
       typeof opts.displayIndex === 'number' && opts.displayIndex > 0 ? opts.displayIndex : null;
     const pid = String(person.id);
     const live = allParticipants.find((p) => String(p.id) === pid) || person;
     const cache = participantExpandCache[pid];
     if (cache?.loading && !cache?.serverDoc) {
+      if (asPanel) {
+        return (
+          <div className="px-4 py-10 text-center">
+            <p className="text-sm font-semibold text-slate-600">Cargando...</p>
+          </div>
+        );
+      }
       return (
         <tr className="bg-indigo-50/30 border-b border-slate-100">
           <td colSpan="3" className="px-4 py-10 text-center">
@@ -35166,6 +35412,11 @@ function resolveEventName(eventId) {
       );
     }
     if (cache?.error && !cache?.serverDoc) {
+      if (asPanel) {
+        return (
+          <div className="px-4 py-10 text-center text-sm text-red-600 font-semibold">{cache.error}</div>
+        );
+      }
       return (
         <tr className="bg-indigo-50/30 border-b border-slate-100">
           <td colSpan="3" className="px-4 py-10 text-center text-sm text-red-600 font-semibold">
@@ -35542,10 +35793,25 @@ function resolveEventName(eventId) {
                     <div className={fieldStack}>
                       {waHistory.map((token) => (
                         <details key={token.id || `${token.kind}-${token.createdAt || 0}`} className="text-[10px] text-slate-700 dark:text-slate-200">
-                          <summary className="cursor-pointer">
-                            {new Date(Number(token.createdAt) || Date.now()).toLocaleString('es-MX')} ·{' '}
-                            {labelByKind[String(token.kind || '')] || 'Mensaje'} ·{' '}
-                            {token.sentBy ? `por ${token.sentBy}` : 'usuario sin dato'}
+                          <summary className="cursor-pointer flex items-center gap-2 flex-wrap">
+                            <span>
+                              {new Date(Number(token.createdAt) || Date.now()).toLocaleString('es-MX')} ·{' '}
+                              {labelByKind[String(token.kind || '')] || 'Mensaje'} ·{' '}
+                              {token.sentBy ? `por ${token.sentBy}` : 'usuario sin dato'}
+                            </span>
+                            {isSuperUser ? (
+                              <button
+                                type="button"
+                                className="text-[9px] font-bold uppercase text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-500/60 px-1.5 py-0.5 rounded hover:bg-rose-50 dark:hover:bg-rose-950/40"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  deleteWhatsAppHistoryEntryForSuperUser(row, token);
+                                }}
+                              >
+                                Eliminar
+                              </button>
+                            ) : null}
                           </summary>
                           <pre className="mt-1 whitespace-pre-wrap break-words text-[10px] font-sans bg-white/80 dark:bg-slate-950/80 border border-emerald-100 dark:border-emerald-600/40 rounded p-1.5">
                             {buildWhatsAppHistoryMessage(token, row)}
@@ -35825,10 +36091,8 @@ function resolveEventName(eventId) {
       </>
     );
 
-    return (
-      <tr className="bg-indigo-50/30 dark:bg-slate-900/50 border-b border-slate-100 dark:border-slate-700">
-        <td colSpan="3" className="px-3 sm:px-5 py-3.5">
-          <div className="space-y-3">
+    const detailBody = (
+      <div className={`space-y-3${asPanel ? ' px-3 sm:px-5 py-3.5' : ''}`}>
             {currentUser?.role === 'Lector' && (
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border border-indigo-200 dark:border-2 dark:border-indigo-500 bg-white dark:bg-transparent p-3 shadow-sm dark:shadow-none">
                 <div className="min-w-0">
@@ -36127,7 +36391,15 @@ function resolveEventName(eventId) {
                 )}
               </div>
             )}
-          </div>
+      </div>
+    );
+
+    if (asPanel) return detailBody;
+
+    return (
+      <tr className="bg-indigo-50/30 dark:bg-slate-900/50 border-b border-slate-100 dark:border-slate-700">
+        <td colSpan="3" className="px-3 sm:px-5 py-3.5">
+          {detailBody}
         </td>
       </tr>
     );
@@ -36343,7 +36615,7 @@ function resolveEventName(eventId) {
         }
         expandedContent={
           isExpanded && !disableExpand
-            ? renderExpandedRosterDetailTableRow(person, loc, { displayIndex })
+            ? renderExpandedRosterDetailTableRow(person, loc, { displayIndex, asPanel: true })
             : null
         }
         showSede={showSede}

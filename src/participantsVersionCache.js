@@ -59,13 +59,23 @@ function normalizeLocKey(location) {
   return String(location || '').trim();
 }
 
-/** Prefer IndexedDB (lecturas gratis); solo va al servidor si no hay caché persistente. */
+/** Lectura del roster completo del evento; prioriza servidor para datos frescos al abrir la app. */
 async function loadEventParticipantsQueryFromStore(eventId) {
   const q = query(getColRef('app_participants'), where('eventId', '==', eventId));
   try {
+    const serverSnap = await getDocsFromServer(q);
+    logCacheDecision(`pe_event_${eventId}`, { event: 'participants-from-server', rows: serverSnap.size });
+    return serverSnap;
+  } catch {
+    /* sin red: caer a caché offline de Firestore */
+  }
+  try {
     const cached = await getDocsFromCache(q);
     if (!cached.empty) {
-      logCacheDecision(`pe_event_${eventId}`, { event: 'participants-from-idb-cache', rows: cached.size });
+      logCacheDecision(`pe_event_${eventId}`, {
+        event: 'participants-from-firestore-cache-offline',
+        rows: cached.size,
+      });
       return cached;
     }
   } catch {
@@ -74,17 +84,19 @@ async function loadEventParticipantsQueryFromStore(eventId) {
   return getDocs(q);
 }
 
-function isParticipantSliceHit(local, remoteV) {
-  return Boolean(
-    local?.data &&
-      Array.isArray(local.data) &&
-      participantCacheVersionsCompatible(local.version, remoteV)
-  );
+/**
+ * ¿Usar slice local en IndexedDB al abrir evento?
+ * Si no hay doc remoto de versión (v=0), siempre refrescar: la caché local no tiene señal de invalidación.
+ */
+export function isParticipantSliceHit(local, remoteV) {
+  if (!local?.data || !Array.isArray(local.data) || local.data.length === 0) return false;
+  if (normalizeCacheVersion(remoteV) === 0) return false;
+  return participantCacheVersionsCompatible(local.version, remoteV);
 }
 
 /**
- * Carga participantes del evento usando versión por sede + IndexedDB.
- * Si alguna sede no coincide, una sola lectura `eventId == …` y se actualizan las cachés.
+ * Carga participantes del evento. Al abrir la app siempre lee Firestore (servidor primero)
+ * y actualiza la caché local; los listeners por sede mantienen datos frescos en sesión.
  */
 export async function loadEventParticipantsWithVersionCache(eventId, locations) {
   const eid = String(eventId || '').trim();
@@ -111,26 +123,6 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
     return isParticipantSliceHit(local, remoteV);
   };
 
-  const anyMiss = locs.some((loc) => !isHit(loc));
-
-  if (!anyMiss) {
-    await Promise.all(locs.map((loc) => syncLocalVersionIndexFromIdb(versionByLoc.get(loc).scope)));
-    const merged = locs.flatMap((loc) => versionByLoc.get(loc).local.data);
-    const byId = new Map();
-    for (const p of merged) byId.set(String(p.id), p);
-    for (const loc of locs) {
-      const { scope, remoteV, local } = versionByLoc.get(loc);
-      logCacheDecision(scope, {
-        event: 'hit',
-        version: remoteV,
-        rows: local.data.length,
-        source: 'indexedDB',
-        sede: loc,
-      });
-    }
-    return stripCompanionWaitlistPhantomRows([...byId.values()]);
-  }
-
   const snap = await loadEventParticipantsQueryFromStore(eid);
   const all = stripCompanionWaitlistPhantomRows(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
 
@@ -140,7 +132,7 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
     const vToStore = await resolveVersionForStore(scope, remoteV);
     await writeLocalVersionCache(scope, vToStore, slice, { eventId: eid, location: loc });
     logCacheDecision(scope, {
-      event: anyMiss && !isHit(loc) ? 'miss-refetch' : 'refresh-cache',
+      event: isHit(loc) ? 'refresh-cache' : 'miss-refetch',
       version: vToStore,
       rows: slice.length,
       source: 'firestore',
@@ -357,27 +349,27 @@ export function subscribeParticipantsLocationVersionsDebounced(
 
 export async function loadArchivedParticipantsWithVersionCache() {
   const scope = scopeParticipantsArchive();
-  const remoteV = await fetchRemoteCacheVersion(scope);
+  const remoteV = await fetchRemoteCacheVersion(scope, { preferServer: true });
   const local = await readVersionCacheRecord(scope);
-
-  if (
-    local?.data &&
-    Array.isArray(local.data) &&
-    participantCacheVersionsCompatible(local.version, remoteV)
-  ) {
-    logCacheDecision(scope, { event: 'hit', version: remoteV, rows: local.data.length, source: 'indexedDB' });
-    return local.data;
-  }
+  const cachedRows = local?.data?.length ?? 0;
 
   const PARTICIPANT_STATUS_ARCHIVED = 'archived';
-  const snap = await getDocs(
-    query(getColRef('app_participants'), where('status', '==', PARTICIPANT_STATUS_ARCHIVED))
-  );
+  const q = query(getColRef('app_participants'), where('status', '==', PARTICIPANT_STATUS_ARCHIVED));
+  let snap;
+  try {
+    snap = await getDocsFromServer(q);
+  } catch {
+    if (isParticipantSliceHit(local, remoteV)) {
+      logCacheDecision(scope, { event: 'hit-offline', version: remoteV, rows: local.data.length, source: 'indexedDB' });
+      return local.data;
+    }
+    snap = await getDocs(q);
+  }
   const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   const vToStore = await resolveVersionForStore(scope, remoteV);
   await writeLocalVersionCache(scope, vToStore, all, { kind: 'archive' });
   logCacheDecision(scope, {
-    event: 'miss-refetch',
+    event: cachedRows !== all.length ? 'refresh-cache' : 'open-refresh',
     version: vToStore,
     rows: all.length,
     source: 'firestore',

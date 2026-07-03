@@ -796,6 +796,11 @@ export function collectBautizosServidoresYEmpleadosRows(roster) {
   return out;
 }
 
+/** Personas únicas en «Servidores y empleados» (misma regla que la página y coincidencias). */
+export function countBautizosServidoresYEmpleadosPeople(roster) {
+  return collectBautizosServidoresYEmpleadosRows(roster).length;
+}
+
 /** Solo tipo Servidor (conteos separados de empleado en dashboard / tarjetas). */
 export function participantIsBautizosServidorAttendance(personLike) {
   return normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.servidor;
