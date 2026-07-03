@@ -65,6 +65,8 @@ import {
   shouldBlockSensitiveHealthWithoutConsent,
   buildRegistrationPrivacyActivityMessage,
 } from './privacyNotice.js';
+import { describeNewRegistrationCompanions } from './registrationChangeLog.js';
+import { truncateActivityLogDetails } from './activityLogDiff.js';
 import { prepareParticipantDocForFirestore } from './firestorePayloadSanitize.js';
 import {
   buildCapSimulationRows,
@@ -1899,7 +1901,9 @@ async function appendPublicRegistrationActivityLog({
       details = `Inscribió a ${name} en la sede ${loc} (formulario público).`;
       if (paymentService) details += ` Servicio: ${paymentService}.`;
       details += ` Pago inicial: $${paid} (${pm})${isLiquidado ? ' [LIQUIDADO]' : ''}.`;
+      details += describeNewRegistrationCompanions(participantData?.bautizosCompanions);
     }
+    details = truncateActivityLogDetails(details);
     // Snapshot completo del registro público (segunda fuente de verdad).
     let hasSnapshot = false;
     if (participantData) {

@@ -84,6 +84,15 @@ import {
   transportPlanningFromEventDoc,
   vehicleKeysForTitular,
 } from '../transportCarMetaStore.js';
+import {
+  describeFamilyCarOverrideChange,
+  describeManualGroupCarsChange,
+  describeManualGroupCreated,
+  describeManualGroupMembersAdded,
+  describeManualGroupSeparated,
+  describeManualGroupTitularChange,
+  titularNameFromSk,
+} from '../transportActivityLog.js';
 
 const CAR_META_SAVE_DEBOUNCE_MS = 700;
 const PLAN_STRUCTURE_SAVE_DEBOUNCE_MS = 800;
@@ -218,6 +227,27 @@ export default function TransportPlanningPage({
       carLines: sortTransportLinesByRosterOrder(built.carLines, evRosterFiltered),
     };
   }, [evRosterFiltered, eventType, locations, currentEvent]);
+
+  const rosterNameById = useMemo(() => {
+    const m = new Map();
+    for (const p of evRosterFiltered || []) {
+      const id = String(p?.id || '').trim();
+      if (id) m.set(id, String(p?.name || '').trim());
+    }
+    return m;
+  }, [evRosterFiltered]);
+
+  const logTransport = useCallback(
+    (details) => {
+      if (typeof addLog !== 'function' || !details) return;
+      void addLog('Transporte', details, null, currentEvent, null, {
+        entityType: 'transport',
+        entityId: String(currentEvent?.id || ''),
+        status: 'ok',
+      });
+    },
+    [addLog, currentEvent]
+  );
 
   const [plan, setPlan] = useState(() =>
     transportPlanningFromEventDoc(currentEvent?.transportPlanning)
@@ -1691,6 +1721,13 @@ export default function TransportPlanningPage({
 
     setCarPick(new Set());
     setMergeConflictModal(null);
+    logTransport(
+      describeManualGroupCreated({
+        memberLines,
+        anchorTitularSk: anchorSk,
+        inheritedCars,
+      })
+    );
     showToast(
       `Grupo manual creado: ${keys.length} persona${keys.length !== 1 ? 's' : ''} · ${inheritedCars} carro${inheritedCars !== 1 ? 's' : ''}.`
     );
@@ -1797,6 +1834,19 @@ export default function TransportPlanningPage({
     }
 
     setAddMembersModal(null);
+    const addedLines = additions.map((k) => lineByKey.get(k)).filter(Boolean);
+    const groupBefore = (plan.carGroups || []).find((g) => String(g.id || '').trim() === gid);
+    const existingCount = (groupBefore?.memberKeys || []).length;
+    logTransport(
+      describeManualGroupMembersAdded({
+        addedLines,
+        groupLabel: addMembersModal?.label || '',
+        titularName: titularNameFromSk(anchorSkForSave, carLines, rosterNameById),
+        totalMembers: existingCount + additions.length,
+        effectiveCars: effectiveCarsForSave,
+        orphanMode,
+      })
+    );
     showToast(
       `Se agregaron ${additions.length} persona${additions.length !== 1 ? 's' : ''} al grupo manual.`
     );
@@ -1893,6 +1943,8 @@ export default function TransportPlanningPage({
     const prevAnchorSk = String(view?.titularSk || '').trim();
     if (!gid || !hid || !newAnchorSk || newAnchorSk === prevAnchorSk) return;
     const effectiveCars = view?.effectiveCars || 1;
+    const prevTitularName = view?.titularName || titularNameFromSk(prevAnchorSk, carLines, rosterNameById);
+    const nextTitularName = rosterNameById.get(hid) || titularNameFromSk(newAnchorSk, carLines, rosterNameById);
     setPlan((prev) => {
       let next = normalizeTransportPlanning(prev);
       const titularMap = { ...(next.bautizosGroupTitularByGroupId || {}), [gid]: hid };
@@ -1901,12 +1953,24 @@ export default function TransportPlanningPage({
       next = mergeCarMetaPatchesIntoPlan(next, copyPatches);
       return applyCarMetaPassengerInheritance(next);
     });
+    logTransport(
+      describeManualGroupTitularChange({
+        groupLabel: view?.label || '',
+        prevTitularName,
+        nextTitularName,
+      })
+    );
     showToast('Titular del grupo manual actualizado. Los datos de carro se copiaron al nuevo titular.');
   };
 
   const unmergeManualCarGroup = (groupId) => {
     const gid = String(groupId || '').trim();
     if (!gid) return;
+    const group = (plan.carGroups || []).find((g) => String(g.id || '').trim() === gid);
+    const memberKeys = group?.memberKeys || [];
+    const memberLines = memberKeys
+      .map((k) => carLines.find((l) => String(l?.sourceKey || '').trim() === String(k).trim()))
+      .filter(Boolean);
     setPlan((prev) => {
       const next = normalizeTransportPlanning(prev);
       return {
@@ -1914,6 +1978,7 @@ export default function TransportPlanningPage({
         carGroups: (next.carGroups || []).filter((g) => String(g.id || '').trim() !== gid),
       };
     });
+    logTransport(describeManualGroupSeparated({ groupId: gid, memberLines }));
     showToast('Grupo separado. Cada registro vuelve a contarse por separado.');
   };
 
@@ -1941,27 +2006,45 @@ export default function TransportPlanningPage({
     showToast('Familias agrupadas (carros según registro del titular; ajusta plazas o override si aplica).');
   };
 
-  const setGroupCars = (groupId, cars) => {
+  const setGroupCars = (groupId, cars, meta = {}) => {
     const c = clampInt(cars, 1, 99);
-    setPlan((prev) => {
-      const next = normalizeTransportPlanning(prev);
+    const group = (plan.carGroups || []).find((g) => String(g.id) === String(groupId));
+    const prev = parseInt(group?.cars, 10);
+    const prevCars = Number.isFinite(prev) && prev >= 1 ? prev : 1;
+    if (prevCars === c) return;
+    setPlan((prevPlan) => {
+      const next = normalizeTransportPlanning(prevPlan);
       const groups = (next.carGroups || []).map((g) =>
         String(g.id) === String(groupId) ? { ...g, cars: c } : g
       );
       return { ...next, carGroups: groups };
     });
+    logTransport(
+      describeManualGroupCarsChange({
+        groupLabel: meta.groupLabel || '',
+        prevCars,
+        nextCars: c,
+        titularName: meta.titularName || '',
+      })
+    );
   };
 
   const setFamilyOverride = (hostId, cars) => {
     const h = String(hostId || '').trim();
     if (!h) return;
     const c = clampInt(cars, 1, 99);
-    setPlan((prev) => {
-      const next = normalizeTransportPlanning(prev);
+    const prevRaw = plan.familyCarOverride?.[h];
+    const prev = parseInt(prevRaw, 10);
+    const prevCars = Number.isFinite(prev) && prev >= 1 ? prev : 1;
+    if (prevCars === c) return;
+    const hostName = rosterNameById.get(h) || h;
+    setPlan((prevPlan) => {
+      const next = normalizeTransportPlanning(prevPlan);
       const familyCarOverride = { ...(next.familyCarOverride || {}) };
       familyCarOverride[h] = c;
       return { ...next, familyCarOverride };
     });
+    logTransport(describeFamilyCarOverrideChange({ hostName, prevCars, nextCars: c }));
   };
 
   const resolveCampaAmbosTransit = (sourceKey) => {
@@ -2906,7 +2989,12 @@ export default function TransportPlanningPage({
                                 min={1}
                                 className={`${inputSm} w-20`}
                                 value={view.effectiveCars}
-                                onChange={(e) => setGroupCars(view.id, e.target.value)}
+                                onChange={(e) =>
+                                  setGroupCars(view.id, e.target.value, {
+                                    groupLabel: view.label || '',
+                                    titularName: view.titularName || '',
+                                  })
+                                }
                               />
                             </label>
                             <button
@@ -3492,7 +3580,11 @@ export default function TransportPlanningPage({
                                       min={1}
                                       className={`${inputSm} w-20`}
                                       value={parseInt(g.cars, 10) >= 1 ? g.cars : eff}
-                                      onChange={(e) => setGroupCars(g.id, e.target.value)}
+                                      onChange={(e) =>
+                                        setGroupCars(g.id, e.target.value, {
+                                          groupLabel: getCarGroupDisplayLabel(g),
+                                        })
+                                      }
                                     />
                                   ) : (
                                     <span className="tabular-nums font-bold">{eff}</span>
@@ -3581,7 +3673,11 @@ export default function TransportPlanningPage({
                                   min={1}
                                   className={`${inputSm} w-20`}
                                   value={parseInt(g.cars, 10) >= 1 ? g.cars : eff}
-                                  onChange={(e) => setGroupCars(g.id, e.target.value)}
+                                  onChange={(e) =>
+                                    setGroupCars(g.id, e.target.value, {
+                                      groupLabel: getCarGroupDisplayLabel(g),
+                                    })
+                                  }
                                 />
                               ) : (
                                 <span className="tabular-nums font-bold">{eff}</span>

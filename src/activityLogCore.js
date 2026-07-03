@@ -7,11 +7,19 @@
  * siendo recuperables desde los logs. Incluye una cola de reintento en IndexedDB
  * para que un fallo de escritura del propio log no pierda la información.
  *
+ * Convención de mensajes (`details` en app_logs):
+ * - Estructura: `{Quién} · {contexto}. {Acción}. Detalle: cambio1; cambio2.`
+ * - Cambios atómicos siempre before→after: `Etiqueta (antes → después)`.
+ * - Objetos complejos (acompañantes, transporte): helpers en *ActivityLog.js.
+ * - `details` legible sin abrir JSON; snapshot = fuente técnica completa.
+ * - Truncar `details` ~1500 chars (ver truncateActivityLogDetails); listas largas resumir.
+ *
  * Este módulo es framework-agnóstico (sin React) para poder usarse también desde
  * `errorLogger.js` y `main.jsx`.
  */
 import { setDoc } from 'firebase/firestore';
 import { getDocRef, getPublicDocRef } from './firebaseRefs.js';
+import { truncateActivityLogDetails } from './activityLogDiff.js';
 
 /** Colección lateral con el snapshot completo (JSON plano) por log. Se carga solo al expandir. */
 export const LOG_SNAPSHOTS_COLLECTION = 'app_log_snapshots';
@@ -138,7 +146,11 @@ export async function logSnapshotBackup(logId, opts = {}) {
  */
 export async function writeLogDoc(logDoc, { usePublic = false } = {}) {
   const id = String(logDoc?.id || buildLogId());
-  const data = { ...logDoc, id };
+  const data = {
+    ...logDoc,
+    id,
+    ...(logDoc?.details != null ? { details: truncateActivityLogDetails(logDoc.details) } : {}),
+  };
   try {
     await setDoc(resolveDocRef(LOGS_COLLECTION, id, usePublic), data);
     return { ok: true, data };

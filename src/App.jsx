@@ -59,7 +59,7 @@ import {
   Wallet, GraduationCap, Droplets, Activity, LogOut, UserCog, History, Lock, Shield,
   UserCircle, Receipt, CalendarRange, ListPlus, GripVertical, Settings2, Undo, ArrowLeft, RotateCcw,
   SlidersHorizontal, Bug, Download, Send, Database, Menu, FileSpreadsheet, MessageCircle, MessageSquare, ClipboardList,
-  Scissors, Calendar, Church, Archive, Ban, QrCode, Percent, Heart, FileText, FileSignature, Scale, Bus, Car, X, Copy,
+  Scissors, Calendar, Church, Archive, Ban, QrCode, Percent, Heart, FileText, FileSignature, Scale, Bus, Car, X, Copy, Link2,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import {
@@ -199,6 +199,27 @@ import {
   BAUTIZOS_DASHBOARD_SCOPE_OPTIONS,
   BAUTIZOS_DASHBOARD_SCOPE_IDS,
 } from './bautizosParty.js';
+import {
+  buildRegistrationEditScalarChanges,
+  describeNewRegistrationCompanions,
+  describeRegisteredCostChange,
+} from './registrationChangeLog.js';
+import { truncateActivityLogDetails } from './activityLogDiff.js';
+import {
+  describeCampaBreakdownLineAdded,
+  describeCampaBreakdownLineRemoved,
+  describeCampaManualDivisorChange,
+  describeStringListConfigChange,
+} from './eventConfigActivityLog.js';
+import {
+  applyCompanionLinkToHostCompanions,
+  buildCompanionRegistrantCollisionIndex,
+  buildNewEntryCompanionCollisionHint,
+  describeCollisionCluster,
+  describeCollisionReasons,
+} from './companionRegistrantCollision.js';
+import { buildCampaFamilyCollisionIndex, describeCampaSpouseCluster } from './campaFamilyCollision.js';
+import { nameTokensSubsetMatch } from './personNameMatch.js';
 import {
   applyCompanionWaitlistCapOnEdit,
   buildCompanionWaitlistVirtualParticipant,
@@ -9406,6 +9427,33 @@ function resolveEventName(eventId) {
     return { byLocation: byLoc, groups, duplicateClusters, total };
   }, [allParticipants, currentEvent]);
 
+  const companionCollisionsInEvent = useMemo(() => {
+    if (!currentEvent || currentEvent.eventType !== 'Bautizos') {
+      return { clusters: [], byRegistrantId: new Map(), byHostId: new Map(), total: 0, actionableCount: 0 };
+    }
+    return buildCompanionRegistrantCollisionIndex(allParticipants, currentEvent.id, {
+      canonicalizeVnpPersonId,
+      minConfidence: 'possible',
+    });
+  }, [allParticipants, currentEvent]);
+
+  const campaFamilyCollisionsInEvent = useMemo(() => {
+    if (!currentEvent || currentEvent.eventType !== 'Campa') {
+      return { clusters: [], byParticipantId: new Map(), total: 0 };
+    }
+    return buildCampaFamilyCollisionIndex(allParticipants, currentEvent.id);
+  }, [allParticipants, currentEvent]);
+
+  const companionCollisionsActionable = useMemo(
+    () =>
+      (companionCollisionsInEvent.clusters || []).filter(
+        (c) => c.confidence === 'certain' || c.confidence === 'probable'
+      ),
+    [companionCollisionsInEvent.clusters]
+  );
+
+  const [expandedCompanionCollisionGroups, setExpandedCompanionCollisionGroups] = useState(new Set());
+
   /**
    * Registros cuya sede no coincide con ninguna entrada de `currentEvent.locations` (o viene vacía).
    * Quedan en `data[claveExtraña]` y no se listan en pestañas ni entran en totales del resumen que iteran solo sedes del evento.
@@ -9698,6 +9746,8 @@ function resolveEventName(eventId) {
     const username = overrideUsername || currentUser?.username;
     if (!username) return null;
 
+    const safeDetails = truncateActivityLogDetails(details);
+
     const ev = targetEvent || currentEvent;
     const createdAt = Date.now();
     const newLogId = String(logOptions?.logId || `${createdAt}${Math.random().toString(36).slice(2, 10)}`);
@@ -9727,7 +9777,7 @@ function resolveEventName(eventId) {
       timestamp: new Date().toLocaleString('es-MX'),
       username,
       action,
-      details,
+      details: safeDetails,
       revertInfo: ri,
       ...buildLogEntityFields({
         entityType: logOptions?.entityType,
@@ -14437,7 +14487,10 @@ function resolveEventName(eventId) {
     if (opts.length === 0) { showToast('Debe haber al menos una opción.'); return; }
     if (!opts.includes('Otro')) { showToast('Debe incluir la opción "Otro".'); return; }
     await updateDoc(getDocRef('app_data', 'config'), { serveAreaOptions: opts });
-    addLog('Configuración', 'Actualizó las opciones de área para servir.', null, { id: 'Global', name: 'Sistema' });
+    const serveDetail =
+      describeStringListConfigChange(globalConfig?.serveAreaOptions, opts, 'Opciones de área para servir') ||
+      'Opciones de área para servir (sin cambios detectados en lista).';
+    addLog('Configuración', serveDetail, null, { id: 'Global', name: 'Sistema' });
     setServeAreaOptionsModal({ isOpen: false });
     showToast('Opciones de área actualizadas.');
   };
@@ -14447,7 +14500,10 @@ function resolveEventName(eventId) {
     const opts = allergyOptionsForm.filter(Boolean).map((s) => s.trim()).filter(Boolean);
     if (opts.length === 0) { showToast('Debe haber al menos una categoría de alergia.'); return; }
     await updateDoc(getDocRef('app_data', 'config'), { allergyOptions: opts });
-    addLog('Configuración', 'Actualizó las categorías de alergias.', null, { id: 'Global', name: 'Sistema' });
+    const allergyDetail =
+      describeStringListConfigChange(globalConfig?.allergyOptions, opts, 'Categorías de alergias') ||
+      'Categorías de alergias (sin cambios detectados en lista).';
+    addLog('Configuración', allergyDetail, null, { id: 'Global', name: 'Sistema' });
     setAllergyOptionsModal({ isOpen: false });
     showToast('Categorías de alergias actualizadas.');
   };
@@ -14627,6 +14683,13 @@ function resolveEventName(eventId) {
     prev.push({ id, concept, quantity: qty, unitCost: unit });
     try {
       await updateEventConfig({ campaRealCostBreakdownItems: prev });
+      addLog(
+        'Configuración',
+        describeCampaBreakdownLineAdded(concept, qty, unit, prev.length),
+        null,
+        currentEvent,
+        { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent }
+      );
       setCampaRealCostBreakdownForm({ concept: '', quantity: '1', unitCost: '' });
       showToast('Concepto agregado al costo real.');
     } catch (e) {
@@ -14637,11 +14700,22 @@ function resolveEventName(eventId) {
 
   const handleDeleteCampaRealCostBreakdownLine = async (lineId) => {
     if (!canAccessExpenses || !currentEvent?.id) return;
+    const removed = (Array.isArray(currentEvent.campaRealCostBreakdownItems)
+      ? currentEvent.campaRealCostBreakdownItems
+      : []
+    ).find((x) => String(x.id) === String(lineId));
     const prev = Array.isArray(currentEvent.campaRealCostBreakdownItems)
       ? currentEvent.campaRealCostBreakdownItems.filter((x) => String(x.id) !== String(lineId))
       : [];
     try {
       await updateEventConfig({ campaRealCostBreakdownItems: prev });
+      addLog(
+        'Configuración',
+        describeCampaBreakdownLineRemoved(removed?.concept || lineId, prev.length),
+        null,
+        currentEvent,
+        { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent }
+      );
       showToast('Concepto eliminado.');
     } catch (e) {
       console.error(e);
@@ -14652,9 +14726,17 @@ function resolveEventName(eventId) {
   const handleSaveCampaRealCostManualDivisor = async () => {
     if (!canAccessExpenses || !currentEvent?.id) return;
     const raw = String(campaRealCostManualDivisorStr || '').trim();
+    const prevDiv = currentEvent?.campaRealCostManualDivisor;
     try {
       if (raw === '') {
         await updateEventConfig({ campaRealCostManualDivisor: deleteField() });
+        addLog(
+          'Configuración',
+          describeCampaManualDivisorChange(prevDiv, ''),
+          null,
+          currentEvent,
+          { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent }
+        );
       } else {
         const n = parseFloat(raw.replace(',', '.'));
         if (!Number.isFinite(n) || n <= 0) {
@@ -14662,6 +14744,13 @@ function resolveEventName(eventId) {
           return;
         }
         await updateEventConfig({ campaRealCostManualDivisor: n });
+        addLog(
+          'Configuración',
+          describeCampaManualDivisorChange(prevDiv, n),
+          null,
+          currentEvent,
+          { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent }
+        );
       }
       showToast('Divisor guardado.');
     } catch (e) {
@@ -15921,6 +16010,29 @@ function resolveEventName(eventId) {
       ),
     [newEntry.name, newEntry.phone, newEntry.alias, newEntry.age, newEntry.allowSharedMainPhone, allParticipants, currentEvent?.id]
   );
+
+  const newRegCompanionCollisionHint = useMemo(() => {
+    if (currentEvent?.eventType !== 'Bautizos') return null;
+    return buildNewEntryCompanionCollisionHint(
+      newEntry.name,
+      newEntry.birthDate,
+      allParticipants,
+      currentEvent?.id,
+      { canonicalizeVnpPersonId }
+    );
+  }, [newEntry.name, newEntry.birthDate, allParticipants, currentEvent?.id, currentEvent?.eventType]);
+
+  const newRegLinkableCompanionCluster = useMemo(() => {
+    if (currentEvent?.eventType !== 'Bautizos' || !newEntry.name?.trim()) return null;
+    const norm = normalizeFullNameCompareKey(newEntry.name);
+    if (!norm) return null;
+    return (
+      companionCollisionsActionable.find((cl) => {
+        const rn = normalizeFullNameCompareKey(cl.registrantSide?.name);
+        return rn && (rn === norm || nameTokensSubsetMatch(newEntry.name, cl.registrantSide?.name));
+      }) || null
+    );
+  }, [companionCollisionsActionable, newEntry.name, currentEvent?.eventType]);
 
   useEffect(() => {
     setNewRegDupExpandedIds([]);
@@ -18851,7 +18963,7 @@ function resolveEventName(eventId) {
     const comentarioInicialLog = comentarioInicialNuevoReg
       ? ` Comentario inicial: «${comentarioInicialNuevoReg.length > 200 ? `${comentarioInicialNuevoReg.slice(0, 200)}…` : comentarioInicialNuevoReg}».`
       : '';
-    const _newRegLog = `${previousParticipantData ? 'Actualizó registro de' : 'Inscribió a'} ${entryPayload.name} en la sede ${loc}.${paymentService ? ` (Servicio: ${paymentService})` : ''} (Pago inicial: $${initialPaidGross} ${paymentMethod === 'Tarjeta' ? `(Tarjeta, Neto: $${initialPaidNet})` : '(Efectivo)'} )${isLiquidadoReg ? ' [LIQUIDADO]' : ''}${comentarioInicialLog}`;
+    const _newRegLog = truncateActivityLogDetails(`${previousParticipantData ? 'Actualizó registro de' : 'Inscribió a'} ${entryPayload.name} en la sede ${loc}.${paymentService ? ` (Servicio: ${paymentService})` : ''} (Pago inicial: $${initialPaidGross} ${paymentMethod === 'Tarjeta' ? `(Tarjeta, Neto: $${initialPaidNet})` : '(Efectivo)'} )${isLiquidadoReg ? ' [LIQUIDADO]' : ''}${describeNewRegistrationCompanions(entryPayload.bautizosCompanions)}${comentarioInicialLog}`);
     addLog(
       'Nuevo Registro',
       _newRegLog,
@@ -19719,89 +19831,31 @@ function resolveEventName(eventId) {
         originalPerson.regresaEnCarro !== editedPerson.regresaEnCarro ||
         String(originalPerson.travelFrom || '') !== String(editedPerson.travelFrom || '') ||
         String(originalPerson.travelTo || '') !== String(editedPerson.travelTo || ''));
-    const changes = [];
-    const fieldsToTrack = [
-      { key: 'name', label: 'Nombre' }, { key: 'phone', label: 'Teléfono' }, { key: 'paid', label: 'Monto Pagado' },
-      { key: 'emergencyContact', label: 'Contacto emergencia' }, { key: 'emergencyPhone', label: 'Tel. emergencia' }, { key: 'emergencyRelationship', label: 'Parentesco emergencia' },
-      { key: 'alias', label: 'Alias' }, { key: 'birthDate', label: 'Fecha nacimiento' }, { key: 'vnpPersonId', label: 'ID VNPM' },
-                      { key: 'llegaEnCarro', label: 'Llega en carro' },
-      { key: 'attendanceSpecialType', label: 'Asistencia especial' },
-      { key: 'isScholarship', label: 'Becado' },
-      { key: 'scholarshipType', label: 'Tipo beca' },
-      { key: 'scholarshipPartialAmount', label: 'Beca parcial — monto becado ($)' },
-      { key: 'responsivaStatus', label: 'Responsiva' },
-      { key: 'isServer', label: 'Servidor' },
-      { key: 'serverAssignment', label: 'Asignación' },
-      { key: 'ambosServeInSegment', label: 'Ambos: sirve en segmento' },
-      { key: 'campAssignment', label: 'Asig. Campista' },
-      { key: 'willBeBaptized', label: 'Bautizo' }, { key: 'baptismSegment', label: 'Bautizo (Teens/Jóvenes)' },
-      { key: 'baptismShirtSize', label: 'Talla playera (bautizados)' },
-      { key: 'canSwim', label: 'Nado' }, { key: 'age', label: 'Edad' },
-      { key: 'travelFrom', label: 'Sale de' }, { key: 'travelTo', label: 'Regresa a' },
-      { key: 'isMarried', label: 'Es casado' }, { key: 'spouseName', label: 'Nombre de pareja' },
-      { key: 'spouseParticipantId', label: 'Registro pareja (id)' }, { key: 'spousePhone', label: 'Tel. pareja (pendiente)' },
-      { key: 'goesWithChildren', label: 'Va con hijos' }, { key: 'childrenCount', label: 'Cant. hijos' }, { key: 'servedOtherCampa', label: 'Sirvió en otro campa' },
-      { key: 'servedAreas', label: 'áreas previas' }, { key: 'preferredServeArea', label: 'área deseada' },
-      { key: 'servesInCongress', label: 'Sirve en congre' }, { key: 'congressServeArea', label: 'área en congre' },
-      { key: 'hasAllergy', label: 'Alergia' }, { key: 'allergyCategory', label: 'Categoría Alergia' }, { key: 'allergyDetails', label: 'Detalle Alergia' },
-      { key: 'hasDisease', label: 'Enfermedad' }, { key: 'diseaseDetails', label: 'Detalle Enfermedad' }, { key: 'diseaseMedication', label: 'Medicamento' },
-      { key: 'hasDisability', label: 'Discapacidad' }, { key: 'disabilityDetails', label: 'Detalle Discapacidad' }
-    ];
-    /**
-     * Filtramos por tipo de evento para no reportar cambios espurios:
-     *   - Bautizos abriendo el modal de edición fuerza defaults (`campAssignment`,
-     *     `scholarshipType`, etc.) que el formulario no muestra. Sin filtrar, el log
-     *     reportaría modificaciones de becas / asignación campista en eventos donde
-     *     no aplican. Aquí solo conservamos campos pertinentes al tipo de evento.
-     */
     const scholarshipToggled =
       String(originalPerson.isScholarship ?? '') !== String(editedPerson.isScholarship ?? '');
     const scholarshipTypeChangedRaw =
       String(originalPerson.scholarshipType ?? '') !== String(editedPerson.scholarshipType ?? '');
     const scholarshipPartialChangedRaw =
       Number(originalPerson.scholarshipPartialAmount ?? 0) !== Number(editedPerson.scholarshipPartialAmount ?? 0);
-    // `scholarshipType` / monto parcial solo son significativos cuando la beca está activa.
     const scholarshipDetailsMeaningful =
       isSiValue(originalPerson.isScholarship) || isSiValue(editedPerson.isScholarship);
     const scholarshipFieldsTouched =
       scholarshipToggled ||
       (scholarshipDetailsMeaningful && (scholarshipTypeChangedRaw || scholarshipPartialChangedRaw));
 
-    const eventScopedFieldsToTrack = filterFieldsToTrackByEventType(fieldsToTrack, currentEvent?.eventType);
-    eventScopedFieldsToTrack.forEach(f => {
-      if ((f.key === 'scholarshipType' || f.key === 'scholarshipPartialAmount') && !scholarshipDetailsMeaningful) return;
-      const prev = originalPerson[f.key];
-      const next = editedPerson[f.key];
-      const prevEmpty = prev === undefined || prev === null || prev === '';
-      const nextEmpty = next === undefined || next === null || next === '';
-      if (prevEmpty && nextEmpty) return;
-      // Ruido de defaults: original no definido y nuevo es '' / 'No' / false.
-      if (prev === undefined && (next === '' || next === 'No' || next === false)) return;
-      if (String(prev) === String(next)) return;
-      changes.push(`${f.label} (${prev} -> ${next})`);
+    const changes = buildRegistrationEditScalarChanges({
+      originalPerson,
+      editedPerson,
+      eventType: currentEvent?.eventType,
+      scholarshipDetailsMeaningful,
+      hasAdminRights,
+      loc,
+      resolveSpouseName: (id) => {
+        const p = allParticipants.find((x) => String(x?.id || '') === String(id));
+        return p?.name ? String(p.name).trim() : '';
+      },
+      includeManualRegisteredCost: !!editedPerson.registeredCostManual,
     });
-    if (!!originalPerson.allowSharedMainPhone !== !!editedPerson.allowSharedMainPhone) {
-      changes.push(
-        `Mismo teléfono permitido (${originalPerson.allowSharedMainPhone ? 'Sí' : 'No'} -> ${editedPerson.allowSharedMainPhone ? 'Sí' : 'No'})`
-      );
-    }
-    if (
-      isParticipantFieldApplicableToEventType('bautizosCompanions', currentEvent?.eventType) &&
-      JSON.stringify(originalPerson.bautizosCompanions || []) !== JSON.stringify(editedPerson.bautizosCompanions || [])
-    ) {
-      changes.push('Acompañantes / familia (actualizado)');
-    }
-    if (
-      isParticipantFieldApplicableToEventType('bautizosAttendanceType', currentEvent?.eventType) &&
-      String(originalPerson.bautizosAttendanceType || '') !== String(editedPerson.bautizosAttendanceType || '')
-    ) {
-      changes.push(
-        `Tipo de asistencia (bautizos) (${originalPerson.bautizosAttendanceType || '—'} -> ${editedPerson.bautizosAttendanceType || '—'})`
-      );
-    }
-    if (hasAdminRights && String(originalPerson.location) !== String(editedPerson.location || loc)) {
-      changes.push(`Sede (${originalPerson.location} -> ${editedPerson.location || loc})`);
-    }
 
     const originalPaid = parseFloat(originalPerson.paid || 0);
     const newPaid = parseFloat(editedPerson.paid || 0);
@@ -19850,7 +19904,18 @@ function resolveEventName(eventId) {
       } else {
         finalRegisteredCost = getPersonCost(editedPerson, currentPricing, currentEvent);
       }
-      changes.push(`Costo Ajustado a ${finalRegisteredCost}`);
+      const prevListCost = Number(originalPerson.registeredCost ?? 0);
+      if (Number(finalRegisteredCost) !== prevListCost) {
+        const costReason = bautizosPartyChanged
+          ? 'por cambio de acompañantes o transporte'
+          : originalPerson.isServer !== editedPerson.isServer ||
+              originalPerson.serverAssignment !== editedPerson.serverAssignment ||
+              String(originalPerson.ambosServeInSegment || '') !== String(editedPerson.ambosServeInSegment || '')
+            ? 'por perfil servidor'
+            : '';
+        const costLine = describeRegisteredCostChange(prevListCost, finalRegisteredCost, costReason);
+        if (costLine) changes.push(costLine);
+      }
     }
 
     const finalLocation = hasAdminRights ? (editedPerson.location || loc) : loc;
@@ -20281,6 +20346,7 @@ function resolveEventName(eventId) {
         kind: 'registro_editado',
         eventId: currentEvent?.id,
         eventName: currentEvent?.name,
+        eventType: currentEvent?.eventType,
         location: payloadWithPrivacy.location || editedPerson.location,
         payload: payloadWithPrivacy,
         bautizosCompanions: payload.bautizosCompanions || editedPerson.bautizosCompanions || [],
@@ -20487,7 +20553,7 @@ function resolveEventName(eventId) {
     if (changes.length > 0) {
       const mergedForLiq = { ...editedPerson, ...payload };
       const isLiquidado = parseFloat(mergedForLiq.paid) >= getLiquidationTarget(mergedForLiq);
-      const _updLog = `Modificó datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`;
+      const _updLog = truncateActivityLogDetails(`Modificó datos de ${originalPerson.name} en ${loc}.${isLiquidado ? ' [LIQUIDADO]' : ''} Cambios: ${changes.join(', ')}`);
       addLog('Actualización de Registro', _updLog, null, null, { collectionName: 'app_participants', docId: String(editedPerson.id), action: 'update', previousData: originalPerson }, {
         logId: _editLogId,
         skipSnapshotWrite: true,
@@ -22372,6 +22438,108 @@ function resolveEventName(eventId) {
     [allParticipants, currentEvent, archiveParticipantToFirestore, addLog, logParticipantActivity, showToast]
   );
 
+  const performLinkCompanionCollision = useCallback(
+    async (cluster) => {
+      if (!cluster?.companionSide?.hostId || !cluster?.registrantSide?.participantId) {
+        showToast('Colisión inválida.');
+        return false;
+      }
+      if (!hasAdminRights || currentUser?.role === 'Lector') {
+        showToast('Solo administradores pueden vincular acompañantes.');
+        return false;
+      }
+      const hostId = String(cluster.companionSide.hostId);
+      const regId = String(cluster.registrantSide.participantId);
+      const host = allParticipants.find((p) => String(p.id) === hostId && p.eventId === currentEvent?.id);
+      const registrant = allParticipants.find((p) => String(p.id) === regId && p.eventId === currentEvent?.id);
+      if (!host || !registrant) {
+        showToast('No se encontraron los registros.');
+        return false;
+      }
+      const loc = String(host.location || '').trim();
+      if (loc && !hasLocationAccess(loc)) {
+        showToast('No tienes permiso en la sede del titular.');
+        return false;
+      }
+      const companionId = String(cluster.companionSide.companionId || '').trim();
+      const nextCompanions = applyCompanionLinkToHostCompanions(host.bautizosCompanions, companionId, registrant);
+      try {
+        await updateDoc(getDocRef('app_participants', hostId), {
+          bautizosCompanions: nextCompanions,
+        });
+        const detail = truncateActivityLogDetails(
+          `Vinculó acompañante «${cluster.companionSide.displayName || '—'}» del titular ${host.name || '—'} (${loc || '?'}) al registro activo ${registrant.name || '—'} (${registrant.location || '?'}). Motivo: ${describeCollisionReasons(cluster.reasons)}.`
+        );
+        addLog('Actualización de Registro', detail, null, currentEvent, {
+          collectionName: 'app_participants',
+          docId: hostId,
+          action: 'update',
+          previousData: host,
+        });
+        logParticipantActivity(hostId, 'actualizacion', detail);
+        showToast('Acompañante vinculado al registro activo.');
+        return true;
+      } catch (e) {
+        console.error(e);
+        showToast('No se pudo vincular el acompañante.');
+        return false;
+      }
+    },
+    [
+      allParticipants,
+      currentEvent,
+      hasAdminRights,
+      currentUser?.role,
+      hasLocationAccess,
+      addLog,
+      logParticipantActivity,
+      showToast,
+    ]
+  );
+
+  const performAckCompanionCollision = useCallback(
+    async (cluster) => {
+      if (!cluster?.ackKey) {
+        showToast('Colisión inválida.');
+        return;
+      }
+      if (!hasAdminRights || currentUser?.role === 'Lector') {
+        showToast('Solo administradores pueden reconocer colisiones.');
+        return;
+      }
+      const hostId = String(cluster.companionSide?.hostId || '');
+      const regId = String(cluster.registrantSide?.participantId || '');
+      const ackKey = String(cluster.ackKey);
+      const ids = [hostId, regId].filter(Boolean);
+      const batch = writeBatch(db);
+      let n = 0;
+      for (const pid of ids) {
+        const fresh = allParticipants.find((p) => String(p.id) === pid && p.eventId === currentEvent?.id);
+        if (!fresh) continue;
+        batch.update(getDocRef('app_participants', pid), {
+          duplicateAlertAcknowledgedKeys: arrayUnion(ackKey),
+        });
+        n += 1;
+      }
+      if (!n) {
+        showToast('No se encontraron registros.');
+        return;
+      }
+      try {
+        await batch.commit();
+        const detail = truncateActivityLogDetails(
+          `Reconoció colisión acompañante↔activo: ${describeCollisionCluster(cluster)}.`
+        );
+        addLog('Configuración', detail, null, currentEvent);
+        showToast('Colisión marcada como reconocida.');
+      } catch (e) {
+        console.error(e);
+        showToast('No se pudo guardar.');
+      }
+    },
+    [allParticipants, currentEvent, hasAdminRights, currentUser?.role, addLog, showToast]
+  );
+
   const performAcceptDuplicateCluster = useCallback(
     async (payload) => {
       const { memberIds, ackKeys, reasons } = payload || {};
@@ -22870,6 +23038,10 @@ function resolveEventName(eventId) {
       else if (m.type === 'archive_waitlist') await performArchiveWaitlistEntry(m.loc, m.personId);
       else if (m.type === 'archive_duplicate_hint') await performArchiveDuplicateHintEntry(m.personId);
       else if (m.type === 'dup_accept_cluster' && m.dupAcceptCluster) await performAcceptDuplicateCluster(m.dupAcceptCluster);
+      else if (m.type === 'companion_link_collision' && m.companionCollisionCluster)
+        await performLinkCompanionCollision(m.companionCollisionCluster);
+      else if (m.type === 'companion_ack_collision' && m.companionCollisionCluster)
+        await performAckCompanionCollision(m.companionCollisionCluster);
       else if (m.type === 'cancel_entry') await performCancelEntry(m.loc, m.personId, bautizosOpts);
       else if (m.type === 'delete_donation' && m.donationId) await handleDeleteDonation(m.donationId);
       else if (m.type === 'remove_pending_refund' && m.personId) await removePendingRefundBySuperUser(m.personId);
@@ -27591,6 +27763,8 @@ function resolveEventName(eventId) {
             {registryConfirmModal.type === 'archive_roster' && 'Archivar registro'}
             {registryConfirmModal.type === 'archive_duplicate_hint' && 'Archivar registro duplicado'}
             {registryConfirmModal.type === 'dup_accept_cluster' && 'Autorizar duplicado'}
+            {registryConfirmModal.type === 'companion_link_collision' && 'Vincular acompañante a registro activo'}
+            {registryConfirmModal.type === 'companion_ack_collision' && 'Reconocer colisión acompañante'}
             {registryConfirmModal.type === 'remove_pending_refund' && 'Eliminar saldo pendiente'}
             {registryConfirmModal.type === 'delete_payment_history_row' && 'Eliminar abono del historial'}
             {registryConfirmModal.type === 'delete_archived_record' && 'Eliminar del archivo'}
@@ -27647,6 +27821,26 @@ function resolveEventName(eventId) {
                 <code className="text-[11px]">app_archived_profiles</code> corresponde exactamente a este registro (o la clave es solo por id de participante), también se elimina esa entrada. Si el mismo VNPM o teléfono tiene otra fusión más reciente en el índice, este último no se borra. Irreversible.
               </p>
             )}
+            {registryConfirmModal.type === 'companion_link_collision' && registryConfirmModal.companionCollisionCluster && (
+              <div className="text-left space-y-2">
+                <p>
+                  Se vinculará la fila de acompañante al registro activo existente. El acompañante dejará de contarse como persona separada en finanzas y transporte del titular.
+                </p>
+                <p className="text-xs text-violet-900 bg-violet-50 border border-violet-100 rounded-lg px-3 py-2">
+                  {describeCollisionCluster(registryConfirmModal.companionCollisionCluster)}
+                </p>
+              </div>
+            )}
+            {registryConfirmModal.type === 'companion_ack_collision' && registryConfirmModal.companionCollisionCluster && (
+              <div className="text-left space-y-2">
+                <p>
+                  Marcará este aviso como reconocido en titular y registro activo. No modifica datos; solo oculta la alerta del diagnóstico.
+                </p>
+                <p className="text-xs text-slate-600 bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
+                  {describeCollisionCluster(registryConfirmModal.companionCollisionCluster)}
+                </p>
+              </div>
+            )}
             {registryConfirmModal.type === 'dup_accept_cluster' && registryConfirmModal.dupAcceptCluster && (
               <div className="text-left space-y-2">
                 <p>
@@ -27691,6 +27885,8 @@ function resolveEventName(eventId) {
                   ? 'bg-red-500 hover:bg-red-600 shadow-red-200'
                   : registryConfirmModal.type === 'dup_accept_cluster'
                     ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200'
+                  : registryConfirmModal.type === 'companion_link_collision'
+                    ? 'bg-violet-600 hover:bg-violet-700 shadow-violet-200'
                   : 'bg-amber-600 hover:bg-amber-700 shadow-amber-200'
               }`}
             >
@@ -27704,6 +27900,10 @@ function resolveEventName(eventId) {
                       ? `${SI_LABEL}, mover`
                     : registryConfirmModal.type === 'dup_accept_cluster'
                       ? `${SI_LABEL}, autorizar`
+                    : registryConfirmModal.type === 'companion_link_collision'
+                      ? `${SI_LABEL}, vincular`
+                    : registryConfirmModal.type === 'companion_ack_collision'
+                      ? `${SI_LABEL}, reconocer`
                     : `${SI_LABEL}, archivar`}
             </button>
           </div>
@@ -28031,6 +28231,46 @@ function resolveEventName(eventId) {
       isSuperUser={isSuperUser}
       onRepairSplitPartyCompanionLinks={handleRepairBautizosSplitCompanionLinks}
       allParticipantsForRepairs={allParticipants}
+      hasAdminRights={hasAdminRights}
+      canonicalizeVnpPersonId={canonicalizeVnpPersonId}
+      onLinkCompanionCollision={(cluster) => {
+        setRegistryConfirmModal({
+          isOpen: true,
+          type: 'companion_link_collision',
+          loc: cluster.companionSide?.location || '',
+          personId: cluster.companionSide?.hostId || '',
+          personName: cluster.companionSide?.displayName || '',
+          donationId: '',
+          donationAmount: 0,
+          refundAmount: 0,
+          paymentIndex: null,
+          paymentRowId: null,
+          fromDuplicateDiagnostic: false,
+          duplicateReasonsLine: describeCollisionCluster(cluster),
+          dupAcceptCluster: null,
+          companionCollisionCluster: cluster,
+          ...REGISTRY_CONFIRM_BAUTIZOS_EMPTY,
+        });
+      }}
+      onAckCompanionCollision={(cluster) => {
+        setRegistryConfirmModal({
+          isOpen: true,
+          type: 'companion_ack_collision',
+          loc: '',
+          personId: cluster.registrantSide?.participantId || '',
+          personName: cluster.registrantSide?.name || '',
+          donationId: '',
+          donationAmount: 0,
+          refundAmount: 0,
+          paymentIndex: null,
+          paymentRowId: null,
+          fromDuplicateDiagnostic: false,
+          duplicateReasonsLine: describeCollisionCluster(cluster),
+          dupAcceptCluster: null,
+          companionCollisionCluster: cluster,
+          ...REGISTRY_CONFIRM_BAUTIZOS_EMPTY,
+        });
+      }}
     />
     </Suspense>
   );
@@ -29878,6 +30118,116 @@ function resolveEventName(eventId) {
             ) : null}
           </div>
         )}
+      </div>
+    );
+  };
+
+  const toggleCompanionCollisionGroup = (key) => {
+    setExpandedCompanionCollisionGroups((prev) => {
+      const n = new Set(prev);
+      if (n.has(key)) n.delete(key);
+      else n.add(key);
+      return n;
+    });
+  };
+
+  const renderCompanionCollisionGroups = (clusters, context = 'summary') => {
+    if (!clusters?.length) return null;
+    return (
+      <div className="mt-3 space-y-2">
+        {clusters.map((cluster, gi) => {
+          const groupKey = `${context}-cc-${gi}`;
+          const isOpen = expandedCompanionCollisionGroups.has(groupKey);
+          const cs = cluster.companionSide || {};
+          const rs = cluster.registrantSide || {};
+          const reasonsText = describeCollisionReasons(cluster.reasons);
+          return (
+            <div key={groupKey} className="bg-white/80 border border-violet-200 rounded-xl overflow-hidden">
+              <button
+                type="button"
+                onClick={() => toggleCompanionCollisionGroup(groupKey)}
+                className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-violet-50/50 transition-colors"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-black text-violet-700 uppercase tracking-wider">
+                      {cluster.confidence === 'certain' ? 'Alta confianza' : cluster.confidence === 'probable' ? 'Probable' : 'Posible'}
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-700">
+                      {cs.displayName || '—'} ↔ {rs.name || '—'}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-violet-900/90 mt-1 leading-snug">
+                    Titular {cs.hostName || '—'} ({cs.location || '?'}) · Activo {rs.name || '—'} ({rs.location || '?'})
+                  </p>
+                  {reasonsText ? (
+                    <p className="text-[10px] text-violet-800/80 font-semibold mt-0.5">{reasonsText}</p>
+                  ) : null}
+                </div>
+                {isOpen ? <ChevronUp size={16} className="text-violet-500 shrink-0" /> : <ChevronDown size={16} className="text-violet-500 shrink-0" />}
+              </button>
+              {isOpen && hasAdminRights ? (
+                <div className="px-3 pb-3 pt-1 border-t border-violet-100 flex flex-wrap gap-2">
+                  {cluster.suggestedAction === 'link_companion_to_registrant' ? (
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-black bg-violet-600 text-white hover:bg-violet-700"
+                      onClick={() => {
+                        if (registryConfirmBusy) return;
+                        setRegistryConfirmModal({
+                          isOpen: true,
+                          type: 'companion_link_collision',
+                          loc: cs.location || '',
+                          personId: cs.hostId || '',
+                          personName: cs.displayName || '',
+                          donationId: '',
+                          donationAmount: 0,
+                          refundAmount: 0,
+                          paymentIndex: null,
+                          paymentRowId: null,
+                          fromDuplicateDiagnostic: false,
+                          duplicateReasonsLine: describeCollisionCluster(cluster),
+                          dupAcceptCluster: null,
+                          companionCollisionCluster: cluster,
+                          ...REGISTRY_CONFIRM_BAUTIZOS_EMPTY,
+                        });
+                      }}
+                    >
+                      <Link2 size={12} />
+                      Vincular acompañante
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200"
+                    onClick={() => {
+                      if (registryConfirmBusy) return;
+                      setRegistryConfirmModal({
+                        isOpen: true,
+                        type: 'companion_ack_collision',
+                        loc: '',
+                        personId: rs.participantId || '',
+                        personName: rs.name || '',
+                        donationId: '',
+                        donationAmount: 0,
+                        refundAmount: 0,
+                        paymentIndex: null,
+                        paymentRowId: null,
+                        fromDuplicateDiagnostic: false,
+                        duplicateReasonsLine: describeCollisionCluster(cluster),
+                        dupAcceptCluster: null,
+                        companionCollisionCluster: cluster,
+                        ...REGISTRY_CONFIRM_BAUTIZOS_EMPTY,
+                      });
+                    }}
+                  >
+                    Reconocer aviso
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     );
   };
@@ -33506,6 +33856,45 @@ function resolveEventName(eventId) {
           </div>
         )}
 
+        {companionCollisionsActionable.length > 0 && isBautizos && (
+          <div className="bg-violet-50 border border-violet-200 rounded-2xl px-5 py-4 mt-4">
+            <div className="flex items-start gap-3">
+              <Users size={22} className="text-violet-600 mt-0.5 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-bold text-violet-900">
+                  Posibles dobles: acompañante + registro activo ({companionCollisionsActionable.length})
+                </p>
+                <p className="text-[11px] text-violet-800 mt-1 leading-relaxed">
+                  Una persona figura como acompañante en el registro de un titular y también tiene (o parece tener) ficha activa propia.
+                  Puedes vincular la fila de acompañante al registro activo para evitar doble conteo y cobro.
+                </p>
+                {renderCompanionCollisionGroups(companionCollisionsActionable, 'dashboard')}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {campaFamilyCollisionsInEvent.total > 0 && isCampa && (
+          <div className="bg-sky-50 border border-sky-200 rounded-2xl px-5 py-4 mt-4">
+            <div className="flex items-start gap-3">
+              <Users size={22} className="text-sky-600 mt-0.5 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-bold text-sky-900">
+                  Parejas Campa sin vínculo ({campaFamilyCollisionsInEvent.total})
+                </p>
+                <ul className="mt-2 space-y-1 text-[11px] text-sky-900 font-semibold">
+                  {campaFamilyCollisionsInEvent.clusters
+                    .filter((c) => c.confidence !== 'possible')
+                    .slice(0, 8)
+                    .map((c, i) => (
+                      <li key={i}>{describeCampaSpouseCluster(c)}</li>
+                    ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+
         {hasAdminRights && cupoSedeOpen && (
           <div className={uiModal.overlay} role="dialog" aria-modal="true" aria-labelledby="cupo-modal-title">
             <button type="button" className={uiModal.backdrop} onClick={() => setCupoSedeOpen(false)} aria-label="Cerrar cupo" />
@@ -34983,6 +35372,26 @@ function resolveEventName(eventId) {
     );
   };
 
+  const renderDoubleRoleCollisionChip = (person) => {
+    if (!isBautizos || !person?.id) return null;
+    const clusters = companionCollisionsInEvent.byRegistrantId?.get?.(String(person.id)) || [];
+    const actionable = clusters.filter((c) => c.confidence === 'certain' || c.confidence === 'probable');
+    if (!actionable.length) return null;
+    const hosts = actionable
+      .map((c) => `${c.companionSide?.hostName || '—'} (${c.companionSide?.location || '?'})`)
+      .slice(0, 3)
+      .join('; ');
+    return (
+      <span
+        key="double-role"
+        className="chip-roster-double-role bg-violet-50 text-violet-900 text-[8px] font-black px-1.5 py-0.5 rounded uppercase inline-flex items-center justify-center border border-violet-200 h-5 leading-none"
+        title={`También figura como acompañante: ${hosts}${actionable.length > 3 ? '…' : ''}`}
+      >
+        Doble rol
+      </span>
+    );
+  };
+
   const BAUTIZOS_ATTENDANCE_CHIP_LABELS = {
     bautizado: 'Bautizado',
     asistente: 'Asistente',
@@ -35219,6 +35628,7 @@ function resolveEventName(eventId) {
               <Bug size={14} className="text-orange-500 inline-block ml-auto flex-shrink-0" title="Cambio no permanente" />
             )}
             {renderPublicLinkExtChip(person)}
+            {renderDoubleRoleCollisionChip(person)}
           </p>
           {renderParticipantAssistanceBadges(person)}
           {renderBautizosAttendanceTypeChip(person, opts)}
@@ -37139,6 +37549,53 @@ function resolveEventName(eventId) {
                       <p className="mt-1 font-bold text-amber-800">{newRegDuplicateHint.moreSuffix}</p>
                     ) : null}
                   </>
+                )}
+              </div>
+            </div>
+          ) : null}
+
+          {newRegCompanionCollisionHint ? (
+            <div className="mb-4 flex gap-2.5 rounded-xl border border-violet-200 bg-violet-50/95 p-3 text-violet-950 shadow-sm">
+              <Users className="mt-0.5 shrink-0 text-violet-600" size={18} aria-hidden />
+              <div className="min-w-0 text-[11px] leading-snug flex-1">
+                <p className="font-black text-violet-900">{newRegCompanionCollisionHint.summary}</p>
+                <ul className="mt-1.5 list-inside list-disc space-y-0.5 font-semibold text-violet-900/95">
+                  {newRegCompanionCollisionHint.lines.map((line, i) => (
+                    <li key={i}>{line}</li>
+                  ))}
+                </ul>
+                {newRegLinkableCompanionCluster && hasAdminRights ? (
+                  <button
+                    type="button"
+                    className="mt-2 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-black bg-violet-600 text-white hover:bg-violet-700"
+                    onClick={() => {
+                      if (registryConfirmBusy) return;
+                      setRegistryConfirmModal({
+                        isOpen: true,
+                        type: 'companion_link_collision',
+                        loc: newRegLinkableCompanionCluster.companionSide?.location || '',
+                        personId: newRegLinkableCompanionCluster.companionSide?.hostId || '',
+                        personName: newRegLinkableCompanionCluster.companionSide?.displayName || '',
+                        donationId: '',
+                        donationAmount: 0,
+                        refundAmount: 0,
+                        paymentIndex: null,
+                        paymentRowId: null,
+                        fromDuplicateDiagnostic: false,
+                        duplicateReasonsLine: describeCollisionCluster(newRegLinkableCompanionCluster),
+                        dupAcceptCluster: null,
+                        companionCollisionCluster: newRegLinkableCompanionCluster,
+                        ...REGISTRY_CONFIRM_BAUTIZOS_EMPTY,
+                      });
+                    }}
+                  >
+                    <Link2 size={12} />
+                    Vincular acompañante existente (no crear registro duplicado)
+                  </button>
+                ) : (
+                  <p className="mt-2 text-[10px] font-semibold text-violet-800">
+                    Si esta persona ya tiene registro activo, usa el panel de diagnóstico para vincularla desde el titular.
+                  </p>
                 )}
               </div>
             </div>
@@ -40805,6 +41262,7 @@ function resolveEventName(eventId) {
                         <p className="font-bold text-slate-700">{p.name}</p>
                         <div className="flex flex-wrap gap-1 mt-1">
                           {renderPublicLinkExtChip(p)}
+                          {renderDoubleRoleCollisionChip(p)}
                           {renderParticipantAssistanceBadges(p)}
                         </div>
                       </td>

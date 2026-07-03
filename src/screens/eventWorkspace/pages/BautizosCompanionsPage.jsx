@@ -17,6 +17,11 @@ import {
   buildActiveRegistrantMetaForCompanionDedupe,
 } from '../../../bautizosParty.js';
 import {
+  buildCompanionRegistrantCollisionIndex,
+  describeCollisionCluster,
+  describeCollisionReasons,
+} from '../../../companionRegistrantCollision.js';
+import {
   uiForm,
   uiShell,
   uiPageHeader,
@@ -681,6 +686,10 @@ export default function BautizosCompanionsPage({
   isSuperUser = false,
   onRepairSplitPartyCompanionLinks,
   allParticipantsForRepairs,
+  onLinkCompanionCollision,
+  onAckCompanionCollision,
+  hasAdminRights = false,
+  canonicalizeVnpPersonId,
 }) {
   const [repairModalOpen, setRepairModalOpen] = useState(false);
   const [repairBusy, setRepairBusy] = useState(false);
@@ -1007,6 +1016,14 @@ export default function BautizosCompanionsPage({
     return plan.size;
   }, [evRosterFiltered]);
 
+  const companionRegistrantCollisions = useMemo(() => {
+    const roster = allParticipantsForRepairs || allParticipants || [];
+    return buildCompanionRegistrantCollisionIndex(roster, currentEvent?.id, {
+      canonicalizeVnpPersonId: typeof canonicalizeVnpPersonId === 'function' ? canonicalizeVnpPersonId : undefined,
+      minConfidence: 'probable',
+    });
+  }, [allParticipantsForRepairs, allParticipants, currentEvent?.id, canonicalizeVnpPersonId]);
+
   const soloListRows = useMemo(
     () => listRows.filter((r) => !companionRowBelongsToFamilyTree(r, familyTrees, sourceLinkMap)),
     [listRows, familyTrees, sourceLinkMap]
@@ -1087,6 +1104,55 @@ export default function BautizosCompanionsPage({
             'Solo afectan a esta vista de Acompañantes (misma barra que Registro global y Servidores). La búsqueda también localiza por nombre o ID VNPM del acompañante en la ficha del registrado.'
           )
         : null}
+
+      {companionRegistrantCollisions.clusters?.length > 0 ? (
+        <div className={`${uiShell.card} p-4 border-violet-200 dark:border-violet-700/50 bg-violet-50/40 dark:bg-violet-950/20`}>
+          <h3 className="text-sm font-black text-violet-900 dark:text-violet-100 uppercase tracking-wide">
+            Colisiones acompañante ↔ registro activo ({companionRegistrantCollisions.clusters.length})
+          </h3>
+          <p className={`${uiForm.help} mt-1 mb-3`}>
+            Personas listadas como acompañantes en un titular que también tienen ficha activa propia.
+          </p>
+          <div className="space-y-2">
+            {companionRegistrantCollisions.clusters.slice(0, 20).map((cluster, i) => (
+              <div
+                key={cluster.ackKey || i}
+                className="rounded-xl border border-violet-200 dark:border-violet-700/60 bg-white/90 dark:bg-slate-900/50 px-3 py-2"
+              >
+                <p className="text-xs font-bold text-slate-800 dark:text-slate-100 leading-snug">
+                  {describeCollisionCluster(cluster)}
+                </p>
+                <p className="text-[10px] text-violet-800 dark:text-violet-300 mt-0.5">
+                  {describeCollisionReasons(cluster.reasons)} · {cluster.confidence}
+                </p>
+                {hasAdminRights && typeof onLinkCompanionCollision === 'function' ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {cluster.suggestedAction === 'link_companion_to_registrant' ? (
+                      <button
+                        type="button"
+                        className={`${uiListToolbarBtn} !text-violet-800 dark:!text-violet-200`}
+                        onClick={() => onLinkCompanionCollision(cluster)}
+                      >
+                        <Link2 size={14} />
+                        Vincular
+                      </button>
+                    ) : null}
+                    {typeof onAckCompanionCollision === 'function' ? (
+                      <button
+                        type="button"
+                        className={uiListToolbarBtn}
+                        onClick={() => onAckCompanionCollision(cluster)}
+                      >
+                        Reconocer
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {repairModalOpen && isSuperUser ? (
         <div className={uiModal.overlay} role="dialog" aria-modal="true" aria-labelledby="bautizos-repair-links-title">

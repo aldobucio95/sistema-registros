@@ -1,7 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { getDoc } from 'firebase/firestore';
 import { getDocRef } from '../firebaseRefs.js';
 import { LOG_SNAPSHOTS_COLLECTION } from '../activityLogCore.js';
+import { describeAbonoSnapshot } from '../activityLogDiff.js';
+import { describeRegistrationEditSnapshot } from '../registrationChangeLog.js';
 
 /** Pretty-print de un valor (objeto/array → JSON indentado; primitivo → texto). */
 function prettyValue(v) {
@@ -14,6 +16,26 @@ function prettyValue(v) {
   }
 }
 
+function describeHumanSnapshotDiff(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const kind = String(snapshot.kind || '').trim();
+  if (kind === 'registro_editado') {
+    return describeRegistrationEditSnapshot(snapshot, snapshot.eventType);
+  }
+  if (kind === 'abono') {
+    return describeAbonoSnapshot(snapshot);
+  }
+  if (kind === 'registro_publico' || kind === 'registro_publico_lista_espera') {
+    const name = snapshot.participant?.name || snapshot.participant?.nombre || '—';
+    const loc = snapshot.loc || snapshot.location || '—';
+    const companions = Array.isArray(snapshot.bautizosCompanions) ? snapshot.bautizosCompanions.length : 0;
+    return kind === 'registro_publico_lista_espera'
+      ? `Lista de espera · ${name} · sede ${loc}`
+      : `Registro público · ${name} · sede ${loc}${companions ? ` · ${companions} acompañante(s)` : ''}`;
+  }
+  return null;
+}
+
 /**
  * Detalle expandible de un log: carga de forma diferida el snapshot completo
  * (`app_log_snapshots/{logId}`) y lo muestra como texto plano legible.
@@ -23,11 +45,10 @@ export default function ActivityLogSnapshotDetails({ log }) {
   const logId = String(log?.id || '');
   const [state, setState] = useState({ loading: true, error: '', data: null });
   const [copied, setCopied] = useState(false);
+  const [jsonExpanded, setJsonExpanded] = useState(false);
 
   useEffect(() => {
     let alive = true;
-    // Solo se actualiza el estado tras resolverse la promesa (nunca de forma síncrona
-    // dentro del efecto) para evitar renders en cascada.
     (async () => {
       if (!logId) {
         if (alive) setState({ loading: false, error: 'Sin id de log.', data: null });
@@ -62,6 +83,8 @@ export default function ActivityLogSnapshotDetails({ log }) {
     }
   }
 
+  const humanDiff = useMemo(() => describeHumanSnapshotDiff(parsed), [parsed]);
+
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(rawJson || JSON.stringify(parsed ?? {}, null, 2));
@@ -91,7 +114,6 @@ export default function ActivityLogSnapshotDetails({ log }) {
         ) : null}
       </div>
 
-      {/* Resumen siempre visible: usuario, evento, acción, estado, error. */}
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 mb-2">
         <div><span className="text-slate-400">Usuario:</span> <b>{log?.username || '—'}</b></div>
         <div><span className="text-slate-400">Contexto:</span> <b>{log?.eventName || '—'}</b></div>
@@ -110,25 +132,53 @@ export default function ActivityLogSnapshotDetails({ log }) {
         <p className="italic text-slate-400">Este registro no tiene snapshot guardado (acción sin payload o log antiguo).</p>
       ) : state.error ? (
         <p className="italic text-rose-500">No se pudo cargar el snapshot: {state.error}</p>
-      ) : entries ? (
-        <div className="space-y-1.5">
-          {entries.map(([k, v]) => (
-            <div key={k} className="border-t border-slate-200/70 dark:border-slate-700/60 pt-1.5 first:border-t-0 first:pt-0">
-              <p className="font-bold text-slate-600 dark:text-slate-300">{k}</p>
-              <pre className="whitespace-pre-wrap break-words text-[10px] text-slate-700 dark:text-slate-200 font-mono leading-snug max-h-72 overflow-auto">
-                {prettyValue(v)}
-              </pre>
-            </div>
-          ))}
-        </div>
-      ) : parsed != null ? (
-        <pre className="whitespace-pre-wrap break-words text-[10px] font-mono leading-snug max-h-72 overflow-auto">
-          {prettyValue(parsed)}
-        </pre>
       ) : (
-        <pre className="whitespace-pre-wrap break-words text-[10px] font-mono leading-snug max-h-72 overflow-auto">
-          {rawJson || '—'}
-        </pre>
+        <>
+          {humanDiff ? (
+            <div className="mb-2 rounded-md border border-emerald-200/80 dark:border-emerald-800/60 bg-emerald-50/60 dark:bg-emerald-950/30 px-2.5 py-2">
+              <p className="text-[9px] font-black uppercase tracking-wide text-emerald-700 dark:text-emerald-300 mb-1">
+                Resumen de cambios
+              </p>
+              <p className="text-[11px] leading-snug whitespace-pre-wrap break-words text-slate-800 dark:text-slate-100">
+                {humanDiff}
+              </p>
+            </div>
+          ) : null}
+
+          {rawJson || parsed != null ? (
+            <div>
+              <button
+                type="button"
+                onClick={() => setJsonExpanded((v) => !v)}
+                className="text-[9px] font-bold px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 mb-1.5"
+              >
+                {jsonExpanded ? 'Ocultar JSON técnico' : 'Ver JSON técnico'}
+              </button>
+              {jsonExpanded ? (
+                entries ? (
+                  <div className="space-y-1.5">
+                    {entries.map(([k, v]) => (
+                      <div key={k} className="border-t border-slate-200/70 dark:border-slate-700/60 pt-1.5 first:border-t-0 first:pt-0">
+                        <p className="font-bold text-slate-600 dark:text-slate-300">{k}</p>
+                        <pre className="whitespace-pre-wrap break-words text-[10px] text-slate-700 dark:text-slate-200 font-mono leading-snug max-h-72 overflow-auto">
+                          {prettyValue(v)}
+                        </pre>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <pre className="whitespace-pre-wrap break-words text-[10px] font-mono leading-snug max-h-72 overflow-auto">
+                    {prettyValue(parsed ?? rawJson)}
+                  </pre>
+                )
+              ) : null}
+            </div>
+          ) : (
+            <pre className="whitespace-pre-wrap break-words text-[10px] font-mono leading-snug max-h-72 overflow-auto">
+              —
+            </pre>
+          )}
+        </>
       )}
     </div>
   );

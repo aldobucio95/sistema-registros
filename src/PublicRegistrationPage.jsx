@@ -48,6 +48,7 @@ import {
   startPublicBrowseSessionWatch,
 } from './publicAnonymousAuthLifecycle.js';
 import { isCardPaymentAllowedForLocation } from './cardPaymentEligibility.js';
+import { buildNewEntryCompanionCollisionHint } from './companionRegistrantCollision.js';
 import { uiButtons } from './ui/uiFormatClasses.js';
 import { formPublicInputClasses, formPublicLabelClasses } from './formFieldClasses.js';
 import { BLOOD_TYPE_UNSPECIFIED, BLOOD_TYPES_SELECT_OPTIONS } from './registrationFormShared.js';
@@ -709,6 +710,17 @@ export default function PublicRegistrationPage({ linkId }) {
     [form, optionalVisibility, eventSnapshot, pricing, editorFieldVis, publicRegPrivacyContext]
   );
 
+  const publicCompanionCollisionHint = useMemo(() => {
+    if (eventSnapshot?.eventType !== 'Bautizos' || !eventSnapshot?.id) return null;
+    return buildNewEntryCompanionCollisionHint(
+      form.name,
+      form.birthDate,
+      currentEventParticipants,
+      eventSnapshot.id,
+      { canonicalizeVnpPersonId }
+    );
+  }, [form.name, form.birthDate, currentEventParticipants, eventSnapshot?.id, eventSnapshot?.eventType]);
+
   const confirmConsentIfNeeded = useCallback(async () => {
     if (!needsRegistrationConsentConfirmation(!!form.privacyAccepted, form.sensitiveDataConsent)) {
       return true;
@@ -934,6 +946,19 @@ export default function PublicRegistrationPage({ linkId }) {
             >
               <p className="text-[10px] font-black uppercase tracking-widest text-red-600 mb-2">No se pudo enviar</p>
               {submitError}
+            </div>
+          ) : null}
+          {publicCompanionCollisionHint ? (
+            <div className="rounded-xl border border-violet-300 bg-violet-50 p-3 text-violet-950 text-sm">
+              <p className="font-black">{publicCompanionCollisionHint.summary}</p>
+              <ul className="mt-2 list-disc list-inside text-xs font-semibold space-y-0.5">
+                {publicCompanionCollisionHint.lines.map((line, i) => (
+                  <li key={i}>{line}</li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs font-semibold text-violet-800">
+                Si ya estás inscrito como acompañante de alguien, contacta a la organización antes de crear un registro activo duplicado.
+              </p>
             </div>
           ) : null}
           <PublicRegistrationFormSections

@@ -15,6 +15,7 @@
 
 import { eventTypeIsDesayuno } from './transportPlanningEligibility.js';
 import { applyParticipantNameFormattingForSave } from './participantNameFormat.js';
+import { logScalarsEquivalent } from './activityLogDiff.js';
 
 /** Datos básicos comunes a todo evento. */
 const COMMON_FIELDS = new Set([
@@ -186,13 +187,15 @@ export function cleanParticipantPayloadForEventType(payload, originalPerson, eve
  * Convenciones:
  *   - Si `prevVal` es undefined/null y `nextVal` es '' o 'No' (es decir, ruido por defaults
  *     del formulario), no se considera cambio.
- *   - Si los valores tras `String(...)` son iguales, no se considera cambio.
+ *   - Si los valores normalizados son equivalentes (NFC, espacios, números), no se considera cambio.
  */
-export function buildParticipantChangeLogEntries(original, edited, fieldsToTrack, eventType, formatChange) {
+export function buildParticipantChangeLogEntries(original, edited, fieldsToTrack, eventType, formatChange, options = {}) {
   if (!original || !edited || !Array.isArray(fieldsToTrack)) return [];
+  const { shouldSkipField = null } = options;
   const filtered = filterFieldsToTrackByEventType(fieldsToTrack, eventType);
   const out = [];
   filtered.forEach((f) => {
+    if (typeof shouldSkipField === 'function' && shouldSkipField(f, original, edited)) return;
     const prev = original[f.key];
     const next = edited[f.key];
     const prevIsEmpty = prev === undefined || prev === null || prev === '';
@@ -201,7 +204,7 @@ export function buildParticipantChangeLogEntries(original, edited, fieldsToTrack
     // Trata "undefined" y 'No' como equivalentes solo si el original no estaba definido,
     // para evitar reportar ruido por defaults del modal de edición.
     if (prev === undefined && (next === '' || next === 'No' || next === false)) return;
-    if (String(prev) === String(next)) return;
+    if (logScalarsEquivalent(prev, next)) return;
     const entry = typeof formatChange === 'function' ? formatChange(f, prev, next) : `${f.label} (${prev} -> ${next})`;
     if (entry) out.push(entry);
   });
