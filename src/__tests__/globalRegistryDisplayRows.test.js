@@ -7,6 +7,7 @@ import {
   expandBautizosWaitlistRegistryRows,
   expandBautizosWaitlistRegistryDisplayRows,
 } from '../bautizosWaitlistRegistryExpand.js';
+import { prepareBautizosRowsForRosterFilter } from '../rosterParticipantFilters.js';
 
 const ev = { id: 'ev1', eventType: 'Bautizos', locations: ['Sede A'] };
 
@@ -56,5 +57,28 @@ describe('global registry display rows', () => {
     expect(display.filter((r) => r.__globalRegistryVirtual).length).toBe(0);
     const virtual = display.find((r) => String(r.id).startsWith('cw:'));
     expect(virtual?.location).toBe('Sede A');
+  });
+
+  it('waitlist expansion Part B injects companion-waitlist rows even when titular waitlist input is empty', () => {
+    const activeHost = {
+      id: 'a1',
+      eventId: 'ev1',
+      location: 'Norte',
+      status: 'active',
+      name: 'Titular activo',
+      bautizosCompanions: [
+        { id: 'cp1', name: 'Acomp en espera', companionWaitlistPending: true },
+      ],
+    };
+    const roster = [activeHost];
+    const expanded = expandBautizosWaitlistRegistryRows([], roster, ev);
+    expect(expanded).toHaveLength(1);
+    expect(String(expanded[0].id)).toMatch(/^cw:/);
+    expect(expanded[0].location).toBe('Norte');
+
+    const filteredAll = prepareBautizosRowsForRosterFilter([], { filterRegistrationStatus: 'all' }, {
+      roster,
+    });
+    expect(filteredAll.some((r) => String(r.id).startsWith('cw:'))).toBe(true);
   });
 });

@@ -39841,7 +39841,9 @@ function resolveEventName(eventId) {
       ...globalRegistryPartyRowsToPersons(validSourceParty.waitlist),
       ...globalRegistryPartyRowsToPersons(validSourceParty.cancelled),
     ];
-    const invalidFiltered = applyGlobalRegistryLikeFilters(invalidSource);
+    // Sin expandir acompañantes: expandBautizosWaitlistRegistryRows inyecta cw:* de titulares activos
+    // aunque invalidSource esté vacío, lo que duplicaba filas con sede válida en esta sección.
+    const invalidFiltered = filterGlobalRegistrySectionRows(invalidSource);
     const coincidenceTotal =
       invalidFiltered.length + activeRows.length + waitlistRows.length + cancelledRows.length;
     const grSearchActive = !!String(globalRegistryListFilters.searchTerm || '').trim();
