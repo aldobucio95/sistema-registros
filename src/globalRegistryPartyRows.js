@@ -5,11 +5,13 @@ import {
   BAUTIZOS_ATTENDANCE,
   buildActiveRegistrantMetaForCompanionDedupe,
   buildBautizosCanonicalCompanionPlan,
+  getBautizosCompanionsArray,
   isBautizosCompanionBaptized,
   isBautizosPastorAttendance,
 } from './bautizosParty.js';
 import { normalizeBirthDateToIso } from './birthDateIsoUtils.js';
 import {
+  isCompanionWaitlistPending,
   isCompanionWaitlistVirtualParticipant,
   resolveCompanionWaitlistVirtualLocation,
 } from './bautizosCompanionWaitlist.js';
@@ -44,6 +46,7 @@ function buildCompanionPartyPerson(host, companion, index) {
     __sourceRegistrantName: String(host?.name || '').trim(),
     __companionRelationship: rel,
     ...(isBautizosPastorAttendance(host) ? { __pastorCourtesyCompanion: true } : {}),
+    ...(isCompanionWaitlistPending(companion) ? { __companionWaitlistPending: true } : {}),
   };
 }
 
@@ -116,6 +119,20 @@ export function buildGlobalRegistryPartyRowsFromTitulars(titulars, rosterForPlan
         isSubRegistration: true,
         disableExpand: true,
         subRegistrationLabel: companionSubLabel(person, host),
+      });
+    }
+
+    for (const c of getBautizosCompanionsArray(host)) {
+      if (!isCompanionWaitlistPending(c) || !String(c?.name || '').trim()) continue;
+      const person = buildCompanionPartyPerson(host, c, 0);
+      out.push({
+        key: `wl-nested:${hostId}:${String(c?.id || '')}`,
+        person,
+        hostPerson: host,
+        isSubRegistration: true,
+        disableExpand: true,
+        subRegistrationLabel: companionSubLabel(person, host),
+        companionWaitlistPending: true,
       });
     }
     for (const { person, canonKey } of baptizedStandalone) {

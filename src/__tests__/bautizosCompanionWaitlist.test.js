@@ -5,6 +5,8 @@ import {
   companionWaitlistVirtualId,
   parseCompanionWaitlistVirtualId,
   resolveCompanionWaitlistVirtualLocation,
+  resolveCompanionWaitlistSource,
+  companionDisplayIsWaitlistPending,
   isCompanionWaitlistPhantomStoredParticipant,
   resolveParticipantEffectiveLocation,
 } from '../bautizosCompanionWaitlist.js';
@@ -97,5 +99,31 @@ describe('bautizosCompanionWaitlist', () => {
     const host = { id: 'h1', location: 'Coapa', status: 'active' };
     const phantom = { id: 'cw:h1::c1', _companionWaitlistHostId: 'h1', location: '', status: 'waitlist' };
     expect(resolveParticipantEffectiveLocation(phantom, [host])).toBe('Coapa');
+  });
+
+  it('resolveCompanionWaitlistSource finds waitlist via linked companion key', () => {
+    const hostA = {
+      id: 'hostA',
+      name: 'Titular A',
+      bautizosCompanions: [
+        { id: 'c1', name: 'Karla', relationship: 'Hija', companionWaitlistPending: true },
+      ],
+    };
+    const hostB = {
+      id: 'hostB',
+      name: 'Titular B',
+      bautizosCompanions: [],
+    };
+    const visibleOnB = {
+      name: 'Karla',
+      relationship: 'Hija',
+      linkedCompanionSourceKey: 'c:hostA::c1',
+      linkedNoExtraCharge: true,
+    };
+    const roster = [hostA, hostB];
+    expect(companionDisplayIsWaitlistPending(visibleOnB, roster)).toBe(true);
+    const src = resolveCompanionWaitlistSource(visibleOnB, roster);
+    expect(src?.host?.id).toBe('hostA');
+    expect(src?.companion?.id).toBe('c1');
   });
 });

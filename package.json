@@ -1,7 +1,7 @@
 {
   "name": "sistema-registros",
   "private": true,
-  "version": "1.0.8",
+  "version": "1.0.9",
   "packageManager": "pnpm@10.12.1",
   "type": "module",
   "scripts": {

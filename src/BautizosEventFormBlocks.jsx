@@ -4,11 +4,13 @@ import {
   BAUTIZOS_ATTENDANCE,
   BAUTIZOS_UNDER_3_POLICY_NOTE,
   bautizosServerToggleLocked,
+  bautizosShowsCompanionServerParticipation,
   bautizosShowsServerParticipation,
   companionRowPhoneLooksValid,
   isBautizosUnder3YearsAtEvent,
   normalizeBautizosAttendanceType,
   syncBautizosAttendanceServerFields,
+  syncBautizosCompanionServerFields,
 } from './bautizosParty.js';
 import { isSiValue, canonicalizeVnpPersonId, generateVnpPersonId } from './publicRegistrationLogic.js';
 import {
@@ -220,9 +222,56 @@ export function BautizosServerParticipationFields({
         <p className="text-[10px] text-slate-500 leading-snug">
           Los empleados se registran como servidor por defecto; puede desmarcar si no participa como servidor.
         </p>
-      ) : (
+      ) : attendance === BAUTIZOS_ATTENDANCE.servidor ? (
         <p className="text-[10px] text-slate-500 leading-snug">Tipo servidor: participa como servidor en el evento.</p>
+      ) : attendance === BAUTIZOS_ATTENDANCE.cortesia ? (
+        <p className="text-[10px] text-slate-500 leading-snug">
+          Cortesía sin cobro de lista; puede marcar si también participa como servidor.
+        </p>
+      ) : attendance === BAUTIZOS_ATTENDANCE.asistente ? (
+        <p className="text-[10px] text-slate-500 leading-snug">
+          Asistente con cobro de lista; puede marcar si también participa como servidor.
+        </p>
+      ) : (
+        <p className="text-[10px] text-slate-500 leading-snug">
+          Puede participar como servidor además de su tipo de asistencia.
+        </p>
       )}
+    </div>
+  );
+}
+
+/** Toggle «Participa como servidor» por fila de acompañante (independiente del titular). */
+export function BautizosCompanionServerParticipationFields({
+  companion,
+  onCompanionChange,
+  disabled,
+  labelClasses,
+  formatSiNo,
+  variant = 'panel',
+}) {
+  if (!bautizosShowsCompanionServerParticipation(companion)) return null;
+  const choiceBtnClass = (on) =>
+    variant === 'public'
+      ? `${uiFormChoiceBtn.public} ${on ? uiFormChoiceBtn.activePublic : uiFormChoiceBtn.idlePublic}`
+      : `${uiFormChoiceBtn.panel} ${on ? 'bg-amber-500 text-white border-amber-400' : 'bg-white text-slate-600 border-slate-200'}`;
+  return (
+    <div className="space-y-2">
+      <label className={labelClasses}>Participa como servidor</label>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => {
+          const next = isSiValue(companion?.isServer) ? 'No' : SI;
+          onCompanionChange(syncBautizosCompanionServerFields({ ...companion, isServer: next }));
+        }}
+        className={choiceBtnClass(isSiValue(companion?.isServer))}
+      >
+        <Users size={14} /> {formatSiNo(companion?.isServer)}
+      </button>
+      <p className="text-[10px] text-slate-500 leading-snug">
+        Los acompañantes no heredan el rol de servidor del titular; marque solo quienes sirvan en el evento.
+      </p>
     </div>
   );
 }
@@ -257,6 +306,8 @@ function newCompanionRow(loc) {
     carrosLlegada: 1,
     travelFrom: l,
     travelTo: l,
+    isServer: 'No',
+    serverAssignment: '',
   };
 }
 
@@ -673,6 +724,16 @@ export function BautizosCompanionsField({
                   aria-label="¿Este acompañante se va a bautizar?"
                 />
               </div>
+              {bautizosShowsCompanionServerParticipation(row) ? (
+                <BautizosCompanionServerParticipationFields
+                  companion={row}
+                  onCompanionChange={(next) => patchRow(i, next)}
+                  disabled={disabled}
+                  labelClasses={labelClasses}
+                  formatSiNo={formatSiNo}
+                  variant={isTeal ? 'public' : 'panel'}
+                />
+              ) : null}
               {baptizedBuddy ? (
                 <div className="rounded-xl border border-sky-200/90 dark:border-sky-700/70 bg-sky-50/50 dark:bg-sky-950/25 p-2.5 space-y-3">
                   <p className="text-[10px] font-bold text-sky-900 dark:text-sky-100 leading-snug">

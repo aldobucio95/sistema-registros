@@ -169,7 +169,10 @@ import {
   BAUTIZOS_UNDER_3_POLICY_NOTE,
   syncBautizosAttendanceServerFields,
   bautizosShowsServerParticipation,
-  participantIsBautizosServidorOrEmpleadoAttendance,
+  bautizosParticipatesAsServer,
+  bautizosCompanionParticipatesAsServer,
+  countBautizosServersDeduped,
+  collectBautizosParticipatingServerRows,
   getBautizosAttendanceTypeLabel,
   resolveBautizosAttendanceChipKind,
   getBautizosCompanionsVisibleForRegistrant,
@@ -198,11 +201,14 @@ import {
   buildCompanionWaitlistVirtualParticipant,
   clearCompanionWaitlistFlags,
   collectCompanionWaitlistVirtualRows,
+  companionDisplayIsWaitlistPending,
   computeAdditionalCompanionCapUnits,
+  countHostCompanionWaitlistPending,
   isCompanionWaitlistPending,
   isCompanionWaitlistVirtualParticipant,
   isCompanionWaitlistPhantomStoredParticipant,
   parseCompanionWaitlistVirtualId,
+  resolveCompanionWaitlistSource,
   resolveCompanionWaitlistVirtualLocation,
   resolveParticipantEffectiveLocation,
 } from './bautizosCompanionWaitlist.js';
@@ -260,6 +266,7 @@ import {
 import {
   BautizosAttendanceTypeField,
   BautizosCompanionsField,
+  BautizosServerParticipationFields,
 } from './BautizosEventFormBlocks.jsx';
 import { BautizosCarDataSection } from './BautizosCarDataSection.jsx';
 import BautizosCarDataPromptModal from './components/transport/BautizosCarDataPromptModal.jsx';
@@ -464,6 +471,7 @@ import {
 import RosterSortDropdown from './components/RosterSortDropdown.jsx';
 import RosterLocationSearchPanel from './components/RosterLocationSearchPanel.jsx';
 import RosterParticipantMobileCard from './components/RosterParticipantMobileCard.jsx';
+import CompanionWaitlistBadge from './components/CompanionWaitlistBadge.jsx';
 import ListMobileCard from './components/ListMobileCard.jsx';
 import ActivityLogMobileCard from './components/ActivityLogMobileCard.jsx';
 import MobileCompactToolbar, { MobileCompactToolbarPanel } from './components/mobile/MobileCompactToolbar.jsx';
@@ -546,6 +554,14 @@ import {
   computeIncomingRegistrationCapUnits,
   computePromoteFromWaitlistCapUnits,
 } from './eventCapUnits.js';
+import {
+  computeCapRemaining,
+  formatCapRemainingDisplay,
+  buildSedeCapChipViewModel,
+  resolveConfiguredCapLimit,
+  resolveCupoLimitMode,
+  resolveSedeCapStatus,
+} from './cupoVsWaitlistDisplay.js';
 import { computeDashboardTodosRosterTotal } from './dashboardTodosRosterTotal.js';
 import {
   getAuth,
@@ -8957,9 +8973,6 @@ function resolveEventName(eventId) {
       if (et === 'Campa' && isSiValue(p.isServer)) {
         servidores += 1;
       }
-      if (et === 'Bautizos' && participantIsBautizosServidorOrEmpleadoAttendance(p)) {
-        servidores += 1;
-      }
     }
 
     if (et === 'Bautizos') {
@@ -8985,16 +8998,17 @@ function resolveEventName(eventId) {
       );
       const meta = buildActiveRegistrantMetaForCompanionDedupe(rosterForPlan);
       const plan = buildBautizosCanonicalCompanionPlan(rosterForPlan, meta, { includeBaptizedCompanions: false });
+      const planAll = buildBautizosCanonicalCompanionPlan(rosterForPlan, meta, { includeBaptizedCompanions: true });
       acompanantes = plan.size;
+      servidores = countBautizosServersDeduped(rosterForPlan, planAll);
+      servidoresOnly = servidores;
 
       for (const p of rosterForPlan) {
         const att = normalizeBautizosAttendanceType(p.bautizosAttendanceType);
         if (att === BAUTIZOS_ATTENDANCE.asistente) asistentes += 1;
-        if (att === BAUTIZOS_ATTENDANCE.servidor) servidoresOnly += 1;
         if (att === BAUTIZOS_ATTENDANCE.empleado) empleados += 1;
         if (att === BAUTIZOS_ATTENDANCE.cortesia) cortesias += 1;
       }
-      const planAll = buildBautizosCanonicalCompanionPlan(rosterForPlan, meta, { includeBaptizedCompanions: true });
       const canonicalCompanions = [...planAll.values()];
       let companionBaptizedCount = 0;
       for (const p of rosterForPlan) {
@@ -10430,8 +10444,7 @@ function resolveEventName(eventId) {
           if (isSiValue(person.hasDisability)) totalDisabilities += allScopeDoubleWeight;
           if (!participantIsCancelled(person)) {
             if (isBautizosEv) {
-              const bzAtt = normalizeBautizosAttendanceType(person.bautizosAttendanceType);
-              if (bzAtt === BAUTIZOS_ATTENDANCE.servidor) {
+              if (bautizosParticipatesAsServer(person)) {
                 totalServers += allScopeDoubleWeight;
                 stats.all.servers += allScopeDoubleWeight;
               }
@@ -11987,13 +12000,22 @@ function resolveEventName(eventId) {
               'Área para servir',
             ];
         const srvData = [srvHead];
-        const basePool = allParticipants.filter(
-          (p) =>
-            p.eventId === currentEvent.id &&
-            participantIsActiveInEvent(p) &&
-            participantIsActiveInRoster(p) &&
-            (isBautizos ? participantIsBautizosServidorOrEmpleadoAttendance(p) : isSiValue(p.isServer))
-        );
+        const basePool = isBautizos
+          ? collectBautizosParticipatingServerRows(
+              allParticipants.filter(
+                (p) =>
+                  p.eventId === currentEvent.id &&
+                  participantIsActiveInEvent(p) &&
+                  participantIsActiveInRoster(p)
+              )
+            )
+          : allParticipants.filter(
+              (p) =>
+                p.eventId === currentEvent.id &&
+                participantIsActiveInEvent(p) &&
+                participantIsActiveInRoster(p) &&
+                isSiValue(p.isServer)
+            );
         for (const p of basePool) {
           const loc = p.location || '';
           if (!locInExportScope(String(loc).trim())) continue;
@@ -20599,6 +20621,18 @@ function resolveEventName(eventId) {
                             hasAdminRights,
                           })}
                         />
+                        <BautizosServerParticipationFields
+                          entry={editRegistryModal.data}
+                          onEntryChange={(next) =>
+                            setEditRegistryModal({ ...editRegistryModal, data: next })
+                          }
+                          disabled={false}
+                          labelClasses={labelClasses}
+                          formatSiNo={formatSiNo}
+                          choiceBtnClass={(on) =>
+                            `${uiFormChoiceBtn.panel} ${on ? 'bg-amber-500 text-white border-amber-400' : uiFormChoiceBtn.idlePanelAlt}`
+                          }
+                        />
                       </div>
                       {isSiValue(editRegistryModal.data.isServer) &&
                         bautizosShowsServerParticipation(editRegistryModal.data) && (
@@ -20607,7 +20641,7 @@ function resolveEventName(eventId) {
                             Información adicional de servidor (opcional)
                           </p>
                           <p className="text-[10px] text-slate-500 leading-snug -mt-1">
-                            El tipo servidor o empleado se define arriba; aquí solo datos de pareja, hijos y áreas de servicio.
+                            Marque «Participa como servidor» arriba si aplica; aquí solo datos de pareja, hijos y áreas de servicio.
                           </p>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div className={fieldStack}>
@@ -29809,9 +29843,21 @@ function resolveEventName(eventId) {
           );
     const bautizosDashServidorListForDash = !isBautizos
       ? []
-      : bautizosDashRowsForCardScope().filter(
-          (p) => normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.servidor
-        );
+      : collectBautizosParticipatingServerRows(bautizosPartyRosterBase).filter((row) => {
+          const sc = bautizosDashScope;
+          if (sc === 'all') return true;
+          if (row.__globalRegistryVirtual) {
+            const host = bautizosPartyRosterBase.find(
+              (p) => String(p?.id || '') === String(row.__hostRegistrantId || '')
+            );
+            if (!host) return false;
+            const comp = getBautizosCompanionsArray(host).find(
+              (c) => String(c?.name || '').trim() === String(row?.name || '').trim()
+            );
+            return comp ? bautizosDashboardCompanionCountsForScope(comp, sc, host) : false;
+          }
+          return bautizosDashboardTitularCountsForScope(row, sc);
+        });
     const bautizosDashCortesiaListForDash = !isBautizos
       ? []
       : bautizosDashRowsForCardScope().filter(
@@ -30279,8 +30325,8 @@ function resolveEventName(eventId) {
             acc.count += allScopeDoubleWeight;
             if (isSiValue(p.isScholarship)) acc.scholarship += allScopeDoubleWeight;
             if (currentEvent?.eventType === 'Bautizos') {
+              if (bautizosParticipatesAsServer(p)) acc.servers += allScopeDoubleWeight;
               const bzAtt = normalizeBautizosAttendanceType(p.bautizosAttendanceType);
-              if (bzAtt === BAUTIZOS_ATTENDANCE.servidor) acc.servers += allScopeDoubleWeight;
               if (bzAtt === BAUTIZOS_ATTENDANCE.asistente) acc.asistentesBautizos += allScopeDoubleWeight;
               if (bzAtt === BAUTIZOS_ATTENDANCE.cortesia) acc.cortesia += allScopeDoubleWeight;
               if (bzAtt === BAUTIZOS_ATTENDANCE.pastor) acc.pastores += allScopeDoubleWeight;
@@ -30682,14 +30728,15 @@ function resolveEventName(eventId) {
     };
     const summaryVisibleColCount = 1 + summaryColumnKeysForEvent.filter((k) => showSummaryTableColumn(k)).length;
     /** Tabla auto + min-widths + nowrap: evita columnas encimadas con muchas columnas (table-fixed forzaba anchos incompatibles con min-w). */
-    const sumHeadLoc = 'px-3 py-3 text-left align-middle bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider font-black border-b border-slate-100 whitespace-nowrap min-w-[7rem] max-w-[14rem]';
-    const sumHeadNum = 'px-3 py-3 text-center align-middle bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider font-black border-b border-slate-100 leading-tight whitespace-nowrap min-w-[2.85rem]';
-    const sumHeadMoney = 'px-3 py-3 text-right align-middle bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider font-black border-b border-slate-100 leading-tight whitespace-nowrap min-w-[5rem]';
-    const sumCellLoc = 'px-3 py-2.5 text-left align-middle min-w-[7rem] max-w-[14rem] font-bold text-slate-700 truncate';
+    const sumStickyLocBase =
+      'sticky left-0 z-[2] border-r border-slate-200/90 dark:border-slate-600 shadow-[4px_0_8px_-4px_rgba(15,23,42,0.12)] dark:shadow-[4px_0_8px_-4px_rgba(0,0,0,0.35)]';
+    const sumHeadLoc = `${sumStickyLocBase} z-[3] px-3 py-3 text-left align-middle bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 text-[10px] uppercase tracking-wider font-black border-b border-slate-100 dark:border-slate-700 whitespace-nowrap min-w-[7rem] max-w-[14rem]`;
+    const sumHeadNum = 'px-3 py-3 text-center align-middle bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 text-[10px] uppercase tracking-wider font-black border-b border-slate-100 dark:border-slate-700 leading-tight whitespace-nowrap min-w-[2.85rem]';
+    const sumHeadMoney = 'px-3 py-3 text-right align-middle bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 text-[10px] uppercase tracking-wider font-black border-b border-slate-100 dark:border-slate-700 leading-tight whitespace-nowrap min-w-[5rem]';
+    const sumCellLoc = `${sumStickyLocBase} px-3 py-2.5 text-left align-middle min-w-[7rem] max-w-[14rem] font-bold text-slate-700 dark:text-slate-200 truncate bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/90`;
     const sumCellNum = 'px-3 py-2.5 text-center align-middle tabular-nums whitespace-nowrap min-w-[2.85rem]';
     const sumCellMoney = 'px-3 py-2.5 text-right align-middle tabular-nums whitespace-nowrap min-w-[5rem]';
-    const sumFootLoc =
-      'px-3 py-3 text-left align-middle min-w-[7rem] max-w-[14rem] font-black text-indigo-900 dark:text-indigo-100 uppercase bg-indigo-50 dark:bg-slate-800';
+    const sumFootLoc = `${sumStickyLocBase} px-3 py-3 text-left align-middle min-w-[7rem] max-w-[14rem] font-black text-indigo-900 dark:text-indigo-100 uppercase bg-indigo-50 dark:bg-slate-800`;
     const sumFootNum =
       'px-3 py-3 text-center align-middle tabular-nums whitespace-nowrap min-w-[2.85rem] font-black bg-indigo-50 dark:bg-slate-800';
     const sumFootMoney =
@@ -30779,11 +30826,15 @@ function resolveEventName(eventId) {
         case 'serveYes':
           return !isCancelled && (
             currentEvent?.eventType === 'Bautizos'
-              ? normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.servidor
+              ? bautizosParticipatesAsServer(p)
               : isSiValue(p.isServer)
           );
         case 'serveNo':
-          return !isCancelled && !isSiValue(p.isServer);
+          return !isCancelled && (
+            currentEvent?.eventType === 'Bautizos'
+              ? !bautizosParticipatesAsServer(p)
+              : !isSiValue(p.isServer)
+          );
         case 'bautizos':
           return evCampa && !isCancelled && isSiValue(p.willBeBaptized);
         case 'teens': {
@@ -33324,7 +33375,7 @@ function resolveEventName(eventId) {
             <div className="mt-5 border-t border-slate-100 pt-4">
               <h4 className="text-xs font-black text-slate-600 uppercase tracking-wider mb-1">Cupo vs Espera por Sede</h4>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-3 leading-relaxed">
-                En <strong>Activos</strong> se muestran las unidades que consumen cupo en cada sede (incluye acompañantes con deduplicación canónica en Bautizos y ×2 en Campa cuando aplica).
+                <strong>Límite</strong> es el tope configurado (global compartido o por sede). <strong>Remanente</strong> son las unidades que aún caben antes de mandar nuevos registros a lista de espera. En <strong>Activos</strong> se cuentan las unidades que consumen cupo en cada sede (acompañantes con deduplicación canónica en Bautizos y ×2 en Campa cuando aplica).
               </p>
               <div className="overflow-x-auto rounded-xl border border-slate-200">
                 <table className="w-full text-left">
@@ -33332,7 +33383,8 @@ function resolveEventName(eventId) {
                     <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
                       <th className="px-4 py-2.5">Sede</th>
                       <th className="px-4 py-2.5 text-center">Activos</th>
-                      <th className="px-4 py-2.5 text-center">Cupo</th>
+                      <th className="px-4 py-2.5 text-center">Límite</th>
+                      <th className="px-4 py-2.5 text-center">Remanente</th>
                       <th className="px-4 py-2.5 text-center">Espera</th>
                       <th className="px-4 py-2.5 text-center">Estado</th>
                     </tr>
@@ -33341,32 +33393,60 @@ function resolveEventName(eventId) {
                     {(() => {
                       const gCap = Math.max(0, Number(tempEventTotalCap ?? 0));
                       const globalUsed = getEventCapUsedUnits();
-                      const sharedRemaining = gCap > 0 ? Math.max(0, gCap - globalUsed) : null;
-                      const eventGlobalFull = gCap > 0 && globalUsed >= gCap;
+                      const capStatusToneClass = {
+                        full: 'bg-rose-100 text-rose-800 border-rose-200',
+                        available: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+                        waitlist: 'bg-amber-100 text-amber-800 border-amber-200',
+                      };
                       return dashboardLocs.map((loc) => {
                         const activeCapUnits = eventCapUsedUnitsBySede[loc] ?? 0;
-                        const cap = sharedRemaining != null
-                          ? sharedRemaining
-                          : Number(tempLocationCaps?.[loc] ?? currentEvent?.locationCaps?.[loc] ?? 0);
+                        const locationCap = Number(tempLocationCaps?.[loc] ?? currentEvent?.locationCaps?.[loc] ?? 0);
+                        const configuredLimit = resolveConfiguredCapLimit({
+                          eventTotalCap: gCap,
+                          locationCap,
+                        });
+                        const remaining = computeCapRemaining({
+                          eventTotalCap: gCap,
+                          globalUsed,
+                          locationCap,
+                          activeAtSede: activeCapUnits,
+                        });
                         const waitCount = waitlistCupoCountBySede[loc] ?? 0;
-                        const isSedeFull = sharedRemaining == null && cap > 0 && activeCapUnits >= cap;
-                        const statusLabel = eventGlobalFull ? 'Cupo evento' : isSedeFull ? 'Lleno' : 'Disponible';
-                        const statusClass = eventGlobalFull
-                          ? 'bg-rose-100 text-rose-800 border-rose-200'
-                          : isSedeFull
-                            ? 'bg-amber-100 text-amber-700 border-amber-200'
-                            : 'bg-emerald-100 text-emerald-700 border-emerald-200';
+                        const status = resolveSedeCapStatus({
+                          eventTotalCap: gCap,
+                          globalUsed,
+                          locationCap,
+                          activeAtSede: activeCapUnits,
+                          waitCount,
+                        });
+                        const remainingDisplay = formatCapRemainingDisplay(remaining);
+                        const remainingClass =
+                          remaining === 0 && configuredLimit.scope !== 'unlimited'
+                            ? 'text-rose-700 font-black'
+                            : 'text-slate-700 font-semibold';
                         return (
                           <tr key={`cap-wait-${loc}`} className="hover:bg-slate-50/60 transition-colors">
                             <td className="px-4 py-2.5 font-bold text-slate-700">{loc}</td>
                             <td className="px-4 py-2.5 text-center font-semibold text-slate-700 tabular-nums">{activeCapUnits}</td>
-                            <td className="px-4 py-2.5 text-center font-semibold text-slate-700">{cap > 0 ? cap : 'Ilimitado'}</td>
-                            <td className={`px-4 py-2.5 text-center font-black ${waitCount > 0 ? 'text-amber-600' : 'text-slate-500'}`}>
+                            <td className="px-4 py-2.5 text-center">
+                              <span className="font-semibold text-slate-700 tabular-nums">{configuredLimit.label}</span>
+                              {configuredLimit.detail ? (
+                                <span className="block text-[9px] font-bold text-indigo-600 uppercase tracking-wide mt-0.5">
+                                  {configuredLimit.detail}
+                                </span>
+                              ) : configuredLimit.scope === 'sede' ? (
+                                <span className="block text-[9px] font-bold text-slate-400 uppercase tracking-wide mt-0.5">
+                                  Por sede
+                                </span>
+                              ) : null}
+                            </td>
+                            <td className={`px-4 py-2.5 text-center tabular-nums ${remainingClass}`}>{remainingDisplay}</td>
+                            <td className={`px-4 py-2.5 text-center font-black tabular-nums ${waitCount > 0 ? 'text-amber-600' : 'text-slate-500'}`}>
                               {waitCount}
                             </td>
                             <td className="px-4 py-2.5 text-center">
-                              <span className={`text-[10px] font-black px-2 py-0.5 rounded border ${statusClass}`}>
-                                {statusLabel}
+                              <span className={`text-[10px] font-black px-2 py-0.5 rounded border ${capStatusToneClass[status.tone]}`}>
+                                {status.label}
                               </span>
                             </td>
                           </tr>
@@ -33376,6 +33456,15 @@ function resolveEventName(eventId) {
                   </tbody>
                 </table>
               </div>
+              {resolveCupoLimitMode(tempEventTotalCap) === 'global' ? (
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">
+                  Consumo global actual: <strong className="tabular-nums text-slate-700 dark:text-slate-200">{getEventCapUsedUnits()}</strong>
+                  {' / '}
+                  <strong className="tabular-nums text-slate-700 dark:text-slate-200">{tempEventTotalCap}</strong>
+                  {' '}
+                  unidades. El remanente es el mismo para todas las sedes porque el cupo es compartido.
+                </p>
+              ) : null}
             </div>
             </div>
           </div>
@@ -33575,7 +33664,7 @@ function resolveEventName(eventId) {
               </div>
             </div>
             <div className="relative z-0 overflow-x-auto max-w-full rounded-b-2xl">
-              <table className="w-max min-w-full border-collapse text-[11px] md:text-xs">
+              <table className="w-max min-w-full border-separate border-spacing-0 text-[11px] md:text-xs">
                 <thead>
                   <tr>
                     <th className={sumHeadLoc}>Sede</th>
@@ -33592,7 +33681,7 @@ function resolveEventName(eventId) {
                       <td colSpan={summaryVisibleColCount} className="px-3 py-8 text-center text-slate-400 italic font-medium">No hay registros con los filtros actuales.</td>
                     </tr>
                   ) : tableByLocation.map(({ loc, stats }) => (
-                    <tr key={`sum-${loc}`} className="hover:bg-slate-50/50 transition-colors">
+                    <tr key={`sum-${loc}`} className="group hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors">
                       <td className={sumCellLoc} title={loc}>{loc}</td>
                       {summaryColumnKeysForEvent.filter(showSummaryTableColumn).map((colKey) => {
                         const val = getSummaryStatValue(stats, colKey);
@@ -33651,7 +33740,7 @@ function resolveEventName(eventId) {
                   ))}
                 </tbody>
                 <tfoot>
-                  <tr className="bg-indigo-50 dark:bg-slate-800 border-t-2 border-indigo-100 dark:border-slate-600">
+                  <tr className="group bg-indigo-50 dark:bg-slate-800 border-t-2 border-indigo-100 dark:border-slate-600">
                     <td className={`${sumFootLoc} ${sumCellClick}`}>Global</td>
                     {summaryColumnKeysForEvent.filter(showSummaryTableColumn).map((colKey) => {
                       const val = getSummaryStatValue(globalTableStats, colKey);
@@ -34847,18 +34936,35 @@ function resolveEventName(eventId) {
           })()}
           {isBautizos && !opts.hideBautizosCompanionCountChip && (() => {
             const companionCount = bautizosCompanionChipCountByRegistrant.get(String(person?.id || '')) || 0;
-            if (companionCount <= 0) return null;
+            const waitlistCompanionCount = countHostCompanionWaitlistPending(person);
+            if (companionCount <= 0 && waitlistCompanionCount <= 0) return null;
             return (
-              <span
-                className="text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-600 dark:text-white dark:border-amber-700"
-                title={`Acompañantes únicos visibles para este registro: ${companionCount}`}
-              >
-                <Users size={10} className="shrink-0" />
-                Acompañantes
-                <span className="inline-flex items-center justify-center min-w-[1rem] h-4 px-1 rounded bg-white/80 text-amber-900 border border-amber-300 dark:bg-amber-700 dark:text-white dark:border-amber-500">
-                  {companionCount}
-                </span>
-              </span>
+              <>
+                {companionCount > 0 ? (
+                  <span
+                    className="text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-600 dark:text-white dark:border-amber-700"
+                    title={`Acompañantes únicos visibles para este registro: ${companionCount}`}
+                  >
+                    <Users size={10} className="shrink-0" />
+                    Acompañantes
+                    <span className="inline-flex items-center justify-center min-w-[1rem] h-4 px-1 rounded bg-white/80 text-amber-900 border border-amber-300 dark:bg-amber-700 dark:text-white dark:border-amber-500">
+                      {companionCount}
+                    </span>
+                  </span>
+                ) : null}
+                {waitlistCompanionCount > 0 ? (
+                  <span
+                    className="text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border bg-violet-50 text-violet-800 border-violet-200 dark:bg-violet-600 dark:text-white dark:border-violet-700"
+                    title={`${waitlistCompanionCount} acompañante(s) en lista de espera en este registro`}
+                  >
+                    <Clock size={10} className="shrink-0" />
+                    En espera
+                    <span className="inline-flex items-center justify-center min-w-[1rem] h-4 px-1 rounded bg-white/80 text-violet-900 border border-violet-300 dark:bg-violet-700 dark:text-white dark:border-violet-500">
+                      {waitlistCompanionCount}
+                    </span>
+                  </span>
+                ) : null}
+              </>
             );
           })()}
           {isCampa && (() => {
@@ -34899,12 +35005,31 @@ function resolveEventName(eventId) {
           </p>
         ) : null}
         {isCompanionWaitlistVirtualParticipant(person) ? (
-          <p className="text-[10px] font-semibold text-violet-800 dark:text-violet-200 leading-snug">
-            Acompañante de {String(person._companionWaitlistHostName || 'titular').trim()}
-            {String(person.relationship || '').trim() && person.relationship !== 'No disponible'
-              ? ` · ${String(person.relationship).trim()}`
-              : ''}
-          </p>
+          <>
+            <p className="text-[10px] font-semibold text-violet-800 dark:text-violet-200 leading-snug">
+              Acompañante de {String(person._companionWaitlistHostName || 'titular').trim()}
+              {String(person.relationship || '').trim() && person.relationship !== 'No disponible'
+                ? ` · ${String(person.relationship).trim()}`
+                : ''}
+            </p>
+            <div className="mt-1">
+              <CompanionWaitlistBadge hostName={String(person._companionWaitlistHostName || '').trim()} />
+            </div>
+          </>
+        ) : null}
+        {isBautizos &&
+        !isCompanionWaitlistVirtualParticipant(person) &&
+        (person.__companionWaitlistPending ||
+          (person.__globalRegistryCompanionRow &&
+            companionDisplayIsWaitlistPending(person, allParticipants))) ? (
+          <div className="mt-1">
+            <CompanionWaitlistBadge
+              hostName={
+                String(person.__sourceRegistrantName || '').trim() ||
+                String(resolveCompanionWaitlistSource(person, allParticipants)?.host?.name || '').trim()
+              }
+            />
+          </div>
         ) : null}
         <div className="text-xs text-slate-500 flex flex-col gap-0.5 mt-1">
           <span className="flex items-center gap-1.5 flex-wrap">
@@ -35633,14 +35758,28 @@ function resolveEventName(eventId) {
                           ? getBautizosCompanionInformativeListPrice(c, currentEvent, allParticipants)
                           : 0;
                         const linkedNoExtraCharge = !!c?.linkedNoExtraCharge || !!String(c?.linkedCompanionSourceKey || '').trim();
+                        const waitlistSrc = resolveCompanionWaitlistSource(c, rosterForCompanionDisplay);
+                        const companionOnWaitlist = !!waitlistSrc;
+                        const waitlistHostName = String(
+                          waitlistSrc?.host?.name || row?.name || ''
+                        ).trim();
                         return (
                           <div
                             key={c?.id || `comp-${idx}`}
-                            className="rounded-md border border-amber-100 dark:border-amber-500/50 bg-white/85 dark:bg-slate-900/70 px-2 py-1.5"
+                            className={`rounded-md border bg-white/85 dark:bg-slate-900/70 px-2 py-1.5 ${
+                              companionOnWaitlist
+                                ? 'border-violet-200 dark:border-violet-500/60 ring-1 ring-violet-100/80 dark:ring-violet-500/30'
+                                : 'border-amber-100 dark:border-amber-500/50'
+                            }`}
                           >
-                            <p className="text-slate-800 dark:text-slate-100 font-semibold text-[11px]">
-                              {idx + 1}. {companionName}
-                            </p>
+                            <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
+                              <p className="text-slate-800 dark:text-slate-100 font-semibold text-[11px]">
+                                {idx + 1}. {companionName}
+                              </p>
+                              {companionOnWaitlist ? (
+                                <CompanionWaitlistBadge hostName={waitlistHostName} compact />
+                              ) : null}
+                            </div>
                             <p className="text-slate-600 dark:text-slate-300 text-[10px]">
                               <strong>Parentesco:</strong> {companionRelationship || 'Sin parentesco capturado'}
                             </p>
@@ -35650,6 +35789,13 @@ function resolveEventName(eventId) {
                             {linkedNoExtraCharge ? (
                               <p className="text-teal-700 dark:text-teal-200 text-[10px] font-semibold">
                                 <strong>Vinculado:</strong> sin cobro extra en este registro
+                              </p>
+                            ) : null}
+                            {companionOnWaitlist ? (
+                              <p className="text-violet-800 dark:text-violet-200 text-[10px] font-semibold leading-snug">
+                                En lista de espera
+                                {waitlistHostName ? ` del grupo de ${waitlistHostName}` : ''}
+                                ; no cuenta en cupo activo hasta promover.
                               </p>
                             ) : null}
                             {showBautizosCompanionIndividualCosts ? (
@@ -36277,6 +36423,19 @@ function resolveEventName(eventId) {
     const rosterSearchMatchCount =
       visibleParticipants.length + visibleBautizedCompanionCount + waitlistFilteredForLoc.length + cancelledFilteredForLoc.length;
     const rawActiveCountForLoc = getActiveCountByLocation(loc);
+    const sedeCapChip = buildSedeCapChipViewModel({
+      eventTotalCap: getEventTotalCap(),
+      globalUsed: getEventCapUsedUnits(),
+      locationCap: getLocationCap(loc),
+      activeAtSede: rawActiveCountForLoc,
+      waitCount: waitlistCupoCountBySede[loc] ?? 0,
+    });
+    const sedeCapChipClass =
+      sedeCapChip.status.tone === 'full'
+        ? 'bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-600 dark:text-white dark:border-amber-700'
+        : sedeCapChip.status.tone === 'waitlist'
+          ? 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-700/90 dark:text-white dark:border-amber-600'
+          : 'bg-indigo-50 text-indigo-700 border-indigo-100 dark:bg-indigo-600 dark:text-white dark:border-indigo-700';
     const rosterSearchActive = searchTerm.trim().length > 0;
     const rosterFilterOption = (filterKey, optionValue, checked, onChange, children, className = uiDropdown.optionRow) => (
       <RosterFilterCheckboxOption
@@ -36415,8 +36574,11 @@ function resolveEventName(eventId) {
             <div className="flex items-center gap-2 flex-wrap">
               <div className={`w-2 h-2 rounded-full ${isLocOpen(loc) ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
               <p className="text-xs font-bold uppercase text-slate-400">Registro {isLocOpen(loc) ? 'Abierto' : 'Cerrado'}</p>
-              <span className={`text-[10px] font-black px-2 py-0.5 rounded border ${isLocationFull(loc) ? 'bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-600 dark:text-white dark:border-amber-700' : 'bg-indigo-50 text-indigo-700 border-indigo-100 dark:bg-indigo-600 dark:text-white dark:border-indigo-700'}`}>
-                Cupo: {getActiveCountByLocation(loc)} / {getEventTotalCap() > 0 ? Math.max(0, getEventTotalCap() - getEventCapUsedUnits()) : (getLocationCap(loc) > 0 ? getLocationCap(loc) : 'Ilimitado')}
+              <span
+                className={`text-[10px] font-black px-2 py-0.5 rounded border tabular-nums ${sedeCapChipClass}`}
+                title={sedeCapChip.title}
+              >
+                {sedeCapChip.text}
               </span>
             </div>
           </div>
@@ -36998,6 +37160,16 @@ function resolveEventName(eventId) {
                         showPastor={canShowPastorAttendanceType}
                       />
                     </fieldset>
+                    <BautizosServerParticipationFields
+                      entry={newEntry}
+                      onEntryChange={setNewEntry}
+                      disabled={fieldBlocked('bautizosAttendanceType')}
+                      labelClasses={labelClasses}
+                      formatSiNo={formatSiNo}
+                      choiceBtnClass={(on) =>
+                        `${uiFormChoiceBtn.panel} ${on ? 'bg-amber-500 text-white border-amber-400' : uiFormChoiceBtn.idlePanelAlt}`
+                      }
+                    />
                     {fv('serverProfileExtra') &&
                       bautizosShowsServerParticipation(newEntry) &&
                       isSiValue(newEntry.isServer) && (
@@ -37009,7 +37181,7 @@ function resolveEventName(eventId) {
                           Información adicional de servidor (opcional)
                         </p>
                         <p className="text-[10px] text-slate-500 mb-3 leading-snug">
-                          El tipo servidor o empleado se define arriba; aquí solo datos de pareja, hijos y áreas de servicio.
+                          Marque «Participa como servidor» arriba si aplica; aquí solo datos de pareja, hijos y áreas de servicio.
                         </p>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div className={fieldStack}>
@@ -40091,11 +40263,12 @@ function resolveEventName(eventId) {
   };
 
   const renderServerProfilesPage = () => {
-    const basePool = scopedEventParticipants.filter((p) => {
-      if (!participantIsActiveInEvent(p) || !participantIsActiveInRoster(p)) return false;
-      if (isBautizos) return participantIsBautizosServidorOrEmpleadoAttendance(p);
-      return isSiValue(p.isServer);
-    });
+    const activeRoster = scopedEventParticipants.filter(
+      (p) => participantIsActiveInEvent(p) && participantIsActiveInRoster(p)
+    );
+    const basePool = isBautizos
+      ? collectBautizosParticipatingServerRows(activeRoster)
+      : activeRoster.filter((p) => isSiValue(p.isServer));
     let rows = applyGlobalRegistryLikeFilters(basePool);
     const locationScopeSet = buildLocationScopeSet(visibleLocations);
     if (locationScopeSet) {
@@ -40171,7 +40344,7 @@ function resolveEventName(eventId) {
             </h3>
             <p className="text-xs text-slate-500">
               {isBautizos
-                ? 'Inscritos activos con tipo de asistencia servidor o empleado (no cancelados ni en espera). Mismos filtros que Registro global.'
+                ? 'Personas activas que participan como servidor (tipo servidor, empleado/cortesía/asistente con participación marcada, o acompañante individual). Mismos filtros que Registro global.'
                 : 'Solo servidores con inscripción activa (no dados de baja ni en lista de espera). Mismos filtros que Registro global.'}
             </p>
             {sedeScopeHint ? (

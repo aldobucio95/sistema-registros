@@ -6,6 +6,8 @@ import {
   getBautizosCompanionsArray,
   getBautizosLineListPrice,
   isBautizosCompanionBaptized,
+  normalizePersonNameKey,
+  parseLinkSourceKey,
 } from './bautizosParty.js';
 import { getBautizosListPriceBreakdown, getBautizosTitularListPrice } from './publicRegistrationLogic.js';
 import { filterEventCapRosterBase } from './dashboardTodosRosterTotal.js';
@@ -254,6 +256,63 @@ export function buildCompanionWaitlistVirtualParticipant(host, companion, eventL
     whatsAppFinanceNotifications: [],
     __globalRegistryVirtual: false,
   };
+}
+
+/**
+ * Resuelve la fila origen de un acompañante en espera (propia o vinculada en otro titular).
+ * @returns {{ host: object|null, companion: object }|null}
+ */
+export function resolveCompanionWaitlistSource(companionLike, roster) {
+  if (!companionLike || typeof companionLike !== 'object') return null;
+  if (isCompanionWaitlistPending(companionLike)) {
+    return { host: null, companion: companionLike };
+  }
+  const list = Array.isArray(roster) ? roster : [];
+  const byId = new Map();
+  for (const p of list) {
+    const pid = String(p?.id || '').trim();
+    if (pid) byId.set(pid, p);
+  }
+
+  const sk = String(companionLike?.linkedCompanionSourceKey || '').trim();
+  if (sk.startsWith('c:')) {
+    const parsed = parseLinkSourceKey(sk);
+    if (parsed?.kind === 'companion') {
+      const host = byId.get(parsed.hostId);
+      const comp = getBautizosCompanionsArray(host).find(
+        (c) => String(c?.id || '') === String(parsed.companionId || '')
+      );
+      if (comp && isCompanionWaitlistPending(comp)) return { host: host || null, companion: comp };
+    }
+  }
+
+  const cid = String(companionLike?.id || '').trim();
+  if (cid) {
+    for (const host of list) {
+      const comp = getBautizosCompanionsArray(host).find((c) => String(c?.id || '') === cid);
+      if (comp && isCompanionWaitlistPending(comp)) return { host, companion: comp };
+    }
+  }
+
+  const nameKey = normalizePersonNameKey(companionLike?.name || companionLike?.linkedCompanionName);
+  if (nameKey) {
+    for (const host of list) {
+      for (const c of getBautizosCompanionsArray(host)) {
+        if (isCompanionWaitlistPending(c) && normalizePersonNameKey(c?.name) === nameKey) {
+          return { host, companion: c };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+export function companionDisplayIsWaitlistPending(companionLike, roster) {
+  return resolveCompanionWaitlistSource(companionLike, roster) != null;
+}
+
+export function countHostCompanionWaitlistPending(hostLike) {
+  return getBautizosCompanionsArray(hostLike).filter(isCompanionWaitlistPending).length;
 }
 
 /** Recolecta filas virtuales de acompañantes en espera para una sede. */

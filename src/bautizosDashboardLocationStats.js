@@ -8,6 +8,8 @@ import {
   buildBautizosCanonicalCompanionPlan,
   bautizosDashboardCompanionCountsForScope,
   bautizosDashboardTitularCountsForScope,
+  bautizosParticipatesAsServer,
+  bautizosCompanionParticipatesAsServer,
   isBautizosCompanionBaptized,
   normalizeBautizosAttendanceType,
   participantHasBaptismChip,
@@ -39,8 +41,8 @@ export function computeBautizosDashboardActiveStatsForLocation(
 
   for (const p of titulars) {
     if (participantHasBaptismChip(p, 'Bautizos')) bautizados += 1;
+    if (bautizosParticipatesAsServer(p)) servers += 1;
     const bzAtt = normalizeBautizosAttendanceType(p.bautizosAttendanceType);
-    if (bzAtt === BAUTIZOS_ATTENDANCE.servidor) servers += 1;
     if (bzAtt === BAUTIZOS_ATTENDANCE.asistente) asistentesBautizos += 1;
     if (bzAtt === BAUTIZOS_ATTENDANCE.cortesia) cortesia += 1;
     if (bzAtt === BAUTIZOS_ATTENDANCE.empleado) empleadosBautizos += 1;
@@ -60,6 +62,7 @@ export function computeBautizosDashboardActiveStatsForLocation(
     compN += 1;
     if (isBautizosCompanionBaptized(comp)) bautizados += 1;
     else companions += 1;
+    if (bautizosCompanionParticipatesAsServer(comp)) servers += 1;
   }
 
   const count = titulars.length + compN;

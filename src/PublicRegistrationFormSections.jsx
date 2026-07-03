@@ -46,6 +46,7 @@ import { registrationRequiresResponsivaStatus, responsivaStatusValidationLabel }
 import {
   BautizosAttendanceTypeField,
   BautizosCompanionsField,
+  BautizosServerParticipationFields,
 } from './BautizosEventFormBlocks.jsx';
 import { BautizosCarDataSection } from './BautizosCarDataSection.jsx';
 import { familyHasAnyCarTransport, collectCarColorSuggestions } from './bautizosCarMeta.js';
@@ -544,6 +545,16 @@ export default function PublicRegistrationFormSections({
                 labelClasses={labelClasses}
                 variant="public"
               />
+              <BautizosServerParticipationFields
+                entry={form}
+                onEntryChange={(next) => setForm(next)}
+                disabled={submitting}
+                labelClasses={labelClasses}
+                formatSiNo={formatSiNo}
+                choiceBtnClass={(on) =>
+                  `${uiFormChoiceBtn.public} ${on ? 'bg-amber-500 text-white border-amber-400' : uiFormChoiceBtn.idlePublic}`
+                }
+              />
               {optionalVisibility.serverProfileExtra !== false &&
                 isSiValue(form.isServer) &&
                 bautizosShowsServerParticipation(form) && (
@@ -552,7 +563,7 @@ export default function PublicRegistrationFormSections({
                     {pubSectionLabel('Información adicional de servidor')} <span className="font-normal normal-case text-slate-500">(opcional)</span>
                   </p>
                   <p className="text-[10px] text-slate-500 mb-3 leading-snug">
-                    El tipo servidor o empleado se elige arriba; aquí solo datos de pareja, hijos y áreas de servicio.
+                    Marque «Participa como servidor» arriba si aplica; aquí solo datos de pareja, hijos y áreas de servicio.
                   </p>
                   <div className="p-3 bg-amber-50/50 border border-amber-100 rounded-lg dark:bg-amber-950 dark:border-amber-700">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

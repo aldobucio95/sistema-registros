@@ -5,6 +5,7 @@
 import {
   bautizosDashboardCompanionCountsForScope,
   bautizosDashboardTitularCountsForScope,
+  bautizosParticipatesAsServer,
   expandBautizosGlobalRegistryRows,
   expandBautizosWaitlistRegistryRows,
   getBautizosCompanionsArray,
@@ -104,13 +105,14 @@ function analyzeBautizosExpandedRowsToTypes(expandedRows) {
         bautizados += 1;
       } else if (p.__virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companion) {
         acompanantes += 1;
+        if (bautizosParticipatesAsServer(p)) servidores += 1;
       }
       continue;
     }
     if (participantHasBaptismChip(p, 'Bautizos')) bautizados += 1;
     const att = normalizeBautizosAttendanceType(p.bautizosAttendanceType);
     if (att === BAUTIZOS_ATTENDANCE.asistente) asistentes += 1;
-    if (att === BAUTIZOS_ATTENDANCE.servidor) servidores += 1;
+    if (bautizosParticipatesAsServer(p)) servidores += 1;
     if (att === BAUTIZOS_ATTENDANCE.empleado) empleados += 1;
     if (att === BAUTIZOS_ATTENDANCE.cortesia) cortesias += 1;
   }

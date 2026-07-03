@@ -130,6 +130,27 @@ describe('globalRegistryPartyRows', () => {
     expect(rows).toHaveLength(3);
   });
 
+  it('includes waitlist companions under active titular with pending flag', () => {
+    const host = {
+      id: 'h1',
+      eventId: 'ev1',
+      location: 'Sede A',
+      status: 'active',
+      name: 'Titular',
+      bautizosCompanions: [
+        { id: 'c1', name: 'Acomp Activo', relationship: 'Hijo' },
+        { id: 'c2', name: 'Acomp Espera', relationship: 'Hija', companionWaitlistPending: true },
+      ],
+    };
+    const rows = buildGlobalRegistryPartyRowsFromTitulars([host], [host]);
+    const waitRow = rows.find((r) => r.key.startsWith('wl-nested:'));
+    expect(waitRow).toBeTruthy();
+    expect(waitRow.person.name).toBe('Acomp Espera');
+    expect(waitRow.person.__companionWaitlistPending).toBe(true);
+    expect(waitRow.companionWaitlistPending).toBe(true);
+    expect(rows.filter((r) => r.isSubRegistration)).toHaveLength(2);
+  });
+
   it('sortGlobalRegistryPartyRows keeps companion blocks under titular when sorting by name', () => {
     const hostA = {
       id: 'hA',

@@ -133,18 +133,22 @@ export function bautizosDashboardTitularCountsForScope(personLike, scope) {
     return normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado;
   }
   if (sc === 'companions') return false;
+  if (sc === BAUTIZOS_ATTENDANCE.servidor) return bautizosParticipatesAsServer(personLike);
   return bautizosAttendanceDashboardScopeMatches(personLike, sc);
 }
 
-/** Acompañante canónico entra al conteo según el alcance unificado (puede filtrar por titular en tipos de asistencia). */
-export function bautizosDashboardCompanionCountsForScope(companionLike, scope, hostLike) {
+/** Acompañante canónico entra al conteo según el alcance unificado (atributos propios; no hereda tipo del titular). */
+export function bautizosDashboardCompanionCountsForScope(companionLike, scope, _hostLike) {
   const sc = normalizeBautizosDashboardScope(scope);
   if (sc === 'all') return true;
   const baptized = isBautizosCompanionBaptized(companionLike);
   if (sc === 'baptized') return baptized;
   if (sc === 'companions') return !baptized;
-  if (hostLike && bautizosAttendanceDashboardScopeMatches(hostLike, sc)) {
-    return String(companionLike?.name || '').trim().length > 0;
+  if (sc === BAUTIZOS_ATTENDANCE.servidor) {
+    return (
+      bautizosCompanionParticipatesAsServer(companionLike) &&
+      String(companionLike?.name || '').trim().length > 0
+    );
   }
   return false;
 }
@@ -251,7 +255,7 @@ export function getBautizosDashboardScopeChartHint(scope, variant = 'generic') {
       return `Personas que no toman el transporte del evento (se asume carro): ${BZ_HINT_TITULARES_ALL} y ${BZ_HINT_ACOMPANANTES_ALL} (deduplicados). No suma vehículos salvo casilla explícita de carros.`;
     }
     if (variant === 'servidorCard') {
-      return `Solo fichas titulares con tipo Servidor (excluye Bautizado, Asistente, Empleado, Cortesía y acompañantes). Con «Todos» en esta tarjeta: todos los servidores activos visibles.`;
+      return `Personas que participan como servidor (tipo Servidor, empleado/cortesía/asistente con «Participa como servidor», o acompañante marcado individualmente); cada persona cuenta una sola vez.`;
     }
     if (variant === 'cortesiaCard') {
       return `Solo fichas titulares con tipo Cortesía (sin cobro de lista; excluye los demás tipos y acompañantes).`;
@@ -368,9 +372,35 @@ export function isBautizosPastorAttendance(personLike) {
 /** Etiqueta fija de asignación servidor en Bautizos (sin Teens/Jóvenes/Ambos). */
 export const BAUTIZOS_SERVER_ASSIGNMENT_LABEL = 'Servidor';
 
+/** Titular o fila con tipo de asistencia: participa como servidor (tipo servidor o isServer=Sí). */
+export function bautizosParticipatesAsServer(personLike) {
+  const t = normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType);
+  if (t === BAUTIZOS_ATTENDANCE.servidor) return true;
+  return isSiValue(personLike?.isServer);
+}
+
+/** Acompañante marcado individualmente como servidor. */
+export function bautizosCompanionParticipatesAsServer(companionLike) {
+  return isSiValue(companionLike?.isServer);
+}
+
 export function bautizosShowsServerParticipation(personLike) {
   const t = normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType);
-  return t === BAUTIZOS_ATTENDANCE.servidor || t === BAUTIZOS_ATTENDANCE.empleado;
+  if (t === BAUTIZOS_ATTENDANCE.pastor) return false;
+  return (
+    t === BAUTIZOS_ATTENDANCE.servidor ||
+    t === BAUTIZOS_ATTENDANCE.empleado ||
+    t === BAUTIZOS_ATTENDANCE.cortesia ||
+    t === BAUTIZOS_ATTENDANCE.asistente ||
+    t === BAUTIZOS_ATTENDANCE.bautizado
+  );
+}
+
+/** Toggle «Participa como servidor» en filas de acompañante (no waitlist). */
+export function bautizosShowsCompanionServerParticipation(companionLike) {
+  if (!companionLike || typeof companionLike !== 'object') return false;
+  if (companionLike?.companionWaitlistPending === true) return false;
+  return true;
 }
 
 /** Filas virtuales en Registro Global (acompañantes expandidos como entradas individuales). */
@@ -379,16 +409,28 @@ export const GLOBAL_REGISTRY_VIRTUAL_KIND = Object.freeze({
   companionBaptized: 'companion-baptized',
 });
 
+function appendBautizosServerParticipationLabel(baseLabel, personLike) {
+  if (normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.servidor) {
+    return baseLabel;
+  }
+  if (bautizosParticipatesAsServer(personLike) || bautizosCompanionParticipatesAsServer(personLike)) {
+    return `${baseLabel} · Servidor`;
+  }
+  return baseLabel;
+}
+
 /** Etiqueta legible del tipo de asistencia Bautizos (incluye filas virtuales de acompañante). */
 export function getBautizosAttendanceTypeLabel(personLike) {
-  if (personLike?.__virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companion) return 'Acompañante';
+  if (personLike?.__virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companion) {
+    return appendBautizosServerParticipationLabel('Acompañante', personLike);
+  }
   const t = normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType);
-  if (t === BAUTIZOS_ATTENDANCE.asistente) return 'Asistente';
+  if (t === BAUTIZOS_ATTENDANCE.asistente) return appendBautizosServerParticipationLabel('Asistente', personLike);
   if (t === BAUTIZOS_ATTENDANCE.servidor) return 'Servidor';
-  if (t === BAUTIZOS_ATTENDANCE.empleado) return 'Empleado';
-  if (t === BAUTIZOS_ATTENDANCE.cortesia) return 'Cortesía';
+  if (t === BAUTIZOS_ATTENDANCE.empleado) return appendBautizosServerParticipationLabel('Empleado', personLike);
+  if (t === BAUTIZOS_ATTENDANCE.cortesia) return appendBautizosServerParticipationLabel('Cortesía', personLike);
   if (t === BAUTIZOS_ATTENDANCE.pastor) return 'Pastor';
-  return 'Bautizado';
+  return appendBautizosServerParticipationLabel('Bautizado', personLike);
 }
 
 /** Clave de chip de asistencia para roster / Registro global. */
@@ -464,6 +506,8 @@ function buildVirtualCompanionGlobalRow(planEntry, canonKey) {
     phone: '',
     registeredAt: resolveBautizosCompanionRegisteredAt(host, companion),
     bautizosAttendanceType: '',
+    isServer: isSiValue(companion?.isServer) ? SI : 'No',
+    serverAssignment: isSiValue(companion?.isServer) ? BAUTIZOS_SERVER_ASSIGNMENT_LABEL : '',
     __globalRegistryVirtual: true,
     __virtualKind: GLOBAL_REGISTRY_VIRTUAL_KIND.companion,
     __hostRegistrantId: String(host.id || '').trim(),
@@ -572,6 +616,102 @@ export function countBautizosServidoresYEmpleadosUnicos(rows) {
   return n;
 }
 
+/** Clave estable para deduplicar personas en conteos de servidores. */
+export function bautizosServerPersonDedupeKey(personLike, opts = {}) {
+  const sk = String(personLike?.linkedCompanionSourceKey || '').trim();
+  if (sk.startsWith('p:')) return sk;
+  const vnp = String(personLike?.vnpPersonId || personLike?.linkedVnpId || '').trim();
+  if (vnp) return `vnp:${vnp}`;
+  const canonKey = String(opts?.canonKey || '').trim();
+  if (canonKey) return `canon:${canonKey}`;
+  const pid = String(personLike?.id || '').trim();
+  if (pid && !pid.startsWith('virt-')) return `p:${pid}`;
+  const nm = normalizePersonNameKey(personLike?.name);
+  if (nm) return `name:${nm}`;
+  return null;
+}
+
+/**
+ * Personas únicas que participan como servidor (titulares + acompañantes canónicos marcados).
+ * @param {Array} roster
+ * @param {Map|Array} canonicalPlan — salida de buildBautizosCanonicalCompanionPlan
+ */
+export function countBautizosServersDeduped(roster, canonicalPlan) {
+  const keys = new Set();
+  for (const p of roster || []) {
+    if (!bautizosParticipatesAsServer(p)) continue;
+    const k = bautizosServerPersonDedupeKey(p);
+    if (k) keys.add(k);
+  }
+  const entries =
+    canonicalPlan instanceof Map
+      ? canonicalPlan.values()
+      : Array.isArray(canonicalPlan)
+        ? canonicalPlan
+        : [];
+  for (const entry of entries) {
+    const c = entry?.sourceCompanion;
+    if (!c || !bautizosCompanionParticipatesAsServer(c)) continue;
+    const sk = String(c?.linkedCompanionSourceKey || '').trim();
+    if (sk.startsWith('p:')) {
+      keys.add(sk);
+      continue;
+    }
+    const k = bautizosServerPersonDedupeKey(c, { canonKey: entry?.canonKey });
+    if (k) keys.add(k);
+  }
+  return keys.size;
+}
+
+/**
+ * Filas para listados de servidores Bautizos: titulares que participan como servidor
+ * + acompañantes canónicos marcados (deduplicados por persona).
+ */
+export function collectBautizosParticipatingServerRows(roster) {
+  const list = Array.isArray(roster) ? roster : [];
+  const titularRows = list.filter((p) => bautizosParticipatesAsServer(p));
+  const meta = buildActiveRegistrantMetaForCompanionDedupe(list);
+  const plan = buildBautizosCanonicalCompanionPlan(list, meta, { includeBaptizedCompanions: true });
+  const out = [...titularRows];
+  const seenDedupe = new Set();
+  for (const p of titularRows) {
+    const k = bautizosServerPersonDedupeKey(p);
+    if (k) seenDedupe.add(k);
+  }
+  for (const entry of plan.values()) {
+    const c = entry?.sourceCompanion;
+    const host = entry?.sourceRegistrant;
+    if (!c || !host || !bautizosCompanionParticipatesAsServer(c)) continue;
+    const dk = bautizosServerPersonDedupeKey(c, { canonKey: entry.canonKey });
+    if (dk && seenDedupe.has(dk)) continue;
+    if (dk) seenDedupe.add(dk);
+    const nm = String(c?.name || '').trim();
+    if (!nm) continue;
+    out.push({
+      id: `virt-srv:${entry.canonKey}`,
+      eventId: host.eventId,
+      name: nm,
+      location: String(host?.location || '').trim(),
+      status: host?.status || 'active',
+      gender: String(c?.gender || '').trim(),
+      phone: String(c?.phone || '').trim(),
+      bautizosAttendanceType: '',
+      isServer: SI,
+      serverAssignment: String(c?.serverAssignment || '').trim() || BAUTIZOS_SERVER_ASSIGNMENT_LABEL,
+      assignedServeArea: String(c?.assignedServeArea || '').trim(),
+      preferredServeArea: String(c?.preferredServeArea || '').trim(),
+      servesInCongress: c?.servesInCongress || 'No',
+      congressServeArea: c?.congressServeArea || '',
+      __globalRegistryVirtual: true,
+      __virtualKind: GLOBAL_REGISTRY_VIRTUAL_KIND.companion,
+      __hostRegistrantId: String(host.id || '').trim(),
+      __sourceRegistrantName: String(host?.name || '').trim(),
+      __companionRelationship: String(c?.relationship || '').trim(),
+    });
+  }
+  return out;
+}
+
 /** Solo tipo Servidor (conteos separados de empleado en dashboard / tarjetas). */
 export function participantIsBautizosServidorAttendance(personLike) {
   return normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.servidor;
@@ -584,6 +724,7 @@ export function bautizosServerToggleLocked(personLike) {
 /**
  * Sincroniza `isServer` / `serverAssignment` según tipo de asistencia Bautizos.
  * Empleado: servidor Sí por defecto; se puede desmarcar. Servidor: siempre Sí.
+ * Cortesía / asistente / bautizado: preservan isServer si el usuario lo marcó.
  */
 export function syncBautizosAttendanceServerFields(entryLike) {
   const t = normalizeBautizosAttendanceType(entryLike?.bautizosAttendanceType);
@@ -601,9 +742,37 @@ export function syncBautizosAttendanceServerFields(entryLike) {
     out.ambosServeInSegment = '';
     return out;
   }
+  if (t === BAUTIZOS_ATTENDANCE.pastor) {
+    out.isServer = 'No';
+    out.serverAssignment = '';
+    out.ambosServeInSegment = '';
+    return out;
+  }
+  if (
+    t === BAUTIZOS_ATTENDANCE.cortesia ||
+    t === BAUTIZOS_ATTENDANCE.asistente ||
+    t === BAUTIZOS_ATTENDANCE.bautizado
+  ) {
+    out.serverAssignment = isSiValue(out.isServer) ? BAUTIZOS_SERVER_ASSIGNMENT_LABEL : '';
+    out.ambosServeInSegment = '';
+    if (!isSiValue(out.isServer)) out.isServer = 'No';
+    return out;
+  }
   out.isServer = 'No';
   out.serverAssignment = '';
   out.ambosServeInSegment = '';
+  return out;
+}
+
+/** Sincroniza campos de servidor en una fila de acompañante. */
+export function syncBautizosCompanionServerFields(companionLike) {
+  const out = { ...(companionLike || {}) };
+  if (isSiValue(out.isServer)) {
+    out.serverAssignment = BAUTIZOS_SERVER_ASSIGNMENT_LABEL;
+  } else {
+    out.isServer = 'No';
+    out.serverAssignment = '';
+  }
   return out;
 }
 
@@ -2015,7 +2184,7 @@ export function normalizeBautizosCompanionsForPersist(personLike, loc = '', vnpC
     const id = idRaw || `bc-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 7)}`;
     const arrivesByCar = !!row?.llegaEnCarro;
     const baptized = isSiValue(row?.willBeBaptized);
-    const base = {
+    const base = syncBautizosCompanionServerFields({
       id,
       name: String(row?.name || '').trim(),
       relationship: String(row?.relationship || '').trim(),
@@ -2036,7 +2205,11 @@ export function normalizeBautizosCompanionsForPersist(personLike, loc = '', vnpC
       birthDate: normalizeBirthDateToIso(row?.birthDate) || '',
       pastorStayStart: normalizeOptionalIsoDate(row?.pastorStayStart),
       pastorStayEnd: normalizeOptionalIsoDate(row?.pastorStayEnd),
-    };
+      isServer: row?.isServer,
+      serverAssignment: row?.serverAssignment,
+      assignedServeArea: row?.assignedServeArea,
+      preferredServeArea: row?.preferredServeArea,
+    });
     if (!baptized) {
       return appendCompanionWaitlistPersistFields(base, row);
     }
