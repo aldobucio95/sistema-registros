@@ -3,6 +3,7 @@ import { Car } from 'lucide-react';
 import {
   buildCarDataSummaryForRosterPerson,
   carCrewRequiresPassengerSelection,
+  manualGroupCrewRequiresPassengers,
   carMetaNeedsAttention,
   familyCarInventoryNeedsAttention,
   formatCarMetaDisplayValue,
@@ -67,6 +68,7 @@ export default function BautizosCarDataSummaryCard({
     titularName,
     carCount,
     labelIndex,
+    manualGroupMemberCount,
   } = summary;
 
   if (!inventory.length) return null;
@@ -74,8 +76,15 @@ export default function BautizosCarDataSummaryCard({
   const needsAttention = familyCarInventoryNeedsAttention(inventory, {
     hostPerson: displayHost,
     companions: displayCompanions,
+    requiresPassengers:
+      manualGroupMemberCount > 1
+        ? true
+        : carCrewRequiresPassengerSelection(displayHost, displayCompanions),
   });
-  const requirePassengers = carCrewRequiresPassengerSelection(displayHost, displayCompanions);
+  const requirePassengers =
+    manualGroupMemberCount > 1
+      ? manualGroupCrewRequiresPassengers(manualGroupMemberCount)
+      : carCrewRequiresPassengerSelection(displayHost, displayCompanions);
   const crewOpts = { requiresPassengers: requirePassengers };
 
   return (

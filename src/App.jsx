@@ -18481,6 +18481,7 @@ function resolveEventName(eventId) {
         plan: currentEvent.transportPlanning,
         draftMetaByVehicleKey: newRegDraftCarMeta,
         hostId: docId,
+        roster: allParticipants,
       });
       if (carPatches.length) {
         await persistBautizosCarMetaPatches(carPatches);
@@ -18881,6 +18882,7 @@ function resolveEventName(eventId) {
           plan: currentEvent.transportPlanning,
           draftMetaByVehicleKey: newRegDraftCarMeta,
           hostId: hostDocWlSp,
+          roster: allParticipants,
         });
         if (carPatches.length) {
           await persistBautizosCarMetaPatches(carPatches);
@@ -19156,6 +19158,7 @@ function resolveEventName(eventId) {
         plan: currentEvent.transportPlanning,
         draftMetaByVehicleKey: newRegDraftCarMeta,
         hostId: docId,
+        roster: allParticipants,
       });
       if (carPatches.length) {
         await persistBautizosCarMetaPatches(carPatches);
@@ -19997,6 +20000,7 @@ function resolveEventName(eventId) {
         plan: currentEvent.transportPlanning,
         draftMetaByVehicleKey: editRegDraftCarMeta,
         hostId: editedPerson.id,
+        roster: allParticipants,
       });
       if (carPatches.length) {
         await persistBautizosCarMetaPatches(carPatches);
@@ -21016,6 +21020,7 @@ function resolveEventName(eventId) {
                         plan={currentEvent?.transportPlanning}
                         hostSourceKey={`p:${String(editRegistryModal.data.id || '').trim()}`}
                         eventLike={currentEvent}
+                        roster={allParticipants}
                         draftMetaByVehicleKey={editRegDraftCarMeta}
                         onDraftMetaChange={(vehicleKey, patch) => {
                           setEditRegDraftCarMeta((prev) => ({

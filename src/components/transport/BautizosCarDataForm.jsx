@@ -6,11 +6,14 @@ import { normalizeArrivalCarCount, bautizosLlegaEnCarroForTransportPricing } fro
 import {
   buildBautizosFamilyCarInventory,
   buildBautizosFamilyMemberOptions,
+  buildManualGroupMemberOptions,
   buildCarCrewAssignmentPatches,
   collectAssignedCrewSourceKeysOnOtherCars,
   familyHasAnyCarTransport,
   filterDriverMemberOptions,
+  manualGroupCrewRequiresPassengers,
   normalizeCarVehicleMeta,
+  resolveManualCarGroupContext,
   vehicleKeysAboveCarCount,
 } from '../../bautizosCarMeta.js';
 
@@ -42,18 +45,27 @@ export default function BautizosCarDataForm({
   carCatalogView,
   colorSuggestions = [],
   labelClasses = 'text-[10px] font-bold text-slate-600 dark:text-slate-300',
+  roster = null,
 }) {
   const catalog = carCatalogView || createCarCatalogView();
-  const memberOptions = useMemo(
-    () =>
-      buildBautizosFamilyMemberOptions({
-        hostPerson,
-        companions,
-        hostSourceKey,
-        draftCompanionKeys,
-      }),
-    [hostPerson, companions, hostSourceKey, draftCompanionKeys]
+  const manualCtx = useMemo(
+    () => resolveManualCarGroupContext(hostPerson, plan, roster),
+    [hostPerson, plan, roster]
   );
+  const memberOptions = useMemo(() => {
+    if (manualCtx?.isAnchor) {
+      return buildManualGroupMemberOptions(plan, manualCtx.group, roster);
+    }
+    return buildBautizosFamilyMemberOptions({
+      hostPerson,
+      companions,
+      hostSourceKey,
+      draftCompanionKeys,
+    });
+  }, [manualCtx, plan, roster, hostPerson, companions, hostSourceKey, draftCompanionKeys]);
+
+  const carCountOverride = manualCtx?.isAnchor ? manualCtx.effectiveCars : undefined;
+  const inventoryOwnerSk = manualCtx?.isAnchor ? manualCtx.anchorSk : hostSourceKey;
 
   const baseInventory = useMemo(
     () =>
@@ -61,10 +73,11 @@ export default function BautizosCarDataForm({
         hostPerson,
         companions,
         plan,
-        hostSourceKey,
+        hostSourceKey: inventoryOwnerSk,
         draftCompanionKeys,
+        carCountOverride,
       }),
-    [hostPerson, companions, plan, hostSourceKey, draftCompanionKeys]
+    [hostPerson, companions, plan, inventoryOwnerSk, draftCompanionKeys, carCountOverride]
   );
 
   const inventory = useMemo(
@@ -96,8 +109,10 @@ export default function BautizosCarDataForm({
   const additionalSlots = inventory.filter((s) => s.slotKind === 'additional');
 
   const hostGoesByCar = bautizosLlegaEnCarroForTransportPricing(hostPerson);
-  const showFamilyCarCount = familyHasAnyCarTransport(hostPerson, companions);
-  const requirePassengers = memberOptions.some((m) => m.kind === 'companion');
+  const showFamilyCarCount = familyHasAnyCarTransport(hostPerson, companions) && !manualCtx?.isAnchor;
+  const requirePassengers = manualCtx?.isAnchor
+    ? manualGroupCrewRequiresPassengers(manualCtx.memberKeys.length)
+    : memberOptions.some((m) => m.kind === 'companion');
 
   const commitHostCarCount = (nextCount) => {
     const next = normalizeArrivalCarCount(nextCount);

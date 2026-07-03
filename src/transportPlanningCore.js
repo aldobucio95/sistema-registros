@@ -569,6 +569,38 @@ export function getManualCarPlanGroups(plan) {
   );
 }
 
+/** Grupo manual (`cg-*`) que contiene `sourceKey`, si existe. */
+export function findManualCarGroupForSourceKey(plan, sourceKey) {
+  const sk = String(sourceKey || '').trim();
+  if (!sk) return null;
+  for (const g of getManualCarPlanGroups(plan)) {
+    const keys = (g.memberKeys || []).map((x) => String(x).trim()).filter(Boolean);
+    if (keys.includes(sk)) return { ...g, memberKeys: keys };
+  }
+  return null;
+}
+
+/** Titular del grupo manual: preferencia guardada en plan o primer participante. */
+export function resolveManualCarGroupTitularSk(plan, group) {
+  const memberKeys = (group?.memberKeys || []).map((x) => String(x).trim()).filter(Boolean);
+  if (!memberKeys.length) return '';
+  const gid = String(group?.id || '').trim();
+  const manualHostId = String(plan?.bautizosGroupTitularByGroupId?.[gid] || '').trim();
+  if (manualHostId) {
+    const sk = `p:${manualHostId}`;
+    if (memberKeys.includes(sk)) return sk;
+  }
+  const firstParticipant = memberKeys.find((k) => k.startsWith('p:'));
+  return firstParticipant || memberKeys[0] || '';
+}
+
+/** Solo claves `p:` de titulares en un grupo manual. */
+export function manualGroupParticipantSourceKeys(group) {
+  return (group?.memberKeys || [])
+    .map((k) => String(k).trim())
+    .filter((k) => k.startsWith('p:'));
+}
+
 /**
  * Máximo de carros registrados (`carrosLlegada`) entre titulares del grupo manual.
  * Incluye vehículos marcados «quizá no vaya» (conteo de registro, no confirmados).
@@ -640,7 +672,14 @@ export function buildManualCarGroupViews(plan, carLines) {
 
     const inheritedCars = manualGroupMaxRegisteredCars(memberLines);
     const effectiveCars = manualGroupEffectiveCars(g, memberLines);
-    const titularLine = memberLines.find((l) => l.kind === 'participant') || memberLines[0];
+    const titularSk = resolveManualCarGroupTitularSk(plan, g);
+    const participantHosts = memberLines
+      .filter((l) => String(l?.kind || '') === 'participant')
+      .map((l) => ({
+        hostId: String(l.hostId || '').trim(),
+        name: String(l.name || '').trim() || '—',
+        sourceKey: String(l.sourceKey || '').trim(),
+      }));
     return {
       id: String(g.id || '').trim(),
       label: `Grupo manual ${manualN}`,
@@ -649,7 +688,8 @@ export function buildManualCarGroupViews(plan, carLines) {
       effectiveCars,
       inheritedCars,
       carsBeforeMerge: Math.max(1, carsBeforeMerge),
-      titularSk: String(titularLine?.sourceKey || memberKeys[0] || '').trim(),
+      titularSk,
+      participantHosts,
     };
   });
 }

@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Bus, Car, ChevronDown, FileDown, MessageCircle, Plus, Save, Trash2 } from 'lucide-react';
+import { Bus, Car, ChevronDown, FileDown, MessageCircle, Plus, Save, Trash2, X } from 'lucide-react';
 import {
   assignBautizosMembersToCarSlots,
   bautizosFamilyEffectiveCarCount,
@@ -21,6 +21,7 @@ import {
   makeBusUnitId,
   manualCarGroupLinesForMember,
   manualGroupMaxRegisteredCars,
+  manualGroupParticipantSourceKeys,
   normalizeTransportPlanning,
   parseBusGroupKey,
   participantIncludedInTransportPlanning,
@@ -40,12 +41,19 @@ import {
   buildBautizosCarSlotsForTransport,
   buildCarCrewAssignmentPatches,
   buildCarInventorySlotsForOwner,
+  buildCopyTitularCarMetaPatches,
+  buildDefaultManualGroupCrewPatches,
+  buildManualGroupOrphanCarMetaCleanup,
+  buildRosterSourceKeyLabelIndex,
   buildTransportCarContextForHost,
   collectAssignedCrewSourceKeysOnOtherCars,
   filterDriverMemberOptions,
   formatCarMetaDisplayValue,
   formatTransportCarMemberRole,
+  listManualGroupTitularCarMetaSources,
+  manualGroupCrewRequiresPassengers,
   mergeCarMetaPatchesIntoPlan,
+  removeCarMetaKeysFromPlan,
 } from '../bautizosCarMeta.js';
 import {
   collectCarMetaCatalogEntries,
@@ -56,7 +64,7 @@ import {
   upsertCustomCarCatalog,
 } from '../data/carBrandModelsCatalog.js';
 import { buildLocationScopeSet, participantInLocationScope } from '../rbac/permissions.js';
-import { uiPageHeader } from '../ui/uiFormatClasses.js';
+import { uiPageHeader, uiModal, uiButtons } from '../ui/uiFormatClasses.js';
 
 const btnPrimary =
   'inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black bg-indigo-600 hover:bg-indigo-700 text-white border border-indigo-500/30 transition-colors disabled:opacity-50 disabled:pointer-events-none';
@@ -173,6 +181,7 @@ export default function TransportPlanningPage({
 
   const [plan, setPlan] = useState(() => normalizeTransportPlanning(currentEvent?.transportPlanning));
   const [saving, setSaving] = useState(false);
+  const [mergeConflictModal, setMergeConflictModal] = useState(null);
 
   const planForCarMetaRead = useMemo(
     () => applyCarMetaPassengerInheritance(normalizeTransportPlanning(plan)),
@@ -1232,8 +1241,39 @@ export default function TransportPlanningPage({
       showToast('Selecciona al menos dos personas para compartir carro.');
       return;
     }
+    const memberLines = keys
+      .map((k) => carLines.find((l) => String(l.sourceKey || '').trim() === String(k).trim()))
+      .filter(Boolean);
+    const titularSks = memberLines
+      .filter((l) => String(l?.kind || '') === 'participant')
+      .map((l) => String(l.sourceKey || '').trim())
+      .filter(Boolean);
+    const sourcesWithData = listManualGroupTitularCarMetaSources(plan, titularSks, evRosterFiltered);
+    if (titularSks.length >= 2 && sourcesWithData.length >= 1) {
+      setMergeConflictModal({
+        keys,
+        memberLines,
+        titularSks,
+        sources: sourcesWithData,
+        selectedSourceSk: sourcesWithData[0]?.titularSk || titularSks[0],
+        anchorTitularSk: titularSks[0],
+        orphanMode: 'maybeAbsent',
+      });
+      return;
+    }
+    finalizeManualGroupMerge(keys, memberLines, titularSks[0], null, 'maybeAbsent');
+  };
+
+  const finalizeManualGroupMerge = (keys, memberLines, anchorTitularSk, dataSourceSk, orphanMode) => {
+    const anchorSk = String(anchorTitularSk || '').trim() || manualGroupParticipantSourceKeys({ memberKeys: keys })[0] || '';
+    const anchorHostId = anchorSk.startsWith('p:') ? anchorSk.slice(2) : '';
+    const dataFrom = String(dataSourceSk || anchorSk).trim() || anchorSk;
+    const inheritedCars = manualGroupMaxRegisteredCars(memberLines);
+    const titularSks = manualGroupParticipantSourceKeys({ memberKeys: keys });
+    const otherTitulars = titularSks.filter((sk) => sk !== anchorSk);
+
     setPlan((prev) => {
-      const next = normalizeTransportPlanning(prev);
+      let next = normalizeTransportPlanning(prev);
       let groups = Array.isArray(next.carGroups) ? [...next.carGroups] : [];
       groups = groups
         .map((g) => ({
@@ -1241,28 +1281,55 @@ export default function TransportPlanningPage({
           memberKeys: (g.memberKeys || []).filter((k) => !keys.includes(k)),
         }))
         .filter((g) => (g.memberKeys || []).length > 1);
-      const memberLines = keys
-        .map((k) => carLines.find((l) => String(l.sourceKey || '').trim() === String(k).trim()))
-        .filter(Boolean);
-      const inheritedCars = manualGroupMaxRegisteredCars(memberLines);
-      groups.push({
-        id: `cg-${Date.now()}`,
-        memberKeys: keys,
-        cars: inheritedCars,
-      });
-      return { ...next, carGroups: groups };
+      const groupId = `cg-${Date.now()}`;
+      groups.push({ id: groupId, memberKeys: keys, cars: inheritedCars });
+      const titularMap = { ...(next.bautizosGroupTitularByGroupId || {}) };
+      if (anchorHostId) titularMap[groupId] = anchorHostId;
+      next = { ...next, carGroups: groups, bautizosGroupTitularByGroupId: titularMap };
+
+      let patches = [];
+      if (dataFrom && dataFrom !== anchorSk) {
+        patches.push(...buildCopyTitularCarMetaPatches(next, dataFrom, anchorSk, inheritedCars));
+      }
+      const { patches: orphanPatches, keysToRemove } = buildManualGroupOrphanCarMetaCleanup(
+        next,
+        otherTitulars,
+        orphanMode
+      );
+      patches = [...patches, ...orphanPatches];
+      next = mergeCarMetaPatchesIntoPlan(next, patches);
+      next = removeCarMetaKeysFromPlan(next, keysToRemove);
+      patches = buildDefaultManualGroupCrewPatches(next, anchorSk, keys, inheritedCars);
+      next = mergeCarMetaPatchesIntoPlan(next, patches);
+      return applyCarMetaPassengerInheritance(next);
     });
+
     setCarPick(new Set());
-    const mergedLines = keys
-      .map((k) => carLines.find((l) => String(l.sourceKey || '').trim() === String(k).trim()))
-      .filter(Boolean);
-    const mergedCars = manualGroupMaxRegisteredCars(mergedLines);
+    setMergeConflictModal(null);
     showToast(
-      `Grupo manual creado: ${keys.length} persona${keys.length !== 1 ? 's' : ''} · ${mergedCars} carro${mergedCars !== 1 ? 's' : ''} (según registro). Recuerda guardar.`
+      `Grupo manual creado: ${keys.length} persona${keys.length !== 1 ? 's' : ''} · ${inheritedCars} carro${inheritedCars !== 1 ? 's' : ''}. Define conductor y pasajeros si hace falta. Recuerda guardar.`
     );
     if (typeof onTransportUiPrefsChange === 'function') {
       onTransportUiPrefsChange((prev) => ({ ...prev, manualCarGroupsOpen: true }));
     }
+  };
+
+  const setManualGroupLeader = (view, hostId) => {
+    const gid = String(view?.id || '').trim();
+    const hid = String(hostId || '').trim();
+    const newAnchorSk = hid ? `p:${hid}` : '';
+    const prevAnchorSk = String(view?.titularSk || '').trim();
+    if (!gid || !hid || !newAnchorSk || newAnchorSk === prevAnchorSk) return;
+    const effectiveCars = view?.effectiveCars || 1;
+    setPlan((prev) => {
+      let next = normalizeTransportPlanning(prev);
+      const titularMap = { ...(next.bautizosGroupTitularByGroupId || {}), [gid]: hid };
+      next = { ...next, bautizosGroupTitularByGroupId: titularMap };
+      const copyPatches = buildCopyTitularCarMetaPatches(next, prevAnchorSk, newAnchorSk, effectiveCars);
+      next = mergeCarMetaPatchesIntoPlan(next, copyPatches);
+      return applyCarMetaPassengerInheritance(next);
+    });
+    showToast('Titular del grupo manual actualizado. Los datos de carro se copiaron al nuevo titular.');
   };
 
   const unmergeManualCarGroup = (groupId) => {
@@ -1489,7 +1556,9 @@ export default function TransportPlanningPage({
     const meta = getCarMeta(titularSk, carIndex);
     const K = Math.max(1, parseInt(effectiveCars, 10) || 1);
     const memberOptions = opts.memberOptions || [];
-    const requirePassengers = memberOptions.some((m) => m.kind === 'companion');
+    const requirePassengers =
+      opts.requirePassengers ??
+      (memberOptions.length > 1 || memberOptions.some((m) => m.kind === 'companion'));
     const vehicleKey = carVehicleMetaStorageKey(titularSk, carIndex);
     const inventory = buildCarInventorySlotsForOwner(planForCarMetaRead, titularSk, K);
     const assignedOnOtherCars = collectAssignedCrewSourceKeysOnOtherCars(inventory, vehicleKey);
@@ -2198,6 +2267,22 @@ export default function TransportPlanningPage({
                             {view.inheritedCars !== 1 ? 's' : ''} (incluye «quizá no vaya»)
                           </p>
                         ) : null}
+                        {canEdit && (view.participantHosts || []).length > 1 ? (
+                          <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex flex-col gap-0.5 mt-2">
+                            Titular del grupo (datos de carro)
+                            <select
+                              className={`${inputSm} max-w-[14rem]`}
+                              value={String(view.titularSk || '').replace(/^p:/, '')}
+                              onChange={(e) => setManualGroupLeader(view, e.target.value)}
+                            >
+                              {(view.participantHosts || []).map((h) => (
+                                <option key={h.hostId} value={h.hostId}>
+                                  {h.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
                       </div>
                       {canEdit ? (
                         <div className="flex flex-wrap gap-2 shrink-0">
@@ -2246,22 +2331,34 @@ export default function TransportPlanningPage({
                       ))}
                     </ul>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 border-t border-indigo-100 dark:border-indigo-800/60 pt-3">
-                      {assignBautizosMembersToCarSlots(
-                        view.memberLines,
-                        view.effectiveCars,
-                        plan.bautizosCarCapacity,
-                        evRosterFiltered
-                      ).map((slot) => (
+                      {buildBautizosCarSlotsForTransport({
+                        plan: planForCarMetaRead,
+                        hostSourceKey: view.titularSk,
+                        effectiveCars: view.effectiveCars,
+                        hostPerson: evRosterFiltered.find(
+                          (p) => String(p?.id || '').trim() === String(view.titularSk || '').replace(/^p:/, '')
+                        ),
+                        companions: [],
+                        labelIndex: buildRosterSourceKeyLabelIndex(evRosterFiltered),
+                        fallbackLines: view.memberLines,
+                        roster: evRosterFiltered,
+                        seatsPerCar: plan.bautizosCarCapacity,
+                      }).map((slot) => (
                         <div
                           key={`${view.id}-slot-${slot.carIndex}`}
                           className="rounded-lg border border-indigo-100 dark:border-indigo-800/60 bg-slate-50/80 dark:bg-slate-800/40 p-2"
                         >
                           <p className="text-[9px] font-black uppercase text-indigo-600 dark:text-indigo-300 mb-1">
-                            Carro {slot.carIndex} · mismo vehículo
+                            Carro {slot.carIndex} · conductor y pasajeros
                           </p>
                           <ul className="space-y-0.5 text-[10px] font-semibold text-slate-800 dark:text-slate-100">
                             {slot.members.map((m) => (
-                              <li key={m.sourceKey}>{m.name}</li>
+                              <li key={m.sourceKey}>
+                                {m.name}
+                                <span className="ml-1 text-[9px] font-bold uppercase text-indigo-500 dark:text-indigo-300">
+                                  {formatTransportCarMemberRole(m)}
+                                </span>
+                              </li>
                             ))}
                           </ul>
                         </div>
@@ -2269,7 +2366,7 @@ export default function TransportPlanningPage({
                     </div>
                     <div className="border-t border-indigo-100 dark:border-indigo-800/60 pt-3 space-y-2">
                       <p className="text-[9px] font-black uppercase text-indigo-600 dark:text-indigo-300">
-                        Datos del vehículo y tripulación
+                        Datos del vehículo y tripulación (compartidos con Registro)
                       </p>
                       {renderCarVehicleBulkActions(view.titularSk, view.effectiveCars)}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -2277,6 +2374,7 @@ export default function TransportPlanningPage({
                           renderCarVehicleMetaBlock(view.titularSk, i + 1, view.effectiveCars, {
                             compact: true,
                             memberOptions: buildMemberOptionsFromLines(view.memberLines),
+                            requirePassengers: manualGroupCrewRequiresPassengers(view.memberLines.length),
                           })
                         )}
                       </div>
@@ -2614,6 +2712,7 @@ export default function TransportPlanningPage({
                                       renderCarVehicleMetaBlock(view.titularSk, i + 1, view.effectiveCars, {
                                         compact: true,
                                         memberOptions: buildMemberOptionsFromLines(view.memberLines),
+                                        requirePassengers: manualGroupCrewRequiresPassengers(view.memberLines.length),
                                       })
                                     )}
                                   </div>
@@ -2959,6 +3058,125 @@ export default function TransportPlanningPage({
               >
                 <Save size={16} />
                 {saving ? 'Guardando…' : 'Guardar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {mergeConflictModal ? (
+        <div className={uiModal.overlay} role="dialog" aria-modal="true" aria-labelledby="manual-merge-title">
+          <button
+            type="button"
+            className={uiModal.backdrop}
+            aria-label="Cerrar"
+            onClick={() => setMergeConflictModal(null)}
+          />
+          <div className={uiModal.panelMd}>
+            <div className={uiModal.header}>
+              <div className="min-w-0">
+                <h3 id="manual-merge-title" className={uiModal.title}>
+                  Datos de carro en conflicto
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
+                  Varias personas del grupo ya tienen datos de vehículo. Elige cuáles conservar y qué hacer con el resto.
+                </p>
+              </div>
+              <button
+                type="button"
+                className={uiButtons.closeIcon}
+                onClick={() => setMergeConflictModal(null)}
+                aria-label="Cerrar modal"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className={`${uiModal.body} space-y-4`}>
+              <div>
+                <p className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 mb-2">
+                  Conservar datos de
+                </p>
+                <div className="space-y-2">
+                  {mergeConflictModal.sources.map((src) => (
+                    <label
+                      key={src.titularSk}
+                      className="flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-600 px-3 py-2 cursor-pointer"
+                    >
+                      <input
+                        type="radio"
+                        name="manual-merge-source"
+                        className="mt-0.5"
+                        checked={mergeConflictModal.selectedSourceSk === src.titularSk}
+                        onChange={() =>
+                          setMergeConflictModal((prev) => ({
+                            ...prev,
+                            selectedSourceSk: src.titularSk,
+                            anchorTitularSk: src.titularSk,
+                          }))
+                        }
+                      />
+                      <span className="min-w-0">
+                        <span className="text-xs font-bold text-slate-800 dark:text-slate-100">{src.label}</span>
+                        <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{src.preview}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 mb-2">
+                  Datos de los demás titulares
+                </p>
+                <div className="space-y-2">
+                  <label className="flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-600 px-3 py-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="manual-merge-orphan"
+                      className="mt-0.5"
+                      checked={mergeConflictModal.orphanMode === 'maybeAbsent'}
+                      onChange={() =>
+                        setMergeConflictModal((prev) => ({ ...prev, orphanMode: 'maybeAbsent' }))
+                      }
+                    />
+                    <span className="text-xs text-slate-700 dark:text-slate-200">
+                      Marcar como <strong>quizá no vaya</strong> (conservar por si acaso)
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-600 px-3 py-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="manual-merge-orphan"
+                      className="mt-0.5"
+                      checked={mergeConflictModal.orphanMode === 'clear'}
+                      onChange={() =>
+                        setMergeConflictModal((prev) => ({ ...prev, orphanMode: 'clear' }))
+                      }
+                    />
+                    <span className="text-xs text-slate-700 dark:text-slate-200">
+                      <strong>Eliminar</strong> los datos duplicados de los otros titulares
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div className={uiModal.footer}>
+              <button type="button" className={uiButtons.secondary} onClick={() => setMergeConflictModal(null)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className={uiButtons.primary}
+                onClick={() =>
+                  finalizeManualGroupMerge(
+                    mergeConflictModal.keys,
+                    mergeConflictModal.memberLines,
+                    mergeConflictModal.anchorTitularSk || mergeConflictModal.selectedSourceSk,
+                    mergeConflictModal.selectedSourceSk,
+                    mergeConflictModal.orphanMode
+                  )
+                }
+              >
+                Crear grupo manual
               </button>
             </div>
           </div>

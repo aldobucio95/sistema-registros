@@ -4,6 +4,10 @@ import {
   normalizeCarVehicleMeta,
   getCarVehicleMetaFromPlan,
   normalizeTransportPlanning,
+  findManualCarGroupForSourceKey,
+  resolveManualCarGroupTitularSk,
+  manualGroupEffectiveCars,
+  manualGroupMaxRegisteredCars,
 } from './transportPlanningCore.js';
 import {
   normalizeArrivalCarCount,
@@ -181,6 +185,235 @@ export function familyHasNamedCompanionsForCarCrew(hostPerson, companions) {
 
 export function carCrewRequiresPassengerSelection(hostPerson, companions) {
   return familyHasNamedCompanionsForCarCrew(hostPerson, companions);
+}
+
+/** Conductor + pasajeros obligatorios cuando el grupo manual tiene más de una persona. */
+export function manualGroupCrewRequiresPassengers(memberCount) {
+  return Math.max(0, parseInt(memberCount, 10) || 0) > 1;
+}
+
+export function resolveCarCrewRequiresPassengers(hostPerson, companions, plan, roster) {
+  const ctx = resolveManualCarGroupContext(hostPerson, plan, roster);
+  if (ctx?.isAnchor && manualGroupCrewRequiresPassengers(ctx.memberKeys.length)) return true;
+  return carCrewRequiresPassengerSelection(hostPerson, companions);
+}
+
+function vehicleMetaHasCapturedValues(meta) {
+  const m = normalizeCarVehicleMeta(meta);
+  if (m.maybeAbsent) return false;
+  for (const field of CAR_META_VEHICLE_FIELDS) {
+    if (String(m[field] || '').trim()) return true;
+  }
+  if (String(m.driverSourceKey || '').trim()) return true;
+  if ((m.passengerSourceKeys || []).length > 0) return true;
+  return false;
+}
+
+/** ¿El titular tiene al menos un vehículo con datos capturados en el plan? */
+export function titularSourceKeyHasCarMetaCaptured(plan, titularSourceKey) {
+  const owner = String(titularSourceKey || '').trim();
+  if (!owner) return false;
+  const normalized = normalizeTransportPlanning(plan);
+  for (const [vehicleKey, rawMeta] of Object.entries(normalized.carMetaBySource || {})) {
+    const parsed = parseVehicleMetaKey(vehicleKey);
+    if (String(parsed?.ownerSourceKey || '').trim() !== owner) continue;
+    if (vehicleMetaHasCapturedValues(rawMeta)) return true;
+  }
+  return false;
+}
+
+/** Titulares del grupo con datos de carro ya registrados (para diálogo de fusión). */
+export function listManualGroupTitularCarMetaSources(plan, titularSourceKeys, roster) {
+  const labelIndex = buildRosterSourceKeyLabelIndex(roster);
+  return (titularSourceKeys || [])
+    .map((sk) => String(sk || '').trim())
+    .filter((sk) => sk.startsWith('p:'))
+    .map((titularSk) => {
+      const hostId = titularSk.slice(2);
+      const person = (roster || []).find((p) => String(p?.id || '').trim() === hostId);
+      const label = String(person?.name || labelIndex.get(titularSk) || '').trim() || 'Titular';
+      const normalized = normalizeTransportPlanning(plan);
+      const previews = [];
+      for (let i = 1; i <= 5; i += 1) {
+        const meta = getCarVehicleMetaFromPlan(normalized, titularSk, i);
+        if (!vehicleMetaHasCapturedValues(meta)) continue;
+        const parts = ['brand', 'model', 'color', 'plates']
+          .map((f) => String(meta[f] || '').trim())
+          .filter(Boolean);
+        if (parts.length) previews.push(`Carro ${i}: ${parts.join(' · ')}`);
+      }
+      return {
+        titularSk,
+        hostId,
+        label,
+        hasData: titularSourceKeyHasCarMetaCaptured(plan, titularSk),
+        preview: previews.join(' | ') || 'Datos parciales',
+      };
+    })
+    .filter((row) => row.hasData);
+}
+
+export function getManualGroupEffectiveCarsFromPlan(plan, group, roster, memberLines = null) {
+  if (!group) return 1;
+  if (Array.isArray(memberLines) && memberLines.length > 0) {
+    return manualGroupEffectiveCars(group, memberLines);
+  }
+  const participantIds = (group.memberKeys || [])
+    .map((k) => String(k).trim())
+    .filter((k) => k.startsWith('p:'))
+    .map((k) => k.slice(2));
+  let inherited = 1;
+  for (const id of participantIds) {
+    const p = (roster || []).find((r) => String(r?.id || '').trim() === id);
+    if (p) inherited = Math.max(inherited, normalizeArrivalCarCount(p.carrosLlegada));
+  }
+  const explicit = parseInt(group.cars, 10);
+  const fromPlan = Number.isFinite(explicit) && explicit >= 1 ? explicit : 1;
+  return Math.max(inherited, fromPlan);
+}
+
+/**
+ * Contexto de grupo manual para una persona titular.
+ * @returns {{ group, anchorSk, anchorPerson, isAnchor, memberKeys, effectiveCars }|null}
+ */
+export function resolveManualCarGroupContext(person, plan, roster) {
+  const personId = String(person?.id || '').trim();
+  if (!personId) return null;
+  const personSk = `p:${personId}`;
+  const group = findManualCarGroupForSourceKey(plan, personSk);
+  if (!group) return null;
+  const anchorSk = resolveManualCarGroupTitularSk(plan, group);
+  const anchorId = anchorSk.startsWith('p:') ? anchorSk.slice(2) : '';
+  const anchorPerson = (roster || []).find((p) => String(p?.id || '').trim() === anchorId) || null;
+  const memberKeys = (group.memberKeys || []).map((k) => String(k).trim()).filter(Boolean);
+  return {
+    group,
+    anchorSk,
+    anchorPerson,
+    isAnchor: anchorSk === personSk,
+    memberKeys,
+    effectiveCars: getManualGroupEffectiveCarsFromPlan(plan, group, roster),
+  };
+}
+
+export function buildManualGroupMemberOptions(plan, group, roster) {
+  const labelIndex = buildRosterSourceKeyLabelIndex(roster);
+  return (group?.memberKeys || [])
+    .map((sk) => {
+      const key = String(sk).trim();
+      if (!key) return null;
+      let label = labelIndex.get(key) || '';
+      if (!label && key.startsWith('p:')) {
+        const pid = key.slice(2);
+        const p = (roster || []).find((r) => String(r?.id || '').trim() === pid);
+        label = String(p?.name || '').trim();
+      }
+      return {
+        sourceKey: key,
+        label: label || '—',
+        kind: key.startsWith('p:') ? 'host' : 'companion',
+      };
+    })
+    .filter(Boolean);
+}
+
+export function removeCarMetaKeysFromPlan(plan, vehicleKeys) {
+  const next = normalizeTransportPlanning(plan);
+  const carMetaBySource = { ...(next.carMetaBySource || {}) };
+  for (const k of vehicleKeys || []) {
+    const vk = String(k || '').trim();
+    if (vk) delete carMetaBySource[vk];
+  }
+  return { ...next, carMetaBySource };
+}
+
+/** Copia metadatos de vehículos de un titular a otro (fusión de grupo manual). */
+export function buildCopyTitularCarMetaPatches(plan, fromTitularSk, toTitularSk, carCount) {
+  const from = String(fromTitularSk || '').trim();
+  const to = String(toTitularSk || '').trim();
+  if (!from || !to || from === to) return [];
+  const K = Math.max(1, parseInt(carCount, 10) || 1);
+  const patches = [];
+  for (let i = 1; i <= K; i += 1) {
+    const fromKey = carVehicleMetaStorageKey(from, i);
+    const toKey = carVehicleMetaStorageKey(to, i);
+    const meta = getCarVehicleMetaFromPlanByKey(plan, fromKey);
+    if (!vehicleMetaHasCapturedValues(meta)) continue;
+    patches.push({
+      vehicleKey: toKey,
+      patch: normalizeCarVehicleMeta({
+        ...meta,
+        ownerSourceKey: to,
+        inheritsFromVehicleKey: '',
+      }),
+    });
+  }
+  return patches;
+}
+
+/**
+ * Limpia datos de carro de titulares que ya no son ancla del grupo manual.
+ * @param {'maybeAbsent'|'clear'} orphanMode
+ */
+export function buildManualGroupOrphanCarMetaCleanup(plan, orphanTitularSks, orphanMode = 'maybeAbsent') {
+  const patches = [];
+  const keysToRemove = [];
+  const normalized = normalizeTransportPlanning(plan);
+  for (const ownerSk of orphanTitularSks || []) {
+    const owner = String(ownerSk || '').trim();
+    if (!owner.startsWith('p:')) continue;
+    for (const [vehicleKey, rawMeta] of Object.entries(normalized.carMetaBySource || {})) {
+      const parsed = parseVehicleMetaKey(vehicleKey);
+      if (String(parsed?.ownerSourceKey || '').trim() !== owner) continue;
+      if (orphanMode === 'clear') {
+        keysToRemove.push(vehicleKey);
+        continue;
+      }
+      const m = normalizeCarVehicleMeta(rawMeta);
+      if (!vehicleMetaHasCapturedValues(m) && !m.maybeAbsent) continue;
+      patches.push({
+        vehicleKey,
+        patch: {
+          maybeAbsent: true,
+          driverSourceKey: '',
+          passengerSourceKeys: [],
+          pendingDriver: false,
+          pendingPassengers: false,
+        },
+      });
+    }
+  }
+  return { patches, keysToRemove };
+}
+
+/** Tripulación inicial sugerida al crear un grupo manual (conductor = ancla, resto pasajeros). */
+export function buildDefaultManualGroupCrewPatches(plan, anchorTitularSk, memberKeys, effectiveCars) {
+  const anchor = String(anchorTitularSk || '').trim();
+  const keys = (memberKeys || []).map((k) => String(k).trim()).filter(Boolean);
+  if (!anchor || keys.length < 2) return [];
+  const passengers = keys.filter((k) => k !== anchor);
+  const K = Math.max(1, parseInt(effectiveCars, 10) || 1);
+  const patches = [];
+  for (let i = 1; i <= K; i += 1) {
+    const vehicleKey = carVehicleMetaStorageKey(anchor, i);
+    const meta = getCarVehicleMetaFromPlan(plan, anchor, i);
+    const hasCrew =
+      Boolean(String(meta?.driverSourceKey || '').trim()) ||
+      (Array.isArray(meta?.passengerSourceKeys) && meta.passengerSourceKeys.length > 0);
+    if (hasCrew) continue;
+    if (i === 1) {
+      patches.push({
+        vehicleKey,
+        patch: {
+          driverSourceKey: anchor,
+          passengerSourceKeys: passengers,
+          pendingDriver: false,
+          pendingPassengers: false,
+        },
+      });
+    }
+  }
+  return patches;
 }
 
 function resolveCarCrewContextOpts(crewContext = {}) {
@@ -475,6 +708,7 @@ export function buildBautizosFamilyCarInventory({
   plan,
   hostSourceKey,
   draftCompanionKeys,
+  carCountOverride,
 }) {
   const hostSk = resolveHostSourceKey(hostPerson, hostSourceKey);
   const hostLabel = String(hostPerson?.name || '').trim() || 'Titular';
@@ -487,7 +721,11 @@ export function buildBautizosFamilyCarInventory({
   const anyCompanionGoesByCar = filledComps.some((c) => companionGoesByCar(c));
   if (!hostGoesByCar && !anyCompanionGoesByCar) return inventory;
 
-  const familyCarCount = normalizeArrivalCarCount(hostPerson?.carrosLlegada);
+  const overrideCount = parseInt(carCountOverride, 10);
+  const familyCarCount =
+    Number.isFinite(overrideCount) && overrideCount >= 1
+      ? overrideCount
+      : normalizeArrivalCarCount(hostPerson?.carrosLlegada);
   for (let carIndex = 1; carIndex <= familyCarCount; carIndex += 1) {
     const vehicleKey = carVehicleMetaStorageKey(hostSk, carIndex);
     const meta = getCarVehicleMetaFromPlanByKey(normalizedPlan, vehicleKey);
@@ -680,24 +918,31 @@ export function buildRosterSourceKeyLabelIndex(roster) {
   return map;
 }
 
-function buildCarSummaryFromTitular(titular, plan, roster, { inherited = false } = {}) {
+function buildCarSummaryFromTitular(titular, plan, roster, { inherited = false, carCountOverride } = {}) {
   const companions = getBautizosCompanionsArray(titular);
   const hostSk = `p:${String(titular?.id || '').trim()}`;
+  const manualCtx = resolveManualCarGroupContext(titular, plan, roster);
+  const effectiveOverride =
+    carCountOverride ??
+    (manualCtx?.isAnchor ? manualCtx.effectiveCars : undefined);
   const inventory = buildBautizosFamilyCarInventory({
     hostPerson: titular,
     companions,
     plan,
     hostSourceKey: hostSk,
+    carCountOverride: effectiveOverride,
   });
   return {
     hostPerson: titular,
     companions,
-    hostSourceKey: hostSk,
+    hostSourceKey: manualCtx?.isAnchor ? manualCtx.anchorSk : hostSk,
     inventory,
     inheritedFromTitular: inherited,
     titularName: String(titular?.name || '').trim() || 'Titular',
-    carCount: normalizeArrivalCarCount(titular?.carrosLlegada),
+    carCount: effectiveOverride ?? normalizeArrivalCarCount(titular?.carrosLlegada),
     labelIndex: buildRosterSourceKeyLabelIndex(roster),
+    manualGroupId: manualCtx?.group?.id || '',
+    manualGroupMemberCount: manualCtx?.memberKeys?.length || 0,
   };
 }
 
@@ -785,22 +1030,39 @@ export function buildCarDataSummaryForRosterPerson({
     if (host) return buildCarSummaryFromTitular(host, normalizedPlan, roster, { inherited: true });
   }
 
+  const manualCtx = resolveManualCarGroupContext(person, normalizedPlan, roster);
+  if (manualCtx && !manualCtx.isAnchor && manualCtx.anchorPerson) {
+    const inherited = buildCarSummaryFromTitular(manualCtx.anchorPerson, normalizedPlan, roster, {
+      inherited: true,
+    });
+    return {
+      ...inherited,
+      hostPerson: person,
+      titularName: String(manualCtx.anchorPerson?.name || '').trim() || inherited.titularName,
+      manualGroupMemberCount: manualCtx.memberKeys.length,
+    };
+  }
+
+  const manualCarCount = manualCtx?.isAnchor ? manualCtx.effectiveCars : undefined;
   const inventory = buildBautizosFamilyCarInventory({
     hostPerson: person,
     companions: comps,
     plan: normalizedPlan,
     hostSourceKey: personSk,
+    carCountOverride: manualCarCount,
   });
   if (inventory.length) {
     return {
       hostPerson: person,
       companions: comps,
-      hostSourceKey: personSk,
+      hostSourceKey: manualCtx?.isAnchor ? manualCtx.anchorSk : personSk,
       inventory,
       inheritedFromTitular: false,
       titularName: '',
-      carCount: normalizeArrivalCarCount(person?.carrosLlegada),
+      carCount: manualCarCount ?? normalizeArrivalCarCount(person?.carrosLlegada),
       labelIndex,
+      manualGroupId: manualCtx?.group?.id || '',
+      manualGroupMemberCount: manualCtx?.memberKeys?.length || 0,
     };
   }
 
@@ -944,10 +1206,45 @@ export function resolveBautizosCarDataAnchor(person, roster, eventLike = null) {
     };
   }
 
+  const plan = eventLike?.transportPlanning;
+  const manualCtx = resolveManualCarGroupContext(person, plan, roster);
+  if (manualCtx && !manualCtx.isAnchor && manualCtx.anchorPerson) {
+    const anchorResult = resolveBautizosCarDataAnchor(manualCtx.anchorPerson, roster, eventLike);
+    return {
+      ...anchorResult,
+      eligible: false,
+      waRecipient: anchorResult.waRecipient || manualCtx.anchorPerson,
+      manualGroupInherited: true,
+    };
+  }
+
   const allFilled = getBautizosCompanionsArray(person).filter((c) => !companionRowIsEffectivelyEmpty(c));
   const nonBaptized = allFilled.filter((c) => !isBautizosCompanionBaptized(c));
   const hostGoesByCar = bautizosLlegaEnCarroForTransportPricing(person);
   const anyNonBaptizedByCar = nonBaptized.some((c) => companionGoesByCar(c));
+
+  const manualMemberGoesByCar =
+    manualCtx?.isAnchor &&
+    (manualCtx.memberKeys || []).some((sk) => {
+      if (!String(sk).startsWith('p:')) return false;
+      const other = (roster || []).find((p) => String(p?.id || '').trim() === sk.slice(2));
+      return other && bautizosLlegaEnCarroForTransportPricing(other);
+    });
+
+  if (manualCtx?.isAnchor) {
+    if (!hostGoesByCar && !anyNonBaptizedByCar && !manualMemberGoesByCar) return empty;
+    const memberOptions = buildManualGroupMemberOptions(plan, manualCtx.group, roster);
+    return {
+      eligible: true,
+      anchorPerson: person,
+      inventoryCompanions: nonBaptized,
+      companionsForCrew: memberOptions,
+      manualGroupMemberCount: manualCtx.memberKeys.length,
+      manualGroupEffectiveCars: manualCtx.effectiveCars,
+      waRecipient: person,
+    };
+  }
+
   if (!hostGoesByCar && !anyNonBaptizedByCar) return empty;
 
   return {
@@ -1139,13 +1436,21 @@ export function buildCarMetaPatchesAfterSave({
   plan,
   draftMetaByVehicleKey,
   hostId,
+  roster,
 }) {
   const hostSk = `p:${String(hostId || '').trim()}`;
+  const manualCtx = resolveManualCarGroupContext(
+    { ...hostPerson, id: hostId },
+    plan,
+    roster || [{ ...hostPerson, id: hostId }]
+  );
+  const carCountOverride = manualCtx?.isAnchor ? manualCtx.effectiveCars : undefined;
   const inventory = buildBautizosFamilyCarInventory({
     hostPerson: { ...hostPerson, id: hostId },
     companions,
     plan,
-    hostSourceKey: hostSk,
+    hostSourceKey: manualCtx?.isAnchor ? manualCtx.anchorSk : hostSk,
+    carCountOverride,
   });
   const patches = inventory.map((slot) => ({
     vehicleKey: slot.vehicleKey,

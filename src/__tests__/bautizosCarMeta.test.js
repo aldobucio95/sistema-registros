@@ -223,3 +223,64 @@ describe('buildTransportCarContextForHost', () => {
     expect(slots[0].members.find((m) => m.crewRole === 'driver')?.name).toBe('Roberto Rosas Vargas');
   });
 });
+
+describe('manual car groups', () => {
+  it('non-anchor titular inherits car summary from manual group anchor', () => {
+    const hostA = {
+      id: 'a1',
+      name: 'Ana',
+      llegaEnCarro: true,
+      carrosLlegada: 1,
+      wantsBautizosTransport: 'No',
+      bautizosCompanions: [],
+    };
+    const hostB = {
+      id: 'b1',
+      name: 'Bruno',
+      llegaEnCarro: true,
+      carrosLlegada: 1,
+      wantsBautizosTransport: 'No',
+      bautizosCompanions: [],
+    };
+    const plan = {
+      carGroups: [{ id: 'cg-1', memberKeys: ['p:a1', 'p:b1'], cars: 1 }],
+      bautizosGroupTitularByGroupId: { 'cg-1': 'a1' },
+      carMetaBySource: {
+        'p:a1|c1': {
+          brand: 'Toyota',
+          model: 'Corolla',
+          color: 'Rojo',
+          plates: 'ABC123',
+          driverSourceKey: 'p:a1',
+          passengerSourceKeys: ['p:b1'],
+        },
+      },
+    };
+    const roster = [hostA, hostB];
+    const summary = buildCarDataSummaryForRosterPerson({
+      person: hostB,
+      plan,
+      roster,
+    });
+    expect(summary.inheritedFromTitular).toBe(true);
+    expect(summary.inventory.length).toBe(1);
+    expect(summary.inventory[0].meta.brand).toBe('Toyota');
+    expect(summary.manualGroupMemberCount).toBe(2);
+  });
+
+  it('resolveBautizosCarDataAnchor marks non-anchor manual member as not eligible', () => {
+    const hostA = { id: 'a1', name: 'Ana', llegaEnCarro: true, carrosLlegada: 1, bautizosCompanions: [] };
+    const hostB = { id: 'b1', name: 'Bruno', llegaEnCarro: true, carrosLlegada: 1, bautizosCompanions: [] };
+    const event = {
+      eventType: 'Bautizos',
+      transportPlanning: {
+        carGroups: [{ id: 'cg-1', memberKeys: ['p:a1', 'p:b1'], cars: 1 }],
+        bautizosGroupTitularByGroupId: { 'cg-1': 'a1' },
+      },
+    };
+    const roster = [hostA, hostB];
+    expect(resolveBautizosCarDataAnchor(hostB, roster, event).eligible).toBe(false);
+    expect(resolveBautizosCarDataAnchor(hostA, roster, event).eligible).toBe(true);
+    expect(resolveBautizosCarDataAnchor(hostA, roster, event).manualGroupMemberCount).toBe(2);
+  });
+});
