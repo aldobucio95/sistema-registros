@@ -52,9 +52,9 @@ import { familyHasAnyCarTransport, collectCarColorSuggestions } from './bautizos
 import { BAUTIZOS_UNDER_3_POLICY_NOTE, isBautizosUnder3YearsAtEvent, normalizeArrivalCarCount } from './bautizosParty.js';
 import {
   BAUTIZOS_ATTENDANCE,
-  bautizosParticipatesAsServer,
   bautizosWillBeBaptizedFromAttendance,
   bautizosShowsServerParticipation,
+  bautizosShowsServerProfileFields,
   normalizeBautizosAttendanceType,
   syncBautizosAttendanceServerFields,
 } from './bautizosParty.js';
@@ -557,8 +557,7 @@ export default function PublicRegistrationFormSections({
                 }
               />
               {optionalVisibility.serverProfileExtra !== false &&
-                bautizosParticipatesAsServer(form) &&
-                bautizosShowsServerParticipation(form) && (
+                bautizosShowsServerProfileFields(form) && (
                 <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-600">
                   <p className="text-[10px] font-black uppercase tracking-widest text-amber-900 dark:text-amber-200 mb-1">
                     {pubSectionLabel('Información adicional de servidor')} <span className="font-normal normal-case text-slate-500">(opcional)</span>

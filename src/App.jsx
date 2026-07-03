@@ -170,6 +170,8 @@ import {
   syncBautizosAttendanceServerFields,
   bautizosShowsServerParticipation,
   bautizosParticipatesAsServer,
+  bautizosShowsServerProfileFields,
+  collectBautizosServidoresYEmpleadosRows,
   bautizosCompanionParticipatesAsServer,
   countBautizosServersDeduped,
   collectBautizosParticipatingServerRows,
@@ -20645,8 +20647,7 @@ function resolveEventName(eventId) {
                         />
                       </div>
                       {fv('serverProfileExtra') &&
-                        bautizosParticipatesAsServer(editRegistryModal.data) &&
-                        bautizosShowsServerParticipation(editRegistryModal.data) && (
+                        bautizosShowsServerProfileFields(editRegistryModal.data) && (
                         <div className="mt-4 pt-4 border-t border-indigo-200 dark:border-indigo-500/50 md:col-span-2 space-y-3">
                           <p className="text-[10px] font-black uppercase tracking-widest text-amber-900 dark:text-amber-200">
                             Información adicional de servidor (opcional)
@@ -34583,6 +34584,42 @@ function resolveEventName(eventId) {
     );
   };
 
+  const BAUTIZOS_ATTENDANCE_CHIP_LABELS = {
+    bautizado: 'Bautizado',
+    asistente: 'Asistente',
+    servidor: 'Servidor',
+    empleado: 'Empleado',
+    cortesia: 'Cortesía',
+    pastor: 'Pastor',
+    acompanante: 'Acompañante',
+  };
+
+  const renderBautizosAttendanceTypeChip = (person, opts = {}) => {
+    if (!isBautizos || opts.isSubRegistration) return null;
+    const kind = resolveBautizosAttendanceChipKind(person);
+    const chipClass = uiBautizosAttendanceChip[kind];
+    if (!chipClass) return null;
+    const label = BAUTIZOS_ATTENDANCE_CHIP_LABELS[kind] || kind;
+    const Icon =
+      kind === 'empleado'
+        ? Briefcase
+        : kind === 'cortesia'
+          ? Gift
+          : kind === 'bautizado' || kind === 'pastor'
+            ? Church
+            : Users;
+    return (
+      <span
+        key={`bz-att-${kind}`}
+        className={`${uiBautizosAttendanceChip.base} ${chipClass}`}
+        title={getBautizosAttendanceTypeLabel(person)}
+      >
+        <Icon size={10} className="shrink-0 opacity-90" aria-hidden />
+        {label}
+      </span>
+    );
+  };
+
   /** Beca total/parcial, empleado y cortesía: visible en cualquier tipo de evento. */
   const renderParticipantAssistanceBadges = (person) => {
     const nodes = [];
@@ -34599,7 +34636,8 @@ function resolveEventName(eventId) {
       );
     }
     const att = normalizeAttendanceSpecial(person);
-    if (att === ATTENDANCE_SPECIAL.empleado) {
+    const bzAtt = isBautizos ? normalizeBautizosAttendanceType(person?.bautizosAttendanceType) : '';
+    if (att === ATTENDANCE_SPECIAL.empleado && bzAtt !== BAUTIZOS_ATTENDANCE.empleado) {
       nodes.push(
         <span
           key="assistance-empleado"
@@ -34609,7 +34647,7 @@ function resolveEventName(eventId) {
         </span>
       );
     }
-    if (att === ATTENDANCE_SPECIAL.cortesia) {
+    if (att === ATTENDANCE_SPECIAL.cortesia && bzAtt !== BAUTIZOS_ATTENDANCE.cortesia) {
       nodes.push(
         <span
           key="assistance-cortesia"
@@ -34619,7 +34657,7 @@ function resolveEventName(eventId) {
         </span>
       );
     }
-    if (att === ATTENDANCE_SPECIAL.pastor) {
+    if (att === ATTENDANCE_SPECIAL.pastor && bzAtt !== BAUTIZOS_ATTENDANCE.pastor) {
       nodes.push(
         <span
           key="assistance-pastor"
@@ -34784,7 +34822,9 @@ function resolveEventName(eventId) {
             {renderPublicLinkExtChip(person)}
           </p>
           {renderParticipantAssistanceBadges(person)}
-          {isSiValue(person.isServer) ? (
+          {renderBautizosAttendanceTypeChip(person, opts)}
+          {isSiValue(person.isServer) &&
+          !(isBautizos && normalizeBautizosAttendanceType(person.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.servidor) ? (
             <span className="chip-roster-servidor bg-amber-100 text-amber-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase flex items-center gap-1">
               <Users size={10} /> Servidor {person.serverAssignment ? `(${person.serverAssignment})` : ''}
             </span>
@@ -37051,8 +37091,7 @@ function resolveEventName(eventId) {
                       }
                     />
                     {fv('serverProfileExtra') &&
-                      bautizosParticipatesAsServer(newEntry) &&
-                      bautizosShowsServerParticipation(newEntry) && (
+                      bautizosShowsServerProfileFields(newEntry) && (
                       <fieldset
                         disabled={fieldBlocked('serverProfileExtra')}
                         className={`mt-4 pt-4 border-t border-slate-200 dark:border-slate-600 ${fieldBlocked('serverProfileExtra') ? 'opacity-70' : ''}`}
@@ -40094,14 +40133,11 @@ function resolveEventName(eventId) {
       (p) => participantIsActiveInEvent(p) && participantIsActiveInRoster(p)
     );
     const basePool = isBautizos
-      ? collectBautizosParticipatingServerRows(activeRoster)
+      ? collectBautizosServidoresYEmpleadosRows(activeRoster)
       : activeRoster.filter((p) => isSiValue(p.isServer));
     let rows = filterParticipantRows(basePool, false, globalRegistryListFilters, {
       expandBautizosCompanions: false,
     });
-    if (isBautizos) {
-      rows = rows.filter((p) => bautizosParticipatesAsServer(p));
-    }
     const locationScopeSet = buildLocationScopeSet(visibleLocations);
     if (locationScopeSet) {
       rows = rows.filter((p) => participantInLocationScope(p, locationScopeSet));
@@ -40176,7 +40212,7 @@ function resolveEventName(eventId) {
             </h3>
             <p className="text-xs text-slate-500">
               {isBautizos
-                ? 'Solo quienes participan como servidor (titular o acompañante marcado individualmente). No se listan acompañantes del titular que no sirven. Mismos filtros que Registro global.'
+                ? 'Inscritos tipo servidor o empleado, quienes participan como servidor y acompañantes marcados individualmente. Mismos filtros que Registro global.'
                 : 'Solo servidores con inscripción activa (no dados de baja ni en lista de espera). Mismos filtros que Registro global.'}
             </p>
             {sedeScopeHint ? (

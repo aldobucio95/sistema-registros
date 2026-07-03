@@ -3,9 +3,14 @@
  */
 import {
   BAUTIZOS_ATTENDANCE,
+  bautizosCompanionParticipatesAsServer,
+  bautizosDashboardCompanionCountsForScope,
+  bautizosDashboardTitularCountsForScope,
   expandBautizosGlobalRegistryRows,
   expandBautizosWaitlistRegistryRows,
   getBautizosCompanionsArray,
+  GLOBAL_REGISTRY_VIRTUAL_KIND,
+  isBautizosCompanionBaptized,
   normalizeBautizosAttendanceType,
 } from './bautizosParty.js';
 import { isSiValue } from './publicRegistrationLogic.js';
@@ -162,17 +167,56 @@ export function getParticipantAgeYearsForFilter(p) {
 export function participantMatchesBautizosAttendanceFilter(personLike, filterId) {
   const id = String(filterId || 'all').trim();
   if (!id || id === 'all') return true;
+
   const virtualKind = String(personLike?.__virtualKind || '').trim();
+
+  if (personLike?._isCompanionWaitlistVirtual === true) {
+    if (id === 'companions') return true;
+    if (id === BAUTIZOS_ATTENDANCE.servidor) return bautizosCompanionParticipatesAsServer(personLike);
+    if (id === BAUTIZOS_ATTENDANCE.bautizado) return isBautizosCompanionBaptized(personLike);
+    return false;
+  }
+
   if (id === 'companions') {
-    return virtualKind === 'companion' || personLike?._isCompanionWaitlistVirtual === true;
+    return virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companion;
   }
-  if (id === BAUTIZOS_ATTENDANCE.bautizado) {
-    if (virtualKind === 'companion') return false;
-    if (virtualKind === 'companion-baptized') return true;
-    return normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado;
+
+  if (personLike?.__globalRegistryVirtual && virtualKind) {
+    const hostLike = { location: personLike?.location };
+    if (virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companion) {
+      if (id === BAUTIZOS_ATTENDANCE.servidor) return bautizosCompanionParticipatesAsServer(personLike);
+      return false;
+    }
+    if (virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companionBaptized) {
+      return bautizosDashboardCompanionCountsForScope(personLike, id, hostLike);
+    }
+    return false;
   }
-  if (virtualKind) return false;
-  return normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType) === id;
+
+  return bautizosDashboardTitularCountsForScope(personLike, id);
+}
+
+/**
+ * Tipos de asistencia (filtros) a los que pertenece una fila.
+ * Una persona combinada (p. ej. Empleado + servidor) puede aparecer en varios;
+ * los totales de lista deben contar filas únicas, no la suma de estos ids.
+ */
+export function resolveBautizosAttendanceFilterIdsForRow(personLike) {
+  const out = [];
+  for (const op of BAUTIZOS_ATTENDANCE_FILTER_OPTIONS) {
+    if (op.id === 'all') continue;
+    if (participantMatchesBautizosAttendanceFilter(personLike, op.id)) out.push(op.id);
+  }
+  return out;
+}
+
+/** Cuenta personas/filas únicas que coinciden con un filtro de asistencia (sin doble conteo entre tipos). */
+export function countRowsMatchingBautizosAttendanceFilter(rows, filterId) {
+  let n = 0;
+  for (const row of rows || []) {
+    if (participantMatchesBautizosAttendanceFilter(row, filterId)) n += 1;
+  }
+  return n;
 }
 
 /**

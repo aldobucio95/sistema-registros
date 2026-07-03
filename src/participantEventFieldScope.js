@@ -50,22 +50,36 @@ const COMMON_FIELDS = new Set([
   'pastorRealCost', 'pastorStayStart', 'pastorStayEnd',
 ]);
 
+/** Servidor / perfil de servicio: Campa y Bautizos (áreas, pareja, asignación). */
+const SERVER_PARTICIPATION_FIELDS = new Set([
+  'isServer',
+  'serverAssignment',
+  'ambosServeInSegment',
+  'isMarried',
+  'spouseName',
+  'spouseParticipantId',
+  'spousePhone',
+  'goesWithChildren',
+  'childrenCount',
+  'servedOtherCampa',
+  'servedAreas',
+  'preferredServeArea',
+  'assignedServeArea',
+  'servesInCongress',
+  'congressServeArea',
+]);
+
 /** Campos exclusivos de Campa. */
 const CAMPA_ONLY_FIELDS = new Set([
   // Becas
   'isScholarship', 'scholarshipType', 'scholarshipPartialAmount',
   'scholarshipPendingApproval', 'scholarshipApprovedAt', 'scholarshipApprovedBy',
-  // Servidor / asignación campista
-  'isServer', 'serverAssignment', 'ambosServeInSegment', 'campAssignment',
+  // Asignación campista (Teens/Jóvenes)
+  'campAssignment',
   // Bautizo en evento Campa (segmento Teens/Jóvenes solo aplica en Campa)
   'baptismSegment',
   // Asistencia especial (Empleado / Cortesía)
   'attendanceSpecialType',
-  // Datos extra del servidor
-  'isMarried', 'spouseName', 'spouseParticipantId', 'spousePhone',
-  'goesWithChildren', 'childrenCount',
-  'servedOtherCampa', 'servedAreas', 'preferredServeArea',
-  'servesInCongress', 'congressServeArea',
   // Hijo de pastor (cortesía Campa)
   'pastorChild', 'pastorChildWithoutPay', 'pastorChildSpecialDonationFinanceId',
 ]);
@@ -119,6 +133,8 @@ export function isParticipantFieldApplicableToEventType(key, eventType) {
 
   // Salud y bautizo compartidos.
   if (CAMPA_AND_BAUTIZOS_FIELDS.has(key)) return isCampa || isBautizos;
+
+  if (SERVER_PARTICIPATION_FIELDS.has(key)) return isCampa || isBautizos;
 
   if (isCampa && CAMPA_ONLY_FIELDS.has(key)) return true;
   if (isBautizos && BAUTIZOS_ONLY_FIELDS.has(key)) return true;

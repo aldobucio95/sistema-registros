@@ -396,6 +396,14 @@ export function bautizosShowsServerParticipation(personLike) {
   );
 }
 
+/** Muestra el bloque de datos extra de servidor (pareja, hijos, áreas) en formularios Bautizos. */
+export function bautizosShowsServerProfileFields(personLike) {
+  if (!bautizosShowsServerParticipation(personLike)) return false;
+  const t = normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType);
+  if (t === BAUTIZOS_ATTENDANCE.servidor || t === BAUTIZOS_ATTENDANCE.empleado) return true;
+  return bautizosParticipatesAsServer(personLike);
+}
+
 const attendanceLabelsForCombination = {
   [BAUTIZOS_ATTENDANCE.bautizado]: 'Bautizado',
   [BAUTIZOS_ATTENDANCE.asistente]: 'Asistente',
@@ -716,17 +724,7 @@ export function countBautizosServersDeduped(roster, canonicalPlan) {
  * Filas para listados de servidores Bautizos: titulares que participan como servidor
  * + acompañantes canónicos marcados (deduplicados por persona).
  */
-export function collectBautizosParticipatingServerRows(roster) {
-  const list = Array.isArray(roster) ? roster : [];
-  const titularRows = list.filter((p) => bautizosParticipatesAsServer(p));
-  const meta = buildActiveRegistrantMetaForCompanionDedupe(list);
-  const plan = buildBautizosCanonicalCompanionPlan(list, meta, { includeBaptizedCompanions: true });
-  const out = [...titularRows];
-  const seenDedupe = new Set();
-  for (const p of titularRows) {
-    const k = bautizosServerPersonDedupeKey(p);
-    if (k) seenDedupe.add(k);
-  }
+function appendBautizosCompanionServerVirtualRows(list, plan, out, seenDedupe) {
   for (const entry of plan.values()) {
     const c = entry?.sourceCompanion;
     const host = entry?.sourceRegistrant;
@@ -758,6 +756,43 @@ export function collectBautizosParticipatingServerRows(roster) {
       __companionRelationship: String(c?.relationship || '').trim(),
     });
   }
+}
+
+export function collectBautizosParticipatingServerRows(roster) {
+  const list = Array.isArray(roster) ? roster : [];
+  const titularRows = list.filter((p) => bautizosParticipatesAsServer(p));
+  const meta = buildActiveRegistrantMetaForCompanionDedupe(list);
+  const plan = buildBautizosCanonicalCompanionPlan(list, meta, { includeBaptizedCompanions: true });
+  const out = [...titularRows];
+  const seenDedupe = new Set();
+  for (const p of titularRows) {
+    const k = bautizosServerPersonDedupeKey(p);
+    if (k) seenDedupe.add(k);
+  }
+  appendBautizosCompanionServerVirtualRows(list, plan, out, seenDedupe);
+  return out;
+}
+
+/**
+ * Filas para «Servidores y empleados»: tipo servidor o empleado + quienes participan como servidor
+ * (incluye empleado sin rol servidor activo) + acompañantes marcados como servidor.
+ */
+export function collectBautizosServidoresYEmpleadosRows(roster) {
+  const list = Array.isArray(roster) ? roster : [];
+  const out = [];
+  const seenDedupe = new Set();
+  for (const p of list) {
+    const includeTitular =
+      participantIsBautizosServidorOrEmpleadoAttendance(p) || bautizosParticipatesAsServer(p);
+    if (!includeTitular) continue;
+    const k = bautizosServerPersonDedupeKey(p);
+    if (k && seenDedupe.has(k)) continue;
+    if (k) seenDedupe.add(k);
+    out.push(p);
+  }
+  const meta = buildActiveRegistrantMetaForCompanionDedupe(list);
+  const plan = buildBautizosCanonicalCompanionPlan(list, meta, { includeBaptizedCompanions: true });
+  appendBautizosCompanionServerVirtualRows(list, plan, out, seenDedupe);
   return out;
 }
 

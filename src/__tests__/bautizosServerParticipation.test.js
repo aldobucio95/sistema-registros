@@ -12,10 +12,12 @@ import {
   buildActiveRegistrantMetaForCompanionDedupe,
   buildBautizosCanonicalCompanionPlan,
   collectBautizosParticipatingServerRows,
+  collectBautizosServidoresYEmpleadosRows,
   countBautizosServersDeduped,
   getBautizosAttendanceTypeLabel,
   isFreeBautizosAttendance,
   syncBautizosAttendanceServerFields,
+  bautizosShowsServerProfileFields,
 } from '../bautizosParty.js';
 import { prepareBautizosRowsForRosterFilter } from '../rosterParticipantFilters.js';
 
@@ -100,6 +102,43 @@ describe('bautizos server participation', () => {
     expect(bautizosParticipatesAsServer(person)).toBe(false);
     expect(bautizosDashboardTitularCountsForScope(person, BAUTIZOS_ATTENDANCE.empleado)).toBe(true);
     expect(bautizosDashboardTitularCountsForScope(person, BAUTIZOS_ATTENDANCE.servidor)).toBe(false);
+  });
+
+  it('empleado with isServer Si counts in both empleado and servidor dashboard scopes', () => {
+    const person = syncBautizosAttendanceServerFields({
+      bautizosAttendanceType: BAUTIZOS_ATTENDANCE.empleado,
+      isServer: 'Si',
+    });
+    expect(bautizosDashboardTitularCountsForScope(person, BAUTIZOS_ATTENDANCE.empleado)).toBe(true);
+    expect(bautizosDashboardTitularCountsForScope(person, BAUTIZOS_ATTENDANCE.servidor)).toBe(true);
+  });
+
+  it('collectBautizosServidoresYEmpleadosRows includes empleado without servidor flag', () => {
+    const roster = [
+      {
+        id: 'e1',
+        name: 'Empleado Sin Servidor',
+        bautizosAttendanceType: BAUTIZOS_ATTENDANCE.empleado,
+        isServer: 'No',
+        preferredServeArea: 'Cocina',
+      },
+      {
+        id: 'b1',
+        name: 'Bautizado Server',
+        bautizosAttendanceType: BAUTIZOS_ATTENDANCE.bautizado,
+        isServer: 'Si',
+      },
+    ];
+    const rows = collectBautizosServidoresYEmpleadosRows(roster);
+    expect(rows.map((r) => r.name).sort()).toEqual(['Bautizado Server', 'Empleado Sin Servidor']);
+  });
+
+  it('bautizosShowsServerProfileFields for empleado even when isServer is No', () => {
+    const person = {
+      bautizosAttendanceType: BAUTIZOS_ATTENDANCE.empleado,
+      isServer: 'No',
+    };
+    expect(bautizosShowsServerProfileFields(person)).toBe(true);
   });
 
   it('collectBautizosParticipatingServerRows excludes non-server companions of servidor titular', () => {
