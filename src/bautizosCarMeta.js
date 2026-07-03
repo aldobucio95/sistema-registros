@@ -320,6 +320,15 @@ function vehicleMetaHasCapturedValues(meta) {
   return false;
 }
 
+function titularSummaryHasCapturedCarMeta(summaryEntry) {
+  const cars = summaryEntry?.cars;
+  if (!Array.isArray(cars) || !cars.length) return false;
+  return cars.some((car) => {
+    if (car?.maybeAbsent) return false;
+    return car.vehicleFieldsComplete === true || car.hasPassengers === true || car.vehiclePending === true;
+  });
+}
+
 /** ¿El titular tiene al menos un vehículo con datos capturados en el plan? */
 export function titularSourceKeyHasCarMetaCaptured(plan, titularSourceKey) {
   const owner = String(titularSourceKey || '').trim();
@@ -330,7 +339,8 @@ export function titularSourceKeyHasCarMetaCaptured(plan, titularSourceKey) {
     if (String(parsed?.ownerSourceKey || '').trim() !== owner) continue;
     if (vehicleMetaHasCapturedValues(rawMeta)) return true;
   }
-  return false;
+  const summaryEntry = normalized.bautizosCarMetaSummaryByTitular?.[owner];
+  return titularSummaryHasCapturedCarMeta(summaryEntry);
 }
 
 /** Titulares del grupo con datos de carro ya registrados (para diálogo de fusión). */
@@ -344,6 +354,7 @@ export function listManualGroupTitularCarMetaSources(plan, titularSourceKeys, ro
       const person = (roster || []).find((p) => String(p?.id || '').trim() === hostId);
       const label = String(person?.name || labelIndex.get(titularSk) || '').trim() || 'Titular';
       const normalized = normalizeTransportPlanning(plan);
+      const summaryEntry = normalized.bautizosCarMetaSummaryByTitular?.[titularSk];
       const previews = [];
       for (let i = 1; i <= 5; i += 1) {
         const meta = getCarVehicleMetaFromPlan(normalized, titularSk, i);
@@ -352,6 +363,14 @@ export function listManualGroupTitularCarMetaSources(plan, titularSourceKeys, ro
           .map((f) => String(meta[f] || '').trim())
           .filter(Boolean);
         if (parts.length) previews.push(`Carro ${i}: ${parts.join(' · ')}`);
+      }
+      if (!previews.length && titularSummaryHasCapturedCarMeta(summaryEntry)) {
+        const activeCars = (summaryEntry?.cars || []).filter((c) => !c?.maybeAbsent);
+        if (activeCars.length) {
+          previews.push(
+            `${activeCars.length} carro${activeCars.length !== 1 ? 's' : ''} con datos (detalle al expandir)`
+          );
+        }
       }
       return {
         titularSk,
@@ -438,6 +457,41 @@ export function removeCarMetaKeysFromPlan(plan, vehicleKeys) {
   return { ...next, carMetaBySource };
 }
 
+/** True si el titular tiene datos en resumen pero aún no hay meta inline legible en el plan. */
+export function titularNeedsCarMetaHydration(plan, titularSourceKey) {
+  const owner = String(titularSourceKey || '').trim();
+  if (!owner || !titularSourceKeyHasCarMetaCaptured(plan, owner)) return false;
+  for (let i = 1; i <= 5; i += 1) {
+    const meta = getCarVehicleMetaFromPlan(normalizeTransportPlanning(plan), owner, i);
+    if (vehicleMetaHasCapturedValues(meta)) return false;
+  }
+  return true;
+}
+
+/**
+ * Deja en `carMetaBySource` la meta ya legible del titular (p. ej. tras merge de cache/subcolección).
+ * @returns {{ plan: object, patches: Array<{ vehicleKey: string, patch: object }> }}
+ */
+export function materializeTitularCarMetaOnPlan(plan, titularSk, carCount) {
+  const owner = String(titularSk || '').trim();
+  const normalized = normalizeTransportPlanning(plan);
+  if (!owner) return { plan: normalized, patches: [] };
+  const K = Math.max(1, parseInt(carCount, 10) || 1);
+  const patches = [];
+  for (let i = 1; i <= K; i += 1) {
+    const vehicleKey = carVehicleMetaStorageKey(owner, i);
+    const meta = getCarVehicleMetaFromPlanByKey(normalized, vehicleKey);
+    if (!vehicleMetaHasCapturedValues(meta) && !meta.maybeAbsent) continue;
+    if (normalized.carMetaBySource?.[vehicleKey]) continue;
+    patches.push({
+      vehicleKey,
+      patch: normalizeCarVehicleMeta({ ...meta, ownerSourceKey: owner }),
+    });
+  }
+  if (!patches.length) return { plan: normalized, patches: [] };
+  return { plan: mergeCarMetaPatchesIntoPlan(normalized, patches), patches };
+}
+
 /** Copia metadatos de vehículos de un titular a otro (fusión de grupo manual). */
 export function buildCopyTitularCarMetaPatches(plan, fromTitularSk, toTitularSk, carCount) {
   const from = String(fromTitularSk || '').trim();
@@ -470,28 +524,44 @@ export function buildManualGroupOrphanCarMetaCleanup(plan, orphanTitularSks, orp
   const patches = [];
   const keysToRemove = [];
   const normalized = normalizeTransportPlanning(plan);
+  const seenKeys = new Set();
+
+  const processVehicleKey = (vehicleKey, rawMeta) => {
+    const vk = String(vehicleKey || '').trim();
+    if (!vk || seenKeys.has(vk)) return;
+    seenKeys.add(vk);
+    if (orphanMode === 'clear') {
+      keysToRemove.push(vk);
+      return;
+    }
+    const m = normalizeCarVehicleMeta(rawMeta);
+    if (!vehicleMetaHasCapturedValues(m) && !m.maybeAbsent) return;
+    patches.push({
+      vehicleKey: vk,
+      patch: {
+        maybeAbsent: true,
+        driverSourceKey: '',
+        passengerSourceKeys: [],
+        pendingDriver: false,
+        pendingPassengers: false,
+      },
+    });
+  };
+
   for (const ownerSk of orphanTitularSks || []) {
     const owner = String(ownerSk || '').trim();
     if (!owner.startsWith('p:')) continue;
     for (const [vehicleKey, rawMeta] of Object.entries(normalized.carMetaBySource || {})) {
       const parsed = parseVehicleMetaKey(vehicleKey);
       if (String(parsed?.ownerSourceKey || '').trim() !== owner) continue;
-      if (orphanMode === 'clear') {
-        keysToRemove.push(vehicleKey);
-        continue;
-      }
-      const m = normalizeCarVehicleMeta(rawMeta);
-      if (!vehicleMetaHasCapturedValues(m) && !m.maybeAbsent) continue;
-      patches.push({
-        vehicleKey,
-        patch: {
-          maybeAbsent: true,
-          driverSourceKey: '',
-          passengerSourceKeys: [],
-          pendingDriver: false,
-          pendingPassengers: false,
-        },
-      });
+      processVehicleKey(vehicleKey, rawMeta);
+    }
+    for (let i = 1; i <= 5; i += 1) {
+      const vehicleKey = carVehicleMetaStorageKey(owner, i);
+      if (seenKeys.has(vehicleKey)) continue;
+      const meta = getCarVehicleMetaFromPlanByKey(normalized, vehicleKey);
+      if (!vehicleMetaHasCapturedValues(meta) && !meta.maybeAbsent) continue;
+      processVehicleKey(vehicleKey, meta);
     }
   }
   return { patches, keysToRemove };

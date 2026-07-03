@@ -27725,6 +27725,7 @@ function resolveEventName(eventId) {
           customCarCatalog={globalConfig?.customCarCatalog}
           transportUiPrefs={transportUiPrefs}
           onTransportUiPrefsChange={onTransportUiPrefsChange}
+          onTransportPlanSaved={patchEventTransportPlanning}
           canSendCarDataWhatsApp={userCanSendWhatsAppQuickAction(currentUser)}
           titularHasPendingCarData={(titular) =>
             titularCarDataVisibleInWhatsAppQueue(titular, currentEvent, allParticipants)

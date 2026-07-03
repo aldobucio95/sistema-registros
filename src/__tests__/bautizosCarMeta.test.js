@@ -10,7 +10,14 @@ import {
   buildCarMetaPatchesAfterSave,
   resolveLinkedCompanionCarInheritance,
   resolveBautizosCarDataAnchor,
+  titularSourceKeyHasCarMetaCaptured,
+  listManualGroupTitularCarMetaSources,
+  titularNeedsCarMetaHydration,
+  materializeTitularCarMetaOnPlan,
+  buildCopyTitularCarMetaPatches,
+  buildManualGroupOrphanCarMetaCleanup,
 } from '../bautizosCarMeta.js';
+import { mergeCarMetaCacheIntoPlan } from '../transportCarMetaStore.js';
 import { bautizosLlegaEnCarroForTransportPricing } from '../bautizosParty.js';
 
 describe('familyHasAnyCarTransport', () => {
@@ -456,5 +463,102 @@ describe('sanitizeBautizosGroupTitularByGroupId', () => {
       bautizosCarDisplayGroups: [],
     });
     expect(normalized.bautizosGroupTitularByGroupId['cg-1']).toBe('b');
+  });
+});
+
+describe('manual group car meta inheritance detection', () => {
+  const roster = [{ id: 'a1', name: 'Ana' }, { id: 'b1', name: 'Beto' }];
+
+  it('detecta datos de carro solo en resumen (subcolección lazy)', () => {
+    const plan = {
+      carMetaBySource: {},
+      bautizosCarMetaSummaryByTitular: {
+        'p:a1': {
+          cars: [{ carIndex: 1, maybeAbsent: false, vehicleFieldsComplete: true, hasPassengers: false }],
+        },
+      },
+    };
+    expect(titularSourceKeyHasCarMetaCaptured(plan, 'p:a1')).toBe(true);
+    expect(titularSourceKeyHasCarMetaCaptured(plan, 'p:b1')).toBe(false);
+  });
+
+  it('listManualGroupTitularCarMetaSources solo incluye titulares con datos', () => {
+    const plan = {
+      carMetaBySource: {},
+      bautizosCarMetaSummaryByTitular: {
+        'p:a1': {
+          cars: [{ carIndex: 1, maybeAbsent: false, vehiclePending: true, vehicleFieldsComplete: false }],
+        },
+      },
+    };
+    const sources = listManualGroupTitularCarMetaSources(plan, ['p:a1', 'p:b1'], roster);
+    expect(sources).toHaveLength(1);
+    expect(sources[0].titularSk).toBe('p:a1');
+    expect(sources[0].preview).toMatch(/carro/i);
+  });
+
+  it('titularNeedsCarMetaHydration cuando solo hay resumen sin inline', () => {
+    const plan = {
+      carMetaBySource: {},
+      bautizosCarMetaSummaryByTitular: {
+        'p:a1': {
+          cars: [{ carIndex: 1, vehicleFieldsComplete: true, maybeAbsent: false }],
+        },
+      },
+    };
+    expect(titularNeedsCarMetaHydration(plan, 'p:a1')).toBe(true);
+  });
+
+  it('materializeTitularCarMetaOnPlan escribe meta desde cache simulado', () => {
+    const cache = {
+      'p:a1|c1': {
+        ownerSourceKey: 'p:a1',
+        brand: 'Toyota',
+        model: 'Corolla',
+        color: 'Rojo',
+        plates: 'ABC-1',
+        driverSourceKey: 'p:a1',
+        passengerSourceKeys: [],
+      },
+    };
+    const plan = mergeCarMetaCacheIntoPlan({ carMetaBySource: {} }, cache);
+    const { plan: materialized } = materializeTitularCarMetaOnPlan(plan, 'p:a1', 1);
+    expect(materialized.carMetaBySource['p:a1|c1']?.brand).toBe('Toyota');
+  });
+
+  it('buildCopyTitularCarMetaPatches copia desde plan con cache mergeado', () => {
+    const cache = {
+      'p:a1|c1': {
+        ownerSourceKey: 'p:a1',
+        brand: 'Nissan',
+        model: 'March',
+        color: 'Azul',
+        plates: 'XYZ-9',
+        driverSourceKey: 'p:a1',
+        passengerSourceKeys: [],
+      },
+    };
+    const plan = mergeCarMetaCacheIntoPlan({ carMetaBySource: {} }, cache);
+    const patches = buildCopyTitularCarMetaPatches(plan, 'p:a1', 'p:b1', 1);
+    expect(patches).toHaveLength(1);
+    expect(patches[0].vehicleKey).toBe('p:b1|c1');
+    expect(patches[0].patch.brand).toBe('Nissan');
+  });
+
+  it('buildManualGroupOrphanCarMetaCleanup marca quizá no vaya en slots del titular huérfano', () => {
+    const plan = mergeCarMetaCacheIntoPlan(
+      { carMetaBySource: {} },
+      {
+        'p:b1|c1': {
+          ownerSourceKey: 'p:b1',
+          brand: 'Honda',
+          model: 'Civic',
+          driverSourceKey: 'p:b1',
+          passengerSourceKeys: [],
+        },
+      }
+    );
+    const { patches } = buildManualGroupOrphanCarMetaCleanup(plan, ['p:b1'], 'maybeAbsent');
+    expect(patches.some((p) => p.vehicleKey === 'p:b1|c1' && p.patch.maybeAbsent === true)).toBe(true);
   });
 });

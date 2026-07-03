@@ -14,6 +14,7 @@ export const TAB_TO_ROUTE_SEGMENT = {
   Responsivas: 'responsivas',
   RegistroGlobal: 'registro-global',
   PastoresPage: 'pastores',
+  TransportPlanning: 'transporte',
   CashCut: 'corte-caja',
   ExpenseList: 'gastos',
 };

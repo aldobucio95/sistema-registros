@@ -54,8 +54,11 @@ import {
   formatTransportCarMemberRole,
   listManualGroupTitularCarMetaSources,
   manualGroupCrewRequiresPassengers,
+  materializeTitularCarMetaOnPlan,
   mergeCarMetaPatchesIntoPlan,
   removeCarMetaKeysFromPlan,
+  titularNeedsCarMetaHydration,
+  titularSourceKeyHasCarMetaCaptured,
 } from '../bautizosCarMeta.js';
 import {
   collectCarMetaCatalogEntries,
@@ -100,6 +103,22 @@ function transportPlanningSignature(raw) {
   }
 }
 
+/** Carga meta de subcolección para titulares con resumen pero sin datos inline en plan/cache. */
+async function hydrateCarMetaCacheForTitulars(eventId, titularSks, plan, baseCache = {}) {
+  const cache = { ...(baseCache || {}) };
+  for (const sk of titularSks || []) {
+    const owner = String(sk || '').trim();
+    if (!owner.startsWith('p:')) continue;
+    const workingPlan = mergeCarMetaCacheIntoPlan(plan, cache);
+    if (!titularNeedsCarMetaHydration(workingPlan, owner)) continue;
+    const eid = String(eventId || '').trim();
+    if (!eid) continue;
+    const fetched = await fetchCarMetaForTitular(eid, owner);
+    Object.assign(cache, fetched);
+  }
+  return cache;
+}
+
 export default function TransportPlanningPage({
   currentEvent,
   allParticipants,
@@ -128,6 +147,8 @@ export default function TransportPlanningPage({
     expandedCarDetailKeys: [],
   },
   onTransportUiPrefsChange,
+  /** Actualiza `currentEvent.transportPlanning` en App tras guardar (evita falso dirty y sync prematuro). */
+  onTransportPlanSaved,
   canSendCarDataWhatsApp = false,
   titularHasPendingCarData,
   onSendCarDataWhatsApp,
@@ -200,7 +221,9 @@ export default function TransportPlanningPage({
   const [loadingTitularSks, setLoadingTitularSks] = useState(() => new Set());
   /** Titulares cuya subcolección ya se consultó (aunque no haya docs). */
   const [fetchedTitularSks, setFetchedTitularSks] = useState(() => new Set());
+  const [mergingManualGroup, setMergingManualGroup] = useState(false);
   const carMetaMigrationStartedRef = useRef(false);
+  const prevSyncEventIdRef = useRef(eventId);
 
   const mergedCarMetaByKey = useMemo(
     () => ({ ...(plan.carMetaBySource || {}), ...loadedCarMetaByKey }),
@@ -236,14 +259,6 @@ export default function TransportPlanningPage({
   );
 
   const canSaveTransport = canEdit || canEditTransportOps;
-
-  React.useEffect(() => {
-    const next = transportPlanningFromEventDoc(currentEvent?.transportPlanning);
-    setPlan((prev) => {
-      if (transportPlanningSignature(prev) === transportPlanningSignature(next)) return prev;
-      return next;
-    });
-  }, [currentEvent?.id, currentEvent?.transportPlanning]);
 
   React.useEffect(() => {
     if (!isBautizos || !eventId || carMetaMigrationStartedRef.current) return;
@@ -357,6 +372,20 @@ export default function TransportPlanningPage({
     () => transportPlanningDirtySignature(plan, planDirtyContext) !== remotePlanSig,
     [plan, planDirtyContext, remotePlanSig]
   );
+
+  React.useEffect(() => {
+    const next = transportPlanningFromEventDoc(currentEvent?.transportPlanning);
+    const eventChanged = String(prevSyncEventIdRef.current || '') !== String(currentEvent?.id || '');
+    prevSyncEventIdRef.current = currentEvent?.id;
+    setPlan((prev) => {
+      if (eventChanged) return next;
+      if (transportPlanningDirtySignature(prev, planDirtyContext) !== remotePlanSig) {
+        return prev;
+      }
+      if (transportPlanningSignature(prev) === transportPlanningSignature(next)) return prev;
+      return next;
+    });
+  }, [currentEvent?.id, currentEvent?.transportPlanning, planDirtyContext, remotePlanSig]);
 
   const carColorSuggestions = useMemo(() => collectCarColorSuggestions(plan), [plan]);
 
@@ -693,6 +722,9 @@ export default function TransportPlanningPage({
       setPlan(savedPlan);
       setLoadedCarMetaByKey({});
       setFetchedTitularSks(new Set());
+      if (typeof onTransportPlanSaved === 'function') {
+        onTransportPlanSaved(savedPlan);
+      }
       showToast('Plan de transporte guardado.');
     } catch (e) {
       console.error(e);
@@ -700,7 +732,7 @@ export default function TransportPlanningPage({
     } finally {
       setSaving(false);
     }
-  }, [canSaveTransport, eventId, getDocRef, plan, planDirtyContext, loadedCarMetaByKey, evRosterFiltered, showToast, updateDoc, addLog, currentEvent, isCampa, customCarCatalog]);
+  }, [canSaveTransport, eventId, getDocRef, plan, planDirtyContext, loadedCarMetaByKey, evRosterFiltered, showToast, updateDoc, addLog, currentEvent, isCampa, customCarCatalog, onTransportPlanSaved]);
 
   const getPassengersForSection = (section) => {
     const passengersBase = passengersForBusGroup(busLines, section);
@@ -1425,7 +1457,8 @@ export default function TransportPlanningPage({
     });
   };
 
-  const mergeSelectedCars = () => {
+  const mergeSelectedCars = async () => {
+    if (mergingManualGroup) return;
     const keys = [...carPick].filter(Boolean);
     if (keys.length < 2) {
       showToast('Selecciona al menos dos personas para compartir carro.');
@@ -1438,23 +1471,58 @@ export default function TransportPlanningPage({
       .filter((l) => String(l?.kind || '') === 'participant')
       .map((l) => String(l.sourceKey || '').trim())
       .filter(Boolean);
-    const sourcesWithData = listManualGroupTitularCarMetaSources(plan, titularSks, evRosterFiltered);
-    if (titularSks.length >= 2 && sourcesWithData.length >= 1) {
-      setMergeConflictModal({
-        keys,
-        memberLines,
+
+    setMergingManualGroup(true);
+    try {
+      showToast('Cargando datos de carro…');
+      const hydratedCache = await hydrateCarMetaCacheForTitulars(
+        eventId,
         titularSks,
-        sources: sourcesWithData,
-        selectedSourceSk: sourcesWithData[0]?.titularSk || titularSks[0],
-        anchorTitularSk: titularSks[0],
-        orphanMode: 'maybeAbsent',
-      });
-      return;
+        plan,
+        loadedCarMetaByKey
+      );
+      const workingPlan = mergeCarMetaCacheIntoPlan(plan, hydratedCache);
+      const sourcesWithData = listManualGroupTitularCarMetaSources(
+        workingPlan,
+        titularSks,
+        evRosterFiltered
+      );
+      if (sourcesWithData.length >= 2) {
+        setMergeConflictModal({
+          keys,
+          memberLines,
+          titularSks,
+          sources: sourcesWithData,
+          selectedSourceSk: sourcesWithData[0]?.titularSk || titularSks[0],
+          anchorTitularSk: sourcesWithData[0]?.titularSk || titularSks[0],
+          orphanMode: 'maybeAbsent',
+          hydratedCache,
+        });
+        return;
+      }
+      if (sourcesWithData.length === 1) {
+        const sourceSk = sourcesWithData[0]?.titularSk || titularSks[0];
+        finalizeManualGroupMerge(keys, memberLines, sourceSk, sourceSk, 'maybeAbsent', hydratedCache);
+        return;
+      }
+      finalizeManualGroupMerge(keys, memberLines, titularSks[0], null, 'maybeAbsent', hydratedCache);
+    } catch (e) {
+      console.error(e);
+      showToast('No se pudo fusionar el grupo de carro.');
+    } finally {
+      setMergingManualGroup(false);
     }
-    finalizeManualGroupMerge(keys, memberLines, titularSks[0], null, 'maybeAbsent');
   };
 
-  const finalizeManualGroupMerge = (keys, memberLines, anchorTitularSk, dataSourceSk, orphanMode) => {
+  const finalizeManualGroupMerge = (
+    keys,
+    memberLines,
+    anchorTitularSk,
+    dataSourceSk,
+    orphanMode,
+    hydratedCache = null
+  ) => {
+    const cache = hydratedCache && typeof hydratedCache === 'object' ? hydratedCache : {};
     const anchorSk = String(anchorTitularSk || '').trim() || manualGroupParticipantSourceKeys({ memberKeys: keys })[0] || '';
     const anchorHostId = anchorSk.startsWith('p:') ? anchorSk.slice(2) : '';
     const dataFrom = String(dataSourceSk || anchorSk).trim() || anchorSk;
@@ -1463,7 +1531,7 @@ export default function TransportPlanningPage({
     const otherTitulars = titularSks.filter((sk) => sk !== anchorSk);
 
     setPlan((prev) => {
-      let next = normalizeTransportPlanning(prev);
+      let next = mergeCarMetaCacheIntoPlan(prev, cache);
       let groups = Array.isArray(next.carGroups) ? [...next.carGroups] : [];
       groups = groups
         .map((g) => ({
@@ -1480,6 +1548,10 @@ export default function TransportPlanningPage({
       let patches = [];
       if (dataFrom && dataFrom !== anchorSk) {
         patches.push(...buildCopyTitularCarMetaPatches(next, dataFrom, anchorSk, inheritedCars));
+        next = mergeCarMetaPatchesIntoPlan(next, patches);
+        patches = [];
+      } else if (dataFrom && titularSourceKeyHasCarMetaCaptured(next, anchorSk)) {
+        next = materializeTitularCarMetaOnPlan(next, anchorSk, inheritedCars).plan;
       }
       const { patches: orphanPatches, keysToRemove } = buildManualGroupOrphanCarMetaCleanup(
         next,
@@ -1492,6 +1564,21 @@ export default function TransportPlanningPage({
       patches = buildDefaultManualGroupCrewPatches(next, anchorSk, keys, inheritedCars);
       next = mergeCarMetaPatchesIntoPlan(next, patches);
       return applyCarMetaPassengerInheritance(next);
+    });
+
+    const materializedKeys = new Set(
+      titularSks.flatMap((sk) => vehicleKeysForTitular(sk, inheritedCars))
+    );
+    setLoadedCarMetaByKey((prev) => {
+      const merged = { ...prev, ...cache };
+      const next = { ...merged };
+      for (const k of materializedKeys) delete next[k];
+      return next;
+    });
+    setFetchedTitularSks((prev) => {
+      const next = new Set(prev);
+      for (const sk of titularSks) next.add(sk);
+      return next;
     });
 
     setCarPick(new Set());
@@ -2781,8 +2868,13 @@ export default function TransportPlanningPage({
             </p>
             {canEdit && (isCampa || isBautizos) ? (
               <div className="px-4 pt-3">
-                <button type="button" className={btnSecondary} onClick={mergeSelectedCars} disabled={carPick.size < 2}>
-                  Unir selección en un carro
+                <button
+                  type="button"
+                  className={btnSecondary}
+                  onClick={() => void mergeSelectedCars()}
+                  disabled={carPick.size < 2 || mergingManualGroup}
+                >
+                  {mergingManualGroup ? 'Cargando…' : 'Unir selección en un carro'}
                 </button>
               </div>
             ) : null}
@@ -3269,7 +3361,8 @@ export default function TransportPlanningPage({
                   Datos de carro en conflicto
                 </h3>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
-                  Varias personas del grupo ya tienen datos de vehículo. Elige cuáles conservar y qué hacer con el resto.
+                  Varias personas del grupo ya tienen datos de vehículo. Elige cuáles conservar y qué hacer con los
+                  demás titulares.
                 </p>
               </div>
               <button
@@ -3362,7 +3455,8 @@ export default function TransportPlanningPage({
                     mergeConflictModal.memberLines,
                     mergeConflictModal.anchorTitularSk || mergeConflictModal.selectedSourceSk,
                     mergeConflictModal.selectedSourceSk,
-                    mergeConflictModal.orphanMode
+                    mergeConflictModal.orphanMode,
+                    mergeConflictModal.hydratedCache
                   )
                 }
               >
