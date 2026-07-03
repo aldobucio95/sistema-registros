@@ -2017,6 +2017,18 @@ export default function TransportPlanningPage({
         new Set((grp?.hosts || []).map((h) => String(h?.hostId || '').trim()).filter(Boolean)),
       ])
     );
+    for (const view of manualCarGroupViews || []) {
+      const gid = String(view?.id || '').trim();
+      if (!gid) continue;
+      validHostsByGroup.set(
+        gid,
+        new Set(
+          (view.participantHosts || [])
+            .map((h) => String(h?.hostId || '').trim())
+            .filter(Boolean)
+        )
+      );
+    }
     const current = plan?.bautizosGroupTitularByGroupId || {};
     const cleaned = {};
     let changed = false;
@@ -2034,7 +2046,7 @@ export default function TransportPlanningPage({
       const next = normalizeTransportPlanning(prev);
       return { ...next, bautizosGroupTitularByGroupId: cleaned };
     });
-  }, [isBautizos, bautizosCarDisplayGroups, plan?.bautizosGroupTitularByGroupId]);
+  }, [isBautizos, bautizosCarDisplayGroups, manualCarGroupViews, plan?.bautizosGroupTitularByGroupId]);
 
   return (
     <div
@@ -2447,6 +2459,7 @@ export default function TransportPlanningPage({
                 const manualCrewOpts = {
                   requiresPassengers: manualGroupCrewRequiresPassengers(view.memberLines.length),
                 };
+                const titularSummary = plan.bautizosCarMetaSummaryByTitular?.[view.titularSk];
                 return (
                   <TransportBautizosCarCard
                     key={view.id}
@@ -2463,16 +2476,23 @@ export default function TransportPlanningPage({
                     effectiveCars={view.effectiveCars}
                     seatsPerCar={plan.bautizosCarCapacity}
                     slots={manualSlots}
-                    titularSummary={plan.bautizosCarMetaSummaryByTitular?.[view.titularSk]}
+                    titularSummary={titularSummary}
                     isLoadingMeta={loadingTitularSks.has(view.titularSk)}
                     getSlotMeta={(carIndex) => getCarMeta(view.titularSk, carIndex)}
                     crewOpts={manualCrewOpts}
+                    showCollapsedCrew
+                    collapsedTitularLabel={view.titularName}
                     className="rounded-xl border border-indigo-200 dark:border-indigo-600/50 bg-white dark:bg-slate-900 p-4 shadow-sm"
                     header={
                       <>
-                        <p className="text-sm font-black text-indigo-800 dark:text-indigo-200">{view.label}</p>
-                        <p className="text-[10px] font-bold text-indigo-600 dark:text-indigo-300 mt-1">
-                          {view.memberLines.length} persona{view.memberLines.length !== 1 ? 's' : ''} ·{' '}
+                        <p className="text-sm font-black text-indigo-800 dark:text-indigo-200 truncate" title={view.titularName}>
+                          {view.titularName}
+                        </p>
+                        <p className="text-[10px] font-bold text-indigo-600 dark:text-indigo-300 mt-0.5">
+                          Titular del grupo · conductor
+                        </p>
+                        <p className="text-[10px] font-bold text-indigo-500/90 dark:text-indigo-400/90 mt-1">
+                          {view.label} · {view.memberLines.length} persona{view.memberLines.length !== 1 ? 's' : ''} ·{' '}
                           {view.effectiveCars} carro{view.effectiveCars !== 1 ? 's' : ''} compartido
                           {view.effectiveCars !== 1 ? 's' : ''}
                         </p>
@@ -2489,24 +2509,26 @@ export default function TransportPlanningPage({
                         ) : null}
                       </>
                     }
+                    headerControls={
+                      canEdit && (view.participantHosts || []).length > 1 ? (
+                        <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex flex-col gap-0.5">
+                          Cambiar titular del grupo (datos de carro)
+                          <select
+                            className={`${inputSm} max-w-full sm:max-w-[16rem]`}
+                            value={String(view.titularSk || '').replace(/^p:/, '')}
+                            onChange={(e) => setManualGroupLeader(view, e.target.value)}
+                          >
+                            {(view.participantHosts || []).map((h) => (
+                              <option key={h.hostId} value={h.hostId}>
+                                {h.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null
+                    }
                     toolbar={
                       <>
-                        {canEdit && (view.participantHosts || []).length > 1 ? (
-                          <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex flex-col gap-0.5">
-                            Titular del grupo (datos de carro)
-                            <select
-                              className={`${inputSm} max-w-[14rem]`}
-                              value={String(view.titularSk || '').replace(/^p:/, '')}
-                              onChange={(e) => setManualGroupLeader(view, e.target.value)}
-                            >
-                              {(view.participantHosts || []).map((h) => (
-                                <option key={h.hostId} value={h.hostId}>
-                                  {h.name}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        ) : null}
                         {canEdit ? (
                           <>
                             <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex flex-col gap-0.5">

@@ -697,6 +697,11 @@ export function buildManualCarGroupViews(plan, carLines) {
         name: String(l.name || '').trim() || '—',
         sourceKey: String(l.sourceKey || '').trim(),
       }));
+    const titularHost =
+      participantHosts.find((h) => h.sourceKey === titularSk) ||
+      participantHosts.find((h) => `p:${h.hostId}` === titularSk) ||
+      participantHosts[0] ||
+      null;
     return {
       id: String(g.id || '').trim(),
       label: `Grupo manual ${manualN}`,
@@ -706,6 +711,7 @@ export function buildManualCarGroupViews(plan, carLines) {
       inheritedCars,
       carsBeforeMerge: Math.max(1, carsBeforeMerge),
       titularSk,
+      titularName: String(titularHost?.name || '').trim() || 'Titular',
       participantHosts,
     };
   });

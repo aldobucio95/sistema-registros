@@ -19,6 +19,9 @@ export default function TransportBautizosCarCard({
   expandedCarFormKeys,
   onToggleCarForm,
   header,
+  headerControls = null,
+  showCollapsedCrew = false,
+  collapsedTitularLabel = '',
   toolbar = null,
   bulkActions = null,
   expandedPrefix = null,
@@ -68,6 +71,41 @@ export default function TransportBautizosCarCard({
           />
         </div>
       </button>
+
+      {headerControls ? (
+        <div
+          className="mt-2 flex flex-wrap items-center gap-2"
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          {headerControls}
+        </div>
+      ) : null}
+
+      {!cardExpanded && showCollapsedCrew ? (
+        <ul className="mt-2 pt-2 border-t border-slate-200/80 dark:border-slate-600/80 space-y-1 text-xs font-semibold text-slate-800 dark:text-slate-100">
+          {((slots[0]?.members || []).length
+            ? slots[0].members
+            : [
+                {
+                  sourceKey: 'titular',
+                  name: String(collapsedTitularLabel || '').trim() || 'Titular',
+                  crewRole: 'driver',
+                },
+              ]
+          ).map((m, idx) => (
+            <li
+              key={`${key}-collapsed-${m.sourceKey || idx}-${m.crewRole}`}
+              className="flex items-center gap-2"
+            >
+              <span className="truncate">{m.name || '—'}</span>
+              <span className="text-[10px] font-bold text-slate-400 shrink-0">
+                {formatTransportCarMemberRole(m)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
       {cardExpanded ? (
         <div className="mt-3 space-y-3 border-t border-slate-200/80 dark:border-slate-600/80 pt-3">
