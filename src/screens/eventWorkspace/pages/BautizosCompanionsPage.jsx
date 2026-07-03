@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Link2, Network, UserPlus, Wrench, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Link2, Network, UserPlus, Wrench, X } from 'lucide-react';
 import {
   getBautizosCompanionsArray,
   normalizeBautizosAttendanceType,
@@ -13,6 +13,8 @@ import {
   isBautizosCompanionBaptized,
   normalizePersonNameKey,
   collectBautizosSplitDerivedCompanionLinkRepairs,
+  buildBautizosCanonicalCompanionPlan,
+  buildActiveRegistrantMetaForCompanionDedupe,
 } from '../../../bautizosParty.js';
 import {
   uiForm,
@@ -45,6 +47,26 @@ function parseNlcHostRegistrantId(ek) {
 
 function isBautizadoActivoInEvent(p) {
   return normalizeBautizosAttendanceType(p?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado;
+}
+
+/** ¿La fila de acompañante pertenece a un árbol familiar (grupo de 3+)? */
+function companionRowBelongsToFamilyTree(row, familyTrees, sourceLinkMap) {
+  const pk = String(row?.personKey || '').trim();
+  if (!pk || !familyTrees?.length) return false;
+  if (pk.startsWith('p:')) {
+    const pid = pk.slice(2);
+    return familyTrees.some((g) => g.participantIds.includes(pid));
+  }
+  let nlcKey = pk;
+  if (pk.startsWith('c:')) {
+    const ultimate = resolveBautizosUltimateSourceKey(pk, sourceLinkMap);
+    const parsed = parseLinkSourceKey(ultimate) || parseLinkSourceKey(pk);
+    if (parsed?.kind === 'companion') {
+      nlcKey = `nlc:${parsed.hostId}:${parsed.companionId}`;
+    }
+  }
+  if (!nlcKey.startsWith('nlc:')) return false;
+  return familyTrees.some((g) => g.canonExtras.includes(nlcKey));
 }
 
 class DSU {
@@ -662,6 +684,7 @@ export default function BautizosCompanionsPage({
 }) {
   const [repairModalOpen, setRepairModalOpen] = useState(false);
   const [repairBusy, setRepairBusy] = useState(false);
+  const [expandedFamilies, setExpandedFamilies] = useState(() => new Set());
   const locationScopeSet = useMemo(() => buildLocationScopeSet(visibleLocations), [visibleLocations]);
 
   const basePool = useMemo(() => {
@@ -978,6 +1001,26 @@ export default function BautizosCompanionsPage({
 
   const familyTrees = unifiedFamilySection.trees;
 
+  const companionMatchCount = useMemo(() => {
+    const meta = buildActiveRegistrantMetaForCompanionDedupe(evRosterFiltered);
+    const plan = buildBautizosCanonicalCompanionPlan(evRosterFiltered, meta, { includeBaptizedCompanions: false });
+    return plan.size;
+  }, [evRosterFiltered]);
+
+  const soloListRows = useMemo(
+    () => listRows.filter((r) => !companionRowBelongsToFamilyTree(r, familyTrees, sourceLinkMap)),
+    [listRows, familyTrees, sourceLinkMap]
+  );
+
+  const toggleFamilyExpanded = (rootKey) => {
+    setExpandedFamilies((prev) => {
+      const next = new Set(prev);
+      if (next.has(rootKey)) next.delete(rootKey);
+      else next.add(rootKey);
+      return next;
+    });
+  };
+
   if (!currentEvent) return null;
 
   return (
@@ -997,8 +1040,11 @@ export default function BautizosCompanionsPage({
               <p className="text-[10px] font-semibold text-indigo-700 dark:text-indigo-300 mt-1">{sedeScopeHint}</p>
             ) : null}
             <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
-              Filas en tabla:{' '}
-              <span className="font-black text-slate-800 dark:text-slate-100 tabular-nums">{listRows.length}</span>
+              Van solos en tabla:{' '}
+              <span className="font-black text-slate-800 dark:text-slate-100 tabular-nums">{soloListRows.length}</span>
+              <span className="text-slate-400"> · </span>
+              Familias registradas:{' '}
+              <span className="font-black text-slate-800 dark:text-slate-100 tabular-nums">{familyTrees.length}</span>
               <span className="text-slate-400"> · </span>
               Registros con al menos un acompañante visible:{' '}
               <span className="font-black text-slate-800 dark:text-slate-100 tabular-nums">
@@ -1027,7 +1073,10 @@ export default function BautizosCompanionsPage({
           ) : null}
           <div className="text-right">
             <p className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase tracking-wider">Coincidencias</p>
-            <p className="text-2xl font-black text-teal-700 dark:text-teal-400 tabular-nums">{listRows.length}</p>
+            <p className="text-2xl font-black text-teal-700 dark:text-teal-400 tabular-nums">{companionMatchCount}</p>
+            <p className="text-[9px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+              Mismo conteo que el dashboard (solos + familias)
+            </p>
           </div>
         </div>
       </div>
@@ -1160,16 +1209,18 @@ export default function BautizosCompanionsPage({
         </div>
       ) : null}
 
-      {!listRows.length ? (
+      {companionMatchCount === 0 && familyTrees.length === 0 ? (
         <div className={`${uiShell.card} ${uiEmptyState.wrap}`}>
           <UserPlus size={28} className={uiEmptyState.icon} />
           <p className={uiEmptyState.title}>Sin acompañantes</p>
           <p className={uiEmptyState.help}>No hay acompañantes que mostrar con los filtros actuales.</p>
         </div>
-      ) : (
+      ) : null}
+
+      {soloListRows.length > 0 ? (
         <>
         <div className={uiListMobile.shellViolet}>
-          {listRows.map((r, i) => (
+          {soloListRows.map((r, i) => (
             <ListMobileCard
               key={r.id}
               variant="compact"
@@ -1195,7 +1246,7 @@ export default function BautizosCompanionsPage({
               </tr>
             </thead>
             <tbody className={uiTable.tbody}>
-              {listRows.map((r, i) => (
+              {soloListRows.map((r, i) => (
                 <tr key={r.id} className={uiTable.tr}>
                   <td className={`${uiTable.td} align-top`}>
                     <span className={`${uiKbd.base} min-w-[1.6rem] h-6 justify-center shrink-0 mr-2 align-middle`}>
@@ -1219,7 +1270,7 @@ export default function BautizosCompanionsPage({
           </table>
         </div>
         </>
-      )}
+      ) : null}
 
       {familyTrees.length > 0 ? (
         <section className="space-y-3 pt-2">
@@ -1228,29 +1279,53 @@ export default function BautizosCompanionsPage({
               <Network size={22} />
             </div>
             <div className="min-w-0">
-              <h3 className={uiPageHeader.title}>Árboles familiares (un gráfico por familia)</h3>
+              <h3 className={uiPageHeader.title}>Árboles familiares</h3>
               <p className={`${uiPageHeader.subtitle} mt-1 leading-snug`}>
-                Cada sección reúne a toda la familia conectada (bautizados, registrados y acompañantes), sin importar el rol. Solo
-                se dibuja si en el grupo hay 3 o más personas. La raíz es el participante de mayor edad en la lista, y todos los
-                parentescos mostrados se calculan respecto a esa raíz.
+                <span className="font-semibold text-teal-700 dark:text-teal-300 tabular-nums">{familyTrees.length}</span>{' '}
+                familia{familyTrees.length === 1 ? '' : 's'} registrada{familyTrees.length === 1 ? '' : 's'}. Cada grupo reúne a
+                toda la familia conectada (bautizados, registrados y acompañantes) con 3 o más personas. Expande para ver
+                miembros y parentescos.
               </p>
             </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {familyTrees.map((g) => {
-              const node = buildFamilyTreeUINode(g, evRosterFiltered, participantById);
+              const isExpanded = expandedFamilies.has(g.root);
+              const node = isExpanded ? buildFamilyTreeUINode(g, evRosterFiltered, participantById) : null;
+              const rootParticipantId = g.participantIds[0] || '';
+              const rootParticipant = rootParticipantId ? participantById.get(rootParticipantId) : null;
+              const familyLabel = String(rootParticipant?.name || '').trim() || 'Familia';
               return (
                 <div
                   key={g.root}
-                  className="rounded-2xl border border-teal-200 bg-teal-50/40 px-4 py-3 shadow-sm dark:bg-transparent dark:border-2 dark:border-teal-500"
+                  className="rounded-2xl border border-teal-200 bg-teal-50/40 shadow-sm dark:bg-transparent dark:border-2 dark:border-teal-500 overflow-hidden"
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                    <p className="text-[10px] font-black uppercase tracking-wider text-teal-700 dark:text-teal-200">Familia</p>
-                    <span className="text-[10px] font-black uppercase tracking-wider bg-teal-600 text-white rounded px-1.5 py-0.5">
-                      {g.nPeople} en el grupo
+                  <button
+                    type="button"
+                    onClick={() => toggleFamilyExpanded(g.root)}
+                    className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-teal-100/60 dark:hover:bg-teal-900/20 transition-colors"
+                    aria-expanded={isExpanded}
+                  >
+                    {isExpanded ? (
+                      <ChevronDown size={16} className="shrink-0 text-teal-700 dark:text-teal-300" />
+                    ) : (
+                      <ChevronRight size={16} className="shrink-0 text-teal-700 dark:text-teal-300" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">{familyLabel}</p>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        {isExpanded ? 'Ocultar miembros' : 'Expandir para ver miembros'}
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-black uppercase tracking-wider bg-teal-600 text-white rounded px-1.5 py-0.5 shrink-0 tabular-nums">
+                      {g.nPeople} {g.nPeople === 1 ? 'miembro' : 'miembros'}
                     </span>
-                  </div>
-                  <TreeBranch node={node} depth={0} />
+                  </button>
+                  {isExpanded && node ? (
+                    <div className="px-4 pb-3 border-t border-teal-200/80 dark:border-teal-600/50 pt-3">
+                      <TreeBranch node={node} depth={0} />
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
