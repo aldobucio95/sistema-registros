@@ -26,6 +26,7 @@ import {
   parseBusGroupKey,
   participantIncludedInTransportPlanning,
   passengersForBusGroup,
+  resolveManualCarGroupTitularSk,
   sortTransportLinesByRosterOrder,
   suggestBautizosFamilyCarGroups,
   totalCarsCount,
@@ -38,6 +39,7 @@ import CarVehicleMetaPanel from '../components/transport/CarVehicleMetaPanel.jsx
 import { collectCarColorSuggestions, applyCarMetaPassengerInheritance } from '../bautizosCarMeta.js';
 import BautizosCarCrewFields from '../components/transport/BautizosCarCrewFields.jsx';
 import TransportBautizosCarCard from '../components/transport/TransportBautizosCarCard.jsx';
+import ManualGroupMemberSearchPicker from '../components/transport/ManualGroupMemberSearchPicker.jsx';
 import {
   buildBautizosFamilyMemberOptions,
   buildBautizosCarSlotsForTransport,
@@ -45,6 +47,7 @@ import {
   buildCarInventorySlotsForOwner,
   buildCopyTitularCarMetaPatches,
   buildDefaultManualGroupCrewPatches,
+  buildManualGroupCrewAppendPatches,
   buildManualGroupOrphanCarMetaCleanup,
   buildRosterSourceKeyLabelIndex,
   buildTransportCarContextForHost,
@@ -227,6 +230,8 @@ export default function TransportPlanningPage({
   /** Titulares cuya subcolección ya se consultó (aunque no haya docs). */
   const [fetchedTitularSks, setFetchedTitularSks] = useState(() => new Set());
   const [mergingManualGroup, setMergingManualGroup] = useState(false);
+  /** Modal para agregar personas a un grupo manual existente (`cg-*`). */
+  const [addMembersModal, setAddMembersModal] = useState(null);
   const carMetaMigrationStartedRef = useRef(false);
   const prevSyncEventIdRef = useRef(eventId);
   const planRef = useRef(plan);
@@ -580,6 +585,26 @@ export default function TransportPlanningPage({
     }
     return keys;
   }, [manualCarGroupViews]);
+  const carLinesEligibleForManualGroupAdd = useMemo(
+    () =>
+      carLines.filter((l) => {
+        const sk = String(l?.sourceKey || '').trim();
+        return sk && !manualGroupedKeys.has(sk);
+      }),
+    [carLines, manualGroupedKeys]
+  );
+  const manualGroupAddMemberOptions = useMemo(
+    () =>
+      carLinesEligibleForManualGroupAdd.map((line) => {
+        const roleLabel = line.kind === 'companion' ? 'Acompañante' : 'Titular';
+        const cars = Number(line.carrosLlegada) || 1;
+        return {
+          value: String(line.sourceKey || '').trim(),
+          label: `${line.name || '—'} · ${line.location || '—'} · ${cars} carro${cars !== 1 ? 's' : ''} · ${roleLabel}`,
+        };
+      }),
+    [carLinesEligibleForManualGroupAdd]
+  );
   const bautizosCarCardGroups = useMemo(() => {
     if (!isBautizos || manualGroupedKeys.size === 0) return bautizosCarDisplayGroups;
     return bautizosCarDisplayGroups
@@ -1674,6 +1699,193 @@ export default function TransportPlanningPage({
     }
   };
 
+  const finalizeAddMembersToManualGroup = (
+    groupId,
+    newKeys,
+    orphanMode = 'maybeAbsent',
+    hydratedCache = null
+  ) => {
+    const gid = String(groupId || '').trim();
+    const additions = [...new Set((newKeys || []).map((k) => String(k).trim()).filter(Boolean))];
+    if (!gid || !additions.length) return;
+
+    const cache = hydratedCache && typeof hydratedCache === 'object' ? hydratedCache : {};
+    const lineByKey = new Map(
+      carLines.map((l) => [String(l.sourceKey || '').trim(), l]).filter(([k]) => k)
+    );
+
+    let anchorSkForSave = '';
+    let effectiveCarsForSave = 1;
+    let titularSksForFetch = [];
+
+    setPlan((prev) => {
+      let next = mergeCarMetaCacheIntoPlan(prev, cache);
+      let groups = Array.isArray(next.carGroups) ? [...next.carGroups] : [];
+      const idx = groups.findIndex((g) => String(g.id || '').trim() === gid);
+      if (idx < 0) return prev;
+
+      const existingKeys = (groups[idx].memberKeys || []).map((k) => String(k).trim()).filter(Boolean);
+      const mergedKeys = [...new Set([...existingKeys, ...additions])];
+      if (mergedKeys.length < 2) return prev;
+
+      const additionSet = new Set(additions);
+      groups = groups
+        .map((g, i) => {
+          if (i === idx) return g;
+          return {
+            ...g,
+            memberKeys: (g.memberKeys || []).filter((k) => !additionSet.has(String(k).trim())),
+          };
+        })
+        .filter((g) => (g.memberKeys || []).length > 1);
+
+      const memberLines = mergedKeys.map((k) => lineByKey.get(k)).filter(Boolean);
+      const inheritedCars = manualGroupMaxRegisteredCars(memberLines);
+      const prevCars = parseInt(groups[idx]?.cars, 10);
+      const effectiveCars = Math.max(
+        inheritedCars,
+        Number.isFinite(prevCars) && prevCars >= 1 ? prevCars : 1
+      );
+
+      groups = groups.map((g) =>
+        String(g.id || '').trim() === gid
+          ? { ...g, memberKeys: mergedKeys, cars: effectiveCars }
+          : g
+      );
+
+      next = { ...next, carGroups: groups };
+      const targetGroup = groups.find((g) => String(g.id || '').trim() === gid);
+      if (!targetGroup) return prev;
+
+      const anchorSk = resolveManualCarGroupTitularSk(next, targetGroup);
+      const newTitularSks = manualGroupParticipantSourceKeys({ memberKeys: additions }).filter(
+        (sk) => !existingKeys.includes(sk)
+      );
+
+      const { patches: orphanPatches, keysToRemove } = buildManualGroupOrphanCarMetaCleanup(
+        next,
+        newTitularSks,
+        orphanMode
+      );
+      next = mergeCarMetaPatchesIntoPlan(next, orphanPatches);
+      next = removeCarMetaKeysFromPlan(next, keysToRemove);
+
+      let patches = buildDefaultManualGroupCrewPatches(next, anchorSk, mergedKeys, effectiveCars);
+      patches = [...patches, ...buildManualGroupCrewAppendPatches(next, anchorSk, mergedKeys, effectiveCars)];
+      next = mergeCarMetaPatchesIntoPlan(next, patches);
+      next = applyCarMetaPassengerInheritance(next);
+
+      anchorSkForSave = anchorSk;
+      effectiveCarsForSave = effectiveCars;
+      titularSksForFetch = manualGroupParticipantSourceKeys({ memberKeys: mergedKeys });
+      return next;
+    });
+
+    if (!anchorSkForSave) {
+      showToast('No se encontró el grupo manual.');
+      return;
+    }
+
+    setLoadedCarMetaByKey((prev) => ({ ...prev, ...cache }));
+    setFetchedTitularSks((prev) => {
+      const nextSet = new Set(prev);
+      for (const sk of titularSksForFetch) nextSet.add(sk);
+      return nextSet;
+    });
+    for (let i = 1; i <= effectiveCarsForSave; i += 1) {
+      queueCarMetaSave(carVehicleMetaStorageKey(anchorSkForSave, i));
+    }
+
+    setAddMembersModal(null);
+    showToast(
+      `Se agregaron ${additions.length} persona${additions.length !== 1 ? 's' : ''} al grupo manual.`
+    );
+    if (typeof onTransportUiPrefsChange === 'function') {
+      onTransportUiPrefsChange((prev) => ({ ...prev, manualCarGroupsOpen: true }));
+    }
+  };
+
+  const openAddMembersModal = (view) => {
+    if (!view?.id) return;
+    setAddMembersModal({
+      groupId: view.id,
+      label: view.label || 'Grupo manual',
+      titularName: view.titularName || '',
+      selectedKeys: new Set(),
+      orphanMode: 'maybeAbsent',
+    });
+  };
+
+  const addMemberPick = (sk) => {
+    const key = String(sk || '').trim();
+    if (!key) return;
+    setAddMembersModal((prev) => {
+      if (!prev) return prev;
+      const nextKeys = new Set(prev.selectedKeys);
+      nextKeys.add(key);
+      return { ...prev, selectedKeys: nextKeys };
+    });
+  };
+
+  const removeMemberPick = (sk) => {
+    const key = String(sk || '').trim();
+    if (!key) return;
+    setAddMembersModal((prev) => {
+      if (!prev) return prev;
+      const nextKeys = new Set(prev.selectedKeys);
+      nextKeys.delete(key);
+      return { ...prev, selectedKeys: nextKeys };
+    });
+  };
+
+  const confirmAddMembersToManualGroup = async () => {
+    if (mergingManualGroup || !addMembersModal?.groupId) return;
+    const newKeys = [...(addMembersModal.selectedKeys || [])].filter(Boolean);
+    if (!newKeys.length) {
+      showToast('Selecciona al menos una persona para agregar al grupo.');
+      return;
+    }
+
+    const memberLines = newKeys
+      .map((k) => carLines.find((l) => String(l.sourceKey || '').trim() === String(k).trim()))
+      .filter(Boolean);
+    const titularSks = memberLines
+      .filter((l) => String(l?.kind || '') === 'participant')
+      .map((l) => String(l.sourceKey || '').trim())
+      .filter(Boolean);
+
+    setMergingManualGroup(true);
+    try {
+      if (titularSks.length > 0) {
+        showToast('Cargando datos de carro…');
+        const hydratedCache = await hydrateCarMetaCacheForTitulars(
+          eventId,
+          titularSks,
+          plan,
+          loadedCarMetaByKey
+        );
+        finalizeAddMembersToManualGroup(
+          addMembersModal.groupId,
+          newKeys,
+          addMembersModal.orphanMode || 'maybeAbsent',
+          hydratedCache
+        );
+      } else {
+        finalizeAddMembersToManualGroup(
+          addMembersModal.groupId,
+          newKeys,
+          addMembersModal.orphanMode || 'maybeAbsent',
+          null
+        );
+      }
+    } catch (e) {
+      console.error(e);
+      showToast('No se pudieron agregar miembros al grupo.');
+    } finally {
+      setMergingManualGroup(false);
+    }
+  };
+
   const setManualGroupLeader = (view, hostId) => {
     const gid = String(view?.id || '').trim();
     const hid = String(hostId || '').trim();
@@ -2700,6 +2912,20 @@ export default function TransportPlanningPage({
                             <button
                               type="button"
                               className={btnSecondary}
+                              onClick={() => openAddMembersModal(view)}
+                              disabled={carLinesEligibleForManualGroupAdd.length === 0}
+                              title={
+                                carLinesEligibleForManualGroupAdd.length === 0
+                                  ? 'No hay personas disponibles fuera de grupos manuales'
+                                  : 'Agregar personas al grupo'
+                              }
+                            >
+                              <Plus size={14} className="shrink-0" />
+                              Agregar miembros
+                            </button>
+                            <button
+                              type="button"
+                              className={btnSecondary}
                               onClick={() => unmergeManualCarGroup(view.id)}
                             >
                               Separar grupo
@@ -3023,13 +3249,24 @@ export default function TransportPlanningPage({
                                       : ''}
                                   </span>
                                   {canEdit ? (
-                                    <button
-                                      type="button"
-                                      className={btnSecondary}
-                                      onClick={() => unmergeManualCarGroup(view.id)}
-                                    >
-                                      Separar grupo
-                                    </button>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <button
+                                        type="button"
+                                        className={btnSecondary}
+                                        onClick={() => openAddMembersModal(view)}
+                                        disabled={carLinesEligibleForManualGroupAdd.length === 0}
+                                      >
+                                        <Plus size={12} className="shrink-0" />
+                                        Agregar miembros
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className={btnSecondary}
+                                        onClick={() => unmergeManualCarGroup(view.id)}
+                                      >
+                                        Separar grupo
+                                      </button>
+                                    </div>
                                   ) : null}
                                 </div>
                               </td>
@@ -3531,6 +3768,104 @@ export default function TransportPlanningPage({
                 }
               >
                 Crear grupo manual
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {addMembersModal ? (
+        <div className={uiModal.overlay} role="dialog" aria-modal="true" aria-labelledby="manual-add-members-title">
+          <button
+            type="button"
+            className={uiModal.backdrop}
+            aria-label="Cerrar"
+            onClick={() => setAddMembersModal(null)}
+          />
+          <div className={uiModal.panelMd}>
+            <div className={uiModal.header}>
+              <div className="min-w-0">
+                <h3 id="manual-add-members-title" className={uiModal.title}>
+                  Agregar miembros al grupo
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
+                  {addMembersModal.label}
+                  {addMembersModal.titularName
+                    ? ` · Titular: ${addMembersModal.titularName}`
+                    : ''}
+                  . Busca y agrega personas que llegan en carro y aún no pertenecen a un grupo manual.
+                </p>
+              </div>
+              <button
+                type="button"
+                className={uiButtons.closeIcon}
+                onClick={() => setAddMembersModal(null)}
+                aria-label="Cerrar modal"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className={`${uiModal.body} space-y-4 max-h-[min(60vh,28rem)] overflow-y-auto`}>
+              <ManualGroupMemberSearchPicker
+                key={addMembersModal.groupId}
+                options={manualGroupAddMemberOptions}
+                selectedKeys={[...(addMembersModal.selectedKeys || [])]}
+                onAdd={addMemberPick}
+                onRemove={removeMemberPick}
+                disabled={mergingManualGroup}
+                inputClassName={inputSm}
+              />
+              <div>
+                <p className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 mb-2">
+                  Si el nuevo titular ya tiene datos de carro propios
+                </p>
+                <div className="space-y-2">
+                  <label className="flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-600 px-3 py-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="manual-add-orphan"
+                      className="mt-0.5"
+                      checked={addMembersModal.orphanMode === 'maybeAbsent'}
+                      onChange={() =>
+                        setAddMembersModal((prev) => (prev ? { ...prev, orphanMode: 'maybeAbsent' } : prev))
+                      }
+                    />
+                    <span className="text-xs text-slate-700 dark:text-slate-200">
+                      Marcar como <strong>quizá no vaya</strong> (conservar por si acaso)
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-600 px-3 py-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="manual-add-orphan"
+                      className="mt-0.5"
+                      checked={addMembersModal.orphanMode === 'clear'}
+                      onChange={() =>
+                        setAddMembersModal((prev) => (prev ? { ...prev, orphanMode: 'clear' } : prev))
+                      }
+                    />
+                    <span className="text-xs text-slate-700 dark:text-slate-200">
+                      <strong>Eliminar</strong> los datos duplicados del titular agregado
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div className={uiModal.footer}>
+              <button type="button" className={uiButtons.secondary} onClick={() => setAddMembersModal(null)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className={uiButtons.primary}
+                disabled={
+                  mergingManualGroup ||
+                  !addMembersModal.selectedKeys?.size ||
+                  carLinesEligibleForManualGroupAdd.length === 0
+                }
+                onClick={() => void confirmAddMembersToManualGroup()}
+              >
+                {mergingManualGroup ? 'Agregando…' : 'Agregar al grupo'}
               </button>
             </div>
           </div>

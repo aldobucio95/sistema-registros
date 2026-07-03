@@ -9,6 +9,7 @@ import {
   manualGroupCrewRequiresPassengers,
   resolveLinkedCompanionCarInheritance,
   resolveManualCarGroupContext,
+  stripDraftHostCarMetaFromPlan,
 } from './bautizosCarMeta.js';
 import {
   fetchCarMetaForTitular,
@@ -44,18 +45,21 @@ export function BautizosCarDataSection({
   alwaysExpanded = false,
   /** Si true, cada vehículo muestra el formulario completo sin colapsar. */
   slotsDefaultExpanded = false,
+  /** Si true, no lee meta persistida del plan/Firestore (nuevo registro en borrador). */
+  ignorePersistedCarMeta = false,
 }) {
   const [open, setOpen] = useState(alwaysExpanded);
   const [loadedMetaByKey, setLoadedMetaByKey] = useState({});
   const [loadingMeta, setLoadingMeta] = useState(false);
   const [metaFetched, setMetaFetched] = useState(false);
 
-  const planForInventory = useMemo(
-    () => mergeCarMetaCacheIntoPlan(plan, loadedMetaByKey),
-    [plan, loadedMetaByKey]
-  );
+  const planForInventory = useMemo(() => {
+    const basePlan = ignorePersistedCarMeta ? stripDraftHostCarMetaFromPlan(plan) : plan;
+    return mergeCarMetaCacheIntoPlan(basePlan, ignorePersistedCarMeta ? {} : loadedMetaByKey);
+  }, [plan, loadedMetaByKey, ignorePersistedCarMeta]);
 
   const loadCarMetaIfNeeded = useCallback(async () => {
+    if (ignorePersistedCarMeta) return;
     const eid = String(eventId || '').trim();
     const owner = String(hostSourceKey || '').trim();
     if (!eid || !owner || metaFetched) return;
@@ -69,11 +73,11 @@ export function BautizosCarDataSection({
     } finally {
       setLoadingMeta(false);
     }
-  }, [eventId, hostSourceKey, metaFetched]);
+  }, [eventId, hostSourceKey, metaFetched, ignorePersistedCarMeta]);
 
   useEffect(() => {
-    if (alwaysExpanded) void loadCarMetaIfNeeded();
-  }, [alwaysExpanded, loadCarMetaIfNeeded]);
+    if (alwaysExpanded && !ignorePersistedCarMeta) void loadCarMetaIfNeeded();
+  }, [alwaysExpanded, ignorePersistedCarMeta, loadCarMetaIfNeeded]);
 
   const handleToggleOpen = () => {
     if (alwaysExpanded) return;
@@ -218,6 +222,7 @@ export function BautizosCarDataSection({
               onDraftMetaPrune={onDraftMetaPrune}
               onSlotMetaChange={handleSlotMetaChange}
               slotsDefaultExpanded={slotsDefaultExpanded}
+              useBlankSlotMeta={ignorePersistedCarMeta}
             />
           ) : null}
         </>

@@ -137,6 +137,31 @@ export function getCarVehicleMetaFromPlanByKey(plan, vehicleKey) {
   return getCarVehicleMetaFromPlan(normalizedPlan, parsed.ownerSourceKey, parsed.carIndex);
 }
 
+/** Meta vacía para nuevo registro: rubros marcados como pendientes hasta capturar datos. */
+export function createBlankDraftCarVehicleMeta(ownerSourceKey = '') {
+  return normalizeCarVehicleMeta({
+    ownerSourceKey: String(ownerSourceKey || '').trim(),
+    pendingBrand: true,
+    pendingModel: true,
+    pendingColor: true,
+    pendingPlates: true,
+    pendingDriver: true,
+    pendingPassengers: true,
+  });
+}
+
+/** Quita meta de borrador (`p:draft-host`) del plan para no precargar registros anteriores. */
+export function stripDraftHostCarMetaFromPlan(plan) {
+  const normalized = normalizeTransportPlanning(plan);
+  const carMetaBySource = { ...(normalized.carMetaBySource || {}) };
+  for (const key of Object.keys(carMetaBySource)) {
+    if (/^p:draft-host(\||$)/.test(key) || /^c:draft-host::/.test(key)) {
+      delete carMetaBySource[key];
+    }
+  }
+  return { ...normalized, carMetaBySource };
+}
+
 export function isCarFieldSatisfied(meta, field) {
   const m = normalizeCarVehicleMeta(meta);
   const f = String(field || '').trim();
@@ -597,6 +622,43 @@ export function buildDefaultManualGroupCrewPatches(plan, anchorTitularSk, member
   return patches;
 }
 
+/**
+ * Añade nuevos integrantes a la tripulación ya definida en el ancla (p. ej. al ampliar un grupo manual).
+ */
+export function buildManualGroupCrewAppendPatches(plan, anchorTitularSk, allMemberKeys, effectiveCars) {
+  const anchor = String(anchorTitularSk || '').trim();
+  const allKeys = (allMemberKeys || []).map((k) => String(k).trim()).filter(Boolean);
+  const passengers = allKeys.filter((k) => k !== anchor);
+  if (!anchor || passengers.length === 0) return [];
+
+  const K = Math.max(1, parseInt(effectiveCars, 10) || 1);
+  const patches = [];
+  for (let i = 1; i <= K; i += 1) {
+    const vehicleKey = carVehicleMetaStorageKey(anchor, i);
+    const meta = getCarVehicleMetaFromPlan(plan, anchor, i);
+    const driver = String(meta?.driverSourceKey || '').trim();
+    const hasCrew =
+      Boolean(driver) ||
+      (Array.isArray(meta?.passengerSourceKeys) && meta.passengerSourceKeys.length > 0);
+    if (!hasCrew) continue;
+
+    const current = Array.isArray(meta?.passengerSourceKeys)
+      ? meta.passengerSourceKeys.map((k) => String(k).trim()).filter(Boolean)
+      : [];
+    const toAdd = passengers.filter((p) => p !== driver && !current.includes(p));
+    if (!toAdd.length) continue;
+
+    patches.push({
+      vehicleKey,
+      patch: {
+        passengerSourceKeys: [...current, ...toAdd],
+        pendingPassengers: false,
+      },
+    });
+  }
+  return patches;
+}
+
 function resolveCarCrewContextOpts(crewContext = {}) {
   const { hostPerson, companions, requiresPassengers } = crewContext;
   if (typeof requiresPassengers === 'boolean') {
@@ -903,6 +965,7 @@ export function buildBautizosFamilyCarInventory({
   hostSourceKey,
   draftCompanionKeys,
   carCountOverride,
+  useBlankSlotMeta = false,
 }) {
   const hostSk = resolveHostSourceKey(hostPerson, hostSourceKey);
   const hostLabel = String(hostPerson?.name || '').trim() || 'Titular';
@@ -922,7 +985,9 @@ export function buildBautizosFamilyCarInventory({
       : normalizeArrivalCarCount(hostPerson?.carrosLlegada);
   for (let carIndex = 1; carIndex <= familyCarCount; carIndex += 1) {
     const vehicleKey = carVehicleMetaStorageKey(hostSk, carIndex);
-    const meta = getCarVehicleMetaFromPlanByKey(normalizedPlan, vehicleKey);
+    const meta = useBlankSlotMeta
+      ? createBlankDraftCarVehicleMeta(hostSk)
+      : getCarVehicleMetaFromPlanByKey(normalizedPlan, vehicleKey);
     inventory.push({
       vehicleKey,
       ownerSourceKey: hostSk,

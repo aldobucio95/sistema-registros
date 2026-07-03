@@ -56,6 +56,8 @@ export default function BautizosCarDataForm({
   onInheritLinkedCarDataChange,
   /** Si true, cada vehículo muestra el formulario completo sin colapsar. */
   slotsDefaultExpanded = false,
+  /** Si true, inventario parte de meta vacía con pendientes (nuevo registro). */
+  useBlankSlotMeta = false,
 }) {
   const catalog = carCatalogView || createCarCatalogView();
   const [expandedSlotKeys, setExpandedSlotKeys] = useState(() => new Set());
@@ -87,8 +89,9 @@ export default function BautizosCarDataForm({
         hostSourceKey: inventoryOwnerSk,
         draftCompanionKeys,
         carCountOverride,
+        useBlankSlotMeta,
       }),
-    [hostPerson, companions, plan, inventoryOwnerSk, draftCompanionKeys, carCountOverride]
+    [hostPerson, companions, plan, inventoryOwnerSk, draftCompanionKeys, carCountOverride, useBlankSlotMeta]
   );
 
   const inventory = useMemo(

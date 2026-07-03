@@ -16,8 +16,13 @@ import {
   materializeTitularCarMetaOnPlan,
   buildCopyTitularCarMetaPatches,
   buildManualGroupOrphanCarMetaCleanup,
+  buildManualGroupCrewAppendPatches,
+  createBlankDraftCarVehicleMeta,
+  stripDraftHostCarMetaFromPlan,
+  buildBautizosFamilyCarInventory,
 } from '../bautizosCarMeta.js';
 import { mergeCarMetaCacheIntoPlan } from '../transportCarMetaStore.js';
+import { normalizeTransportPlanning } from '../transportPlanningCore.js';
 import { bautizosLlegaEnCarroForTransportPricing } from '../bautizosParty.js';
 
 describe('familyHasAnyCarTransport', () => {
@@ -233,6 +238,30 @@ describe('buildTransportCarContextForHost', () => {
       expect.arrayContaining(['Roberto Rosas Vargas', 'Febe Cruz Treviño', 'Norma Rosas Cruz'])
     );
     expect(slots[0].members.find((m) => m.crewRole === 'driver')?.name).toBe('Roberto Rosas Vargas');
+  });
+});
+
+describe('buildManualGroupCrewAppendPatches', () => {
+  it('añade nuevos pasajeros a tripulación existente del ancla', () => {
+    const plan = normalizeTransportPlanning({
+      carMetaBySource: {
+        'p:anchor|c1': {
+          driverSourceKey: 'p:anchor',
+          passengerSourceKeys: ['c:a1'],
+          pendingDriver: false,
+          pendingPassengers: false,
+        },
+      },
+    });
+    const patches = buildManualGroupCrewAppendPatches(
+      plan,
+      'p:anchor',
+      ['p:anchor', 'c:a1', 'p:new1', 'c:new2'],
+      1
+    );
+    expect(patches).toHaveLength(1);
+    expect(patches[0].vehicleKey).toBe('p:anchor|c1');
+    expect(patches[0].patch.passengerSourceKeys).toEqual(['c:a1', 'p:new1', 'c:new2']);
   });
 });
 
@@ -560,5 +589,38 @@ describe('manual group car meta inheritance detection', () => {
     );
     const { patches } = buildManualGroupOrphanCarMetaCleanup(plan, ['p:b1'], 'maybeAbsent');
     expect(patches.some((p) => p.vehicleKey === 'p:b1|c1' && p.patch.maybeAbsent === true)).toBe(true);
+  });
+});
+
+describe('draft host car meta helpers', () => {
+  it('createBlankDraftCarVehicleMeta marca rubros como pendientes', () => {
+    const meta = createBlankDraftCarVehicleMeta('p:draft-host');
+    expect(meta.brand).toBe('');
+    expect(meta.pendingBrand).toBe(true);
+    expect(meta.pendingDriver).toBe(true);
+    expect(meta.pendingPassengers).toBe(true);
+  });
+
+  it('stripDraftHostCarMetaFromPlan elimina claves de borrador', () => {
+    const plan = {
+      carMetaBySource: {
+        'p:draft-host|c1': { brand: 'Chevrolet', model: 'Spark', color: 'Azul', plates: '123' },
+        'p:real-id|c1': { brand: 'Ford', model: 'Focus', color: 'Rojo', plates: '456' },
+      },
+    };
+    const stripped = stripDraftHostCarMetaFromPlan(plan);
+    expect(stripped.carMetaBySource['p:draft-host|c1']).toBeUndefined();
+    expect(stripped.carMetaBySource['p:real-id|c1']?.brand).toBe('Ford');
+
+    const withBlank = buildBautizosFamilyCarInventory({
+      hostPerson: { name: 'Nuevo', llegaEnCarro: true, carrosLlegada: 1 },
+      companions: [],
+      plan,
+      hostSourceKey: 'p:draft-host',
+      useBlankSlotMeta: true,
+    });
+    expect(withBlank[0].meta.brand).toBe('');
+    expect(withBlank[0].meta.pendingBrand).toBe(true);
+    expect(withBlank[0].meta.plates).toBe('');
   });
 });

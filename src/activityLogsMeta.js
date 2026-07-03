@@ -1,7 +1,6 @@
 /** Si el log debe mostrarse en el panel de Actividad (misma regla que createActivityLogListFilter base). */
 export function computeLogVisibleInPanel(logLike) {
   if (!logLike) return false;
-  if (String(logLike.action || '').trim() === 'WhatsApp') return false;
   if (logLike.isHidden === true) return false;
   if (logLike.isDebug === true) return false;
   return true;

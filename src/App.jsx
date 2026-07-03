@@ -540,6 +540,7 @@ import {
 import { auth, db, storage, getColRef, getDocRef } from "./firebaseRefs.js";
 import { sanitizeJsonForFirestore, patchForLocalParticipantCache, prepareParticipantDocForFirestore } from './firestorePayloadSanitize.js';
 import { withLogVisibleInPanel, slimRevertInfoForLog, buildLogEntityFields } from './activityLogsMeta.js';
+import { logWhatsAppSentActivity } from './whatsappActivityLog.js';
 import {
   buildLogId,
   writeSnapshotDoc,
@@ -3725,12 +3726,11 @@ const getLogDateISO = (log) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
-/** Visibilidad base del panel (WhatsApp / debug / oculto), sin filtros de columna. */
+/** Visibilidad base del panel (debug / oculto), sin filtros de columna. */
 function createActivityLogPanelVisibilityFilter(ctx) {
   const { hasAdminRights, showDebugLogs } = ctx;
   return (log) => {
     if (!log) return false;
-    if (log.action === 'WhatsApp') return false;
     if (log.isDebug || log.isHidden) {
       if (!hasAdminRights || !showDebugLogs) return false;
     }
@@ -3772,7 +3772,6 @@ function createActivityLogListFilter(ctx) {
   } = ctx;
   return (log) => {
     if (!log) return false;
-    if (log.action === 'WhatsApp') return false;
     if (log.isDebug || log.isHidden) {
       if (!hasAdminRights || !showDebugLogs) return false;
     }
@@ -17024,6 +17023,15 @@ function resolveEventName(eventId) {
             skipRefetch: true,
             patch: localWaPatch,
           });
+          logWhatsAppSentActivity(addLog, {
+            recipientName: person?.name || personSnapData?.name || '',
+            recipientId: person.id,
+            loc: person.location || loc,
+            phone: waPhone,
+            channel: 'Envío automático',
+            message: body,
+            currentEvent,
+          });
         } catch {
           failures += 1;
           showToast(`No se pudo marcar como enviado: ${person?.name || person.id} (${i + 1}/${total}).`);
@@ -17042,6 +17050,7 @@ function resolveEventName(eventId) {
       whatsAppAutoSendCancelRef.current = false;
     },
     [
+      addLog,
       appendWhatsAppMessageHistoryToken,
       buildMergedFinanceWhatsAppMessage,
       currentEvent,
@@ -17057,9 +17066,16 @@ function resolveEventName(eventId) {
   );
 
   const finalizeWhatsAppQuickSend = useCallback(
-    async ({ personId, loc: waLoc, text: sentBody, pendingMergeMarkKeys, whatsAppQueuedMessageSnapshot }) => {
+    async ({
+      personId,
+      loc: waLoc,
+      text: sentBody,
+      pendingMergeMarkKeys,
+      whatsAppQueuedMessageSnapshot,
+      logChannel = 'Acción rápida',
+    }) => {
       const text = String(sentBody || '').trim();
-      if (!personId) return;
+      if (!personId || !text) return;
       const hasPendingQueue = Array.isArray(pendingMergeMarkKeys) && pendingMergeMarkKeys.length > 0;
       const messageUnchangedFromQueue =
         hasPendingQueue &&
@@ -17073,6 +17089,17 @@ function resolveEventName(eventId) {
       } catch {
         personSnapData = null;
       }
+      const emitWaActivityLog = () => {
+        logWhatsAppSentActivity(addLog, {
+          recipientName: personInMemory?.name || personSnapData?.name || '',
+          recipientId: personId,
+          loc: waLoc || personInMemory?.location || personSnapData?.location || '',
+          phone: normalizeWhatsAppPhone(personInMemory?.phone || personSnapData?.phone),
+          channel: logChannel,
+          message: text,
+          currentEvent,
+        });
+      };
       const applyWhatsAppParticipantPatch = (patch) => {
         const bumpPerson = personInMemory || {
           id: personId,
@@ -17134,6 +17161,7 @@ function resolveEventName(eventId) {
         } catch {
           showToast('WhatsApp abierto; no se pudo marcar el aviso como enviado en el servidor.');
         }
+        emitWaActivityLog();
         return;
       }
       const now = Date.now();
@@ -17166,12 +17194,21 @@ function resolveEventName(eventId) {
       } catch {
         showToast('WhatsApp abierto; no se pudo registrar el envío en el historial.');
       }
+      emitWaActivityLog();
     },
-    [allParticipants, buildWhatsAppMessage, currentUser?.username, getLiquidationTarget, refreshParticipantCache, showToast]
+    [addLog, allParticipants, buildWhatsAppMessage, currentEvent, currentUser?.username, getLiquidationTarget, refreshParticipantCache, showToast]
   );
 
   const finalizeCarDataWhatsAppSend = useCallback(
-    async ({ titularId, loc: waLoc, text: sentBody, markKeys = [], titularName = '' }) => {
+    async ({
+      titularId,
+      loc: waLoc,
+      text: sentBody,
+      markKeys = [],
+      titularName = '',
+      phone: waPhoneOverride = '',
+      logChannel = 'Datos de carro',
+    }) => {
       const text = String(sentBody || '').trim();
       const tid = String(titularId || '').trim();
       if (!tid || !text) return;
@@ -17248,6 +17285,17 @@ function resolveEventName(eventId) {
         });
       } catch {
         showToast('WhatsApp abierto; no se pudo registrar el aviso de datos de carro en el titular.');
+        logWhatsAppSentActivity(addLog, {
+          recipientName: titularName || titularInMemory?.name || titularSnapData?.name || '',
+          recipientId: tid,
+          loc: waLoc || titularInMemory?.location || titularSnapData?.location || '',
+          phone:
+            waPhoneOverride ||
+            normalizeWhatsAppPhone(titularInMemory?.phone || titularSnapData?.phone),
+          channel: logChannel,
+          message: text,
+          currentEvent,
+        });
         return;
       }
 
@@ -17286,8 +17334,20 @@ function resolveEventName(eventId) {
           /* omitir fallo en acompañante split */
         }
       }
+
+      logWhatsAppSentActivity(addLog, {
+        recipientName: titularName || titularInMemory?.name || titularSnapData?.name || '',
+        recipientId: tid,
+        loc: waLoc || titularInMemory?.location || titularSnapData?.location || '',
+        phone:
+          waPhoneOverride ||
+          normalizeWhatsAppPhone(titularInMemory?.phone || titularSnapData?.phone),
+        channel: logChannel,
+        message: text,
+        currentEvent,
+      });
     },
-    [allParticipants, currentUser?.username, refreshParticipantCache, showToast]
+    [addLog, allParticipants, currentEvent, currentUser?.username, refreshParticipantCache, showToast]
   );
 
   const openCarDataWhatsAppForTitular = useCallback(
@@ -17331,6 +17391,8 @@ function resolveEventName(eventId) {
         text: ctx.message,
         markKeys: ctx.markKeys,
         titularName: waRecipient.name,
+        phone: waPhone,
+        logChannel: 'Acción rápida (datos de carro)',
       });
       showToast('WhatsApp abierto con solicitud de datos de carro.');
     },
@@ -17424,6 +17486,8 @@ function resolveEventName(eventId) {
             text: body,
             markKeys,
             titularName: titular.name,
+            phone: waPhone,
+            logChannel: 'Envío masivo datos de carro',
           });
         } catch {
           failures += 1;
@@ -17502,6 +17566,7 @@ function resolveEventName(eventId) {
         text: trimmed,
         pendingMergeMarkKeys,
         whatsAppQueuedMessageSnapshot,
+        logChannel: 'Acción rápida',
       });
       showToast('WhatsApp abierto en nueva pestaña.');
     },
@@ -17537,6 +17602,7 @@ function resolveEventName(eventId) {
       text: sentBody,
       pendingMergeMarkKeys,
       whatsAppQueuedMessageSnapshot,
+      logChannel: 'Modal WhatsApp',
     });
     setWhatsAppModal({
       isOpen: false,
@@ -17657,6 +17723,15 @@ function resolveEventName(eventId) {
         };
       });
       window.open(buildWhatsAppMeUrl(waPhone, msg), '_blank', 'noopener,noreferrer');
+      logWhatsAppSentActivity(addLog, {
+        recipientName: person.name || 'menor',
+        recipientId: person.id,
+        loc,
+        phone: waPhone,
+        channel: 'Responsiva digital',
+        message: msg,
+        currentEvent,
+      });
       const _respWaLog = `Envió enlace de firma digital de responsiva para ${person.name || 'menor'} (sede ${loc}).`;
       addLog(
         'Responsiva',
@@ -37739,6 +37814,7 @@ function resolveEventName(eventId) {
                     labelClasses={labelClasses}
                     alwaysExpanded
                     slotsDefaultExpanded
+                    ignorePersistedCarMeta
                     onHostCarCountChange={(count) =>
                       setNewEntry({ ...newEntry, carrosLlegada: normalizeArrivalCarCount(count) })
                     }
