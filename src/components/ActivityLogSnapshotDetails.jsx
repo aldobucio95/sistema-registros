@@ -4,6 +4,7 @@ import { getDocRef } from '../firebaseRefs.js';
 import { LOG_SNAPSHOTS_COLLECTION } from '../activityLogCore.js';
 import { describeAbonoSnapshot } from '../activityLogDiff.js';
 import { describeRegistrationEditSnapshot } from '../registrationChangeLog.js';
+import { describeWhatsAppSentSnapshot, activityLogExpandedContentClass, activityLogExpandedSectionTitle, buildWhatsAppSentLogFullDetails } from '../whatsappActivityLog.js';
 
 /** Pretty-print de un valor (objeto/array → JSON indentado; primitivo → texto). */
 function prettyValue(v) {
@@ -21,6 +22,9 @@ function describeHumanSnapshotDiff(snapshot) {
   const kind = String(snapshot.kind || '').trim();
   if (kind === 'registro_editado') {
     return describeRegistrationEditSnapshot(snapshot, snapshot.eventType);
+  }
+  if (kind === 'whatsapp_enviado') {
+    return describeWhatsAppSentSnapshot(snapshot);
   }
   if (kind === 'abono') {
     return describeAbonoSnapshot(snapshot);
@@ -83,7 +87,22 @@ export default function ActivityLogSnapshotDetails({ log }) {
     }
   }
 
-  const humanDiff = useMemo(() => describeHumanSnapshotDiff(parsed), [parsed]);
+  const humanDiff = useMemo(() => {
+    const fromSnapshot = describeHumanSnapshotDiff(parsed);
+    if (fromSnapshot) return fromSnapshot;
+    if (String(log?.action || '').trim().toLowerCase() === 'whatsapp' && log?.details) {
+      const details = String(log.details);
+      if (details.includes('--- Mensaje enviado ---')) return details;
+      return buildWhatsAppSentLogFullDetails({
+        recipientName: log?.entityId || 'participante',
+        message: details,
+      });
+    }
+    return null;
+  }, [parsed, log?.action, log?.details, log?.entityId]);
+
+  const expandedSectionTitle = activityLogExpandedSectionTitle(log?.action);
+  const expandedContentClass = activityLogExpandedContentClass(log?.action);
 
   const handleCopy = async () => {
     try {
@@ -128,18 +147,18 @@ export default function ActivityLogSnapshotDetails({ log }) {
 
       {state.loading ? (
         <p className="italic text-slate-400">Cargando snapshot…</p>
-      ) : state.error === 'no-snapshot' ? (
+      ) : state.error === 'no-snapshot' && !humanDiff ? (
         <p className="italic text-slate-400">Este registro no tiene snapshot guardado (acción sin payload o log antiguo).</p>
-      ) : state.error ? (
+      ) : state.error && state.error !== 'no-snapshot' ? (
         <p className="italic text-rose-500">No se pudo cargar el snapshot: {state.error}</p>
       ) : (
         <>
           {humanDiff ? (
             <div className="mb-2 rounded-md border border-emerald-200/80 dark:border-emerald-800/60 bg-emerald-50/60 dark:bg-emerald-950/30 px-2.5 py-2">
               <p className="text-[9px] font-black uppercase tracking-wide text-emerald-700 dark:text-emerald-300 mb-1">
-                Resumen de cambios
+                {expandedSectionTitle}
               </p>
-              <p className="text-[11px] leading-snug whitespace-pre-wrap break-words text-slate-800 dark:text-slate-100">
+              <p className={expandedContentClass}>
                 {humanDiff}
               </p>
             </div>

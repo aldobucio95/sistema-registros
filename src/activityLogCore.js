@@ -19,7 +19,7 @@
  */
 import { setDoc } from 'firebase/firestore';
 import { getDocRef, getPublicDocRef } from './firebaseRefs.js';
-import { truncateActivityLogDetails } from './activityLogDiff.js';
+import { truncateActivityLogDetails, ACTIVITY_LOG_DETAILS_MAX, WHATSAPP_LOG_DETAILS_MAX } from './activityLogDiff.js';
 
 /** Colección lateral con el snapshot completo (JSON plano) por log. Se carga solo al expandir. */
 export const LOG_SNAPSHOTS_COLLECTION = 'app_log_snapshots';
@@ -146,10 +146,14 @@ export async function logSnapshotBackup(logId, opts = {}) {
  */
 export async function writeLogDoc(logDoc, { usePublic = false } = {}) {
   const id = String(logDoc?.id || buildLogId());
+  const { preserveFullDetails, detailsMax, ...rest } = logDoc || {};
+  const detailsLimit = preserveFullDetails ? (detailsMax ?? WHATSAPP_LOG_DETAILS_MAX) : ACTIVITY_LOG_DETAILS_MAX;
   const data = {
-    ...logDoc,
+    ...rest,
     id,
-    ...(logDoc?.details != null ? { details: truncateActivityLogDetails(logDoc.details) } : {}),
+    ...(logDoc?.details != null
+      ? { details: truncateActivityLogDetails(logDoc.details, detailsLimit) }
+      : {}),
   };
   try {
     await setDoc(resolveDocRef(LOGS_COLLECTION, id, usePublic), data);

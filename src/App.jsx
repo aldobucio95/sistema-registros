@@ -204,7 +204,7 @@ import {
   describeNewRegistrationCompanions,
   describeRegisteredCostChange,
 } from './registrationChangeLog.js';
-import { truncateActivityLogDetails } from './activityLogDiff.js';
+import { truncateActivityLogDetails, WHATSAPP_LOG_DETAILS_MAX } from './activityLogDiff.js';
 import {
   describeCampaBreakdownLineAdded,
   describeCampaBreakdownLineRemoved,
@@ -561,7 +561,7 @@ import {
 import { auth, db, storage, getColRef, getDocRef } from "./firebaseRefs.js";
 import { sanitizeJsonForFirestore, patchForLocalParticipantCache, prepareParticipantDocForFirestore } from './firestorePayloadSanitize.js';
 import { withLogVisibleInPanel, slimRevertInfoForLog, buildLogEntityFields } from './activityLogsMeta.js';
-import { logWhatsAppSentActivity } from './whatsappActivityLog.js';
+import { logWhatsAppSentActivity, activityLogDetailsDisplayClass, formatActivityLogDetailsForDisplay } from './whatsappActivityLog.js';
 import {
   buildLogId,
   writeSnapshotDoc,
@@ -9746,7 +9746,9 @@ function resolveEventName(eventId) {
     const username = overrideUsername || currentUser?.username;
     if (!username) return null;
 
-    const safeDetails = truncateActivityLogDetails(details);
+    const safeDetails = logOptions?.preserveFullDetails
+      ? truncateActivityLogDetails(details, logOptions?.detailsMax ?? WHATSAPP_LOG_DETAILS_MAX)
+      : truncateActivityLogDetails(details);
 
     const ev = targetEvent || currentEvent;
     const createdAt = Date.now();
@@ -9778,6 +9780,9 @@ function resolveEventName(eventId) {
       username,
       action,
       details: safeDetails,
+      ...(logOptions?.preserveFullDetails
+        ? { preserveFullDetails: true, detailsMax: logOptions?.detailsMax ?? WHATSAPP_LOG_DETAILS_MAX }
+        : {}),
       revertInfo: ri,
       ...buildLogEntityFields({
         entityType: logOptions?.entityType,
@@ -16500,7 +16505,9 @@ function resolveEventName(eventId) {
       });
     }
     if (f.filterWhatsAppPending === 'pending') {
-      processedData = processedData.filter((p) => getLatestUnsentWhatsAppNotification(p) != null);
+      processedData = processedData.filter(
+        (p) => countUnsentWhatsAppNotificationsForQueue(p, currentEvent, allParticipants) > 0
+      );
     }
     if (f.filterLiquidation === 'liquidado') {
       processedData = processedData.filter((p) => isRosterPersonLiquidadoForFilter(p, getLiquidationTarget));
@@ -27032,7 +27039,7 @@ function resolveEventName(eventId) {
                     <td className="px-2 py-1.5 text-[11px] leading-snug text-slate-600 dark:text-slate-300">
                       <span className="inline-flex items-center gap-1">
                         <ChevronRight size={12} className={`shrink-0 text-slate-400 transition-transform ${expandedLogId === log.id ? 'rotate-90' : ''}`} />
-                        <span>{log.details}</span>
+                        <span className={activityLogDetailsDisplayClass(log.action)}>{formatActivityLogDetailsForDisplay(log)}</span>
                       </span>
                     </td>
                     {hasAdminRights && (

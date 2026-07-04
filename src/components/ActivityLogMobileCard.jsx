@@ -1,6 +1,7 @@
 import React from 'react';
 import { Database, History, Undo, UserCircle, ChevronRight } from 'lucide-react';
 import { uiBadgeMini, uiTonalButton } from '../ui/uiFormatClasses.js';
+import { activityLogDetailsDisplayClass, formatActivityLogDetailsForDisplay } from '../whatsappActivityLog.js';
 
 function ctxBadgeClass(log) {
   if (log.isDebug) {
@@ -82,7 +83,7 @@ export default function ActivityLogMobileCard({
         {log.status === 'pending' ? <span className={uiBadgeMini('amber', 'soft')}>Pend.</span> : null}
       </div>
 
-      <p className="mt-0.5 text-[10px] leading-snug text-slate-600 dark:text-slate-300 whitespace-pre-wrap break-words">
+      <p className={`mt-0.5 text-[10px] text-slate-600 dark:text-slate-300 ${activityLogDetailsDisplayClass(log.action)}`}>
         {onToggleExpand ? (
           <ChevronRight
             size={10}
@@ -93,7 +94,7 @@ export default function ActivityLogMobileCard({
         <span className="text-[8px] font-black uppercase tracking-wide text-slate-400 dark:text-slate-500 mr-1">
           Det.
         </span>
-        {log.details || '—'}
+        {formatActivityLogDetailsForDisplay(log)}
       </p>
 
       {isExpanded && detailsSlot ? (

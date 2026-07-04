@@ -1,6 +1,8 @@
 /** Utilidades para textos de auditoría before→after. */
 
 export const ACTIVITY_LOG_DETAILS_MAX = 1500;
+/** WA puede ser largo; se guarda completo en details y snapshot. */
+export const WHATSAPP_LOG_DETAILS_MAX = 12000;
 
 export function formatLogScalar(v) {
   if (v === true) return 'Sí';
@@ -58,6 +60,11 @@ export function truncateActivityLogDetails(text, max = ACTIVITY_LOG_DETAILS_MAX)
   const s = String(text || '').trim();
   if (s.length <= max) return s;
   return `${s.slice(0, max - 20).trim()}… (ver snapshot)`;
+}
+
+/** Trunca mensajes WA con límite amplio (conserva saltos de línea). */
+export function truncateWhatsAppLogDetails(text) {
+  return truncateActivityLogDetails(text, WHATSAPP_LOG_DETAILS_MAX);
 }
 
 /** Diff legible desde snapshot `abono`. */

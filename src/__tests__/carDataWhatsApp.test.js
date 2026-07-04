@@ -265,6 +265,31 @@ describe('filterWhatsAppFinanceNotificationsForQueue', () => {
     expect(out).toHaveLength(0);
     expect(countUnsentWhatsAppNotificationsForQueue(person, event, [])).toBe(0);
   });
+
+  it('aviso datos_carro pospuesto no cuenta como pendiente aunque sent sea false', () => {
+    const now = 1_700_000_000_000;
+    const person = {
+      id: 'p2',
+      name: 'Fernando',
+      phone: '5511111111',
+      llegaEnCarro: true,
+      wantsBautizosTransport: 'No',
+      carrosLlegada: 1,
+      whatsAppFinanceNotifications: [
+        {
+          kind: 'datos_carro',
+          sent: false,
+          createdAt: 2,
+          id: 'car-wa-1',
+          carDataWaSnoozedUntil: now + 60_000,
+        },
+      ],
+    };
+    const rawUnsent = person.whatsAppFinanceNotifications.filter((n) => n && !n.sent);
+    expect(rawUnsent).toHaveLength(1);
+    expect(filterWhatsAppFinanceNotificationsForQueue(person, person.whatsAppFinanceNotifications, event, [], now)).toHaveLength(0);
+    expect(countUnsentWhatsAppNotificationsForQueue(person, event, [], now)).toBe(0);
+  });
 });
 
 describe('car data nested filters', () => {
