@@ -97,6 +97,28 @@ import {
 const CAR_META_SAVE_DEBOUNCE_MS = 700;
 const PLAN_STRUCTURE_SAVE_DEBOUNCE_MS = 800;
 
+/** Solo monta hijos cuando está abierto (evita render pesado con secciones colapsadas). */
+function TransportLazySection({ open, onOpenChange, header, children, shellClassName = '', headerClassName = '' }) {
+  return (
+    <div className={shellClassName}>
+      <button
+        type="button"
+        className={headerClassName}
+        aria-expanded={open}
+        onClick={() => onOpenChange(!open)}
+      >
+        {header}
+        <ChevronDown
+          size={18}
+          className={`shrink-0 transition-transform ${open ? 'rotate-180 text-slate-400' : 'text-slate-400'}`}
+          aria-hidden
+        />
+      </button>
+      {open ? children : null}
+    </div>
+  );
+}
+
 const btnPrimary =
   'inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black bg-indigo-600 hover:bg-indigo-700 text-white border border-indigo-500/30 transition-colors disabled:opacity-50 disabled:pointer-events-none';
 const btnSecondary =
@@ -160,7 +182,7 @@ export default function TransportPlanningPage({
   transportUiPrefs = {
     bautizosCarCardsOpen: false,
     rowByRowOpen: false,
-    manualCarGroupsOpen: true,
+    manualCarGroupsOpen: false,
     expandedCarDetailKeys: [],
   },
   onTransportUiPrefsChange,
@@ -263,6 +285,7 @@ export default function TransportPlanningPage({
   /** Modal para agregar personas a un grupo manual existente (`cg-*`). */
   const [addMembersModal, setAddMembersModal] = useState(null);
   const carMetaMigrationStartedRef = useRef(false);
+  const carMetaPrefetchStartedRef = useRef(false);
   const prevSyncEventIdRef = useRef(eventId);
   const planRef = useRef(plan);
   const loadedCarMetaRef = useRef(loadedCarMetaByKey);
@@ -304,6 +327,42 @@ export default function TransportPlanningPage({
 
   const canSaveTransport = canEdit || canEditTransportOps;
 
+  const needsCarMetaData =
+    isBautizos &&
+    (transportUiPrefs?.bautizosCarCardsOpen === true ||
+      transportUiPrefs?.manualCarGroupsOpen === true ||
+      transportUiPrefs?.rowByRowOpen === true);
+
+  React.useEffect(() => {
+    carMetaPrefetchStartedRef.current = false;
+  }, [eventId]);
+
+  React.useEffect(() => {
+    if (!needsCarMetaData || !eventId) return undefined;
+    if (carMetaPrefetchStartedRef.current) return undefined;
+    carMetaPrefetchStartedRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const all = await fetchAllCarMetaForEvent(eventId);
+        if (cancelled) return;
+        setLoadedCarMetaByKey(all);
+        const owners = new Set();
+        for (const meta of Object.values(all || {})) {
+          const owner = String(meta?.ownerSourceKey || '').trim();
+          if (owner) owners.add(owner);
+        }
+        setFetchedTitularSks(owners);
+      } catch (e) {
+        console.error('[transport] prefetch car meta', e);
+        carMetaPrefetchStartedRef.current = false;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [needsCarMetaData, eventId]);
+
   React.useEffect(() => {
     if (!isBautizos || !eventId || carMetaMigrationStartedRef.current) return;
     const raw = currentEvent?.transportPlanning;
@@ -342,33 +401,6 @@ export default function TransportPlanningPage({
     },
     [plan.carMetaBySource, loadedCarMetaByKey, fetchedTitularSks]
   );
-
-  React.useEffect(() => {
-    if (!isBautizos || !eventId) {
-      setLoadedCarMetaByKey({});
-      setFetchedTitularSks(new Set());
-      return undefined;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const all = await fetchAllCarMetaForEvent(eventId);
-        if (cancelled) return;
-        setLoadedCarMetaByKey(all);
-        const owners = new Set();
-        for (const meta of Object.values(all || {})) {
-          const owner = String(meta?.ownerSourceKey || '').trim();
-          if (owner) owners.add(owner);
-        }
-        setFetchedTitularSks(owners);
-      } catch (e) {
-        console.error('[transport] prefetch car meta', e);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isBautizos, eventId]);
 
   const loadCarMetaForTitular = useCallback(
     async (titularSk, effectiveCars = 1) => {
@@ -756,6 +788,18 @@ export default function TransportPlanningPage({
     },
     [onTransportUiPrefsChange]
   );
+
+  const [openBusPassengerGroups, setOpenBusPassengerGroups] = useState(() => new Set());
+  const toggleBusPassengerGroup = useCallback((groupKey) => {
+    const k = String(groupKey || '').trim();
+    if (!k) return;
+    setOpenBusPassengerGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+  }, []);
 
   const toggleCarDetailKey = useCallback(
     (detailKey) => {
@@ -2754,18 +2798,18 @@ export default function TransportPlanningPage({
                 </p>
               )}
 
-              <details className="group border-t border-slate-100 dark:border-slate-800 open:bg-slate-50/50 dark:open:bg-slate-900/40">
-                <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-2 text-xs font-black text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/60 [&::-webkit-details-marker]:hidden">
+              <TransportLazySection
+                open={openBusPassengerGroups.has(groupKey)}
+                onOpenChange={() => toggleBusPassengerGroup(groupKey)}
+                shellClassName="border-t border-slate-100 dark:border-slate-800"
+                headerClassName="w-full cursor-pointer px-4 py-3 flex items-center justify-between gap-2 text-xs font-black text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                header={
                   <span>
                     Lista de asistentes ({passengers.length}) — expandir para asignar
                   </span>
-                  <ChevronDown
-                    size={18}
-                    className="text-slate-400 shrink-0 transition-transform group-open:rotate-180"
-                    aria-hidden
-                  />
-                </summary>
-                <div className="overflow-x-auto px-0 pb-3">
+                }
+              >
+                <div className="overflow-x-auto px-0 pb-3 bg-slate-50/50 dark:bg-slate-900/40">
                   <table className="w-full text-left text-xs">
                     <thead>
                       <tr className="bg-slate-50 dark:bg-slate-800 text-[10px] uppercase font-black text-slate-500 border-b border-slate-100 dark:border-slate-700">
@@ -2853,7 +2897,7 @@ export default function TransportPlanningPage({
                     </tbody>
                   </table>
                 </div>
-              </details>
+              </TransportLazySection>
             </div>
           );
         })}
@@ -2875,12 +2919,12 @@ export default function TransportPlanningPage({
         ) : null}
 
         {manualCarGroupViews.length > 0 ? (
-          <details
-            className="group bg-indigo-50/80 dark:bg-indigo-950/30 rounded-2xl border border-indigo-200 dark:border-indigo-700/60 overflow-hidden shadow-sm"
-            open={transportUiPrefs?.manualCarGroupsOpen !== false}
-            onToggle={(e) => patchTransportUiPrefs({ manualCarGroupsOpen: e.currentTarget.open })}
-          >
-            <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-2 bg-indigo-100/80 dark:bg-indigo-900/40 border-b border-indigo-200/80 dark:border-indigo-700/50 text-[10px] font-black uppercase tracking-widest text-indigo-800 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900/55 [&::-webkit-details-marker]:hidden">
+          <TransportLazySection
+            open={transportUiPrefs?.manualCarGroupsOpen === true}
+            onOpenChange={(next) => patchTransportUiPrefs({ manualCarGroupsOpen: next })}
+            shellClassName="bg-indigo-50/80 dark:bg-indigo-950/30 rounded-2xl border border-indigo-200 dark:border-indigo-700/60 overflow-hidden shadow-sm"
+            headerClassName="w-full cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-2 bg-indigo-100/80 dark:bg-indigo-900/40 border-b border-indigo-200/80 dark:border-indigo-700/50 text-[10px] font-black uppercase tracking-widest text-indigo-800 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900/55"
+            header={
               <span className="flex items-center gap-2">
                 <Car size={14} className="shrink-0" />
                 Carros compartidos (grupos manuales)
@@ -2888,12 +2932,8 @@ export default function TransportPlanningPage({
                   ({manualCarGroupViews.length} grupo{manualCarGroupViews.length !== 1 ? 's' : ''})
                 </span>
               </span>
-              <ChevronDown
-                size={18}
-                className="text-indigo-400 shrink-0 transition-transform group-open:rotate-180"
-                aria-hidden
-              />
-            </summary>
+            }
+          >
             <div className="p-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
               {manualCarGroupViews.map((view) => {
                 const savings = view.carsBeforeMerge > view.effectiveCars;
@@ -3060,16 +3100,16 @@ export default function TransportPlanningPage({
                 );
               })}
             </div>
-          </details>
+          </TransportLazySection>
         ) : null}
 
         {isBautizos && bautizosCarCardGroups.length > 0 ? (
-          <details
-            className="group bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm"
+          <TransportLazySection
             open={transportUiPrefs?.bautizosCarCardsOpen === true}
-            onToggle={(e) => patchTransportUiPrefs({ bautizosCarCardsOpen: e.currentTarget.open })}
-          >
-            <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-2 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 [&::-webkit-details-marker]:hidden">
+            onOpenChange={(next) => patchTransportUiPrefs({ bautizosCarCardsOpen: next })}
+            shellClassName="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm"
+            headerClassName="w-full cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-2 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+            header={
               <span className="flex items-center gap-2">
                 <Car size={14} className="text-indigo-500 shrink-0" />
                 Personas por carro — una tarjeta por registro o familia (árboles familiares)
@@ -3077,12 +3117,8 @@ export default function TransportPlanningPage({
                   ({bautizosCarCardGroups.length} grupo{bautizosCarCardGroups.length !== 1 ? 's' : ''})
                 </span>
               </span>
-              <ChevronDown
-                size={18}
-                className="text-slate-400 shrink-0 transition-transform group-open:rotate-180"
-                aria-hidden
-              />
-            </summary>
+            }
+          >
             <div className="p-3 space-y-3">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               {bautizosCarCardGroups.map((grp) => {
@@ -3258,21 +3294,17 @@ export default function TransportPlanningPage({
               })}
             </div>
             </div>
-          </details>
+          </TransportLazySection>
         ) : null}
 
         <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
-          <details
-            className="group"
+          <TransportLazySection
             open={transportUiPrefs?.rowByRowOpen === true}
-            onToggle={(e) => patchTransportUiPrefs({ rowByRowOpen: e.currentTarget.open })}
+            onOpenChange={(next) => patchTransportUiPrefs({ rowByRowOpen: next })}
+            shellClassName=""
+            headerClassName="w-full cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-2 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-xs font-black text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+            header={<span>Detalle fila a fila ({carLines.length}) — expandir</span>}
           >
-            <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-2 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-xs font-black text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 [&::-webkit-details-marker]:hidden">
-              <span>
-                Detalle fila a fila ({carLines.length}) — expandir
-              </span>
-              <ChevronDown size={18} className="text-slate-400 shrink-0 transition-transform group-open:rotate-180" aria-hidden />
-            </summary>
             <p className="px-4 pt-2 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
               Marca y modelo: lista de referencia ~2025–2026. Con 2 o más carros por familia, capture datos de cada vehículo
               y marque «Quizá no vaya» en los que podrían no asistir (siempre debe quedar al menos uno confirmado).
@@ -3732,7 +3764,7 @@ export default function TransportPlanningPage({
               </tbody>
             </table>
             </div>
-          </details>
+          </TransportLazySection>
         </div>
         {isBautizos ? (
           <p className="text-[10px] text-slate-500 dark:text-slate-400 px-1">
