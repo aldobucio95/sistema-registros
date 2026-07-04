@@ -71,6 +71,11 @@ service cloud.firestore {
       match /transport_car_meta/{metaId} {
         allow read, write: if request.auth != null;
       }
+
+      /** Transporte v2: un documento por vehículo. */
+      match /transport_vehicles/{vehicleId} {
+        allow read, write: if request.auth != null;
+      }
     }
 
     match /app_participants/{docId} {

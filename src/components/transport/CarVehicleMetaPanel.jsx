@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import SedeAutocompleteInput from '../SedeAutocompleteInput.jsx';
 import {
   CAR_BRAND_CUSTOM,
@@ -9,6 +9,49 @@ import {
 
 const inputSm =
   'w-full min-w-0 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-slate-100';
+
+const CAR_META_TEXT_DEBOUNCE_MS = 300;
+
+/** Texto controlado localmente; el padre recibe cambios con debounce (o al perder foco). */
+function useDebouncedTextField(externalValue, onCommit, delay = CAR_META_TEXT_DEBOUNCE_MS) {
+  const [local, setLocal] = useState(() => String(externalValue || ''));
+  const timerRef = useRef(null);
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+
+  useEffect(() => {
+    setLocal(String(externalValue || ''));
+  }, [externalValue]);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    []
+  );
+
+  const scheduleCommit = useCallback(
+    (nextValue, immediate = false) => {
+      const v = String(nextValue ?? '');
+      setLocal(v);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      if (immediate) {
+        onCommitRef.current?.(v);
+        return;
+      }
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        onCommitRef.current?.(v);
+      }, delay);
+    },
+    [delay]
+  );
+
+  return [local, scheduleCommit, () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+  }];
+}
 
 /**
  * Metadatos de un carro (marca, modelo, color, placas) y marca «quizá no vaya».
@@ -47,7 +90,7 @@ export default function CarVehicleMetaPanel({
           className="rounded border-amber-400 accent-amber-600"
           checked={pending}
           disabled={!canEdit}
-          onChange={(e) => onPendingFieldChange?.(field, e.target.checked)}
+          onChange={(e) => handlePendingFieldChange(field, e.target.checked)}
         />
         Pendiente
       </label>
@@ -93,6 +136,37 @@ export default function CarVehicleMetaPanel({
 
   const brandSelectVal = knownBrand ? canonBrand : brandManualMode ? CAR_BRAND_CUSTOM : '';
   const modelSelectVal = !knownBrand ? '' : modelInList ? canonModel : modelManualMode ? CAR_MODEL_CUSTOM : '';
+
+  const commitColor = useCallback(
+    (value) => onFieldChange?.('color', value),
+    [onFieldChange]
+  );
+  const commitPlates = useCallback(
+    (value) => onFieldChange?.('plates', value),
+    [onFieldChange]
+  );
+  const commitBrandText = useCallback(
+    (value) => onFieldChange?.('brand', value),
+    [onFieldChange]
+  );
+  const commitModelText = useCallback(
+    (value) => onFieldChange?.('model', value),
+    [onFieldChange]
+  );
+  const [localColor, setLocalColor, cancelColorCommit] = useDebouncedTextField(color, commitColor);
+  const [localPlates, setLocalPlates, cancelPlatesCommit] = useDebouncedTextField(plates, commitPlates);
+  const [localBrandText, setLocalBrandText, cancelBrandCommit] = useDebouncedTextField(knownBrand ? '' : b, commitBrandText);
+  const [localModelText, setLocalModelText, cancelModelCommit] = useDebouncedTextField(m, commitModelText);
+
+  const handlePendingFieldChange = (field, checked) => {
+    if (checked) {
+      if (field === 'color') cancelColorCommit();
+      if (field === 'plates') cancelPlatesCommit();
+      if (field === 'brand') cancelBrandCommit();
+      if (field === 'model') cancelModelCommit();
+    }
+    onPendingFieldChange?.(field, checked);
+  };
 
   const labelCls = compact
     ? 'text-[9px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-400'
@@ -175,8 +249,9 @@ export default function CarVehicleMetaPanel({
                 type="text"
                 className={inputSm}
                 placeholder="Escriba la marca"
-                value={knownBrand ? '' : b}
-                onChange={(e) => onFieldChange?.('brand', e.target.value)}
+                value={knownBrand ? '' : localBrandText}
+                onChange={(e) => setLocalBrandText(e.target.value)}
+                onBlur={(e) => setLocalBrandText(e.target.value, true)}
               />
             ) : null}
           </div>
@@ -187,9 +262,10 @@ export default function CarVehicleMetaPanel({
                 type="text"
                 className={inputSm}
                 placeholder="Modelo…"
-                value={pendingModel ? '' : m}
+                value={pendingModel ? '' : localModelText}
                 disabled={pendingModel}
-                onChange={(e) => onFieldChange?.('model', e.target.value)}
+                onChange={(e) => setLocalModelText(e.target.value)}
+                onBlur={(e) => setLocalModelText(e.target.value, true)}
               />
             ) : (
               <>
@@ -223,8 +299,9 @@ export default function CarVehicleMetaPanel({
                     type="text"
                     className={inputSm}
                     placeholder="Escriba el modelo"
-                    value={modelInList ? '' : m}
-                    onChange={(e) => onFieldChange?.('model', e.target.value)}
+                    value={modelInList ? '' : localModelText}
+                    onChange={(e) => setLocalModelText(e.target.value)}
+                    onBlur={(e) => setLocalModelText(e.target.value, true)}
                   />
                 ) : null}
               </>
@@ -238,9 +315,10 @@ export default function CarVehicleMetaPanel({
               placeholder="Escriba el color…"
               listId={`car-color-${carIndex}`}
               suggestions={colorSuggestions}
-              value={pendingColor ? '' : color}
+              value={pendingColor ? '' : localColor}
               disabled={pendingColor || !canEdit}
-              onChange={(e) => onFieldChange?.('color', e.target.value)}
+              onChange={(e) => setLocalColor(e.target.value)}
+              onBlur={(e) => setLocalColor(e.target.value, true)}
             />
           </div>
           <div className="flex flex-col gap-1">
@@ -249,9 +327,10 @@ export default function CarVehicleMetaPanel({
               type="text"
               className={inputSm}
               placeholder="—"
-              value={pendingPlates ? '' : plates}
+              value={pendingPlates ? '' : localPlates}
               disabled={pendingPlates}
-              onChange={(e) => onFieldChange?.('plates', e.target.value)}
+              onChange={(e) => setLocalPlates(e.target.value)}
+              onBlur={(e) => setLocalPlates(e.target.value, true)}
             />
           </div>
         </div>

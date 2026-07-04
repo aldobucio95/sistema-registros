@@ -273,22 +273,7 @@ export function buildNewEntryCompanionCollisionHint(name, birthDate, participant
   const candidateName = String(name || '').trim();
   if (!eid || !candidateName) return null;
 
-  const index = buildCompanionRegistrantCollisionIndex(participants, eid, {
-    ...options,
-    minConfidence: COLLISION_CONFIDENCE.PROBABLE,
-  });
-
-  const normCandidate = normalizePersonNameForMatch(candidateName);
   const candidateBirth = normalizeBirthDateToIso(birthDate) || '';
-
-  const matches = index.clusters.filter((cl) => {
-    const regSide = cl.registrantSide;
-    if (regSide?.participantId) {
-      const fakeReg = { id: '__candidate__', name: candidateName, birthDate: candidateBirth };
-      return evaluateCompanionRegistrantMatch(cl.companionSide.companionRow, fakeReg, options).confidence;
-    }
-    return false;
-  });
 
   const directMatches = [];
   const pool = (Array.isArray(participants) ? participants : []).filter(

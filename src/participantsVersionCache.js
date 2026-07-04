@@ -33,7 +33,10 @@ export { stripCompanionWaitlistPhantomRows };
 export function patchParticipantsInList(prev, personId, patch) {
   const id = String(personId || '').trim();
   if (!id || !patch || typeof patch !== 'object') return prev || [];
-  return (prev || []).map((p) => (String(p.id) === id ? { ...p, ...patch } : p));
+  const list = prev || [];
+  const exists = list.some((p) => String(p.id) === id);
+  if (!exists) return [...list, { ...patch, id }];
+  return list.map((p) => (String(p.id) === id ? { ...p, ...patch } : p));
 }
 
 /**

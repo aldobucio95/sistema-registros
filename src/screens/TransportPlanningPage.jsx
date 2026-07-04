@@ -1,5 +1,5 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { Bus, Car, ChevronDown, FileDown, MessageCircle, Plus, Trash2, X } from 'lucide-react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, MessageCircle, Plus, X } from 'lucide-react';
 import {
   assignBautizosMembersToCarSlots,
   bautizosFamilyEffectiveCarCount,
@@ -72,9 +72,30 @@ import {
   upsertCustomCarCatalog,
 } from '../data/carBrandModelsCatalog.js';
 import { buildLocationScopeSet, participantInLocationScope } from '../rbac/permissions.js';
-import { uiPageHeader, uiModal, uiButtons } from '../ui/uiFormatClasses.js';
+import { uiModal, uiButtons } from '../ui/uiFormatClasses.js';
+import ScreenLoadingFallback from './ScreenLoadingFallback.jsx';
+import { runComputeWorkerJob } from '../workers/computeWorkerClient.js';
+import { slimEventForTransportWorker } from '../workers/computeTasks/transportPlanningData.js';
+import { useTransportV2Migration } from '../transport/hooks/useTransportV2Migration.js';
 import {
-  fetchAllCarMetaForEvent,
+  CAR_META_SAVE_DEBOUNCE_MS,
+  PLAN_STRUCTURE_SAVE_DEBOUNCE_MS,
+  btnPrimary,
+  btnSecondary,
+  btnWhatsAppCarData,
+  inputSm,
+  clampInt,
+} from '../transport/transportPlanningUi.jsx';
+import TransportPlanHeaderCard from '../transport/sections/TransportPlanHeaderCard.jsx';
+import TransportBusGroupsSection from '../transport/sections/TransportBusGroupsSection.jsx';
+import TransportCarArrivalShell from '../transport/sections/TransportCarArrivalShell.jsx';
+import TransportManualCarGroupsSection from '../transport/sections/TransportManualCarGroupsSection.jsx';
+import TransportBautizosCarCardsSection from '../transport/sections/TransportBautizosCarCardsSection.jsx';
+import TransportRowByRowSection from '../transport/sections/TransportRowByRowSection.jsx';
+import { isTransportV2Plan } from '../transport/v2/transportMigration.js';
+import { saveVehiclePatch } from '../transport/v2/transportService.js';
+import { parseVehicleDocId, vehicleDocIdFromLegacyKey } from '../transport/v2/transportSchema.js';
+import {
   fetchCarMetaForTitular,
   mergeCarMetaCacheIntoPlan,
   migrateInlineCarMetaToSubcollection,
@@ -93,46 +114,6 @@ import {
   describeManualGroupTitularChange,
   titularNameFromSk,
 } from '../transportActivityLog.js';
-
-const CAR_META_SAVE_DEBOUNCE_MS = 700;
-const PLAN_STRUCTURE_SAVE_DEBOUNCE_MS = 800;
-
-/** Solo monta hijos cuando está abierto (evita render pesado con secciones colapsadas). */
-function TransportLazySection({ open, onOpenChange, header, children, shellClassName = '', headerClassName = '' }) {
-  return (
-    <div className={shellClassName}>
-      <button
-        type="button"
-        className={headerClassName}
-        aria-expanded={open}
-        onClick={() => onOpenChange(!open)}
-      >
-        {header}
-        <ChevronDown
-          size={18}
-          className={`shrink-0 transition-transform ${open ? 'rotate-180 text-slate-400' : 'text-slate-400'}`}
-          aria-hidden
-        />
-      </button>
-      {open ? children : null}
-    </div>
-  );
-}
-
-const btnPrimary =
-  'inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black bg-indigo-600 hover:bg-indigo-700 text-white border border-indigo-500/30 transition-colors disabled:opacity-50 disabled:pointer-events-none';
-const btnSecondary =
-  'inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-100 dark:border-slate-600 transition-colors disabled:opacity-50';
-const btnWhatsAppCarData =
-  'inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wide border border-[#1DA851] bg-[#25D366] text-white hover:bg-[#20BD5A] transition-colors disabled:opacity-50 disabled:pointer-events-none';
-const inputSm =
-  'w-full min-w-0 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-slate-100';
-
-function clampInt(n, min, max) {
-  const x = parseInt(n, 10);
-  if (!Number.isFinite(x)) return min;
-  return Math.min(max, Math.max(min, x));
-}
 
 function transportPlanningSignature(raw) {
   try {
@@ -195,6 +176,7 @@ export default function TransportPlanningPage({
   resolveParticipantById,
 }) {
   const eventId = currentEvent?.id;
+  useTransportV2Migration(eventId, currentEvent?.transportPlanning, updateDoc);
   const eventType = String(currentEvent?.eventType || '').trim();
   const isBautizos = eventType === 'Bautizos';
   const splitCampaBySubevent = isCampa && countAmbosDoubleInAllCounts !== false;
@@ -235,6 +217,54 @@ export default function TransportPlanningPage({
     return roster;
   }, [basePool, applyGlobalRegistryLikeFilters, globalLocationFilters]);
 
+  /** Cálculos pesados (líneas, grupos) en Web Worker cuando el roster es grande. */
+  const deferredRoster = useDeferredValue(evRosterFiltered);
+  const rosterComputePending = deferredRoster !== evRosterFiltered;
+  const transportComputeReqRef = useRef(0);
+  const [transportWorkerPending, setTransportWorkerPending] = useState(false);
+  const [transportComputed, setTransportComputed] = useState({
+    busLines: [],
+    carLines: [],
+    bautizosCarDisplayGroups: [],
+  });
+
+  useEffect(() => {
+    const reqId = ++transportComputeReqRef.current;
+    setTransportWorkerPending(true);
+    const payload = {
+      roster: deferredRoster,
+      eventType,
+      locations,
+      eventLike: slimEventForTransportWorker(currentEvent),
+    };
+    runComputeWorkerJob('transportPlanning', payload, { participantCount: deferredRoster.length })
+      .then((result) => {
+        if (transportComputeReqRef.current === reqId) {
+          setTransportComputed(result);
+          setTransportWorkerPending(false);
+        }
+      })
+      .catch(() => {
+        if (transportComputeReqRef.current === reqId) {
+          const built = buildTransportPlanningLines(deferredRoster, eventType, locations, currentEvent);
+          setTransportComputed({
+            busLines: sortTransportLinesByRosterOrder(built.busLines, deferredRoster),
+            carLines: sortTransportLinesByRosterOrder(built.carLines, deferredRoster),
+            bautizosCarDisplayGroups: isBautizos
+              ? buildBautizosCarDisplayGroups(deferredRoster, built.carLines)
+              : [],
+          });
+          setTransportWorkerPending(false);
+        }
+      });
+    return () => {
+      transportComputeReqRef.current += 1;
+    };
+  }, [deferredRoster, eventType, locations, currentEvent, isBautizos]);
+
+  const { busLines, carLines, bautizosCarDisplayGroups } = transportComputed;
+  const showTransportBodyPending = rosterComputePending || transportWorkerPending;
+
   const sedeScopeHint =
     visibleLocations.length === 1
       ? `Mostrando solo la sede ${visibleLocations[0]}.`
@@ -242,17 +272,9 @@ export default function TransportPlanningPage({
         ? `Sedes visibles para tu usuario: ${visibleLocations.join(', ')}.`
         : null;
 
-  const { busLines, carLines } = useMemo(() => {
-    const built = buildTransportPlanningLines(evRosterFiltered, eventType, locations, currentEvent);
-    return {
-      busLines: sortTransportLinesByRosterOrder(built.busLines, evRosterFiltered),
-      carLines: sortTransportLinesByRosterOrder(built.carLines, evRosterFiltered),
-    };
-  }, [evRosterFiltered, eventType, locations, currentEvent]);
-
   const rosterNameById = useMemo(() => {
     const m = new Map();
-    for (const p of evRosterFiltered || []) {
+    for (const p of deferredRoster || []) {
       const id = String(p?.id || '').trim();
       if (id) m.set(id, String(p?.name || '').trim());
     }
@@ -285,7 +307,6 @@ export default function TransportPlanningPage({
   /** Modal para agregar personas a un grupo manual existente (`cg-*`). */
   const [addMembersModal, setAddMembersModal] = useState(null);
   const carMetaMigrationStartedRef = useRef(false);
-  const carMetaPrefetchStartedRef = useRef(false);
   const prevSyncEventIdRef = useRef(eventId);
   const planRef = useRef(plan);
   const loadedCarMetaRef = useRef(loadedCarMetaByKey);
@@ -327,46 +348,13 @@ export default function TransportPlanningPage({
 
   const canSaveTransport = canEdit || canEditTransportOps;
 
-  const needsCarMetaData =
-    isBautizos &&
-    (transportUiPrefs?.bautizosCarCardsOpen === true ||
-      transportUiPrefs?.manualCarGroupsOpen === true ||
-      transportUiPrefs?.rowByRowOpen === true);
-
-  React.useEffect(() => {
-    carMetaPrefetchStartedRef.current = false;
-  }, [eventId]);
-
-  React.useEffect(() => {
-    if (!needsCarMetaData || !eventId) return undefined;
-    if (carMetaPrefetchStartedRef.current) return undefined;
-    carMetaPrefetchStartedRef.current = true;
-    let cancelled = false;
-    (async () => {
-      try {
-        const all = await fetchAllCarMetaForEvent(eventId);
-        if (cancelled) return;
-        setLoadedCarMetaByKey(all);
-        const owners = new Set();
-        for (const meta of Object.values(all || {})) {
-          const owner = String(meta?.ownerSourceKey || '').trim();
-          if (owner) owners.add(owner);
-        }
-        setFetchedTitularSks(owners);
-      } catch (e) {
-        console.error('[transport] prefetch car meta', e);
-        carMetaPrefetchStartedRef.current = false;
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [needsCarMetaData, eventId]);
+  /** Sin prefetch masivo: meta de carro se carga por titular al expandir tarjeta (loadCarMetaForTitular). */
 
   React.useEffect(() => {
     if (!isBautizos || !eventId || carMetaMigrationStartedRef.current) return;
     const raw = currentEvent?.transportPlanning;
     const normalized = normalizeTransportPlanning(raw);
+    if (isTransportV2Plan(normalized)) return;
     const inlineKeys = Object.keys(normalized.carMetaBySource || {});
     if (!inlineKeys.length) return;
     carMetaMigrationStartedRef.current = true;
@@ -453,10 +441,6 @@ export default function TransportPlanningPage({
     () => (isBautizos ? buildBautizosCarFamilyInfo(carLines) : null),
     [isBautizos, carLines]
   );
-  const bautizosCarDisplayGroups = useMemo(
-    () => (isBautizos ? buildBautizosCarDisplayGroups(evRosterFiltered, carLines) : []),
-    [isBautizos, evRosterFiltered, carLines]
-  );
 
   const planDirtyContext = useMemo(
     () => ({ isBautizos, bautizosCarDisplayGroups }),
@@ -486,6 +470,15 @@ export default function TransportPlanningPage({
       if (!fullMeta) return;
       setSaving(true);
       try {
+        if (isTransportV2Plan(merged)) {
+          const { ownerParticipantId, carIndex } = parseVehicleDocId(vehicleDocIdFromLegacyKey(vk));
+          if (ownerParticipantId) {
+            await saveVehiclePatch(String(eventId), ownerParticipantId, carIndex, fullMeta);
+            setLoadedCarMetaByKey((prev) => ({ ...prev, [vk]: fullMeta }));
+            return;
+          }
+        }
+
         const savedPlan = await saveCarMetaVehicleToFirestore({
           eventId: String(eventId),
           vehicleKey: vk,
@@ -1718,7 +1711,8 @@ export default function TransportPlanningPage({
     const otherTitulars = titularSks.filter((sk) => sk !== anchorSk);
 
     setPlan((prev) => {
-      let next = mergeCarMetaCacheIntoPlan(prev, cache);
+      const fullCache = { ...(loadedCarMetaRef.current || {}), ...cache };
+      let next = mergeCarMetaCacheIntoPlan(prev, fullCache);
       let groups = Array.isArray(next.carGroups) ? [...next.carGroups] : [];
       groups = groups
         .map((g) => ({
@@ -1798,9 +1792,11 @@ export default function TransportPlanningPage({
     let anchorSkForSave = '';
     let effectiveCarsForSave = 1;
     let titularSksForFetch = [];
+    let anchorMetaKeysForCache = {};
 
     setPlan((prev) => {
-      let next = mergeCarMetaCacheIntoPlan(prev, cache);
+      const fullCache = { ...(loadedCarMetaRef.current || {}), ...cache };
+      let next = mergeCarMetaCacheIntoPlan(prev, fullCache);
       let groups = Array.isArray(next.carGroups) ? [...next.carGroups] : [];
       const idx = groups.findIndex((g) => String(g.id || '').trim() === gid);
       if (idx < 0) return prev;
@@ -1843,6 +1839,10 @@ export default function TransportPlanningPage({
         (sk) => !existingKeys.includes(sk)
       );
 
+      if (titularSourceKeyHasCarMetaCaptured(next, anchorSk)) {
+        next = materializeTitularCarMetaOnPlan(next, anchorSk, effectiveCars).plan;
+      }
+
       const { patches: orphanPatches, keysToRemove } = buildManualGroupOrphanCarMetaCleanup(
         next,
         newTitularSks,
@@ -1859,6 +1859,11 @@ export default function TransportPlanningPage({
       anchorSkForSave = anchorSk;
       effectiveCarsForSave = effectiveCars;
       titularSksForFetch = manualGroupParticipantSourceKeys({ memberKeys: mergedKeys });
+      for (let i = 1; i <= effectiveCars; i += 1) {
+        const vk = carVehicleMetaStorageKey(anchorSk, i);
+        const meta = next?.carMetaBySource?.[vk];
+        if (meta) anchorMetaKeysForCache[vk] = meta;
+      }
       return next;
     });
 
@@ -1867,7 +1872,7 @@ export default function TransportPlanningPage({
       return;
     }
 
-    setLoadedCarMetaByKey((prev) => ({ ...prev, ...cache }));
+    setLoadedCarMetaByKey((prev) => ({ ...prev, ...cache, ...anchorMetaKeysForCache }));
     setFetchedTitularSks((prev) => {
       const nextSet = new Set(prev);
       for (const sk of titularSksForFetch) nextSet.add(sk);
@@ -2186,6 +2191,7 @@ export default function TransportPlanningPage({
           nextMeta[k] = String(v ?? '');
         }
       }
+      loadedCarMetaRef.current = { ...loadedCarMetaRef.current, [sk]: nextMeta };
       setPlan((prev) => ({
         ...prev,
         carMetaBySource: { ...(prev.carMetaBySource || {}), [sk]: nextMeta },
@@ -2548,123 +2554,31 @@ export default function TransportPlanningPage({
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-6xl mx-auto">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
-          <div className="min-w-0">
-            <h2 className="text-lg sm:text-xl font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
-              <Bus className="text-indigo-600 shrink-0" size={22} />
-              Transporte
-            </h2>
-            <p className={`${uiPageHeader.subtitle} mt-1 leading-snug max-w-2xl max-md:hidden text-[11px]`}>
-              Camiones y camionetas por sede de salida, asignación de pasajeros y conteo de carros. Mismos filtros de
-              búsqueda y sede que Registro global y Acompañantes.
-            </p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-snug max-w-2xl md:hidden">
-              Camiones, camionetas y carros por sede. Usa la barra de búsqueda y filtros debajo.
-            </p>
-            {sedeScopeHint ? (
-              <p className="text-[10px] font-semibold text-indigo-700 dark:text-indigo-300 mt-1">{sedeScopeHint}</p>
-            ) : null}
-            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
-              Registros en plan:{' '}
-              <span className="font-black text-slate-800 dark:text-slate-100 tabular-nums">{evRosterFiltered.length}</span>
-              <span className="text-slate-400"> · </span>
-              En camión:{' '}
-              <span className="font-black text-slate-800 dark:text-slate-100 tabular-nums">{busLines.length}</span>
-              <span className="text-slate-400"> · </span>
-              En carro:{' '}
-              <span className="font-black text-slate-800 dark:text-slate-100 tabular-nums">{carLines.length}</span>
-            </p>
-          </div>
-          <div className="flex flex-col items-end gap-2 shrink-0">
-            <div className="text-right">
-              <p className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase tracking-wider">
-                Coincidencias
-              </p>
-              <p className="text-2xl font-black text-indigo-700 dark:text-indigo-400 tabular-nums">
-                {evRosterFiltered.length}
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <div className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 text-right">
-                Unidades totales: <span className="text-indigo-600 dark:text-indigo-400">{totalUnitsAll}</span>
-                {' · '}
-                Carros estimados: <span className="text-indigo-600 dark:text-indigo-400">{carsTotal}</span>
-              </div>
-              <button type="button" className={btnSecondary} onClick={() => void exportTransportPlanPdf()}>
-                <FileDown size={14} />
-                Exportar PDF
-              </button>
-              {isBautizos && canSendCarDataWhatsApp && pendingCarDataTitularCount > 0 ? (
-                <button
-                  type="button"
-                  className={btnWhatsAppCarData}
-                  onClick={() => onBulkSendCarDataWhatsApp?.()}
-                  title="Enviar solicitud de datos de carro a todos los titulares pendientes visibles"
-                >
-                  <MessageCircle size={14} aria-hidden />
-                  WhatsApp datos carro ({pendingCarDataTitularCount})
-                </button>
-              ) : null}
-              {saving ? (
-                <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 px-2 py-1">
-                  Guardando…
-                </span>
-              ) : null}
-            </div>
-          </div>
-        </div>
+      <TransportPlanHeaderCard
+        sedeScopeHint={sedeScopeHint}
+        evRosterFilteredLength={evRosterFiltered.length}
+        busLinesLength={showTransportBodyPending ? 0 : busLines.length}
+        carLinesLength={showTransportBodyPending ? 0 : carLines.length}
+        totalUnitsAll={showTransportBodyPending ? 0 : totalUnitsAll}
+        carsTotal={showTransportBodyPending ? 0 : carsTotal}
+        onExportPdf={exportTransportPlanPdf}
+        isBautizos={isBautizos}
+        canSendCarDataWhatsApp={canSendCarDataWhatsApp}
+        pendingCarDataTitularCount={pendingCarDataTitularCount}
+        onBulkSendCarDataWhatsApp={onBulkSendCarDataWhatsApp}
+        saving={saving}
+        canEdit={canEdit}
+        plan={plan}
+        setDefaultCaps={setDefaultCaps}
+        setPlan={setPlan}
+        isCampa={isCampa}
+        normalizeTransportPlanning={normalizeTransportPlanning}
+      />
 
-        <div className="mt-4 flex flex-wrap gap-4 text-xs">
-          <label className="flex items-center gap-2 font-bold text-slate-600 dark:text-slate-300">
-            Plazas camión (sugerencia)
-            <input
-              type="number"
-              min={1}
-              className={`${inputSm} w-20`}
-              disabled={!canEdit}
-              value={plan.defaultBusCap}
-              onChange={(e) => setDefaultCaps('defaultBusCap', e.target.value)}
-            />
-          </label>
-          <label className="flex items-center gap-2 font-bold text-slate-600 dark:text-slate-300">
-            Plazas camioneta (sugerencia)
-            <input
-              type="number"
-              min={1}
-              className={`${inputSm} w-20`}
-              disabled={!canEdit}
-              value={plan.defaultVanCap}
-              onChange={(e) => setDefaultCaps('defaultVanCap', e.target.value)}
-            />
-          </label>
-          {isBautizos ? (
-            <label className="flex items-center gap-2 font-bold text-slate-600 dark:text-slate-300">
-              Plazas / carro (familias Bautizos)
-              <input
-                type="number"
-                min={1}
-                className={`${inputSm} w-20`}
-                disabled={!canEdit}
-                value={plan.bautizosCarCapacity}
-                onChange={(e) => {
-                  const n = clampInt(e.target.value, 1, 30);
-                  setPlan((prev) => ({ ...normalizeTransportPlanning(prev), bautizosCarCapacity: n }));
-                }}
-              />
-            </label>
-          ) : null}
-        </div>
-        {isCampa ? (
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-3 leading-snug border-t border-slate-100 dark:border-slate-700 pt-3">
-            Campamento: con «Contar servidor Ambos x2…» activo en el dashboard, los camiones se planifican por bloques{' '}
-            <span className="font-bold">Teens</span> y <span className="font-bold">Jóvenes</span>. En «Ambos», por defecto
-            se considera llega en Teens y regresa en Jóvenes (transporte del evento), y puedes ajustar manualmente
-            «Regresa Teens / Llega Jóvenes». Si desactivas esa casilla, un solo bloque por sede de salida.
-          </p>
-        ) : null}
-      </div>
-
+      {showTransportBodyPending ? (
+        <ScreenLoadingFallback title="Preparando listas de transporte…" />
+      ) : (
+        <>
       {typeof renderGlobalRegistryListToolbar === 'function'
         ? renderGlobalRegistryListToolbar(
             basePool,
@@ -2672,270 +2586,38 @@ export default function TransportPlanningPage({
           )
         : null}
 
-      <div className="space-y-4">
-        <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 px-1">
-          En transporte del evento (por sede de salida{splitCampaBySubevent ? ' · Teens / Jóvenes' : ''})
-        </h3>
-        {busSectionsEffective.length === 0 && busLines.length === 0 ? (
-          <p className="text-sm text-slate-500 italic">No hay pasajeros en camión.</p>
-        ) : null}
+      <TransportBusGroupsSection
+        busSectionsEffective={busSectionsEffective}
+        busLines={busLines}
+        plan={plan}
+        isCampa={isCampa}
+        splitCampaBySubevent={splitCampaBySubevent}
+        canEdit={canEdit}
+        canEditTransportOps={canEditTransportOps}
+        openBusPassengerGroups={openBusPassengerGroups}
+        toggleBusPassengerGroup={toggleBusPassengerGroup}
+        sortPassengersForDisplay={sortPassengersForDisplay}
+        resolveCampaAmbosTransit={resolveCampaAmbosTransit}
+        setCampaAmbosTransit={setCampaAmbosTransit}
+        suggestUnitsForGroup={suggestUnitsForGroup}
+        addUnit={addUnit}
+        removeUnit={removeUnit}
+        updateUnit={updateUnit}
+        assignBus={assignBus}
+        renderTransportAttendanceCheckbox={renderTransportAttendanceCheckbox}
+      />
 
-        {busSectionsEffective.map((section) => {
-          const passengersBase = passengersForBusGroup(busLines, section);
-          const passengers = sortPassengersForDisplay(
-            passengersBase
-              .filter((row) => {
-                if (!(isCampa && splitCampaBySubevent)) return true;
-                if (String(row?.campaSegment || '') !== 'Ambos') return true;
-                const t = resolveCampaAmbosTransit(row.sourceKey);
-                if (section.subevent === 'Teens') return t.teenArrive || t.teenReturn;
-                if (section.subevent === 'Jóvenes') return t.jovenArrive || t.jovenReturn;
-                return true;
-              })
-              .map((row) => {
-                if (!(isCampa && splitCampaBySubevent)) return { ...row, transportSourceKey: row.sourceKey };
-                if (String(row?.campaSegment || '') !== 'Ambos') return { ...row, transportSourceKey: row.sourceKey };
-                const sub = String(section?.subevent || '').trim();
-                return { ...row, transportSourceKey: `${row.sourceKey}|${sub || 'Ambos'}` };
-              })
-          );
-          const groupKey = section.groupKey;
-          const units = getUnitsForSede(plan, groupKey);
-          if (passengers.length === 0 && units.length === 0) return null;
-          const requiredHint = Math.max(1, Math.ceil(passengers.length / plan.defaultBusCap));
-          const assignedInSection = passengers.filter((row) => !!plan.busAssign[row.transportSourceKey || row.sourceKey]).length;
-          return (
-            <div
-              key={`bus-${groupKey}`}
-              className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm"
-            >
-              <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2">
-                <div className="font-black text-slate-800 dark:text-slate-100 flex flex-wrap items-center gap-2 min-w-0">
-                  <Bus size={18} className="text-indigo-500 shrink-0" />
-                  <span className="break-words">{section.title}</span>
-                  <span className="text-[10px] font-bold text-slate-500">
-                    {passengers.length} en camión · {assignedInSection} asignados · sugerido ≥ {requiredHint} camión(es){' '}
-                    ({plan.defaultBusCap} plazas)
-                  </span>
-                </div>
-                {canEdit ? (
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className={btnSecondary}
-                      onClick={() => suggestUnitsForGroup(section, passengers.length)}
-                    >
-                      Generar unidades ({plan.defaultBusCap} plazas)
-                    </button>
-                    <button type="button" className={btnSecondary} onClick={() => addUnit(section, 'bus')}>
-                      <Plus size={14} /> Camión
-                    </button>
-                    <button type="button" className={btnSecondary} onClick={() => addUnit(section, 'van')}>
-                      <Plus size={14} /> Camioneta
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-
-              {units.length > 0 ? (
-                <div className="p-3 grid grid-cols-1 md:grid-cols-2 gap-2 border-b border-slate-100 dark:border-slate-800">
-                  {units.map((u) => {
-                    const occ = countAssignedToUnit(plan, u.id);
-                    const cap = Math.max(1, parseInt(u.capacity, 10) || 1);
-                    return (
-                      <div
-                        key={u.id}
-                        className="rounded-xl border border-slate-200 dark:border-slate-600 p-3 flex flex-col gap-2"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-[10px] font-black uppercase text-slate-500">
-                            {u.kind === 'van' ? 'Camioneta' : 'Camión'}
-                          </span>
-                          {canEdit ? (
-                            <button
-                              type="button"
-                              className="text-red-600 hover:text-red-700 p-1"
-                              title="Quitar unidad"
-                              onClick={() => removeUnit(groupKey, u.id)}
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          ) : null}
-                        </div>
-                        <p className="text-sm font-black text-indigo-700 dark:text-indigo-300 tabular-nums">
-                          Asignados: {occ} <span className="text-slate-500 font-bold text-xs">/ {cap} plazas</span>
-                        </p>
-                        <input
-                          type="text"
-                          className={inputSm}
-                          disabled={!canEdit}
-                          value={u.label || ''}
-                          onChange={(e) => updateUnit(groupKey, u.id, { label: e.target.value })}
-                        />
-                        <label className="text-[10px] font-bold text-slate-500 flex items-center gap-2">
-                          Plazas
-                          <input
-                            type="number"
-                            min={1}
-                            className={`${inputSm} w-20`}
-                            disabled={!canEdit}
-                            value={cap}
-                            onChange={(e) =>
-                              updateUnit(groupKey, u.id, { capacity: clampInt(e.target.value, 1, 200) })
-                            }
-                          />
-                          <span className="tabular-nums text-slate-700 dark:text-slate-200">
-                            {occ}/{cap}
-                          </span>
-                        </label>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="px-4 py-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50/80 dark:bg-amber-950/40">
-                  Sin unidades definidas. Usa «Generar» o añade camión/camioneta.
-                </p>
-              )}
-
-              <TransportLazySection
-                open={openBusPassengerGroups.has(groupKey)}
-                onOpenChange={() => toggleBusPassengerGroup(groupKey)}
-                shellClassName="border-t border-slate-100 dark:border-slate-800"
-                headerClassName="w-full cursor-pointer px-4 py-3 flex items-center justify-between gap-2 text-xs font-black text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/60"
-                header={
-                  <span>
-                    Lista de asistentes ({passengers.length}) — expandir para asignar
-                  </span>
-                }
-              >
-                <div className="overflow-x-auto px-0 pb-3 bg-slate-50/50 dark:bg-slate-900/40">
-                  <table className="w-full text-left text-xs">
-                    <thead>
-                      <tr className="bg-slate-50 dark:bg-slate-800 text-[10px] uppercase font-black text-slate-500 border-b border-slate-100 dark:border-slate-700">
-                        <th className="px-3 py-2">Persona</th>
-                        <th className="px-3 py-2">Sede registro</th>
-                        {isCampa && splitCampaBySubevent ? (
-                          <th className="px-3 py-2">Segmento</th>
-                        ) : null}
-                        {isCampa && splitCampaBySubevent ? (
-                          <th className="px-3 py-2">Ajuste x2</th>
-                        ) : null}
-                        <th className="px-3 py-2">Asignación</th>
-                        <th className="px-3 py-2">Asistió (día evento)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {passengers.map((row) => {
-                        const assignKey = row.transportSourceKey || row.sourceKey;
-                        const cur =
-                          plan.busAssign[assignKey] ||
-                          (String(row?.campaSegment || '') === 'Ambos' ? plan.busAssign[row.sourceKey] || '' : '');
-                        return (
-                          <tr key={`${groupKey}-${assignKey}`}>
-                            <td className="px-3 py-2 font-semibold text-slate-800 dark:text-slate-100">{row.name}</td>
-                            <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{row.location || '—'}</td>
-                            {isCampa && splitCampaBySubevent ? (
-                              <td className="px-3 py-2 text-slate-600 dark:text-slate-300">
-                                <div className="flex flex-col gap-1">
-                                  <span>{String(row.campaSegment || '—')}</span>
-                                  {String(row?.campaSegment || '') === 'Ambos' ? (
-                                    <span className="text-[10px] text-slate-400">Default: llega Teens / regresa Jóvenes</span>
-                                  ) : null}
-                                </div>
-                              </td>
-                            ) : null}
-                            {isCampa && splitCampaBySubevent ? (
-                              <td className="px-3 py-2 text-slate-600 dark:text-slate-300">
-                                {String(row?.campaSegment || '') === 'Ambos' ? (
-                                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px]">
-                                    <label className="inline-flex items-center gap-1">
-                                      <input
-                                        type="checkbox"
-                                        className="rounded border-slate-300"
-                                        checked={resolveCampaAmbosTransit(row.sourceKey).teenReturn}
-                                        onChange={(e) => setCampaAmbosTransit(row.sourceKey, { teenReturn: e.target.checked })}
-                                        disabled={!canEdit}
-                                      />
-                                      Regresa Teens
-                                    </label>
-                                    <label className="inline-flex items-center gap-1">
-                                      <input
-                                        type="checkbox"
-                                        className="rounded border-slate-300"
-                                        checked={resolveCampaAmbosTransit(row.sourceKey).jovenArrive}
-                                        onChange={(e) => setCampaAmbosTransit(row.sourceKey, { jovenArrive: e.target.checked })}
-                                        disabled={!canEdit}
-                                      />
-                                      Llega Jóvenes
-                                    </label>
-                                  </div>
-                                ) : (
-                                  <span className="text-slate-400">—</span>
-                                )}
-                              </td>
-                            ) : null}
-                            <td className="px-3 py-2">
-                              <select
-                                className={inputSm}
-                                disabled={!canEditTransportOps}
-                                value={cur}
-                                onChange={(e) => assignBus(assignKey, e.target.value)}
-                              >
-                                <option value="">Sin asignar</option>
-                                {units.map((u) => (
-                                  <option key={u.id} value={u.id}>
-                                    {u.label} ({u.kind === 'van' ? 'Camioneta' : 'Camión'})
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="px-3 py-2">{renderTransportAttendanceCheckbox(assignKey)}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </TransportLazySection>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="space-y-3">
-        <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 px-1 flex items-center gap-2">
-          <Car size={14} />
-          Llegan en carro
-        </h3>
-        {canEdit ? (
-          <div className="flex flex-wrap gap-2">
-            {isBautizos ? (
-              <button type="button" className={btnSecondary} onClick={applyBautizosFamilies}>
-                Sincronizar grupos en plan (carros del titular · {plan.bautizosCarCapacity} plazas/carro)
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-
-        {manualCarGroupViews.length > 0 ? (
-          <TransportLazySection
-            open={transportUiPrefs?.manualCarGroupsOpen === true}
-            onOpenChange={(next) => patchTransportUiPrefs({ manualCarGroupsOpen: next })}
-            shellClassName="bg-indigo-50/80 dark:bg-indigo-950/30 rounded-2xl border border-indigo-200 dark:border-indigo-700/60 overflow-hidden shadow-sm"
-            headerClassName="w-full cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-2 bg-indigo-100/80 dark:bg-indigo-900/40 border-b border-indigo-200/80 dark:border-indigo-700/50 text-[10px] font-black uppercase tracking-widest text-indigo-800 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900/55"
-            header={
-              <span className="flex items-center gap-2">
-                <Car size={14} className="shrink-0" />
-                Carros compartidos (grupos manuales)
-                <span className="font-bold normal-case tracking-normal text-indigo-600/80 dark:text-indigo-300/80">
-                  ({manualCarGroupViews.length} grupo{manualCarGroupViews.length !== 1 ? 's' : ''})
-                </span>
-              </span>
-            }
-          >
-            <div className="p-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
-              {manualCarGroupViews.map((view) => {
+      <TransportCarArrivalShell
+        isBautizos={isBautizos}
+        canEdit={canEdit}
+        bautizosCarCapacity={plan.bautizosCarCapacity}
+        onApplyBautizosFamilies={applyBautizosFamilies}
+      >
+        <TransportManualCarGroupsSection
+          views={manualCarGroupViews}
+          isOpen={transportUiPrefs?.manualCarGroupsOpen === true}
+          onOpenChange={(next) => patchTransportUiPrefs({ manualCarGroupsOpen: next })}
+          renderGroupCard={(view) => {
                 const savings = view.carsBeforeMerge > view.effectiveCars;
                 const manualSlots = resolveSlotsForTitular(
                   view.titularSk,
@@ -3098,30 +2780,14 @@ export default function TransportPlanningPage({
                     }
                   />
                 );
-              })}
-            </div>
-          </TransportLazySection>
-        ) : null}
+          }}
+        />
 
-        {isBautizos && bautizosCarCardGroups.length > 0 ? (
-          <TransportLazySection
-            open={transportUiPrefs?.bautizosCarCardsOpen === true}
-            onOpenChange={(next) => patchTransportUiPrefs({ bautizosCarCardsOpen: next })}
-            shellClassName="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm"
-            headerClassName="w-full cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-2 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-            header={
-              <span className="flex items-center gap-2">
-                <Car size={14} className="text-indigo-500 shrink-0" />
-                Personas por carro — una tarjeta por registro o familia (árboles familiares)
-                <span className="font-bold normal-case tracking-normal text-slate-400">
-                  ({bautizosCarCardGroups.length} grupo{bautizosCarCardGroups.length !== 1 ? 's' : ''})
-                </span>
-              </span>
-            }
-          >
-            <div className="p-3 space-y-3">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              {bautizosCarCardGroups.map((grp) => {
+        <TransportBautizosCarCardsSection
+          groups={isBautizos ? bautizosCarCardGroups : []}
+          isOpen={transportUiPrefs?.bautizosCarCardsOpen === true}
+          onOpenChange={(next) => patchTransportUiPrefs({ bautizosCarCardsOpen: next })}
+          renderGroupCard={(grp) => {
                 const groupPeople = grp.lines.length;
                 const groupEff = resolveDisplayGroupCars(grp);
                 const leader = resolveGroupLeader(grp);
@@ -3291,54 +2957,26 @@ export default function TransportPlanningPage({
                     </div>
                   </div>
                 );
-              })}
-            </div>
-            </div>
-          </TransportLazySection>
-        ) : null}
+          }}
+        />
 
-        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
-          <TransportLazySection
-            open={transportUiPrefs?.rowByRowOpen === true}
-            onOpenChange={(next) => patchTransportUiPrefs({ rowByRowOpen: next })}
-            shellClassName=""
-            headerClassName="w-full cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-2 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-xs font-black text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
-            header={<span>Detalle fila a fila ({carLines.length}) — expandir</span>}
-          >
-            <p className="px-4 pt-2 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-              Marca y modelo: lista de referencia ~2025–2026. Con 2 o más carros por familia, capture datos de cada vehículo
-              y marque «Quizá no vaya» en los que podrían no asistir (siempre debe quedar al menos uno confirmado).
-            </p>
-            {canEdit && (isCampa || isBautizos) ? (
-              <div className="px-4 pt-3">
-                <button
-                  type="button"
-                  className={btnSecondary}
-                  onClick={() => void mergeSelectedCars()}
-                  disabled={carPick.size < 2 || mergingManualGroup}
-                >
-                  {mergingManualGroup ? 'Cargando…' : 'Unir selección en un carro'}
-                </button>
-              </div>
-            ) : null}
-            <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="bg-slate-50 dark:bg-slate-800 text-[10px] uppercase font-black text-slate-500 border-b border-slate-100 dark:border-slate-700">
-                  {canEdit ? <th className="px-3 py-2 w-10" /> : null}
-                  <th className="px-3 py-2">Persona</th>
-                  <th className="px-3 py-2">Sede</th>
-                  <th className="px-3 py-2">Carros (registro)</th>
-                  <th className="px-3 py-2">Grupo / carros efectivos</th>
-                  <th className="px-3 py-2">Marca</th>
-                  <th className="px-3 py-2">Modelo</th>
-                  <th className="px-3 py-2">Color</th>
-                  <th className="px-3 py-2">Placas</th>
-                  <th className="px-3 py-2">Asistió (día evento)</th>
-                  {isBautizos ? <th className="px-3 py-2">Carros familia (manual)</th> : null}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+        <TransportRowByRowSection
+          isOpen={transportUiPrefs?.rowByRowOpen === true}
+          onOpenChange={(next) => patchTransportUiPrefs({ rowByRowOpen: next })}
+          carLinesLength={carLines.length}
+          canEdit={canEdit}
+          isCampa={isCampa}
+          isBautizos={isBautizos}
+          mergingManualGroup={mergingManualGroup}
+          carPickSize={carPick.size}
+          onMergeSelected={mergeSelectedCars}
+          carTableColSpan={carTableColSpan}
+          footerNote={
+            isBautizos
+              ? 'Por defecto, titular y acompañantes comparten los carros indicados en el registro del titular. Con varios carros, ingrese marca, modelo, color y placas de cada uno, y asigne conductor y pasajeros (o márquelos como pendientes). Los grupos manuales comparten los mismos datos por carro. «Quizá no vaya» excluye ese carro del conteo estimado (debe quedar al menos un carro confirmado). Los cambios se sincronizan con el registro por sede y global.'
+              : 'Con 2 o más carros registrados, capture los datos de cada vehículo y use «Quizá no vaya» si alguno podría no asistir al final.'
+          }
+        >
                 {carLines.length === 0 ? (
                   <tr>
                     <td colSpan={carTableColSpan} className="px-4 py-8 text-center text-slate-400 italic">
@@ -3761,25 +3399,11 @@ export default function TransportPlanningPage({
                         : null}
                   </>
                 )}
-              </tbody>
-            </table>
-            </div>
-          </TransportLazySection>
-        </div>
-        {isBautizos ? (
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 px-1">
-            Por defecto, titular y acompañantes comparten los carros indicados en el registro del titular. Con varios carros,
-            ingrese marca, modelo, color y placas de cada uno, y asigne conductor y pasajeros (o márquelos como pendientes).
-            Los grupos manuales comparten los mismos datos por carro. «Quizá no vaya» excluye ese carro del conteo estimado (debe
-            quedar al menos un carro confirmado). Los cambios se sincronizan con el registro por sede y global.
-          </p>
-        ) : (
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 px-1">
-            Con 2 o más carros registrados, capture los datos de cada vehículo y use «Quizá no vaya» si alguno podría no
-            asistir al final.
-          </p>
-        )}
-      </div>
+        </TransportRowByRowSection>
+      </TransportCarArrivalShell>
+
+        </>
+      )}
 
       {mergeConflictModal ? (
         <div className={uiModal.overlay} role="dialog" aria-modal="true" aria-labelledby="manual-merge-title">

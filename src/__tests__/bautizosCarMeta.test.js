@@ -20,6 +20,8 @@ import {
   createBlankDraftCarVehicleMeta,
   stripDraftHostCarMetaFromPlan,
   buildBautizosFamilyCarInventory,
+  buildMergedFamilyCarInventory,
+  getFamilyCarInventoryValidationIssues,
 } from '../bautizosCarMeta.js';
 import { mergeCarMetaCacheIntoPlan } from '../transportCarMetaStore.js';
 import { normalizeTransportPlanning } from '../transportPlanningCore.js';
@@ -622,5 +624,36 @@ describe('draft host car meta helpers', () => {
     expect(withBlank[0].meta.brand).toBe('');
     expect(withBlank[0].meta.pendingBrand).toBe(true);
     expect(withBlank[0].meta.plates).toBe('');
+  });
+
+  it('buildMergedFamilyCarInventory con useBlankSlotMeta valida pendientes por defecto en nuevo registro', () => {
+    const host = {
+      name: 'Familia Test',
+      llegaEnCarro: true,
+      wantsBautizosTransport: 'Si',
+      carrosLlegada: 1,
+      bautizosCompanions: [{ name: 'Esposa', relationship: 'Esposa', llegaEnCarro: true }],
+    };
+    const withoutBlank = buildMergedFamilyCarInventory({
+      hostPerson: host,
+      companions: host.bautizosCompanions,
+      plan: {},
+      hostSourceKey: 'p:draft-host',
+      draftMetaByVehicleKey: {},
+      useBlankSlotMeta: false,
+    });
+    expect(getFamilyCarInventoryValidationIssues(withoutBlank, { hostPerson: host, companions: host.bautizosCompanions }).length).toBeGreaterThan(0);
+
+    const withBlank = buildMergedFamilyCarInventory({
+      hostPerson: host,
+      companions: host.bautizosCompanions,
+      plan: {},
+      hostSourceKey: 'p:draft-host',
+      draftMetaByVehicleKey: {},
+      useBlankSlotMeta: true,
+    });
+    expect(
+      getFamilyCarInventoryValidationIssues(withBlank, { hostPerson: host, companions: host.bautizosCompanions })
+    ).toEqual([]);
   });
 });

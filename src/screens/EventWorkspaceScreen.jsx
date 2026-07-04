@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import {
   Activity, ArrowLeft, ArrowRight, BarChart3, Bug, Bus, Calendar, CalendarRange, CheckCircle2, Church, CreditCard, DollarSign, Edit3,
@@ -46,6 +46,11 @@ function sidebarNavIconClass(activeColor = '') {
 }
 import BulkRestoreResyncBanner from '../components/BulkRestoreResyncBanner.jsx';
 import PanelNoticeToast from '../components/PanelNoticeToast.jsx';
+import ScreenLoadingFallback from './ScreenLoadingFallback.jsx';
+
+function preloadTransportPlanningChunk() {
+  void import('../screens/TransportPlanningPage.jsx');
+}
 
 function donationIsSuperEditable(don) {
   if (!don || don._syntheticArchivedCredit || don._syntheticCancelledRefund) return false;
@@ -241,6 +246,19 @@ function SidebarEventDatesReadOnly({ eventDateDraft, isCampa }) {
 
 export default function EventWorkspaceScreen() {
   const shell = useWorkspaceShell();
+  const contentTab = shell.deferredActiveTab ?? shell.activeTab;
+  const showNavContentPending = Boolean(shell.navContentPending);
+
+  useEffect(() => {
+    if (!shell.isPanelNavSectionAllowed?.('transporte')) return undefined;
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback(preloadTransportPlanningChunk, { timeout: 4000 });
+      return () => cancelIdleCallback(id);
+    }
+    const t = setTimeout(preloadTransportPlanningChunk, 1500);
+    return () => clearTimeout(t);
+  }, [shell.isPanelNavSectionAllowed, shell.selectedEventId]);
+
   const paymentModalCardAllowed = useMemo(() => {
     if (!shell.paymentModal.isOpen || !shell.currentEvent || !shell.paymentModal.loc) return true;
     return isCardPaymentAllowedForLocation(shell.currentEvent, shell.paymentModal.loc);
@@ -580,6 +598,8 @@ export default function EventWorkspaceScreen() {
           {shell.isPanelNavSectionAllowed('transporte') && (
             <button
               type="button"
+              onMouseEnter={preloadTransportPlanningChunk}
+              onFocus={preloadTransportPlanningChunk}
               onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'TransportPlanning')}
               className={workspaceSidebarNavClassDesktop(shell.activeTab === 'TransportPlanning')}
             >
@@ -876,32 +896,38 @@ export default function EventWorkspaceScreen() {
           data-vnpm-workspace-scroll
           className={`flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden overscroll-y-contain ${editRegistryModalOpen ? 'md:hidden' : ''}`}
         >
-          {shell.activeTab === "Summary" && shell.isPanelNavSectionAllowed('dashboard') && shell.renderSummary()}
-          {shell.activeTab === 'Bautizados' &&
+          {showNavContentPending ? (
+            <ScreenLoadingFallback title="Cargando vista…" />
+          ) : (
+            <>
+          {contentTab === "Summary" && shell.isPanelNavSectionAllowed('dashboard') && shell.renderSummary()}
+          {contentTab === 'Bautizados' &&
             (shell.isCampa || shell.isBautizos) &&
             shell.isPanelNavSectionAllowed('bautizados') &&
             shell.renderBautizadosPage()}
-          {shell.activeTab === 'ServersPage' &&
+          {contentTab === 'ServersPage' &&
             (shell.isCampa || shell.isBautizos) &&
             shell.isPanelNavSectionAllowed('serversPage') &&
             shell.renderServerProfilesPage()}
-          {shell.activeTab === 'Becados' &&
+          {contentTab === 'Becados' &&
             !shell.isBautizos &&
             shell.isPanelNavSectionAllowed('becados') &&
             shell.renderBecadosPage()}
-          {shell.activeTab === 'BautizosCompanions' &&
+          {contentTab === 'BautizosCompanions' &&
             shell.isPanelNavSectionAllowed('becados') &&
             shell.isBautizos &&
             shell.renderBautizosCompanionsPage()}
-          {shell.activeTab === 'Responsivas' && shell.hasAdminRights && shell.isCampa && shell.renderResponsivasPage()}
-          {shell.activeTab === 'PastoresPage' && shell.hasAdminRights && shell.renderPastoresPage()}
-          {shell.activeTab === 'TransportPlanning' &&
+          {contentTab === 'Responsivas' && shell.hasAdminRights && shell.isCampa && shell.renderResponsivasPage()}
+          {contentTab === 'PastoresPage' && shell.hasAdminRights && shell.renderPastoresPage()}
+          {contentTab === 'TransportPlanning' &&
             shell.isPanelNavSectionAllowed('transporte') &&
             shell.renderTransportPlanningPage()}
-          {shell.activeTab === 'RegistroGlobal' && shell.isPanelNavSectionAllowed('registroGlobal') && shell.renderGlobalRegistryPage()}
-          {shell.activeTab === "CashCut" && shell.isPanelNavSectionAllowed('cashCut') && shell.renderCashCutPage()}
-          {shell.activeTab === "ExpenseList" && shell.canAccessExpenses && shell.isPanelNavSectionAllowed('expenseList') && shell.renderExpenseListPage()}
-          {shell.visibleLocations.includes(shell.activeTab) && shell.isPanelNavSectionAllowed('locations') && shell.renderLocationSheet(shell.activeTab)}
+          {contentTab === 'RegistroGlobal' && shell.isPanelNavSectionAllowed('registroGlobal') && shell.renderGlobalRegistryPage()}
+          {contentTab === "CashCut" && shell.isPanelNavSectionAllowed('cashCut') && shell.renderCashCutPage()}
+          {contentTab === "ExpenseList" && shell.canAccessExpenses && shell.isPanelNavSectionAllowed('expenseList') && shell.renderExpenseListPage()}
+          {shell.visibleLocations.includes(contentTab) && shell.isPanelNavSectionAllowed('locations') && shell.renderLocationSheet(contentTab)}
+            </>
+          )}
         </div>
       </main>
 

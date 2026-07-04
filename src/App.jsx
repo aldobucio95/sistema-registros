@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef, lazy, Suspense, startTransition, useDeferredValue } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useLocation, Navigate } from 'react-router-dom';
 import {
@@ -91,6 +91,7 @@ import {
   tierHasServerPricesInCamperTier,
   isPhoneShareFamilyAllowed,
   resolveParticipantDocumentIdForWrite,
+  resolveParticipantDocIdAndWriteGate,
   loadParticipantRegistrationWriteGate,
   participantRegisteredViaPublicLink,
 } from './publicRegistrationLogic.js';
@@ -311,6 +312,7 @@ import {
   resolveLinkedCompanionCarInheritance,
 } from './bautizosCarMeta.js';
 import { persistEventCarMetaPatches } from './transportCarMetaStore.js';
+import { scheduleRegistrationTransportSave } from './transport/v2/registrationTransportBridge.js';
 import PastoresPage from './screens/PastoresPage.jsx';
 import {
   countPastorParticipants,
@@ -345,7 +347,6 @@ import {
   whatsAppHistoryEntryId,
 } from './whatsappHistoryQueue.js';
 import PrivacyConsentBlock from './components/PrivacyConsentBlock.jsx';
-import PrivacyConsentConfirmModal from './components/PrivacyConsentConfirmModal.jsx';
 import UserAccountModalShell from './components/UserAccountModalShell.jsx';
 import NewUserAccountFormFields from './components/NewUserAccountFormFields.jsx';
 import { defaultNewUserFormState, closedEditingUserState } from './userAccountFormDefaults.js';
@@ -356,7 +357,6 @@ import {
   applySensitiveConsentToParticipantPayload,
   applyRegistrationConsentPolicy,
   privacyConsentFieldsForSave,
-  needsRegistrationConsentConfirmation,
   buildRegistrationPrivacyActivityMessage,
   participantHasSensitiveHealthData,
   shouldBlockSensitiveHealthWithoutConsent,
@@ -416,6 +416,11 @@ import {
 import { describeDashboardConfigDelta, EXPENSE_ACTIVITY_GENERIC } from './dashboardActivityLog.js';
 import { appendParticipantActivityEntry, fetchParticipantActivityEntries } from './participantActivityLog.js';
 import ScreenLoadingFallback from './screens/ScreenLoadingFallback.jsx';
+import {
+  computeWorkspaceSidebarBadges,
+  EMPTY_WORKSPACE_SIDEBAR_BADGES,
+} from './workspaceSidebarBadgesCompute.js';
+import { runComputeWorkerJob } from './workers/computeWorkerClient.js';
 import UserSessionSummaryCell from './UserSessionSummaryCell.jsx';
 import AppVersionBadge from './AppVersionBadge.jsx';
 import { formatBirthDateExcelLabel, normalizeBirthDateToIso } from './birthDateIsoUtils.js';
@@ -456,6 +461,7 @@ import {
 } from './clientTelemetry.js';
 import { WorkspaceShellProvider } from './screens/eventWorkspace/WorkspaceShellContext.jsx';
 import { mergeWorkspaceShellParts } from './screens/eventWorkspace/mergeWorkspaceShellParts.js';
+import { NewRegModalDraftProvider } from './components/registration/NewRegModalDraftProvider.jsx';
 import { getTransportSectionEligibleForEventDoc } from './transportPlanningEligibility.js';
 import { isCardPaymentAllowedForLocation } from './cardPaymentEligibility.js';
 import { chunkArray } from './chunkedFirestore.js';
@@ -5188,6 +5194,9 @@ function resolveEventName(eventId) {
     return out;
   }, [mergedArchivedParticipantsForView, archiveViewSearch, archiveViewSort, events]);
   const [activeTab, setActiveTab] = useState("Summary");
+  /** Contenido principal: un tick detrás del menú lateral para mejorar INP al cambiar sede / sección. */
+  const deferredActiveTab = useDeferredValue(activeTab);
+  const navContentPending = deferredActiveTab !== activeTab;
   useLayoutEffect(() => {
     navSnapshotRef.current = { systemView, selectedEventId, activeTab };
   });
@@ -5266,8 +5275,17 @@ function resolveEventName(eventId) {
     [currentEvent?.id]
   );
 
+  const patchEventTransportPlanningDeferred = useCallback(
+    (nextPlan) => {
+      startTransition(() => {
+        patchEventTransportPlanning(nextPlan);
+      });
+    },
+    [patchEventTransportPlanning]
+  );
+
   const persistBautizosCarMetaPatches = useCallback(
-    async (patches) => {
+    async (patches, opts = {}) => {
       if (!patches?.length || !currentEvent?.id) return null;
       const nextPlan = await persistEventCarMetaPatches({
         eventId: currentEvent.id,
@@ -5275,12 +5293,15 @@ function resolveEventName(eventId) {
         currentPlan: normalizeTransportPlanning(currentEvent.transportPlanning),
         getDocRef,
         updateDoc,
-        roster: allParticipants || [],
+        roster: opts.rosterOverride || allParticipants || [],
+        deferEventDocUpdate: opts.deferEventDocUpdate === true,
       });
-      patchEventTransportPlanning(nextPlan);
+      if (opts.deferEventDocUpdate !== true) {
+        patchEventTransportPlanningDeferred(nextPlan);
+      }
       return nextPlan;
     },
-    [currentEvent?.id, currentEvent?.transportPlanning, patchEventTransportPlanning, getDocRef, updateDoc, allParticipants]
+    [currentEvent?.id, currentEvent?.transportPlanning, patchEventTransportPlanningDeferred, getDocRef, updateDoc, allParticipants]
   );
 
   const promptBautizosCarDataIfNeeded = useCallback(
@@ -5310,6 +5331,14 @@ function resolveEventName(eventId) {
   );
   /** Modal de inscripción en pestaña de sede (registro por sedes). */
   const [newRegModalOpen, setNewRegModalOpen] = useState(false);
+  const [newRegDraftResetToken, setNewRegDraftResetToken] = useState(0);
+  const newRegModalDraftLiveRef = useRef(null);
+  const newRegModalProfileSearchLiveRef = useRef('');
+
+  const openNewRegModal = useCallback(() => {
+    setNewRegDraftResetToken((t) => t + 1);
+    setNewRegModalOpen(true);
+  }, []);
 
   useEffect(() => {
     if (newRegModalOpen) {
@@ -5592,6 +5621,33 @@ function resolveEventName(eventId) {
     isRefundDisbursement: false,
   });
   const [sendToWaitlist, setSendToWaitlist] = useState(false);
+
+  const persistNewRegDraftOnly = useCallback(
+    (draftEntry, profileSearchQuery) => {
+      if (!currentUser?.id || !currentEvent?.id) return;
+      persistRegistrationFormDraft(currentUser.id, currentEvent.id, {
+        entry: draftEntry,
+        newRegProfileSearch: profileSearchQuery ?? '',
+        spouseLinkSearchNew,
+        sendToWaitlist,
+      });
+    },
+    [currentUser?.id, currentEvent?.id, spouseLinkSearchNew, sendToWaitlist]
+  );
+
+  const flushNewRegDraftToParent = useCallback((draftEntry, profileSearchQuery) => {
+    if (draftEntry && typeof draftEntry === 'object') setNewEntry(draftEntry);
+    if (typeof profileSearchQuery === 'string') setNewRegProfileSearch(profileSearchQuery);
+  }, []);
+
+  const buildNewRegCompanionCollisionHintForDraft = useCallback(
+    (name, birthDate) =>
+      buildNewEntryCompanionCollisionHint(name, birthDate, allParticipants, currentEvent?.id, {
+        canonicalizeVnpPersonId,
+      }),
+    [allParticipants, currentEvent?.id]
+  );
+
   const [openPreferredServeLoc, setOpenPreferredServeLoc] = useState(null);
   const [editPreferredServeDropdownOpen, setEditPreferredServeDropdownOpen] = useState(false);
   const [openServedAreasLoc, setOpenServedAreasLoc] = useState(null);
@@ -6061,43 +6117,46 @@ function resolveEventName(eventId) {
     return pool;
   }, [currentEvent, importProfileParticipants, allParticipants]);
 
-  const profileImportMatches = useMemo(() => {
-    if (!currentEvent) return [];
-    const q = newRegProfileSearch.trim().toLowerCase();
-    const qDigits = digitsOnlyPhone(newRegProfileSearch);
-    if (q.length < 2 && qDigits.length < 4) return [];
+  const buildProfileImportMatchesForModal = useCallback(
+    (query) => {
+      if (!currentEvent) return [];
+      const q = String(query || '').trim().toLowerCase();
+      const qDigits = digitsOnlyPhone(query);
+      if (q.length < 2 && qDigits.length < 4) return [];
 
-    const activeInCurrentEvent = allParticipants.filter(
-      (p) => p.eventId === currentEvent.id && participantIsActiveInEvent(p)
-    );
+      const activeInCurrentEvent = allParticipants.filter(
+        (p) => p.eventId === currentEvent.id && participantIsActiveInEvent(p)
+      );
 
-    const seen = new Set();
-    const candidates = [];
-    for (const p of pastProfilesForImport) {
-      const d = digitsOnlyPhone(p.phone);
-      if (
-        d.length >= 10 &&
-        activeInCurrentEvent.some(
-          (evp) => digitsOnlyPhone(evp.phone) === d && !isPhoneShareFamilyAllowed(p.name, p.age, evp.name, evp.age)
-        )
-      ) {
-        continue;
+      const seen = new Set();
+      const candidates = [];
+      for (const p of pastProfilesForImport) {
+        const d = digitsOnlyPhone(p.phone);
+        if (
+          d.length >= 10 &&
+          activeInCurrentEvent.some(
+            (evp) => digitsOnlyPhone(evp.phone) === d && !isPhoneShareFamilyAllowed(p.name, p.age, evp.name, evp.age)
+          )
+        ) {
+          continue;
+        }
+
+        const nameMatch = q.length >= 2 && (p.name || '').toLowerCase().includes(q);
+        const aliasMatch = q.length >= 2 && String(p.alias || '').toLowerCase().includes(q);
+        const phoneMatch = qDigits.length >= 4 && d.includes(qDigits);
+        const idMatch = q.length >= 2 && (p.vnpPersonId || '').toLowerCase().includes(q);
+        if (!nameMatch && !aliasMatch && !phoneMatch && !idMatch) continue;
+
+        const dedupeKey = (p.vnpPersonId && String(p.vnpPersonId)) || d || `${p.id}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        candidates.push(p);
+        if (candidates.length >= 15) break;
       }
-
-      const nameMatch = q.length >= 2 && (p.name || '').toLowerCase().includes(q);
-      const aliasMatch = q.length >= 2 && String(p.alias || '').toLowerCase().includes(q);
-      const phoneMatch = qDigits.length >= 4 && d.includes(qDigits);
-      const idMatch = q.length >= 2 && (p.vnpPersonId || '').toLowerCase().includes(q);
-      if (!nameMatch && !aliasMatch && !phoneMatch && !idMatch) continue;
-
-      const dedupeKey = (p.vnpPersonId && String(p.vnpPersonId)) || d || `${p.id}`;
-      if (seen.has(dedupeKey)) continue;
-      seen.add(dedupeKey);
-      candidates.push(p);
-      if (candidates.length >= 15) break;
-    }
-    return candidates;
-  }, [currentEvent, pastProfilesForImport, allParticipants, newRegProfileSearch]);
+      return candidates;
+    },
+    [currentEvent, pastProfilesForImport, allParticipants]
+  );
 
   const applyImportedProfile = useCallback(
     (src, loc) => {
@@ -6189,9 +6248,10 @@ function resolveEventName(eventId) {
       };
       setNewEntry((prev) => mergeNewRegistrationWithImport(base, prev));
       setNewRegProfileSearch('');
+      if (newRegModalOpen) setNewRegDraftResetToken((t) => t + 1);
       showToast('Datos importados: se fusionaron con el formulario (lo que ya habías editado tiene prioridad). Revisa abono y campos.');
     },
-    [getAutoPaymentService, showToast, currentEvent?.eventType, personOfInterestVnpSet, personOfInterestRegistrationHelpers]
+    [getAutoPaymentService, showToast, currentEvent?.eventType, personOfInterestVnpSet, personOfInterestRegistrationHelpers, newRegModalOpen]
   );
 
   const handleClearRegistrationForm = useCallback(() => {
@@ -6209,8 +6269,9 @@ function resolveEventName(eventId) {
     setNewRegGeneralComment('');
     setNewRegDraftCarMeta({});
     if (currentUser?.id && currentEvent?.id) clearRegistrationFormDraft(currentUser.id, currentEvent.id);
+    if (newRegModalOpen) setNewRegDraftResetToken((t) => t + 1);
     showToast('Formulario limpiado.');
-  }, [getAutoPaymentService, showToast, currentEvent?.eventType, currentUser?.id, currentEvent?.id]);
+  }, [getAutoPaymentService, showToast, currentEvent?.eventType, currentUser?.id, currentEvent?.id, newRegModalOpen]);
 
   const resetRegistrationFormAfterSuccess = useCallback(
     (loc) => {
@@ -6411,14 +6472,16 @@ function resolveEventName(eventId) {
       const locs = targetEvent ? resolveVisibleLocationsForEvent(targetEvent) : [];
       const path = buildPathFromNavState(view, eventId, resolvedTab, targetEvent, events, locs);
       programmaticNavTargetRef.current = path;
-      setForwardNavStack([]);
-      setNavHistory((prev) => [...prev, { systemView, selectedEventId, activeTab }]);
-      setSystemView(view);
-      setSelectedEventId(eventId);
       setActiveTab(resolvedTab);
       setShowViewSettings(false);
       setIsMobileMenuOpen(false);
-      navigate(path);
+      startTransition(() => {
+        setForwardNavStack([]);
+        setNavHistory((prev) => [...prev, { systemView, selectedEventId, activeTab }]);
+        setSystemView(view);
+        setSelectedEventId(eventId);
+        navigate(path);
+      });
     },
     [
       systemView,
@@ -7039,9 +7102,11 @@ function resolveEventName(eventId) {
     if (!remote.events || Object.keys(remote.events).length === 0) return;
     if (!currentEvent?.id) return;
     const eventId = String(currentEvent.id);
-    if (activeTab === 'RegistroGlobal') loadGlobalRegistryFiltersFromPrefsRef.current(eventId);
-    else if (isLocationRosterTab(activeTab)) loadRosterFiltersForLocationRef.current(eventId, activeTab);
-  }, [currentUser?.id, currentUser?.listFiltersPrefs, currentEvent?.id, activeTab]);
+    if (deferredActiveTab === 'RegistroGlobal') loadGlobalRegistryFiltersFromPrefsRef.current(eventId);
+    else if (isLocationRosterTab(deferredActiveTab)) {
+      loadRosterFiltersForLocationRef.current(eventId, deferredActiveTab);
+    }
+  }, [currentUser?.id, currentUser?.listFiltersPrefs, currentEvent?.id, deferredActiveTab]);
 
   useEffect(() => {
     if (!listFiltersPrefsHydratedUidRef.current || !currentEvent?.id) return;
@@ -7051,18 +7116,18 @@ function resolveEventName(eventId) {
     const leavingLocationTab =
       prev.eventId &&
       prev.loc &&
-      (prev.eventId !== eventId || prev.loc !== activeTab || !isLocationRosterTab(activeTab));
+      (prev.eventId !== eventId || prev.loc !== deferredActiveTab || !isLocationRosterTab(deferredActiveTab));
     if (leavingLocationTab) {
       flushRosterFiltersToPrefsRef.current(prev.eventId, prev.loc);
     }
 
-    if (activeTab === 'RegistroGlobal') {
+    if (deferredActiveTab === 'RegistroGlobal') {
       rosterFiltersContextRef.current = { eventId, loc: null };
       loadGlobalRegistryFiltersFromPrefsRef.current(eventId);
       return;
     }
 
-    if (!isLocationRosterTab(activeTab)) {
+    if (!isLocationRosterTab(deferredActiveTab)) {
       rosterFiltersContextRef.current = { eventId, loc: null };
       return;
     }
@@ -7076,9 +7141,9 @@ function resolveEventName(eventId) {
         /* ignore */
       }
     }
-    loadRosterFiltersForLocationRef.current(eventId, activeTab, { legacyParsed });
-    rosterFiltersContextRef.current = { eventId, loc: activeTab };
-  }, [activeTab, currentEvent?.id, currentUser?.id]);
+    loadRosterFiltersForLocationRef.current(eventId, deferredActiveTab, { legacyParsed });
+    rosterFiltersContextRef.current = { eventId, loc: deferredActiveTab };
+  }, [deferredActiveTab, currentEvent?.id, currentUser?.id]);
 
   useEffect(() => {
     if (!isLocationRosterTab(activeTab)) {
@@ -9069,190 +9134,29 @@ function resolveEventName(eventId) {
     return groupedData;
   }, [allParticipants, currentEvent, globalLocations]);
 
-  /** Contadores barra lateral del workspace (solo memoria; debe declararse antes de cualquier return de App). */
-  const workspaceSidebarBadges = useMemo(() => {
-    const ev = currentEvent;
-    const evId = ev?.id;
-    const et = String(ev?.eventType || '').trim();
-    const scopeLocs =
-      Array.isArray(visibleLocations) && visibleLocations.length > 0
-        ? visibleLocations.map((x) => String(x).trim()).filter(Boolean)
-        : (Array.isArray(ev?.locations) ? ev.locations : []).map((x) => String(x).trim()).filter(Boolean);
-    const scopeSet = new Set(scopeLocs);
-    const empty = {
-      bautizados: 0,
-      servidores: 0,
-      acompanantes: 0,
-      pastores: 0,
-      sedeCounts: {},
-      attendanceLines: [],
-      waitlistLines: [],
-      activeTotalDeduped: 0,
-      waitlistTotalDeduped: 0,
-      cancelledTotal: 0,
-      totalDeduped: 0,
-    };
-    if (!evId || !et) return empty;
+  /** Contadores barra lateral del workspace (Web Worker en eventos grandes). */
+  const [workspaceSidebarBadges, setWorkspaceSidebarBadges] = useState(EMPTY_WORKSPACE_SIDEBAR_BADGES);
+  const sidebarBadgesReqRef = useRef(0);
 
-    const capBySede =
-      et === 'Bautizos' ? computeEventCapUsedUnitsBySede(allParticipants || [], ev) : null;
-    const sedeCounts = {};
-    for (const loc of ev.locations || []) {
-      const lk = String(loc).trim();
-      if (!scopeSet.has(lk)) continue;
-      const rows = data[lk] || [];
-      if (et === 'Bautizos') {
-        sedeCounts[lk] = capBySede[lk] ?? 0;
-      } else {
-        sedeCounts[lk] = rows.length;
-      }
+  useEffect(() => {
+    if (!currentEvent?.id) {
+      setWorkspaceSidebarBadges(EMPTY_WORKSPACE_SIDEBAR_BADGES);
+      return undefined;
     }
-
-    let bautizados = 0;
-    let servidores = 0;
-    let acompanantes = 0;
-    let asistentes = 0;
-    let empleados = 0;
-    let cortesias = 0;
-    let servidoresOnly = 0;
-    let becados = 0;
-    let pastores = 0;
-    let attendanceLines = [];
-    let waitlistLines = [];
-    let activeTotalDeduped = 0;
-    let waitlistTotalDeduped = 0;
-    let cancelledTotal = 0;
-    let totalDeduped = 0;
-
-    const rosterInScope = (allParticipants || []).filter(
-      (p) =>
-        String(p?.eventId || '') === String(evId) &&
-        participantIsActiveInEvent(p) &&
-        participantIsActiveInRoster(p) &&
-        !participantIsCancelled(p) &&
-        scopeSet.has(String(p.location || '').trim())
-    );
-
-    for (const p of rosterInScope) {
-      if (isPastorParticipant(p, et)) pastores += 1;
-    }
-
-    for (const p of allParticipants || []) {
-      if (String(p?.eventId || '') !== String(evId)) continue;
-      if (!participantIsActiveInEvent(p) || !participantIsActiveInRoster(p)) continue;
-      const loc = String(p.location || '').trim();
-      if (!scopeSet.has(loc)) continue;
-      if ((et === 'Campa' || et === 'Bautizos') && participantHasBaptismChip(p, et)) {
-        bautizados += 1;
-      }
-      if (et === 'Campa' && isSiValue(p.isServer)) {
-        servidores += 1;
-      }
-    }
-
-    if (et === 'Bautizos') {
-      for (const p of allParticipants || []) {
-        if (String(p?.eventId || '') !== String(evId)) continue;
-        if (!participantIsActiveInEvent(p) || !participantIsActiveInRoster(p)) continue;
-        const loc = String(p.location || '').trim();
-        if (!scopeSet.has(loc)) continue;
-        const comps = getBautizosCompanionsArray(p);
-        for (let i = 0; i < comps.length; i++) {
-          const c = comps[i] || {};
-          if (!String(c?.name || '').trim() || !isBautizosCompanionBaptized(c)) continue;
-          bautizados += 1;
+    const reqId = ++sidebarBadgesReqRef.current;
+    const payload = { ev: currentEvent, visibleLocations, allParticipants, data };
+    runComputeWorkerJob('sidebarBadges', payload, { participantCount: allParticipants?.length ?? 0 })
+      .then((result) => {
+        if (sidebarBadgesReqRef.current === reqId) setWorkspaceSidebarBadges(result);
+      })
+      .catch(() => {
+        if (sidebarBadgesReqRef.current === reqId) {
+          setWorkspaceSidebarBadges(computeWorkspaceSidebarBadges(payload));
         }
-      }
-      const rosterForPlan = (allParticipants || []).filter(
-        (p) =>
-          String(p?.eventId || '') === String(evId) &&
-          participantIsActiveInEvent(p) &&
-          participantIsActiveInRoster(p) &&
-          !participantIsCancelled(p) &&
-          scopeSet.has(String(p.location || '').trim())
-      );
-      const meta = buildActiveRegistrantMetaForCompanionDedupe(rosterForPlan);
-      const plan = buildBautizosCanonicalCompanionPlan(rosterForPlan, meta, { includeBaptizedCompanions: false });
-      const planAll = buildBautizosCanonicalCompanionPlan(rosterForPlan, meta, { includeBaptizedCompanions: true });
-      acompanantes = plan.size;
-      servidoresOnly = countBautizosServersDeduped(rosterForPlan, planAll);
-      servidores = countBautizosServidoresYEmpleadosPeople(rosterForPlan);
-
-      for (const p of rosterForPlan) {
-        const att = normalizeBautizosAttendanceType(p.bautizosAttendanceType);
-        if (att === BAUTIZOS_ATTENDANCE.asistente) asistentes += 1;
-        if (att === BAUTIZOS_ATTENDANCE.empleado) empleados += 1;
-        if (att === BAUTIZOS_ATTENDANCE.cortesia) cortesias += 1;
-      }
-      const canonicalCompanions = [...planAll.values()];
-      let companionBaptizedCount = 0;
-      for (const p of rosterForPlan) {
-        const comps = getBautizosCompanionsArray(p);
-        for (let i = 0; i < comps.length; i++) {
-          const c = comps[i] || {};
-          if (!String(c?.name || '').trim() || !isBautizosCompanionBaptized(c)) continue;
-          companionBaptizedCount += 1;
-        }
-      }
-      totalDeduped = countBautizosDashboardPeople(rosterForPlan, canonicalCompanions, 'all', {
-        companionBaptizedCount,
       });
-      activeTotalDeduped = totalDeduped;
-      attendanceLines = [
-        { label: 'Bautizados', count: bautizados },
-        { label: 'Acompañantes', count: acompanantes },
-        { label: 'Asistentes', count: asistentes },
-        { label: 'Servidores', count: servidoresOnly },
-        { label: 'Empleados', count: empleados },
-        { label: 'Cortesías', count: cortesias },
-      ];
+    return undefined;
+  }, [currentEvent, visibleLocations, allParticipants, data]);
 
-      const waitlistCounts = computeWaitlistCountsForEvent(allParticipants, ev, scopeLocs);
-      waitlistTotalDeduped = waitlistCounts.global.total;
-      waitlistLines = waitlistCounts.global.lines;
-    } else if (et === 'Campa') {
-      for (const p of rosterInScope) {
-        if (isSiValue(p.isScholarship)) becados += 1;
-      }
-      totalDeduped = rosterInScope.length;
-      activeTotalDeduped = totalDeduped;
-      attendanceLines = [
-        { label: 'Bautizados', count: bautizados },
-        { label: 'Servidores', count: servidores },
-        { label: 'Becados', count: becados },
-      ];
-      const waitlistCounts = computeWaitlistCountsForEvent(allParticipants, ev, scopeLocs);
-      waitlistTotalDeduped = waitlistCounts.global.total;
-    } else {
-      totalDeduped = rosterInScope.length;
-      activeTotalDeduped = totalDeduped;
-      attendanceLines = [{ label: 'Inscritos', count: totalDeduped }];
-      const waitlistCounts = computeWaitlistCountsForEvent(allParticipants, ev, scopeLocs);
-      waitlistTotalDeduped = waitlistCounts.global.total;
-    }
-
-    cancelledTotal = (allParticipants || []).filter(
-      (p) =>
-        String(p?.eventId || '') === String(evId) &&
-        participantIsCancelled(p) &&
-        !participantIsArchived(p) &&
-        scopeSet.has(String(p.cancelledFromLocation || p.location || '').trim())
-    ).length;
-
-    return {
-      bautizados,
-      servidores,
-      acompanantes,
-      pastores,
-      sedeCounts,
-      attendanceLines,
-      waitlistLines,
-      activeTotalDeduped,
-      waitlistTotalDeduped,
-      cancelledTotal,
-      totalDeduped,
-    };
-  }, [currentEvent?.id, currentEvent?.eventType, currentEvent?.locations, visibleLocations, allParticipants, data]);
 
   const waitlistData = useMemo(() => {
     if (!currentEvent) return {};
@@ -9701,25 +9605,6 @@ function resolveEventName(eventId) {
       showToast,
     ]
   );
-
-  const privacyConsentConfirmRef = useRef(null);
-  const [privacyConsentConfirmModal, setPrivacyConsentConfirmModal] = useState({ isOpen: false });
-
-  const requestPrivacyConsentConfirm = useCallback(
-    () =>
-      new Promise((resolve) => {
-        privacyConsentConfirmRef.current = resolve;
-        setPrivacyConsentConfirmModal({ isOpen: true });
-      }),
-    []
-  );
-
-  const closePrivacyConsentConfirm = useCallback((confirmed) => {
-    setPrivacyConsentConfirmModal({ isOpen: false });
-    const resolve = privacyConsentConfirmRef.current;
-    privacyConsentConfirmRef.current = null;
-    resolve?.(!!confirmed);
-  }, []);
 
   const isEventGlobalActiveCapReached = useCallback(() => {
     const cap = getEventTotalCap();
@@ -16002,47 +15887,6 @@ function resolveEventName(eventId) {
     showToast(formatRegistrationValidationIssuesMessage(issues));
   };
 
-  const newRegDuplicateHint = useMemo(
-    () =>
-      buildNewEntryDuplicateHint(
-        newEntry.name,
-        newEntry.phone,
-        newEntry.alias,
-        newEntry.age,
-        allParticipants,
-        currentEvent?.id,
-        !!newEntry.allowSharedMainPhone
-      ),
-    [newEntry.name, newEntry.phone, newEntry.alias, newEntry.age, newEntry.allowSharedMainPhone, allParticipants, currentEvent?.id]
-  );
-
-  const newRegCompanionCollisionHint = useMemo(() => {
-    if (currentEvent?.eventType !== 'Bautizos') return null;
-    return buildNewEntryCompanionCollisionHint(
-      newEntry.name,
-      newEntry.birthDate,
-      allParticipants,
-      currentEvent?.id,
-      { canonicalizeVnpPersonId }
-    );
-  }, [newEntry.name, newEntry.birthDate, allParticipants, currentEvent?.id, currentEvent?.eventType]);
-
-  const newRegLinkableCompanionCluster = useMemo(() => {
-    if (currentEvent?.eventType !== 'Bautizos' || !newEntry.name?.trim()) return null;
-    const norm = normalizeFullNameCompareKey(newEntry.name);
-    if (!norm) return null;
-    return (
-      companionCollisionsActionable.find((cl) => {
-        const rn = normalizeFullNameCompareKey(cl.registrantSide?.name);
-        return rn && (rn === norm || nameTokensSubsetMatch(newEntry.name, cl.registrantSide?.name));
-      }) || null
-    );
-  }, [companionCollisionsActionable, newEntry.name, currentEvent?.eventType]);
-
-  useEffect(() => {
-    setNewRegDupExpandedIds([]);
-  }, [newRegDuplicateHint?.summary]);
-
   const missingInitialPaid = !!currentEvent && (() => {
     const paidFmt = parseStrictNonNegativeMoneyInput(newEntryWithEditorDefaults.paid, { allowEmpty: true });
     if (!paidFmt.ok) return true;
@@ -18137,7 +17981,7 @@ function resolveEventName(eventId) {
     addLog('Campos Extra', `Eliminó el campo "${field}" del evento.`, null, null, { collectionName: 'app_events', docId: currentEvent.id, action: 'update', previousData: currentEvent });
   };
 
-  const handleAddEntry = async (loc) => {
+  const handleAddEntry = async (loc, entrySource) => {
     if (isRegisteringRef.current) return;
     if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
       showToast("No tienes permisos para registrar en esta sede/evento.");
@@ -18147,7 +17991,8 @@ function resolveEventName(eventId) {
     isRegisteringRef.current = true;
     try {
     const editorVis = currentUser?.role === 'Editor' ? editorRegistrationFieldVis : null;
-    let entryPayload = { ...newEntry, paid: newEntry.paid || 0 };
+    const sourceEntry = entrySource ?? newEntry;
+    let entryPayload = { ...sourceEntry, paid: sourceEntry.paid || 0 };
     if (editorVis) {
       entryPayload = applyEditorRegistrationDefaults(entryPayload, editorVis, currentEvent.eventType, loc);
     }
@@ -18181,6 +18026,7 @@ function resolveEventName(eventId) {
             plan: currentEvent.transportPlanning,
             hostSourceKey: 'p:draft-host',
             draftMetaByVehicleKey: newRegDraftCarMeta,
+            useBlankSlotMeta: true,
           }),
           { hostPerson: entryPayload, companions: entryPayload.bautizosCompanions || [] }
         );
@@ -18189,10 +18035,6 @@ function resolveEventName(eventId) {
           return;
         }
       }
-    }
-    if (needsRegistrationConsentConfirmation(newRegPrivacyAccepted, newRegSensitiveConsent)) {
-      const confirmed = await requestPrivacyConsentConfirm();
-      if (!confirmed) return;
     }
     entryPayload = applyRegistrationConsentPolicy(entryPayload, {
       privacyNotice: mergedPrivacyNotice,
@@ -18586,8 +18428,14 @@ function resolveEventName(eventId) {
     const phoneDigits = digitsOnlyPhone(entryPayload.phone);
     const vnpId = canonicalizeVnpPersonId(entryPayload.vnpPersonId || '');
     const candidateVnpId = vnpId || generateVnpPersonId(entryPayload);
-    const docId = await resolveParticipantDocumentIdForWrite(candidateVnpId, currentEvent.id);
+    const vnpWasUserProvided = Boolean(vnpId);
+    const idExistsAnywherePromise = vnpWasUserProvided
+      ? vnpPersonIdExistsInFirestore(candidateVnpId)
+      : Promise.resolve(false);
+    const docGatePromise = resolveParticipantDocIdAndWriteGate(candidateVnpId, currentEvent.id);
     let normalizedBautCompForAdd = null;
+
+    const { docId, gate } = await docGatePromise;
 
     if (
       phoneDuplicateInEvent(
@@ -18640,9 +18488,7 @@ function resolveEventName(eventId) {
         return;
       }
     }
-    const idExistsAnywhere = await vnpPersonIdExistsInFirestore(candidateVnpId);
-
-    const gate = await loadParticipantRegistrationWriteGate(docId, currentEvent.id);
+    const idExistsAnywhere = await idExistsAnywherePromise;
     if (!gate.ok) {
       showToast(gate.error);
       return;
@@ -18899,12 +18745,16 @@ function resolveEventName(eventId) {
       bautizosCompanions: personData.bautizosCompanions || [],
       carDraftMeta: newRegDraftCarMeta || null,
     };
-    await logSnapshotBackup(_regLogId, { entityType: 'participant', entityId: docId, snapshot: _regSnapshot });
     try {
       await setDoc(
         getDocRef('app_participants', docId),
         prepareParticipantDocForFirestore(personData)
       );
+      void logSnapshotBackup(_regLogId, {
+        entityType: 'participant',
+        entityId: docId,
+        snapshot: _regSnapshot,
+      }).catch((err) => logAppError('handleAddEntry.snapshotBackup', err, { docId }));
     } catch (e) {
       logAppError('handleAddPerson.setDoc', e, { docId, name: personData?.name, loc, eventId: currentEvent?.id });
       await addLog(
@@ -18932,85 +18782,92 @@ function resolveEventName(eventId) {
       showToast('No se pudo guardar el registro. Los datos quedaron respaldados en Actividad.');
       throw e;
     }
-    if (currentEvent.eventType === 'Bautizos' && familyHasAnyCarTransport(personData, personData.bautizosCompanions)) {
-      const carPatches = buildCarMetaPatchesAfterSave({
-        hostPerson: personData,
-        companions: personData.bautizosCompanions,
-        plan: currentEvent.transportPlanning,
-        draftMetaByVehicleKey: newRegDraftCarMeta,
-        hostId: docId,
-        roster: allParticipants,
-      });
-      if (carPatches.length) {
-        await persistBautizosCarMetaPatches(carPatches);
-      }
-    }
-    logParticipantActivity(
-      docId,
-      'privacidad',
-      buildRegistrationPrivacyActivityMessage(
-        mergedPrivacyNotice,
-        newRegPrivacyAccepted,
-        personData.sensitiveDataConsent
-      )
-    );
-    if (spouseCtxAdd && personData.spouseParticipantId) {
-      const sync = await syncSpouseParticipantLinks({
-        eventId: currentEvent.id,
-        personId: docId,
-        previousSpouseId: previousSpouseIdForLink,
-        nextSpouseId: personData.spouseParticipantId,
-        currentPersonName: String(personData.name || '').trim(),
-      });
-      if (!sync.ok) {
-        showToast(sync.error || 'Registro guardado, pero no se pudo vincular la pareja. Intenta desde edición.');
-      }
-    }
     const comentarioInicialNuevoReg = newRegGeneralComment.trim();
     const comentarioInicialLog = comentarioInicialNuevoReg
       ? ` Comentario inicial: «${comentarioInicialNuevoReg.length > 200 ? `${comentarioInicialNuevoReg.slice(0, 200)}…` : comentarioInicialNuevoReg}».`
       : '';
     const _newRegLog = truncateActivityLogDetails(`${previousParticipantData ? 'Actualizó registro de' : 'Inscribió a'} ${entryPayload.name} en la sede ${loc}.${paymentService ? ` (Servicio: ${paymentService})` : ''} (Pago inicial: $${initialPaidGross} ${paymentMethod === 'Tarjeta' ? `(Tarjeta, Neto: $${initialPaidNet})` : '(Efectivo)'} )${isLiquidadoReg ? ' [LIQUIDADO]' : ''}${describeNewRegistrationCompanions(entryPayload.bautizosCompanions)}${comentarioInicialLog}`);
-    addLog(
-      'Nuevo Registro',
-      _newRegLog,
-      null,
-      null,
-      {
-        collectionName: 'app_participants',
-        docId,
-        action: previousParticipantData ? 'update' : 'create',
-        previousData: previousParticipantData || null,
-      },
-      {
-        logId: _regLogId,
-        skipSnapshotWrite: true,
-        hasSnapshot: true,
-        entityType: 'participant',
-        entityId: docId,
-        status: LOG_STATUS.OK,
-      }
-    );
-    logParticipantActivity(docId, 'registro', _newRegLog);
 
     persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload, {
       newRegGeneralComment,
       newRegDraftCarMeta,
     });
-    resetRegistrationFormAfterSuccess(loc);
-    refreshParticipantCache(personData, previousParticipantData ? 'Actualizar registro' : 'Nuevo registro', {
-      eventId: currentEvent.id,
-      location: loc,
-      personId: docId,
-      patch: personData,
+    scheduleRegistrationTransportSave({
+      event: currentEvent,
+      personData,
+      draftMetaByVehicleKey: newRegDraftCarMeta,
+      allParticipants,
+      patchEventTransportPlanningDeferred,
+      updateDoc,
+      useBlankSlotMeta: true,
+      onError: (err) => logAppError('handleAddEntry.transportV2', err, { docId, eventId: currentEvent?.id }),
     });
-    showToast("Registro añadido exitosamente.");
+    resetRegistrationFormAfterSuccess(loc);
+    startTransition(() => {
+      refreshParticipantCache(personData, previousParticipantData ? 'Actualizar registro' : 'Nuevo registro', {
+        eventId: currentEvent.id,
+        location: loc,
+        personId: docId,
+        patch: personData,
+        skipRefetch: true,
+      });
+    });
+    showToast('Registro añadido exitosamente.');
+
+    void (async () => {
+      try {
+        logParticipantActivity(
+          docId,
+          'privacidad',
+          buildRegistrationPrivacyActivityMessage(
+            mergedPrivacyNotice,
+            newRegPrivacyAccepted,
+            personData.sensitiveDataConsent
+          )
+        );
+        if (spouseCtxAdd && personData.spouseParticipantId) {
+          const sync = await syncSpouseParticipantLinks({
+            eventId: currentEvent.id,
+            personId: docId,
+            previousSpouseId: previousSpouseIdForLink,
+            nextSpouseId: personData.spouseParticipantId,
+            currentPersonName: String(personData.name || '').trim(),
+          });
+          if (!sync.ok) {
+            showToast(sync.error || 'Registro guardado, pero no se pudo vincular la pareja. Intenta desde edición.');
+          }
+        }
+        addLog(
+          'Nuevo Registro',
+          _newRegLog,
+          null,
+          null,
+          {
+            collectionName: 'app_participants',
+            docId,
+            action: previousParticipantData ? 'update' : 'create',
+            previousData: previousParticipantData || null,
+          },
+          {
+            logId: _regLogId,
+            skipSnapshotWrite: true,
+            hasSnapshot: true,
+            entityType: 'participant',
+            entityId: docId,
+            status: LOG_STATUS.OK,
+          }
+        );
+        logParticipantActivity(docId, 'registro', _newRegLog);
+      } catch (postErr) {
+        logAppError('handleAddEntry.postRegister', postErr, { docId, loc, eventId: currentEvent?.id });
+      }
+    })();
     } finally {
       isRegisteringRef.current = false;
     }
   };
 
-  const handleAddToWaitlist = async (loc, _calledInternally = false, waitlistOptions = null) => {
+  const handleAddToWaitlist = async (loc, _calledInternally = false, waitlistOptions = null, entrySource) => {
     if (!_calledInternally && isRegisteringRef.current) return;
     if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
       showToast("No tienes permisos para registrar en lista de espera en esta sede/evento.");
@@ -19020,7 +18877,8 @@ function resolveEventName(eventId) {
     if (!_calledInternally) isRegisteringRef.current = true;
     try {
     const editorVis = currentUser?.role === 'Editor' ? editorRegistrationFieldVis : null;
-    let entryPayload = { ...newEntry, paid: newEntry.paid || 0 };
+    const sourceEntry = entrySource ?? newEntry;
+    let entryPayload = { ...sourceEntry, paid: sourceEntry.paid || 0 };
     if (editorVis) {
       entryPayload = applyEditorRegistrationDefaults(entryPayload, editorVis, currentEvent.eventType, loc);
     }
@@ -19028,10 +18886,6 @@ function resolveEventName(eventId) {
     if (wlIssues.length) {
       showRegistrationValidationIssues(wlIssues);
       return;
-    }
-    if (!_calledInternally && needsRegistrationConsentConfirmation(newRegPrivacyAccepted, newRegSensitiveConsent)) {
-      const confirmed = await requestPrivacyConsentConfirm();
-      if (!confirmed) return;
     }
     entryPayload = applyRegistrationConsentPolicy(entryPayload, {
       privacyNotice: mergedPrivacyNotice,
@@ -19338,6 +19192,7 @@ function resolveEventName(eventId) {
           draftMetaByVehicleKey: newRegDraftCarMeta,
           hostId: hostDocWlSp,
           roster: allParticipants,
+          useBlankSlotMeta: true,
         });
         if (carPatches.length) {
           await persistBautizosCarMetaPatches(carPatches);
@@ -19563,12 +19418,14 @@ function resolveEventName(eventId) {
       bautizosCompanions: personData.bautizosCompanions || [],
       carDraftMeta: newRegDraftCarMeta || null,
     };
-    await logSnapshotBackup(_wlLogId, { entityType: 'participant', entityId: docId, snapshot: _wlSnapshot });
     try {
-      await setDoc(
-        getDocRef('app_participants', docId),
-        prepareParticipantDocForFirestore(personData)
-      );
+      await Promise.all([
+        logSnapshotBackup(_wlLogId, { entityType: 'participant', entityId: docId, snapshot: _wlSnapshot }),
+        setDoc(
+          getDocRef('app_participants', docId),
+          prepareParticipantDocForFirestore(personData)
+        ),
+      ]);
     } catch (e) {
       logAppError('handleAddToWaitlist.setDoc', e, { docId, name: personData?.name, loc, eventId: currentEvent?.id });
       await addLog(
@@ -19596,61 +19453,7 @@ function resolveEventName(eventId) {
       showToast('No se pudo guardar en lista de espera. Los datos quedaron respaldados en Actividad.');
       throw e;
     }
-    if (currentEvent.eventType === 'Bautizos' && familyHasAnyCarTransport(personData, personData.bautizosCompanions)) {
-      const carPatches = buildCarMetaPatchesAfterSave({
-        hostPerson: personData,
-        companions: personData.bautizosCompanions,
-        plan: currentEvent.transportPlanning,
-        draftMetaByVehicleKey: newRegDraftCarMeta,
-        hostId: docId,
-        roster: allParticipants,
-      });
-      if (carPatches.length) {
-        await persistBautizosCarMetaPatches(carPatches);
-      }
-    }
     setNewRegDraftCarMeta({});
-    if (spouseCtxWl && personData.spouseParticipantId) {
-      const sync = await syncSpouseParticipantLinks({
-        eventId: currentEvent.id,
-        personId: docId,
-        previousSpouseId: previousSpouseIdWl,
-        nextSpouseId: personData.spouseParticipantId,
-        currentPersonName: String(personData.name || '').trim(),
-      });
-      if (!sync.ok) {
-        showToast(sync.error || 'Registro guardado, pero no se pudo vincular la pareja. Intenta desde edición.');
-      }
-    }
-    if (currentEvent.eventType === 'Campa' && isSiValue(entryPayload.isScholarship)) {
-      const now = Date.now();
-      const pendingApprovalNotification = {
-        id: `wa-bpd-${now}`,
-        kind: 'beca_pendiente_aprobacion',
-        amount: 0,
-        pendingAmount: Math.max(Number(getLiquidationTarget(personData)) || 0, 0),
-        isLiquidado: false,
-        createdAt: now,
-        sent: false,
-        sentAt: null,
-        message: buildScholarshipPendingWhatsAppMessage({
-          person: personData,
-          loc,
-          reportedAtMs: now,
-          eventSnapshot: currentEvent,
-        }),
-      };
-      await updateDoc(getDocRef('app_participants', docId), {
-        whatsAppFinanceNotifications: [...prevWlWaNotifications, pendingApprovalNotification],
-      });
-      refreshParticipantCache(personData, 'Aviso beca en espera', {
-        personId: docId,
-        skipRefetch: true,
-        patch: {
-          whatsAppFinanceNotifications: [...prevWlWaNotifications, pendingApprovalNotification],
-        },
-      });
-    }
     const becaNote =
       currentEvent.eventType === 'Campa' && isSiValue(entryPayload.isScholarship)
         ? ` Solicitud de beca ${entryPayload.scholarshipType === 'partial' ? 'parcial' : 'total'}${entryPayload.scholarshipType === 'partial' ? ` (monto becado $${parseFloat(entryPayload.scholarshipPartialAmount || 0).toLocaleString('es-MX')})` : ''}, pendiente de aprobación al promover.`
@@ -19660,27 +19463,7 @@ function resolveEventName(eventId) {
       ? ` Comentario inicial: «${comentarioInicialEspera.length > 200 ? `${comentarioInicialEspera.slice(0, 200)}…` : comentarioInicialEspera}».`
       : '';
     const _wlLog = `${previousWlData ? 'Actualizó lista de espera de' : 'Añadió a'} ${entryPayload.name} a la lista de espera en la sede ${loc}.${becaNote}${comentarioInicialEsperaLog}`;
-    addLog(
-      'Lista de Espera',
-      _wlLog,
-      null,
-      null,
-      {
-        collectionName: 'app_participants',
-        docId,
-        action: previousWlData ? 'update' : 'create',
-        previousData: previousWlData || null,
-      },
-      {
-        logId: _wlLogId,
-        skipSnapshotWrite: true,
-        hasSnapshot: true,
-        entityType: 'participant',
-        entityId: docId,
-        status: LOG_STATUS.OK,
-      }
-    );
-    logParticipantActivity(docId, 'lista_espera', _wlLog);
+
     persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload, {
       newRegGeneralComment,
       newRegDraftCarMeta,
@@ -19689,7 +19472,7 @@ function resolveEventName(eventId) {
     refreshParticipantCache(
       personData,
       previousWlData ? 'Actualizar lista de espera' : 'Nueva lista de espera',
-      { eventId: currentEvent.id, location: loc, personId: docId, patch: personData }
+      { eventId: currentEvent.id, location: loc, personId: docId, patch: personData, skipRefetch: true }
     );
     showToast(
       currentEvent.eventType === 'Campa' && isSiValue(entryPayload.isScholarship)
@@ -19698,6 +19481,89 @@ function resolveEventName(eventId) {
           ? 'Cupo lleno: registro guardado en lista de espera. Un administrador puede promoverlo a activos cuando haya lugar.'
           : 'Registro enviado a lista de espera.'
     );
+
+    void (async () => {
+      try {
+        if (currentEvent.eventType === 'Bautizos' && familyHasAnyCarTransport(personData, personData.bautizosCompanions)) {
+          const carPatches = buildCarMetaPatchesAfterSave({
+            hostPerson: personData,
+            companions: personData.bautizosCompanions,
+            plan: currentEvent.transportPlanning,
+            draftMetaByVehicleKey: newRegDraftCarMeta,
+            hostId: docId,
+            roster: allParticipants,
+            useBlankSlotMeta: true,
+          });
+          if (carPatches.length) {
+            await persistBautizosCarMetaPatches(carPatches);
+          }
+        }
+        if (spouseCtxWl && personData.spouseParticipantId) {
+          const sync = await syncSpouseParticipantLinks({
+            eventId: currentEvent.id,
+            personId: docId,
+            previousSpouseId: previousSpouseIdWl,
+            nextSpouseId: personData.spouseParticipantId,
+            currentPersonName: String(personData.name || '').trim(),
+          });
+          if (!sync.ok) {
+            showToast(sync.error || 'Registro guardado, pero no se pudo vincular la pareja. Intenta desde edición.');
+          }
+        }
+        if (currentEvent.eventType === 'Campa' && isSiValue(entryPayload.isScholarship)) {
+          const now = Date.now();
+          const pendingApprovalNotification = {
+            id: `wa-bpd-${now}`,
+            kind: 'beca_pendiente_aprobacion',
+            amount: 0,
+            pendingAmount: Math.max(Number(getLiquidationTarget(personData)) || 0, 0),
+            isLiquidado: false,
+            createdAt: now,
+            sent: false,
+            sentAt: null,
+            message: buildScholarshipPendingWhatsAppMessage({
+              person: personData,
+              loc,
+              reportedAtMs: now,
+              eventSnapshot: currentEvent,
+            }),
+          };
+          await updateDoc(getDocRef('app_participants', docId), {
+            whatsAppFinanceNotifications: [...prevWlWaNotifications, pendingApprovalNotification],
+          });
+          refreshParticipantCache(personData, 'Aviso beca en espera', {
+            personId: docId,
+            skipRefetch: true,
+            patch: {
+              whatsAppFinanceNotifications: [...prevWlWaNotifications, pendingApprovalNotification],
+            },
+          });
+        }
+        addLog(
+          'Lista de Espera',
+          _wlLog,
+          null,
+          null,
+          {
+            collectionName: 'app_participants',
+            docId,
+            action: previousWlData ? 'update' : 'create',
+            previousData: previousWlData || null,
+          },
+          {
+            logId: _wlLogId,
+            skipSnapshotWrite: true,
+            hasSnapshot: true,
+            entityType: 'participant',
+            entityId: docId,
+            status: LOG_STATUS.OK,
+          }
+        );
+        logParticipantActivity(docId, 'lista_espera', _wlLog);
+      } catch (postErr) {
+        logAppError('handleAddToWaitlist.postRegister', postErr, { docId, loc, eventId: currentEvent?.id });
+      }
+    })();
     } finally {
       if (!_calledInternally) isRegisteringRef.current = false;
     }
@@ -27391,6 +27257,10 @@ function resolveEventName(eventId) {
       return true;
     }
     if (newRegModalOpen) {
+      flushNewRegDraftToParent(
+        newRegModalDraftLiveRef.current || newEntry,
+        newRegModalProfileSearchLiveRef.current ?? ''
+      );
       setNewRegModalOpen(false);
       return true;
     }
@@ -37243,63 +37113,8 @@ function resolveEventName(eventId) {
     const blockAdminInputs = currentUser?.role === 'Administrador';
     const fv = (key) => !restrictEditorForm || editorRegistrationFieldVis[key] !== false;
     const fieldBlocked = (key) => blockAdminInputs && editorRegistrationFieldVis[key] === false;
-    const entryForCampaignPreview = restrictEditorForm
-      ? applyEditorRegistrationDefaults(newEntry, editorRegistrationFieldVis, currentEvent.eventType, loc)
-      : newEntry;
-    const newRegCampaignsActive = getActiveDiscountCampaigns(currentEvent).filter((c) => campaignMatchesPersonProfile(c, entryForCampaignPreview));
-    const newRegSelectableCampaigns = getValidDiscountCampaignsForPerson(currentEvent, entryForCampaignPreview);
-    const newRegBaseList = getPersonCost(entryForCampaignPreview, currentPricing, currentEvent);
-    const newRegCampPreview = isBautizos ? null : resolveMatchedCampaignForNewEntry(entryForCampaignPreview);
-    const newRegLiqPreview = newRegCampPreview ? Math.max(0, Number(newRegCampPreview.finalAmount) || 0) : newRegBaseList;
-    const editorVisForNewReg = restrictEditorForm ? editorRegistrationFieldVis : null;
-    let newRegEntryForValidation = { ...newEntry, paid: newEntry.paid || 0 };
-    if (editorVisForNewReg) {
-      newRegEntryForValidation = applyEditorRegistrationDefaults(
-        newRegEntryForValidation,
-        editorVisForNewReg,
-        currentEvent.eventType,
-        loc
-      );
-    }
-    const minDepForNewRegButton =
-      sendToWaitlist && !(isCampa && isSiValue(newEntry.isScholarship)) ? 0 : currentEvent.minDeposit || 0;
-    const newRegFormIssues = getRegistrationFormIssues(
-      newRegEntryForValidation,
-      minDepForNewRegButton,
-      currentEvent.eventType,
-      editorVisForNewReg,
-      currentEvent,
-      {
-        privacyAccepted: newRegPrivacyAccepted,
-        sensitiveConsent: newRegSensitiveConsent,
-        requirePrivacy: true,
-      }
-    );
-    const isPastorNewReg =
-      isBautizos &&
-      normalizeBautizosAttendanceType(newEntry.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor;
-    const pastorOverCapAllowed = canShowPastorAttendance({
-      role: currentUser?.role,
-      visibility: editorRegistrationFieldVis,
-      hasAdminRights,
-      eventType: currentEvent?.eventType,
-    });
-    const canShowPastorAttendanceType = pastorOverCapAllowed;
-    const showPastorAttendanceNewReg = pastorOverCapAllowed;
-    const attendanceSpecialGridClassNewReg = showPastorAttendanceNewReg
-      ? 'grid grid-cols-2 sm:grid-cols-4 gap-2'
-      : 'grid grid-cols-3 gap-2';
-    const newRegSubmitBlocked = newRegFormIssues.length > 0;
-    const canSubmitNewRegistration = isLocOpen(loc) && !newRegSubmitBlocked;
-    const newRegSubmitBlockedTooltip =
-      isLocOpen(loc) && newRegSubmitBlocked ? formatRegistrationValidationIssuesMessage(newRegFormIssues) : undefined;
     let rosterDisplayNum = 1;
-    let newRegSectionSeq = 0;
     const rosterLocSlug = String(loc).replace(/[^a-zA-Z0-9_-]/g, '_');
-    const newRegSectionLabel = (title) => {
-      newRegSectionSeq += 1;
-      return `${newRegSectionSeq}. ${title}`;
-    };
     const buildFlattenedActiveRows = (participants) => {
       const flattened = [];
       for (const person of participants) {
@@ -37378,7 +37193,7 @@ function resolveEventName(eventId) {
             <button
               type="button"
               disabled={!isLocOpen(loc)}
-              onClick={() => setNewRegModalOpen(true)}
+              onClick={openNewRegModal}
               className={uiLocationNewRegCta.button}
             >
               <span className={uiLocationNewRegCta.buttonIcon} aria-hidden>
@@ -37396,12 +37211,117 @@ function resolveEventName(eventId) {
       )}
 
       {newRegModalOpen && canAddRegistrations(currentUser) && (
+        <NewRegModalDraftProvider
+          seedEntry={newEntry}
+          seedProfileSearch={newRegProfileSearch}
+          resetToken={newRegDraftResetToken}
+          persistDraft={persistNewRegDraftOnly}
+          draftLiveRef={newRegModalDraftLiveRef}
+          profileSearchLiveRef={newRegModalProfileSearchLiveRef}
+          buildProfileImportMatches={buildProfileImportMatchesForModal}
+          buildCompanionCollisionHint={
+            currentEvent?.eventType === 'Bautizos' ? buildNewRegCompanionCollisionHintForDraft : undefined
+          }
+        >
+          {({
+            draft,
+            setDraft,
+            draftRef,
+            profileSearch,
+            setProfileSearch,
+            profileImportMatches,
+            companionCollisionHint: newRegCompanionCollisionHint,
+          }) => {
+            const closeNewRegModal = () => {
+              flushNewRegDraftToParent(draftRef.current, profileSearch);
+              setNewRegModalOpen(false);
+            };
+            const entryForCampaignPreview = restrictEditorForm
+              ? applyEditorRegistrationDefaults(draft, editorRegistrationFieldVis, currentEvent.eventType, loc)
+              : draft;
+            const newRegCampaignsActive = getActiveDiscountCampaigns(currentEvent).filter((c) =>
+              campaignMatchesPersonProfile(c, entryForCampaignPreview)
+            );
+            const newRegSelectableCampaigns = getValidDiscountCampaignsForPerson(currentEvent, entryForCampaignPreview);
+            const newRegBaseList = getPersonCost(entryForCampaignPreview, currentPricing, currentEvent);
+            const newRegCampPreview = isBautizos ? null : resolveMatchedCampaignForNewEntry(entryForCampaignPreview);
+            const newRegLiqPreview = newRegCampPreview
+              ? Math.max(0, Number(newRegCampPreview.finalAmount) || 0)
+              : newRegBaseList;
+            const editorVisForNewReg = restrictEditorForm ? editorRegistrationFieldVis : null;
+            let newRegEntryForValidation = { ...draft, paid: draft.paid || 0 };
+            if (editorVisForNewReg) {
+              newRegEntryForValidation = applyEditorRegistrationDefaults(
+                newRegEntryForValidation,
+                editorVisForNewReg,
+                currentEvent.eventType,
+                loc
+              );
+            }
+            const minDepForNewRegButton =
+              sendToWaitlist && !(isCampa && isSiValue(draft.isScholarship)) ? 0 : currentEvent.minDeposit || 0;
+            const newRegFormIssues = getRegistrationFormIssues(
+              newRegEntryForValidation,
+              minDepForNewRegButton,
+              currentEvent.eventType,
+              editorVisForNewReg,
+              currentEvent,
+              newRegPrivacyContext
+            );
+            const isPastorNewReg =
+              isBautizos &&
+              normalizeBautizosAttendanceType(draft.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor;
+            const pastorOverCapAllowed = canShowPastorAttendance({
+              role: currentUser?.role,
+              visibility: editorRegistrationFieldVis,
+              hasAdminRights,
+              eventType: currentEvent?.eventType,
+            });
+            const canShowPastorAttendanceType = pastorOverCapAllowed;
+            const showPastorAttendanceNewReg = pastorOverCapAllowed;
+            const attendanceSpecialGridClassNewReg = showPastorAttendanceNewReg
+              ? 'grid grid-cols-2 sm:grid-cols-4 gap-2'
+              : 'grid grid-cols-3 gap-2';
+            const newRegSubmitBlocked = newRegFormIssues.length > 0;
+            const canSubmitNewRegistration = isLocOpen(loc) && !newRegSubmitBlocked;
+            const newRegSubmitBlockedTooltip =
+              isLocOpen(loc) && newRegSubmitBlocked
+                ? formatRegistrationValidationIssuesMessage(newRegFormIssues)
+                : undefined;
+            const newRegDuplicateHint = buildNewEntryDuplicateHint(
+              draft.name,
+              draft.phone,
+              draft.alias,
+              draft.age,
+              allParticipants,
+              currentEvent?.id,
+              !!draft.allowSharedMainPhone
+            );
+            const newRegLinkableCompanionCluster =
+              currentEvent?.eventType === 'Bautizos' && draft.name?.trim()
+                ? (() => {
+                    const norm = normalizeFullNameCompareKey(draft.name);
+                    if (!norm) return null;
+                    return (
+                      companionCollisionsActionable.find((cl) => {
+                        const rn = normalizeFullNameCompareKey(cl.registrantSide?.name);
+                        return rn && (rn === norm || nameTokensSubsetMatch(draft.name, cl.registrantSide?.name));
+                      }) || null
+                    );
+                  })()
+                : null;
+            let newRegSectionSeq = 0;
+            const newRegSectionLabel = (title) => {
+              newRegSectionSeq += 1;
+              return `${newRegSectionSeq}. ${title}`;
+            };
+            return (
         <>
         <div className={uiModal.overlay} role="dialog" aria-modal="true" aria-labelledby="new-reg-modal-title">
           <button
             type="button"
             className={uiModal.backdrop}
-            onClick={() => setNewRegModalOpen(false)}
+            onClick={closeNewRegModal}
             aria-label="Cerrar formulario"
           />
           <div
@@ -37422,7 +37342,7 @@ function resolveEventName(eventId) {
               <button
                 type="button"
                 className={uiButtons.closeIcon}
-                onClick={() => setNewRegModalOpen(false)}
+                onClick={closeNewRegModal}
                 aria-label="Cerrar"
               >
                 <X size={20} />
@@ -37632,16 +37552,16 @@ function resolveEventName(eventId) {
                 type="text"
                 className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                 placeholder="Nombre, alias, ID VNPM o teléfono"
-                value={newRegProfileSearch}
-                onChange={(e) => setNewRegProfileSearch(e.target.value)}
+                value={profileSearch}
+                onChange={(e) => setProfileSearch(e.target.value)}
               />
             </div>
-            {newEntry.vnpPersonId ? (
+            {draft.vnpPersonId ? (
               <p className="text-[11px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-lg inline-flex flex-wrap items-center gap-1">
                 <span>
-                  ID VNPM vinculado: <strong>{newEntry.vnpPersonId}</strong> (nuevo registro reutilizará este ID)
+                  ID VNPM vinculado: <strong>{draft.vnpPersonId}</strong> (nuevo registro reutilizará este ID)
                 </span>
-                <CopyButton text={newEntry.vnpPersonId} label="ID VNPM" />
+                <CopyButton text={draft.vnpPersonId} label="ID VNPM" />
               </p>
             ) : null}
             {profileImportMatches.length > 0 && (
@@ -37708,10 +37628,10 @@ function resolveEventName(eventId) {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                 <div className={fieldStack}>
                   <label className={labelClasses}>Nombre completo</label>
-                  <input placeholder="Ej. Juan Pérez López" className={`${inputClasses} ${getRequiredFieldClass(!hasValidFullName(newEntry.name || ''))}`} value={newEntry.name} onChange={e => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, name: e.target.value })} />
+                  <input placeholder="Ej. Juan Pérez López" className={`${inputClasses} ${getRequiredFieldClass(!hasValidFullName(draft.name || ''))}`} value={draft.name} onChange={e => handleNameInput(e.target.value) && setDraft({ ...draft, name: e.target.value })} />
                   <p className="text-[10px] text-slate-500 px-1">Debe incluir 1 nombre y 2 apellidos.</p>
                   <p className="text-[10px] font-mono text-indigo-600 px-1">
-                    ID VNPM: {hasValidFullName(newEntry.name || '') && (newEntry.birthDate || '').trim() && String(newEntry.gender || '').trim() ? generateVnpPersonId(newEntry) : 'completa nombre, fecha de nacimiento y género'}
+                    ID VNPM: {hasValidFullName(draft.name || '') && (draft.birthDate || '').trim() && String(draft.gender || '').trim() ? generateVnpPersonId(draft) : 'completa nombre, fecha de nacimiento y género'}
                   </p>
                 </div>
                 <div className={fieldStack}>
@@ -37721,16 +37641,16 @@ function resolveEventName(eventId) {
                     placeholder="55-1234-5678"
                     listId={locSugList('phone')}
                     suggestions={locFieldSuggestions.phones}
-                    className={`${inputClasses} ${getRequiredFieldClass(!isValidPhone(newEntry.phone || ''))}`}
-                    value={newEntry.phone}
-                    onChange={(e) => setNewEntry({ ...newEntry, phone: formatPhoneNumber(e.target.value) })}
+                    className={`${inputClasses} ${getRequiredFieldClass(!isValidPhone(draft.phone || ''))}`}
+                    value={draft.phone}
+                    onChange={(e) => setDraft({ ...draft, phone: formatPhoneNumber(e.target.value) })}
                   />
                   <label className="flex items-start gap-2 cursor-pointer px-1 pt-0.5">
                     <input
                       type="checkbox"
                       className="mt-0.5 size-3.5 shrink-0 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                      checked={!!newEntry.allowSharedMainPhone}
-                      onChange={(e) => setNewEntry({ ...newEntry, allowSharedMainPhone: e.target.checked })}
+                      checked={!!draft.allowSharedMainPhone}
+                      onChange={(e) => setDraft({ ...draft, allowSharedMainPhone: e.target.checked })}
                     />
                     <span className="text-[10px] text-slate-600 leading-snug">
                       Es el mismo teléfono que otro inscrito (p. ej. menor con el contacto del adulto principal)
@@ -37740,26 +37660,26 @@ function resolveEventName(eventId) {
                 <div className={fieldStack}>
                   <RegistryBirthDateField
                     userId={currentUser?.id}
-                    value={newEntry.birthDate || ''}
+                    value={draft.birthDate || ''}
                     onIsoChange={(birthDate) =>
-                      setNewEntry({ ...newEntry, birthDate, age: calculateAgeFromBirthDate(birthDate) })
+                      setDraft({ ...draft, birthDate, age: calculateAgeFromBirthDate(birthDate) })
                     }
-                    inputClasses={`${inputClasses} ${getRequiredFieldClass(!(newEntry.birthDate || '').trim())}`}
+                    inputClasses={`${inputClasses} ${getRequiredFieldClass(!(draft.birthDate || '').trim())}`}
                     labelClasses={labelClasses}
                     footer={
-                      <p className="text-[10px] text-slate-500 font-semibold px-1">Edad calculada: {newEntry.age || '-'}</p>
+                      <p className="text-[10px] text-slate-500 font-semibold px-1">Edad calculada: {draft.age || '-'}</p>
                     }
                   />
                 </div>
                 {(() => {
-                  if (!registrationRequiresResponsivaStatus(newEntry, currentEvent)) return null;
+                  if (!registrationRequiresResponsivaStatus(draft, currentEvent)) return null;
                   return (
                     <div className={fieldStack}>
                       <label className={labelClasses}>{responsivaStatusValidationLabel(currentEvent)}</label>
                       <select
-                        className={`${inputClasses} ${getRequiredFieldClass(!(newEntry.responsivaStatus || '').trim())}`}
-                        value={newEntry.responsivaStatus || ''}
-                        onChange={e => setNewEntry({ ...newEntry, responsivaStatus: e.target.value })}
+                        className={`${inputClasses} ${getRequiredFieldClass(!(draft.responsivaStatus || '').trim())}`}
+                        value={draft.responsivaStatus || ''}
+                        onChange={e => setDraft({ ...draft, responsivaStatus: e.target.value })}
                       >
                         <option value="">Seleccionar</option>
                         {RESPONSIVA_STATUSES.map((st) => <option key={st} value={st}>{st}</option>)}
@@ -37771,14 +37691,14 @@ function resolveEventName(eventId) {
                   label="Género"
                   labelClasses={labelClasses}
                   required
-                  missing={!String(newEntry.gender || '').trim()}
-                  value={newEntry.gender || ''}
-                  onChange={(gender) => setNewEntry({ ...newEntry, gender })}
+                  missing={!String(draft.gender || '').trim()}
+                  value={draft.gender || ''}
+                  onChange={(gender) => setDraft({ ...draft, gender })}
                 />
                 {fv('alias') && (
                 <fieldset disabled={fieldBlocked('alias')} className={`space-y-1 md:col-span-2 lg:col-span-2 ${fieldBlocked('alias') ? 'opacity-70' : ''}`}>
                   <label className={labelClasses}>Alias (opcional)</label>
-                  <input placeholder="Ej. Juanito" className={inputClasses} value={newEntry.alias} onChange={e => setNewEntry({ ...newEntry, alias: e.target.value })} />
+                  <input placeholder="Ej. Juanito" className={inputClasses} value={draft.alias} onChange={e => setDraft({ ...draft, alias: e.target.value })} />
                 </fieldset>
                 )}
               </div>
@@ -37787,7 +37707,7 @@ function resolveEventName(eventId) {
                   {currentEvent.customFields.map((field, idx) => (
                     <div className={fieldStack} key={idx}>
                       <label className="text-[10px] font-black text-slate-400 uppercase px-1 truncate block tracking-widest" title={field}>{field}</label>
-                      <input className={inputClasses} value={newEntry.customData?.[field] || ''} onChange={e => setNewEntry({ ...newEntry, customData: { ...(newEntry.customData || {}), [field]: e.target.value } })} />
+                      <input className={inputClasses} value={draft.customData?.[field] || ''} onChange={e => setDraft({ ...draft, customData: { ...(draft.customData || {}), [field]: e.target.value } })} />
                     </div>
                   ))}
                 </fieldset>
@@ -37805,9 +37725,9 @@ function resolveEventName(eventId) {
                       placeholder="Nombre contacto"
                       listId={locSugList('emergencyContact')}
                       suggestions={locFieldSuggestions.emergencyContacts}
-                      className={`${inputClasses} ${getRequiredFieldClass((isCampa || isBautizos || isGeneral) && !(newEntry.emergencyContact || '').trim())}`}
-                      value={newEntry.emergencyContact}
-                      onChange={(e) => handleNameInput(e.target.value) && setNewEntry({ ...newEntry, emergencyContact: e.target.value })}
+                      className={`${inputClasses} ${getRequiredFieldClass((isCampa || isBautizos || isGeneral) && !(draft.emergencyContact || '').trim())}`}
+                      value={draft.emergencyContact}
+                      onChange={(e) => handleNameInput(e.target.value) && setDraft({ ...draft, emergencyContact: e.target.value })}
                     />
                   </div>
                   <div className={fieldStack}>
@@ -37817,9 +37737,9 @@ function resolveEventName(eventId) {
                       placeholder="55-1234-5678"
                       listId={locSugList('emergencyPhone')}
                       suggestions={locFieldSuggestions.emergencyPhones}
-                      className={`${inputClasses} ${getRequiredFieldClass((isCampa || isBautizos || isGeneral) && !isValidPhone(newEntry.emergencyPhone || ''))}`}
-                      value={newEntry.emergencyPhone}
-                      onChange={(e) => setNewEntry({ ...newEntry, emergencyPhone: formatPhoneNumber(e.target.value) })}
+                      className={`${inputClasses} ${getRequiredFieldClass((isCampa || isBautizos || isGeneral) && !isValidPhone(draft.emergencyPhone || ''))}`}
+                      value={draft.emergencyPhone}
+                      onChange={(e) => setDraft({ ...draft, emergencyPhone: formatPhoneNumber(e.target.value) })}
                     />
                   </div>
                   <div className={fieldStack}>
@@ -37829,9 +37749,9 @@ function resolveEventName(eventId) {
                       placeholder="Ej. Madre, padre, tutor"
                       listId={locSugList('emergencyRelationship')}
                       suggestions={locFieldSuggestions.relationships}
-                      className={`${inputClasses} ${getRequiredFieldClass((isCampa || isBautizos || isGeneral) && !(newEntry.emergencyRelationship || '').trim())}`}
-                      value={newEntry.emergencyRelationship || ''}
-                      onChange={(e) => setNewEntry({ ...newEntry, emergencyRelationship: e.target.value })}
+                      className={`${inputClasses} ${getRequiredFieldClass((isCampa || isBautizos || isGeneral) && !(draft.emergencyRelationship || '').trim())}`}
+                      value={draft.emergencyRelationship || ''}
+                      onChange={(e) => setDraft({ ...draft, emergencyRelationship: e.target.value })}
                     />
                   </div>
                 </div>
@@ -37847,7 +37767,7 @@ function resolveEventName(eventId) {
                   {fv('bloodType') && (
                     <fieldset disabled={fieldBlocked('bloodType')} className={`${fieldStack} ${fieldBlocked('bloodType') ? 'opacity-70' : ''}`}>
                       <label className={labelClasses}>Tipo de sangre</label>
-                      <select className={inputClasses} value={newEntry.bloodType} onChange={e => setNewEntry({ ...newEntry, bloodType: e.target.value })}>
+                      <select className={inputClasses} value={draft.bloodType} onChange={e => setDraft({ ...draft, bloodType: e.target.value })}>
                         {BLOOD_TYPES_SELECT_OPTIONS.map((bt) => (
                               <option key={bt} value={bt}>
                                 {bt}
@@ -37861,8 +37781,8 @@ function resolveEventName(eventId) {
                       <label className={labelClasses}>¿Sabe nadar?</label>
                       <SiNoFieldToggle
                         variant="swim"
-                        value={newEntry.canSwim}
-                        onChange={(canSwim) => setNewEntry({ ...newEntry, canSwim })}
+                        value={draft.canSwim}
+                        onChange={(canSwim) => setDraft({ ...draft, canSwim })}
                       />
                     </fieldset>
                     )}
@@ -37887,13 +37807,13 @@ function resolveEventName(eventId) {
                     </div>
                     <AllergyFormFields
                       variant="panel"
-                      hasAllergy={newEntry.hasAllergy}
-                      allergyDetails={newEntry.allergyDetails}
-                      allergyCategory={newEntry.allergyCategory}
+                      hasAllergy={draft.hasAllergy}
+                      allergyDetails={draft.allergyDetails}
+                      allergyCategory={draft.allergyCategory}
                       allergyOptions={globalConfig?.allergyOptions?.length ? globalConfig.allergyOptions : DEFAULT_ALLERGY_OPTIONS}
-                      detailsMissing={!(newEntry.allergyDetails || '').trim() && !(newEntry.allergyCategory || '').trim()}
-                      detailsClassName={getRequiredFieldClass(!(newEntry.allergyDetails || '').trim() && !(newEntry.allergyCategory || '').trim())}
-                      onChange={(patch) => setNewEntry({ ...newEntry, ...patch })}
+                      detailsMissing={!(draft.allergyDetails || '').trim() && !(draft.allergyCategory || '').trim()}
+                      detailsClassName={getRequiredFieldClass(!(draft.allergyDetails || '').trim() && !(draft.allergyCategory || '').trim())}
+                      onChange={(patch) => setDraft({ ...draft, ...patch })}
                     />
                   </fieldset>
                   )}
@@ -37901,11 +37821,11 @@ function resolveEventName(eventId) {
                   <fieldset disabled={fieldBlocked('diseases')} className={`space-y-1 ${fieldBlocked('diseases') ? 'opacity-70' : ''}`}>
                     <label className={labelClasses}>Enfermedades</label>
                     <DiseaseFormFields
-                      hasDisease={newEntry.hasDisease}
-                      diseaseDetails={newEntry.diseaseDetails}
-                      diseaseMedication={newEntry.diseaseMedication}
-                      detailsClassName={getRequiredFieldClass(!(newEntry.diseaseDetails || '').trim())}
-                      onChange={(patch) => setNewEntry({ ...newEntry, ...patch })}
+                      hasDisease={draft.hasDisease}
+                      diseaseDetails={draft.diseaseDetails}
+                      diseaseMedication={draft.diseaseMedication}
+                      detailsClassName={getRequiredFieldClass(!(draft.diseaseDetails || '').trim())}
+                      onChange={(patch) => setDraft({ ...draft, ...patch })}
                     />
                   </fieldset>
                   )}
@@ -37913,10 +37833,10 @@ function resolveEventName(eventId) {
                   <fieldset disabled={fieldBlocked('disability')} className={`space-y-1 ${fieldBlocked('disability') ? 'opacity-70' : ''}`}>
                     <label className={labelClasses}>Discapacidades</label>
                     <DisabilityFormFields
-                      hasDisability={newEntry.hasDisability}
-                      disabilityDetails={newEntry.disabilityDetails}
-                      detailsClassName={getRequiredFieldClass(!(newEntry.disabilityDetails || '').trim())}
-                      onChange={(patch) => setNewEntry({ ...newEntry, ...patch })}
+                      hasDisability={draft.hasDisability}
+                      disabilityDetails={draft.disabilityDetails}
+                      detailsClassName={getRequiredFieldClass(!(draft.disabilityDetails || '').trim())}
+                      onChange={(patch) => setDraft({ ...draft, ...patch })}
                     />
                   </fieldset>
                   )}
@@ -37961,13 +37881,13 @@ function resolveEventName(eventId) {
                       className={`space-y-2 ${fieldBlocked('bautizosAttendanceType') ? 'opacity-70' : ''}`}
                     >
                       <BautizosAttendanceTypeField
-                        value={newEntry.bautizosAttendanceType}
-                        entry={newEntry}
+                        value={draft.bautizosAttendanceType}
+                        entry={draft}
                         onChange={(v) => {
                           const t = normalizeBautizosAttendanceType(v);
-                          setNewEntry(
+                          setDraft(
                             syncBautizosAttendanceServerFields({
-                              ...newEntry,
+                              ...draft,
                               bautizosAttendanceType: v,
                               willBeBaptized: bautizosWillBeBaptizedFromAttendance(t),
                             })
@@ -37979,8 +37899,8 @@ function resolveEventName(eventId) {
                       />
                     </fieldset>
                     <BautizosServerParticipationFields
-                      entry={newEntry}
-                      onEntryChange={setNewEntry}
+                      entry={draft}
+                      onEntryChange={setDraft}
                       disabled={fieldBlocked('bautizosAttendanceType')}
                       labelClasses={labelClasses}
                       formatSiNo={formatSiNo}
@@ -37989,7 +37909,7 @@ function resolveEventName(eventId) {
                       }
                     />
                     {fv('serverProfileExtra') &&
-                      bautizosShowsServerProfileFields(newEntry) && (
+                      bautizosShowsServerProfileFields(draft) && (
                       <fieldset
                         disabled={fieldBlocked('serverProfileExtra')}
                         className={`mt-4 pt-4 border-t border-slate-200 dark:border-slate-600 ${fieldBlocked('serverProfileExtra') ? 'opacity-70' : ''}`}
@@ -38003,11 +37923,11 @@ function resolveEventName(eventId) {
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div className={fieldStack}>
                             <label className={labelClasses}>¿Es casado y va con su esposo(a)?</label>
-                            <select className={inputClasses} value={newEntry.isMarried || 'No'} onChange={e => setNewEntry({ ...newEntry, isMarried: e.target.value, spouseName: isSiValue(e.target.value) ? newEntry.spouseName : '', spouseParticipantId: isSiValue(e.target.value) ? newEntry.spouseParticipantId : '', spousePhone: isSiValue(e.target.value) ? newEntry.spousePhone : '' })}>
+                            <select className={inputClasses} value={draft.isMarried || 'No'} onChange={e => setDraft({ ...draft, isMarried: e.target.value, spouseName: isSiValue(e.target.value) ? draft.spouseName : '', spouseParticipantId: isSiValue(e.target.value) ? draft.spouseParticipantId : '', spousePhone: isSiValue(e.target.value) ? draft.spousePhone : '' })}>
                               <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                             </select>
                           </div>
-                          {isSiValue(newEntry.isMarried) && (
+                          {isSiValue(draft.isMarried) && (
                             <div className="space-y-1 sm:col-span-2 relative">
                               <label className={labelClasses}>Buscar pareja en registros (todas las sedes)</label>
                               <input
@@ -38025,8 +37945,8 @@ function resolveEventName(eventId) {
                                         type="button"
                                         className="w-full text-left px-3 py-2 hover:bg-amber-50 font-medium text-slate-800 dark:hover:bg-amber-900/40 dark:text-slate-100"
                                         onClick={() => {
-                                          setNewEntry({
-                                            ...newEntry,
+                                          setDraft({
+                                            ...draft,
                                             spouseParticipantId: String(p.id),
                                             spouseName: p.name || '',
                                           });
@@ -38048,15 +37968,15 @@ function resolveEventName(eventId) {
                               </p>
                             </div>
                           )}
-                          {isSiValue(newEntry.isMarried) && (
+                          {isSiValue(draft.isMarried) && (
                             <div className="space-y-1 sm:col-span-2">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <label className={labelClasses}>Nombre de pareja</label>
-                                {newEntry.spouseParticipantId ? (
+                                {draft.spouseParticipantId ? (
                                   <button
                                     type="button"
                                     className="text-[10px] font-bold text-amber-700 hover:underline dark:text-amber-300"
-                                    onClick={() => setNewEntry({ ...newEntry, spouseParticipantId: '' })}
+                                    onClick={() => setDraft({ ...draft, spouseParticipantId: '' })}
                                   >
                                     Quitar vínculo
                                   </button>
@@ -38065,17 +37985,17 @@ function resolveEventName(eventId) {
                               <input
                                 className={inputClasses}
                                 placeholder="Nombre o el del registro elegido arriba"
-                                value={newEntry.spouseName || ''}
-                                onChange={(e) => setNewEntry({ ...newEntry, spouseName: e.target.value })}
+                                value={draft.spouseName || ''}
+                                onChange={(e) => setDraft({ ...draft, spouseName: e.target.value })}
                               />
-                              {!newEntry.spouseParticipantId ? (
+                              {!draft.spouseParticipantId ? (
                                 <p className="text-[9px] text-amber-800/90 font-semibold dark:text-amber-200/90">Pendiente de asignar pareja (sin vínculo a registro)</p>
                               ) : (
                                 <p className="text-[9px] text-emerald-700 font-semibold dark:text-emerald-400">Vinculado a registro en el sistema</p>
                               )}
                             </div>
                           )}
-                          {isSiValue(newEntry.isMarried) && (
+                          {isSiValue(draft.isMarried) && (
                             <div className={fieldStack}>
                               <label className={labelClasses}>Teléfono de la pareja (si aún no inscribe)</label>
                               <input
@@ -38083,30 +38003,30 @@ function resolveEventName(eventId) {
                                 inputMode="tel"
                                 autoComplete="off"
                                 placeholder="Opcional"
-                                value={newEntry.spousePhone || ''}
-                                onChange={(e) => setNewEntry({ ...newEntry, spousePhone: e.target.value })}
+                                value={draft.spousePhone || ''}
+                                onChange={(e) => setDraft({ ...draft, spousePhone: e.target.value })}
                               />
                             </div>
                           )}
                           <div className={fieldStack}>
                             <label className={labelClasses}>¿Va con hijos?</label>
-                            <select className={inputClasses} value={newEntry.goesWithChildren || 'No'} onChange={e => setNewEntry({ ...newEntry, goesWithChildren: e.target.value, childrenCount: isSiValue(e.target.value) ? newEntry.childrenCount : '' })}>
+                            <select className={inputClasses} value={draft.goesWithChildren || 'No'} onChange={e => setDraft({ ...draft, goesWithChildren: e.target.value, childrenCount: isSiValue(e.target.value) ? draft.childrenCount : '' })}>
                               <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                             </select>
                           </div>
-                          {isSiValue(newEntry.goesWithChildren) && (
+                          {isSiValue(draft.goesWithChildren) && (
                             <div className={fieldStack}>
                               <label className={labelClasses}>¿Cuántos?</label>
-                              <input type="number" min="1" className={inputClasses} placeholder="Número" value={newEntry.childrenCount || ''} onChange={e => setNewEntry({ ...newEntry, childrenCount: e.target.value })} />
+                              <input type="number" min="1" className={inputClasses} placeholder="Número" value={draft.childrenCount || ''} onChange={e => setDraft({ ...draft, childrenCount: e.target.value })} />
                             </div>
                           )}
                           <div className={fieldStack}>
                             <label className={labelClasses}>¿Han servido en otro campa?</label>
-                            <select className={inputClasses} value={newEntry.servedOtherCampa || 'No'} onChange={e => setNewEntry({ ...newEntry, servedOtherCampa: e.target.value, servedAreas: isSiValue(e.target.value) ? newEntry.servedAreas : '' })}>
+                            <select className={inputClasses} value={draft.servedOtherCampa || 'No'} onChange={e => setDraft({ ...draft, servedOtherCampa: e.target.value, servedAreas: isSiValue(e.target.value) ? draft.servedAreas : '' })}>
                               <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                             </select>
                           </div>
-                          {isSiValue(newEntry.servedOtherCampa) && (
+                          {isSiValue(draft.servedOtherCampa) && (
                             <div className={fieldStack}>
                               <label className={labelClasses}>¿En qué áreas?</label>
                               <ServeAreaMultiSelect
@@ -38117,8 +38037,8 @@ function resolveEventName(eventId) {
                                     ? globalConfig.serveAreaOptions
                                     : DEFAULT_SERVE_AREA_OPTIONS
                                 }
-                                value={newEntry.servedAreas || ''}
-                                onChange={(next) => setNewEntry({ ...newEntry, servedAreas: next })}
+                                value={draft.servedAreas || ''}
+                                onChange={(next) => setDraft({ ...draft, servedAreas: next })}
                               />
                             </div>
                           )}
@@ -38132,20 +38052,20 @@ function resolveEventName(eventId) {
                                   ? globalConfig.serveAreaOptions
                                   : DEFAULT_SERVE_AREA_OPTIONS
                               }
-                              value={newEntry.preferredServeArea || ''}
-                              onChange={(next) => setNewEntry({ ...newEntry, preferredServeArea: next })}
+                              value={draft.preferredServeArea || ''}
+                              onChange={(next) => setDraft({ ...draft, preferredServeArea: next })}
                             />
                           </div>
                           <div className={fieldStack}>
                             <label className={labelClasses}>¿Sirve en su congre local?</label>
-                            <select className={inputClasses} value={newEntry.servesInCongress || 'No'} onChange={e => setNewEntry({ ...newEntry, servesInCongress: e.target.value, congressServeArea: isSiValue(e.target.value) ? newEntry.congressServeArea : '' })}>
+                            <select className={inputClasses} value={draft.servesInCongress || 'No'} onChange={e => setDraft({ ...draft, servesInCongress: e.target.value, congressServeArea: isSiValue(e.target.value) ? draft.congressServeArea : '' })}>
                               <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                             </select>
                           </div>
-                          {isSiValue(newEntry.servesInCongress) && (
+                          {isSiValue(draft.servesInCongress) && (
                             <div className={fieldStack}>
                               <label className={labelClasses}>¿En qué área?</label>
-                              <input className={inputClasses} value={newEntry.congressServeArea || ''} onChange={e => setNewEntry({ ...newEntry, congressServeArea: e.target.value })} />
+                              <input className={inputClasses} value={draft.congressServeArea || ''} onChange={e => setDraft({ ...draft, congressServeArea: e.target.value })} />
                             </div>
                           )}
                         </div>
@@ -38178,19 +38098,19 @@ function resolveEventName(eventId) {
                         <button
                           type="button"
                           onClick={() => {
-                            const next = isSiValue(newEntry.wantsBautizosTransport) ? 'No' : SI;
-                            setNewEntry({
-                              ...newEntry,
+                            const next = isSiValue(draft.wantsBautizosTransport) ? 'No' : SI;
+                            setDraft({
+                              ...draft,
                               wantsBautizosTransport: next,
                               llegaEnCarro: isSiValue(next) ? false : true,
                               ...(isSiValue(next)
-                                ? { travelFrom: newEntry.travelFrom || loc, travelTo: newEntry.travelTo || loc }
+                                ? { travelFrom: draft.travelFrom || loc, travelTo: draft.travelTo || loc }
                                 : {}),
                             });
                           }}
-                          className={`${uiFormChoiceBtn.panel} ${isSiValue(newEntry.wantsBautizosTransport) ? 'bg-indigo-500 text-white border-indigo-400' : uiFormChoiceBtn.idlePanel}`}
+                          className={`${uiFormChoiceBtn.panel} ${isSiValue(draft.wantsBautizosTransport) ? 'bg-indigo-500 text-white border-indigo-400' : uiFormChoiceBtn.idlePanel}`}
                         >
-                          {formatSiNo(newEntry.wantsBautizosTransport)}
+                          {formatSiNo(draft.wantsBautizosTransport)}
                         </button>
                       </div>
                       <div className="space-y-3">
@@ -38201,12 +38121,12 @@ function resolveEventName(eventId) {
                                 <input
                                   type="checkbox"
                                   className="h-4 w-4 accent-indigo-600 rounded"
-                                  checked={!!newEntry.llegaEnCarro}
+                                  checked={!!draft.llegaEnCarro}
                                   onChange={(e) =>
-                                    setNewEntry({
-                                      ...newEntry,
+                                    setDraft({
+                                      ...draft,
                                       llegaEnCarro: e.target.checked,
-                                      wantsBautizosTransport: e.target.checked ? 'No' : newEntry.wantsBautizosTransport,
+                                      wantsBautizosTransport: e.target.checked ? 'No' : draft.wantsBautizosTransport,
                                     })}
                                 />
                                 Llega en carro
@@ -38216,16 +38136,16 @@ function resolveEventName(eventId) {
                               Si llega en carro, el costo de transporte es $0. Esta opción no se puede combinar con transporte organizado.
                             </p>
                           </div>
-                          {isSiValue(newEntry.wantsBautizosTransport) &&
-                            !newEntry.llegaEnCarro && (
+                          {isSiValue(draft.wantsBautizosTransport) &&
+                            !draft.llegaEnCarro && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                               {fv('travelFrom') && (
                                 <div className={fieldStack}>
                                   <label className={labelClasses}>Sale de sede</label>
                                   <select
                                     className={inputClasses}
-                                    value={newEntry.travelFrom || loc}
-                                    onChange={(e) => setNewEntry({ ...newEntry, travelFrom: e.target.value })}
+                                    value={draft.travelFrom || loc}
+                                    onChange={(e) => setDraft({ ...draft, travelFrom: e.target.value })}
                                   >
                                     {(currentEvent?.locations || []).map((s) => (
                                       <option key={`bz-from-${s}`} value={s}>
@@ -38240,8 +38160,8 @@ function resolveEventName(eventId) {
                                   <label className={labelClasses}>Regresa a sede</label>
                                   <select
                                     className={inputClasses}
-                                    value={newEntry.travelTo || loc}
-                                    onChange={(e) => setNewEntry({ ...newEntry, travelTo: e.target.value })}
+                                    value={draft.travelTo || loc}
+                                    onChange={(e) => setDraft({ ...draft, travelTo: e.target.value })}
                                   >
                                     {(currentEvent?.locations || []).map((s) => (
                                       <option key={`bz-to-${s}`} value={s}>
@@ -38257,10 +38177,10 @@ function resolveEventName(eventId) {
                     </fieldset>
                   </section>
                 )}
-                {familyHasAnyCarTransport(newEntry, newEntry.bautizosCompanions || [], currentEvent) ? (
+                {familyHasAnyCarTransport(draft, draft.bautizosCompanions || [], currentEvent) ? (
                   <BautizosCarDataSection
-                    hostPerson={newEntry}
-                    companions={newEntry.bautizosCompanions || []}
+                    hostPerson={draft}
+                    companions={draft.bautizosCompanions || []}
                     plan={currentEvent?.transportPlanning}
                     eventId={currentEvent?.id}
                     hostSourceKey="p:draft-host"
@@ -38280,10 +38200,10 @@ function resolveEventName(eventId) {
                     slotsDefaultExpanded
                     ignorePersistedCarMeta
                     onHostCarCountChange={(count) =>
-                      setNewEntry({ ...newEntry, carrosLlegada: normalizeArrivalCarCount(count) })
+                      setDraft({ ...draft, carrosLlegada: normalizeArrivalCarCount(count) })
                     }
                     onCompanionCarCountChange={(companionIndex, count) => {
-                      setNewEntry((prev) => {
+                      setDraft((prev) => {
                         const comps = [...(prev.bautizosCompanions || [])];
                         if (comps[companionIndex]) {
                           comps[companionIndex] = {
@@ -38302,9 +38222,9 @@ function resolveEventName(eventId) {
                       });
                     }}
                     roster={allParticipants}
-                    inheritLinkedCarData={newEntry.bautizosInheritLinkedCompanionCarData}
+                    inheritLinkedCarData={draft.bautizosInheritLinkedCompanionCarData}
                     onInheritLinkedCarDataChange={(checked) =>
-                      setNewEntry((prev) => ({
+                      setDraft((prev) => ({
                         ...prev,
                         bautizosInheritLinkedCompanionCarData: checked,
                       }))
@@ -38313,13 +38233,13 @@ function resolveEventName(eventId) {
                 ) : null}
                 {fv('bautizosCompanions') && (
                   <BautizosCompanionsField
-                    registrantAge={newEntry.age}
-                    companions={newEntry.bautizosCompanions || []}
+                    registrantAge={draft.age}
+                    companions={draft.bautizosCompanions || []}
                     fieldSuggestions={locFieldSuggestions}
                     registryBirthDateUserId={currentUser?.id}
-                    onChange={(next) => setNewEntry({ ...newEntry, bautizosCompanions: next })}
+                    onChange={(next) => setDraft({ ...draft, bautizosCompanions: next })}
                     locations={currentEvent?.locations || []}
-                    loc={newEntry.location || loc}
+                    loc={draft.location || loc}
                     optionalVisibility={{
                       bautizosCompanions: true,
                       bautizosTransport: fv('bautizosTransport'),
@@ -38375,38 +38295,38 @@ function resolveEventName(eventId) {
                       <button
                         type="button"
                         onClick={() => {
-                          const next = isSiValue(newEntry.isScholarship) ? 'No' : SI;
-                          setNewEntry({
-                            ...newEntry,
+                          const next = isSiValue(draft.isScholarship) ? 'No' : SI;
+                          setDraft({
+                            ...draft,
                             isScholarship: next,
                             scholarshipType: 'total',
                             scholarshipPartialAmount: '',
-                            attendanceSpecialType: isSiValue(next) ? ATTENDANCE_SPECIAL.ninguno : newEntry.attendanceSpecialType,
+                            attendanceSpecialType: isSiValue(next) ? ATTENDANCE_SPECIAL.ninguno : draft.attendanceSpecialType,
                           });
                           if (isSiValue(next)) setSendToWaitlist(false);
                         }}
                         className={`${uiFormChoiceBtn.panel} ${
-                          isSiValue(newEntry.isScholarship)
+                          isSiValue(draft.isScholarship)
                             ? 'bg-purple-500 text-white border-purple-400'
                             : uiFormChoiceBtn.idlePanel
                         }`}
                       >
-                        <GraduationCap size={14} className={isSiValue(newEntry.isScholarship) ? 'text-white' : uiFormChoiceBtn.iconIdle} /> {formatSiNo(newEntry.isScholarship)}
+                        <GraduationCap size={14} className={isSiValue(draft.isScholarship) ? 'text-white' : uiFormChoiceBtn.iconIdle} /> {formatSiNo(draft.isScholarship)}
                       </button>
                     </div>
-                    {isSiValue(newEntry.isScholarship) && (
+                    {isSiValue(draft.isScholarship) && (
                       <>
                         <div className={fieldStack}>
                           <label className={labelClasses}>Tipo de beca</label>
                           <select
                             className={inputClasses}
-                            value={newEntry.scholarshipType === 'partial' ? 'partial' : 'total'}
+                            value={draft.scholarshipType === 'partial' ? 'partial' : 'total'}
                             onChange={(e) => {
                               const v = e.target.value;
-                              setNewEntry({
-                                ...newEntry,
+                              setDraft({
+                                ...draft,
                                 scholarshipType: v === 'partial' ? 'partial' : 'total',
-                                scholarshipPartialAmount: v === 'total' ? '' : newEntry.scholarshipPartialAmount,
+                                scholarshipPartialAmount: v === 'total' ? '' : draft.scholarshipPartialAmount,
                               });
                             }}
                           >
@@ -38414,7 +38334,7 @@ function resolveEventName(eventId) {
                             <option value="partial">Beca parcial</option>
                           </select>
                         </div>
-                        {newEntry.scholarshipType === 'partial' && (
+                        {draft.scholarshipType === 'partial' && (
                           <div className={fieldStack}>
                             <label className={labelClasses}>Monto becado</label>
                             <input
@@ -38422,9 +38342,9 @@ function resolveEventName(eventId) {
                               min="0"
                               step="0.01"
                               placeholder="0.00"
-                              className={`${inputClasses} ${getRequiredFieldClass(isSiValue(newEntry.isScholarship) && newEntry.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(newEntry.scholarshipPartialAmount)) || parseFloat(newEntry.scholarshipPartialAmount) < 0 || parseFloat(newEntry.scholarshipPartialAmount) >= getPersonCost(newEntry, currentPricing, currentEvent)))}`}
-                              value={newEntry.scholarshipPartialAmount}
-                              onChange={(e) => setNewEntry({ ...newEntry, scholarshipPartialAmount: e.target.value })}
+                              className={`${inputClasses} ${getRequiredFieldClass(isSiValue(draft.isScholarship) && draft.scholarshipType === 'partial' && (!Number.isFinite(parseFloat(draft.scholarshipPartialAmount)) || parseFloat(draft.scholarshipPartialAmount) < 0 || parseFloat(draft.scholarshipPartialAmount) >= getPersonCost(draft, currentPricing, currentEvent)))}`}
+                              value={draft.scholarshipPartialAmount}
+                              onChange={(e) => setDraft({ ...draft, scholarshipPartialAmount: e.target.value })}
                             />
                           </div>
                         )}
@@ -38437,9 +38357,9 @@ function resolveEventName(eventId) {
                   <fieldset disabled={fieldBlocked('serverRole')} className={`space-y-2 min-w-0 ${fieldBlocked('serverRole') ? 'opacity-70' : ''}`}>
                     <div className={fieldStack}>
                       <label className={labelClasses}>Servidor</label>
-                      <button type="button" onClick={() => setNewEntry({
-                        ...newEntry,
-                        isServer: isSiValue(newEntry.isServer) ? 'No' : SI,
+                      <button type="button" onClick={() => setDraft({
+                        ...draft,
+                        isServer: isSiValue(draft.isServer) ? 'No' : SI,
                         serverAssignment: '',
                         ambosServeInSegment: '',
                         baptismSegment: '',
@@ -38455,23 +38375,23 @@ function resolveEventName(eventId) {
                         servesInCongress: 'No',
                         congressServeArea: '',
                       })} className={`${uiFormChoiceBtn.panel} ${
-                        isSiValue(newEntry.isServer)
+                        isSiValue(draft.isServer)
                           ? 'bg-amber-500 text-white border-amber-400'
                           : uiFormChoiceBtn.idlePanel
-                      }`}><Users size={14} className={isSiValue(newEntry.isServer) ? 'text-white' : uiFormChoiceBtn.iconIdle} /> {formatSiNo(newEntry.isServer)}</button>
+                      }`}><Users size={14} className={isSiValue(draft.isServer) ? 'text-white' : uiFormChoiceBtn.iconIdle} /> {formatSiNo(draft.isServer)}</button>
                     </div>
-                    {isSiValue(newEntry.isServer) && (
+                    {isSiValue(draft.isServer) && (
                       <div className={fieldStack}>
                         <label className={labelClasses}>Asignación</label>
-                        <select className={`${inputClasses} ${getRequiredFieldClass(isSiValue(newEntry.isServer) && !String(newEntry.serverAssignment || '').trim())}`} value={newEntry.serverAssignment} onChange={e => {
+                        <select className={`${inputClasses} ${getRequiredFieldClass(isSiValue(draft.isServer) && !String(draft.serverAssignment || '').trim())}`} value={draft.serverAssignment} onChange={e => {
                           const v = e.target.value;
-                          const prevAssign = String(newEntry.serverAssignment || '').trim();
-                          setNewEntry({
-                            ...newEntry,
+                          const prevAssign = String(draft.serverAssignment || '').trim();
+                          setDraft({
+                            ...draft,
                             serverAssignment: v,
-                            baptismSegment: v === 'Ambos' ? newEntry.baptismSegment : '',
+                            baptismSegment: v === 'Ambos' ? draft.baptismSegment : '',
                             ambosServeInSegment:
-                              v === 'Ambos' ? (prevAssign === 'Ambos' ? newEntry.ambosServeInSegment : '') : '',
+                              v === 'Ambos' ? (prevAssign === 'Ambos' ? draft.ambosServeInSegment : '') : '',
                           });
                         }}>
                           <option value="Teens">Teens</option>
@@ -38481,13 +38401,13 @@ function resolveEventName(eventId) {
                         <p className="text-[9px] text-slate-500 leading-snug">
                           Puedes asignar un servidor a <strong>Teens</strong> aunque sea mayor de edad (p. ej. liderazgo en ese segmento).
                         </p>
-                        {newEntry.serverAssignment === 'Ambos' && (
+                        {draft.serverAssignment === 'Ambos' && (
                           <div className="space-y-1 mt-2">
                             <label className={labelClasses}>¿En qué segmento sirves?</label>
                             <select
                               className={inputClasses}
-                              value={newEntry.ambosServeInSegment || ''}
-                              onChange={(e) => setNewEntry({ ...newEntry, ambosServeInSegment: e.target.value })}
+                              value={draft.ambosServeInSegment || ''}
+                              onChange={(e) => setDraft({ ...draft, ambosServeInSegment: e.target.value })}
                             >
                               <option value="">{ambosServeOptionLabelsNew.uniqueNew}</option>
                               <option value="Teens">{ambosServeOptionLabelsNew.teensNew}</option>
@@ -38510,34 +38430,34 @@ function resolveEventName(eventId) {
                       <button
                         type="button"
                         onClick={() => {
-                          const next = isSiValue(newEntry.willBeBaptized) ? 'No' : SI;
-                          setNewEntry({
-                            ...newEntry,
+                          const next = isSiValue(draft.willBeBaptized) ? 'No' : SI;
+                          setDraft({
+                            ...draft,
                             willBeBaptized: next,
-                            baptismSegment: next === 'No' ? '' : newEntry.baptismSegment,
+                            baptismSegment: next === 'No' ? '' : draft.baptismSegment,
                           });
                         }}
                         className={`${uiFormChoiceBtn.panel} ${
-                          isSiValue(newEntry.willBeBaptized)
+                          isSiValue(draft.willBeBaptized)
                             ? 'bg-sky-600 text-white border-sky-500'
                             : uiFormChoiceBtn.idlePanel
                         }`}
                       >
-                        <Church size={14} className={isSiValue(newEntry.willBeBaptized) ? 'text-white' : uiFormChoiceBtn.iconIdle} /> {formatSiNo(newEntry.willBeBaptized)}
+                        <Church size={14} className={isSiValue(draft.willBeBaptized) ? 'text-white' : uiFormChoiceBtn.iconIdle} /> {formatSiNo(draft.willBeBaptized)}
                       </button>
                     </div>
-                    {isSiValue(newEntry.willBeBaptized) && !isSiValue(newEntry.isServer) && (
+                    {isSiValue(draft.willBeBaptized) && !isSiValue(draft.isServer) && (
                       <p className="text-[9px] text-slate-500 leading-snug">
-                        Conteo en <strong>{parseInt(newEntry.age, 10) < 18 ? 'Teens' : 'Jóvenes'}</strong> según edad al guardar (campista).
+                        Conteo en <strong>{parseInt(draft.age, 10) < 18 ? 'Teens' : 'Jóvenes'}</strong> según edad al guardar (campista).
                       </p>
                     )}
-                    {isSiValue(newEntry.willBeBaptized) && isSiValue(newEntry.isServer) && newEntry.serverAssignment === 'Ambos' && (
+                    {isSiValue(draft.willBeBaptized) && isSiValue(draft.isServer) && draft.serverAssignment === 'Ambos' && (
                       <div className={fieldStack}>
                         <label className={labelClasses}>¿Dónde se bautiza?</label>
                         <select
-                          className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(!String(newEntry.baptismSegment || '').trim())}`}
-                          value={newEntry.baptismSegment || ''}
-                          onChange={(e) => setNewEntry({ ...newEntry, baptismSegment: e.target.value })}
+                          className={`w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-bold text-slate-700 ${getRequiredFieldClass(!String(draft.baptismSegment || '').trim())}`}
+                          value={draft.baptismSegment || ''}
+                          onChange={(e) => setDraft({ ...draft, baptismSegment: e.target.value })}
                         >
                           <option value="">Seleccionar</option>
                           <option value="Teens">Teens</option>
@@ -38548,7 +38468,7 @@ function resolveEventName(eventId) {
                   </fieldset>
                   )}
 
-                  {!isSiValue(newEntry.isScholarship) && fv('attendanceSpecial') && (
+                  {!isSiValue(draft.isScholarship) && fv('attendanceSpecial') && (
                     <fieldset disabled={fieldBlocked('attendanceSpecial')} className={`sm:col-span-3 space-y-2 ${fieldBlocked('attendanceSpecial') ? 'opacity-70' : ''}`}>
                       <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Asistencia sin cobro (cuenta en registro)</p>
                       <div className={attendanceSpecialGridClassNewReg}>
@@ -38557,8 +38477,8 @@ function resolveEventName(eventId) {
                             key={id}
                             type="button"
                             onClick={() =>
-                              setNewEntry({
-                                ...newEntry,
+                              setDraft({
+                                ...draft,
                                 attendanceSpecialType: id,
                                 isScholarship: 'No',
                                 scholarshipType: 'total',
@@ -38566,7 +38486,7 @@ function resolveEventName(eventId) {
                                 selectedDiscountCampaignId: '',
                               })
                             }
-                            className={attendanceSpecialChoiceButtonClass(newEntry.attendanceSpecialType, id)}
+                            className={attendanceSpecialChoiceButtonClass(draft.attendanceSpecialType, id)}
                           >
                             {Icon ? <Icon size={14} /> : null}
                             {label}
@@ -38591,8 +38511,8 @@ function resolveEventName(eventId) {
                         key={id}
                         type="button"
                         onClick={() =>
-                          setNewEntry({
-                            ...newEntry,
+                          setDraft({
+                            ...draft,
                             attendanceSpecialType: id,
                             isScholarship: 'No',
                             scholarshipType: 'total',
@@ -38600,7 +38520,7 @@ function resolveEventName(eventId) {
                             selectedDiscountCampaignId: '',
                           })
                         }
-                        className={attendanceSpecialChoiceButtonClass(newEntry.attendanceSpecialType, id)}
+                        className={attendanceSpecialChoiceButtonClass(draft.attendanceSpecialType, id)}
                       >
                         {Icon ? <Icon size={14} /> : null}
                         {label}
@@ -38612,7 +38532,7 @@ function resolveEventName(eventId) {
             )}
 
             {isCampa &&
-              isSiValue(newEntry.isServer) &&
+              isSiValue(draft.isServer) &&
               fv('serverProfileExtra') && (
               <section className="rounded-xl border border-amber-100 bg-amber-50/50 p-3 dark:border-amber-500/35 dark:bg-amber-950/30">
                 <fieldset
@@ -38625,11 +38545,11 @@ function resolveEventName(eventId) {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className={fieldStack}>
                       <label className={labelClasses}>¿Es casado y va con su esposo(a)?</label>
-                      <select className={inputClasses} value={newEntry.isMarried || 'No'} onChange={e => setNewEntry({ ...newEntry, isMarried: e.target.value, spouseName: isSiValue(e.target.value) ? newEntry.spouseName : '', spouseParticipantId: isSiValue(e.target.value) ? newEntry.spouseParticipantId : '', spousePhone: isSiValue(e.target.value) ? newEntry.spousePhone : '' })}>
+                      <select className={inputClasses} value={draft.isMarried || 'No'} onChange={e => setDraft({ ...draft, isMarried: e.target.value, spouseName: isSiValue(e.target.value) ? draft.spouseName : '', spouseParticipantId: isSiValue(e.target.value) ? draft.spouseParticipantId : '', spousePhone: isSiValue(e.target.value) ? draft.spousePhone : '' })}>
                         <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                       </select>
                     </div>
-                    {isSiValue(newEntry.isMarried) && (
+                    {isSiValue(draft.isMarried) && (
                       <div className="space-y-1 sm:col-span-2 relative">
                         <label className={labelClasses}>Buscar pareja en registros (todas las sedes)</label>
                         <input
@@ -38647,8 +38567,8 @@ function resolveEventName(eventId) {
                                   type="button"
                                   className="w-full text-left px-3 py-2 hover:bg-amber-50 font-medium text-slate-800 dark:hover:bg-amber-900/40 dark:text-slate-100"
                                   onClick={() => {
-                                    setNewEntry({
-                                      ...newEntry,
+                                    setDraft({
+                                      ...draft,
                                       spouseParticipantId: String(p.id),
                                       spouseName: p.name || '',
                                     });
@@ -38670,15 +38590,15 @@ function resolveEventName(eventId) {
                         </p>
                       </div>
                     )}
-                    {isSiValue(newEntry.isMarried) && (
+                    {isSiValue(draft.isMarried) && (
                       <div className="space-y-1 sm:col-span-2">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <label className={labelClasses}>Nombre de pareja</label>
-                          {newEntry.spouseParticipantId ? (
+                          {draft.spouseParticipantId ? (
                             <button
                               type="button"
                               className="text-[10px] font-bold text-amber-700 hover:underline dark:text-amber-300"
-                              onClick={() => setNewEntry({ ...newEntry, spouseParticipantId: '' })}
+                              onClick={() => setDraft({ ...draft, spouseParticipantId: '' })}
                             >
                               Quitar vínculo
                             </button>
@@ -38687,17 +38607,17 @@ function resolveEventName(eventId) {
                         <input
                           className={inputClasses}
                           placeholder="Nombre o el del registro elegido arriba"
-                          value={newEntry.spouseName || ''}
-                          onChange={(e) => setNewEntry({ ...newEntry, spouseName: e.target.value })}
+                          value={draft.spouseName || ''}
+                          onChange={(e) => setDraft({ ...draft, spouseName: e.target.value })}
                         />
-                        {!newEntry.spouseParticipantId ? (
+                        {!draft.spouseParticipantId ? (
                           <p className="text-[9px] text-amber-800/90 font-semibold dark:text-amber-200/90">Pendiente de asignar pareja (sin vínculo a registro)</p>
                         ) : (
                           <p className="text-[9px] text-emerald-700 font-semibold dark:text-emerald-400">Vinculado a registro en el sistema</p>
                         )}
                       </div>
                     )}
-                    {isSiValue(newEntry.isMarried) && (
+                    {isSiValue(draft.isMarried) && (
                       <div className={fieldStack}>
                         <label className={labelClasses}>Teléfono de la pareja (si aún no inscribe)</label>
                         <input
@@ -38705,41 +38625,41 @@ function resolveEventName(eventId) {
                           inputMode="tel"
                           autoComplete="off"
                           placeholder="Opcional"
-                          value={newEntry.spousePhone || ''}
-                          onChange={(e) => setNewEntry({ ...newEntry, spousePhone: e.target.value })}
+                          value={draft.spousePhone || ''}
+                          onChange={(e) => setDraft({ ...draft, spousePhone: e.target.value })}
                         />
                       </div>
                     )}
                     <div className={fieldStack}>
                       <label className={labelClasses}>¿Va con hijos?</label>
-                      <select className={inputClasses} value={newEntry.goesWithChildren || 'No'} onChange={e => setNewEntry({ ...newEntry, goesWithChildren: e.target.value, childrenCount: isSiValue(e.target.value) ? newEntry.childrenCount : '' })}>
+                      <select className={inputClasses} value={draft.goesWithChildren || 'No'} onChange={e => setDraft({ ...draft, goesWithChildren: e.target.value, childrenCount: isSiValue(e.target.value) ? draft.childrenCount : '' })}>
                         <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                       </select>
                     </div>
-                    {isSiValue(newEntry.goesWithChildren) && (
+                    {isSiValue(draft.goesWithChildren) && (
                       <div className={fieldStack}>
                         <label className={labelClasses}>¿Cuántos?</label>
-                        <input type="number" min="1" className={inputClasses} placeholder="Número" value={newEntry.childrenCount || ''} onChange={e => setNewEntry({ ...newEntry, childrenCount: e.target.value })} />
+                        <input type="number" min="1" className={inputClasses} placeholder="Número" value={draft.childrenCount || ''} onChange={e => setDraft({ ...draft, childrenCount: e.target.value })} />
                       </div>
                     )}
                     <div className={fieldStack}>
                       <label className={labelClasses}>¿Han servido en otro campa?</label>
-                      <select className={inputClasses} value={newEntry.servedOtherCampa || 'No'} onChange={e => setNewEntry({ ...newEntry, servedOtherCampa: e.target.value, servedAreas: isSiValue(e.target.value) ? newEntry.servedAreas : '' })}>
+                      <select className={inputClasses} value={draft.servedOtherCampa || 'No'} onChange={e => setDraft({ ...draft, servedOtherCampa: e.target.value, servedAreas: isSiValue(e.target.value) ? draft.servedAreas : '' })}>
                         <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                       </select>
                     </div>
-                    {isSiValue(newEntry.servedOtherCampa) && (
+                    {isSiValue(draft.servedOtherCampa) && (
                       <div className={fieldStack}>
                         <label className={labelClasses}>¿En qué áreas?</label>
                         {(() => {
                           const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
-                          const { selected, otroText } = parsePreferredServeArea(newEntry.servedAreas, opts);
+                          const { selected, otroText } = parsePreferredServeArea(draft.servedAreas, opts);
                           const isOpen = openServedAreasLoc === loc;
                           const toggle = (opt) => {
                             const next = new Set(selected);
                             if (next.has(opt)) next.delete(opt); else next.add(opt);
                             const txt = opt === 'Otro' ? (next.has('Otro') ? otroText : '') : otroText;
-                            setNewEntry({ ...newEntry, servedAreas: formatPreferredServeArea(next, txt) });
+                            setDraft({ ...draft, servedAreas: formatPreferredServeArea(next, txt) });
                           };
                           return (
                             <div className="relative" data-dropdown-root="new-served-areas">
@@ -38758,7 +38678,7 @@ function resolveEventName(eventId) {
                                           {opt}
                                         </label>
                                         {opt === 'Otro' && selected.has('Otro') && (
-                                          <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm dark:border-slate-600 dark:bg-slate-900" value={otroText} onChange={e => setNewEntry({ ...newEntry, servedAreas: formatPreferredServeArea(selected, e.target.value) })} onClick={e => e.stopPropagation()} />
+                                          <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm dark:border-slate-600 dark:bg-slate-900" value={otroText} onChange={e => setDraft({ ...draft, servedAreas: formatPreferredServeArea(selected, e.target.value) })} onClick={e => e.stopPropagation()} />
                                         )}
                                       </div>
                                     ))}
@@ -38774,14 +38694,14 @@ function resolveEventName(eventId) {
                       <label className={labelClasses}>¿En qué área les gustaría servir?</label>
                       {(() => {
                         const opts = (globalConfig?.serveAreaOptions?.length ? globalConfig.serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS);
-                        const { selected, otroText } = parsePreferredServeArea(newEntry.preferredServeArea, opts);
+                        const { selected, otroText } = parsePreferredServeArea(draft.preferredServeArea, opts);
                         const isOpen = openPreferredServeLoc === loc;
                         const toggle = (opt) => {
                           const next = new Set(selected);
                           if (next.has(opt)) next.delete(opt);
                           else next.add(opt);
-                          if (opt === 'Otro' && !next.has('Otro')) setNewEntry({ ...newEntry, preferredServeArea: formatPreferredServeArea(next, '') });
-                          else setNewEntry({ ...newEntry, preferredServeArea: formatPreferredServeArea(next, opt === 'Otro' ? otroText : '') });
+                          if (opt === 'Otro' && !next.has('Otro')) setDraft({ ...draft, preferredServeArea: formatPreferredServeArea(next, '') });
+                          else setDraft({ ...draft, preferredServeArea: formatPreferredServeArea(next, opt === 'Otro' ? otroText : '') });
                         };
                         return (
                           <div className="relative" data-dropdown-root="new-preferred-areas">
@@ -38800,7 +38720,7 @@ function resolveEventName(eventId) {
                                         {opt}
                                       </label>
                                       {opt === 'Otro' && selected.has('Otro') && (
-                                        <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm dark:border-slate-600 dark:bg-slate-900" value={otroText} onChange={e => setNewEntry({ ...newEntry, preferredServeArea: formatPreferredServeArea(selected, e.target.value) })} onClick={e => e.stopPropagation()} />
+                                        <input type="text" placeholder="¿Cuál?" className="ml-6 mt-1 w-[calc(100%-1.5rem)] p-2 border border-slate-200 rounded text-sm dark:border-slate-600 dark:bg-slate-900" value={otroText} onChange={e => setDraft({ ...draft, preferredServeArea: formatPreferredServeArea(selected, e.target.value) })} onClick={e => e.stopPropagation()} />
                                       )}
                                     </div>
                                   ))}
@@ -38813,14 +38733,14 @@ function resolveEventName(eventId) {
                     </div>
                     <div className={fieldStack}>
                       <label className={labelClasses}>¿Sirve en su congre local?</label>
-                      <select className={inputClasses} value={newEntry.servesInCongress || 'No'} onChange={e => setNewEntry({ ...newEntry, servesInCongress: e.target.value, congressServeArea: isSiValue(e.target.value) ? newEntry.congressServeArea : '' })}>
+                      <select className={inputClasses} value={draft.servesInCongress || 'No'} onChange={e => setDraft({ ...draft, servesInCongress: e.target.value, congressServeArea: isSiValue(e.target.value) ? draft.congressServeArea : '' })}>
                         <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
                       </select>
                     </div>
-                    {isSiValue(newEntry.servesInCongress) && (
+                    {isSiValue(draft.servesInCongress) && (
                       <div className={fieldStack}>
                         <label className={labelClasses}>¿En qué área?</label>
-                        <input className={inputClasses} value={newEntry.congressServeArea || ''} onChange={e => setNewEntry({ ...newEntry, congressServeArea: e.target.value })} />
+                        <input className={inputClasses} value={draft.congressServeArea || ''} onChange={e => setDraft({ ...draft, congressServeArea: e.target.value })} />
                       </div>
                     )}
                   </div>
@@ -38835,7 +38755,7 @@ function resolveEventName(eventId) {
                   {fv('travelFrom') && (
                   <fieldset disabled={fieldBlocked('travelFrom')} className={`space-y-1 ${fieldBlocked('travelFrom') ? 'opacity-70' : ''}`}>
                     <label className={labelClasses}>Sale de sede</label>
-                    <select className={inputClasses} value={newEntry.travelFrom || loc} onChange={e => setNewEntry({ ...newEntry, travelFrom: e.target.value })}>
+                    <select className={inputClasses} value={draft.travelFrom || loc} onChange={e => setDraft({ ...draft, travelFrom: e.target.value })}>
                       {(currentEvent?.locations || []).map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </fieldset>
@@ -38843,7 +38763,7 @@ function resolveEventName(eventId) {
                   {fv('travelTo') && (
                   <fieldset disabled={fieldBlocked('travelTo')} className={`space-y-1 ${fieldBlocked('travelTo') ? 'opacity-70' : ''}`}>
                     <label className={labelClasses}>Regresa a sede</label>
-                    <select className={inputClasses} value={newEntry.travelTo || loc} onChange={e => setNewEntry({ ...newEntry, travelTo: e.target.value })}>
+                    <select className={inputClasses} value={draft.travelTo || loc} onChange={e => setDraft({ ...draft, travelTo: e.target.value })}>
                       {(currentEvent?.locations || []).map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </fieldset>
@@ -38856,8 +38776,8 @@ function resolveEventName(eventId) {
                         <input
                           type="checkbox"
                           className="h-4 w-4 accent-indigo-600 rounded"
-                          checked={!!newEntry.llegaEnCarro}
-                          onChange={(e) => setNewEntry({ ...newEntry, llegaEnCarro: e.target.checked })}
+                          checked={!!draft.llegaEnCarro}
+                          onChange={(e) => setDraft({ ...draft, llegaEnCarro: e.target.checked })}
                         />
                         Llega en carro
                       </label>
@@ -38865,8 +38785,8 @@ function resolveEventName(eventId) {
                         <input
                           type="checkbox"
                           className="h-4 w-4 accent-indigo-600 rounded"
-                          checked={!!newEntry.regresaEnCarro}
-                          onChange={(e) => setNewEntry({ ...newEntry, regresaEnCarro: e.target.checked })}
+                          checked={!!draft.regresaEnCarro}
+                          onChange={(e) => setDraft({ ...draft, regresaEnCarro: e.target.checked })}
                         />
                         Regresa en carro
                       </label>
@@ -38894,26 +38814,26 @@ function resolveEventName(eventId) {
                   </label>
                   <label className={formPaymentPairLabelRow}>
                     <span>Abono inicial ($)</span>
-                    {isCampa && isSiValue(newEntry.isScholarship) && newEntry.scholarshipType === 'partial' ? (
+                    {isCampa && isSiValue(draft.isScholarship) && draft.scholarshipType === 'partial' ? (
                       <span
                         className={formFieldPairLabelHint}
                         title="Cualquier abono entre $0 y el saldo pendiente por liquidar (lista menos monto becado). No requiere apartado mínimo."
                       >
                         Parcial: hasta{' '}
-                        {Number(getLiquidationTarget({ ...newEntry, isScholarship: SI, scholarshipType: 'partial' }) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {Number(getLiquidationTarget({ ...draft, isScholarship: SI, scholarshipType: 'partial' }) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
-                    ) : !(isCampa && isSiValue(newEntry.isScholarship)) ? (
+                    ) : !(isCampa && isSiValue(draft.isScholarship)) ? (
                       <span className={formFieldPairLabelHint}>Mín. ${currentEvent.minDeposit}</span>
                     ) : null}
                   </label>
                   <PaymentMethodSegmentToggle
-                    value={newEntry.paymentMethod}
+                    value={draft.paymentMethod}
                     cardEnabled={cardAllowedNewReg}
                     onChange={(method) =>
-                      setNewEntry({
-                        ...newEntry,
+                      setDraft({
+                        ...draft,
                         paymentMethod: method,
-                        cardReference: method === PAYMENT_TARJETA ? newEntry.cardReference : '',
+                        cardReference: method === PAYMENT_TARJETA ? draft.cardReference : '',
                       })
                     }
                   />
@@ -38922,21 +38842,21 @@ function resolveEventName(eventId) {
                     <input
                       type="number"
                       className={`${inputClasses} !pl-7 font-bold text-green-600 dark:text-green-400 focus:ring-green-500 dark:focus:ring-green-500 ${getRequiredFieldClass(missingInitialPaid)}`}
-                      value={newEntry.paid}
+                      value={draft.paid}
                       placeholder="0.00"
                       onChange={e => {
                         let val = e.target.value;
-                        if (val === '') { setNewEntry({ ...newEntry, paid: '' }); return; }
+                        if (val === '') { setDraft({ ...draft, paid: '' }); return; }
                         let numVal = parseFloat(val);
                         if (numVal < 0) numVal = 0;
-                        const bc = getPersonCost(newEntry, currentPricing, currentEvent);
+                        const bc = getPersonCost(draft, currentPricing, currentEvent);
                         let maxCap = bc;
-                        if (isCampa && isSiValue(newEntry.isScholarship) && newEntry.scholarshipType === 'partial') {
-                          const liq = getLiquidationTarget({ ...newEntry, isScholarship: SI, scholarshipType: 'partial' });
+                        if (isCampa && isSiValue(draft.isScholarship) && draft.scholarshipType === 'partial') {
+                          const liq = getLiquidationTarget({ ...draft, isScholarship: SI, scholarshipType: 'partial' });
                           maxCap = Math.min(bc, Math.max(0, liq));
                         }
                         if (numVal > maxCap) numVal = maxCap;
-                        setNewEntry({ ...newEntry, paid: numVal });
+                        setDraft({ ...draft, paid: numVal });
                       }}
                     />
                   </div>
@@ -38945,8 +38865,8 @@ function resolveEventName(eventId) {
                   <div className="hidden md:block" aria-hidden />
                   <div className={formPaymentHints}>
                     {(() => {
-                      const inv = parseStrictNonNegativeMoneyInput(newEntry.paid, { allowEmpty: true });
-                      if (inv.ok || newEntry.paid === '') return null;
+                      const inv = parseStrictNonNegativeMoneyInput(draft.paid, { allowEmpty: true });
+                      if (inv.ok || draft.paid === '') return null;
                       return (
                         <p className="text-[10px] text-red-600 font-semibold px-1 leading-snug">{inv.reason}</p>
                       );
@@ -38968,9 +38888,9 @@ function resolveEventName(eventId) {
                       ) : null}
                     </p>
                     {(() => {
-                      if (isCampa && isSiValue(newEntry.isScholarship)) return null;
-                      const w = parseStrictNonNegativeMoneyInput(newEntry.paid, { allowEmpty: true });
-                      if (newEntry.paid === '' || !w.ok || w.value >= currentEvent.minDeposit) return null;
+                      if (isCampa && isSiValue(draft.isScholarship)) return null;
+                      const w = parseStrictNonNegativeMoneyInput(draft.paid, { allowEmpty: true });
+                      if (draft.paid === '' || !w.ok || w.value >= currentEvent.minDeposit) return null;
                       return (
                         <p className="text-[10px] text-red-500 font-bold px-1">
                           Falta ${currentEvent.minDeposit - w.value} para el apartado
@@ -38979,14 +38899,14 @@ function resolveEventName(eventId) {
                     })()}
                   </div>
                 </div>
-                {newEntry.paymentMethod === PAYMENT_TARJETA && (
+                {draft.paymentMethod === PAYMENT_TARJETA && (
                   <div className={fieldStack}>
                     <label className={labelClasses}>Folio / referencia (opcional)</label>
                     <input
                       className={inputClasses}
-                      value={newEntry.cardReference}
+                      value={draft.cardReference}
                       placeholder="Ej. folio / transacción"
-                      onChange={(e) => setNewEntry({ ...newEntry, cardReference: e.target.value })}
+                      onChange={(e) => setDraft({ ...draft, cardReference: e.target.value })}
                     />
                   </div>
                 )}
@@ -39027,8 +38947,8 @@ function resolveEventName(eventId) {
                         <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide px-0.5">Aplicar campaña</label>
                         <select
                           className="w-full px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-700 outline-none focus:ring-2 focus:ring-slate-300"
-                          value={newEntry.selectedDiscountCampaignId || ''}
-                          onChange={(e) => setNewEntry({ ...newEntry, selectedDiscountCampaignId: e.target.value })}
+                          value={draft.selectedDiscountCampaignId || ''}
+                          onChange={(e) => setDraft({ ...draft, selectedDiscountCampaignId: e.target.value })}
                         >
                           <option value="">Automático (fechas vigentes hoy)</option>
                           {newRegSelectableCampaigns.map((c) => {
@@ -39096,16 +39016,16 @@ function resolveEventName(eventId) {
                     />
                   </div>
                   <div className="order-2 flex w-full min-w-0 items-end justify-end gap-3 lg:max-w-xs lg:shrink-0">
-                    <label className={`inline-flex items-center gap-2 text-sm whitespace-nowrap ${isCampa && isSiValue(newEntry.isScholarship) ? 'text-slate-400 cursor-not-allowed' : 'text-slate-600 dark:text-slate-300'}`}>
+                    <label className={`inline-flex items-center gap-2 text-sm whitespace-nowrap ${isCampa && isSiValue(draft.isScholarship) ? 'text-slate-400 cursor-not-allowed' : 'text-slate-600 dark:text-slate-300'}`}>
                       <input
                         type="checkbox"
                         className="h-4 w-4 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
                         checked={sendToWaitlist}
                         onChange={(e) => setSendToWaitlist(e.target.checked)}
-                        disabled={!isLocOpen(loc) || (isCampa && isSiValue(newEntry.isScholarship))}
+                        disabled={!isLocOpen(loc) || (isCampa && isSiValue(draft.isScholarship))}
                       />
                       Lista de espera
-                      {isCampa && isSiValue(newEntry.isScholarship) ? (
+                      {isCampa && isSiValue(draft.isScholarship) ? (
                         <span className="text-[10px] font-bold text-purple-600 normal-case">(la beca ya va a espera)</span>
                       ) : null}
                     </label>
@@ -39115,7 +39035,11 @@ function resolveEventName(eventId) {
                     >
                       <button
                         type="button"
-                        onClick={() => (sendToWaitlist ? handleAddToWaitlist(loc) : handleAddEntry(loc))}
+                        onClick={() =>
+                          sendToWaitlist
+                            ? handleAddToWaitlist(loc, false, null, draft)
+                            : handleAddEntry(loc, draft)
+                        }
                         disabled={!canSubmitNewRegistration}
                         className={`sm:w-auto px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all border shadow-lg active:scale-95 ${
                           canSubmitNewRegistration
@@ -39124,7 +39048,7 @@ function resolveEventName(eventId) {
                         }`}
                       >
                         <Plus size={20} />{' '}
-                        {isCampa && isSiValue(newEntry.isScholarship)
+                        {isCampa && isSiValue(draft.isScholarship)
                           ? 'Enviar solicitud de beca'
                           : sendToWaitlist || (isLocationFull(loc) && !(isPastorNewReg && pastorOverCapAllowed))
                             ? 'Registrar (a espera)'
@@ -39141,6 +39065,9 @@ function resolveEventName(eventId) {
         </div>
         {renderCapFullWaitlistConfirmModal()}
         </>
+            );
+          }}
+        </NewRegModalDraftProvider>
       )}
 
       <div className={uiLocationNewRegCta.listDivider}>
@@ -41371,6 +41298,8 @@ function resolveEventName(eventId) {
       navHistory,
       forwardNavStack,
       activeTab,
+      deferredActiveTab,
+      navContentPending,
       systemView,
       selectedEventId,
       darkMode,

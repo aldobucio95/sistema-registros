@@ -165,6 +165,47 @@ describe('mergeCarMetaCacheIntoPlan', () => {
     });
     expect(collectCarColorSuggestions(merged)).toEqual(['Azul', 'Rojo']);
   });
+
+  it('merging loaded cache before crew patches preserves vehicle fields after autosave', async () => {
+    const { buildDefaultManualGroupCrewPatches, mergeCarMetaPatchesIntoPlan } = await import(
+      '../bautizosCarMeta.js'
+    );
+    const vehicleKey = 'p:h1|c1';
+    const loadedCache = {
+      [vehicleKey]: {
+        brand: 'Toyota',
+        model: 'Corolla',
+        color: 'Plata',
+        plates: 'ABC123',
+        ownerSourceKey: 'p:h1',
+        driverSourceKey: 'p:h1',
+        passengerSourceKeys: ['c:h1:0'],
+      },
+    };
+    const planEmpty = transportPlanningFromEventDoc({ transportCarMetaStorageVersion: 1 });
+    const withoutLoadedCache = mergeCarMetaCacheIntoPlan(planEmpty, {});
+    const orphanCrewPatches = buildDefaultManualGroupCrewPatches(
+      withoutLoadedCache,
+      'p:h1',
+      ['p:h1', 'p:h2'],
+      1
+    );
+    expect(orphanCrewPatches.length).toBe(1);
+    const stripped = mergeCarMetaPatchesIntoPlan(withoutLoadedCache, orphanCrewPatches);
+    expect(stripped.carMetaBySource[vehicleKey]?.brand).toBe('');
+
+    const withLoadedCache = mergeCarMetaCacheIntoPlan(planEmpty, loadedCache);
+    const safeCrewPatches = buildDefaultManualGroupCrewPatches(
+      withLoadedCache,
+      'p:h1',
+      ['p:h1', 'p:h2'],
+      1
+    );
+    expect(safeCrewPatches.length).toBe(0);
+    const preserved = mergeCarMetaPatchesIntoPlan(withLoadedCache, safeCrewPatches);
+    expect(preserved.carMetaBySource[vehicleKey].brand).toBe('Toyota');
+    expect(preserved.carMetaBySource[vehicleKey].plates).toBe('ABC123');
+  });
 });
 
 describe('transportPlanningStructureSignature', () => {

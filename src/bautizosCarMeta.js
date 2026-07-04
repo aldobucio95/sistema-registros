@@ -345,6 +345,13 @@ function vehicleMetaHasCapturedValues(meta) {
   return false;
 }
 
+/** Solo persistir en Firestore si hay datos capturados o el carro está marcado ausente. */
+export function carMetaPatchNeedsFirestoreWrite(meta) {
+  const m = normalizeCarVehicleMeta(meta);
+  if (m.maybeAbsent) return true;
+  return vehicleMetaHasCapturedValues(m);
+}
+
 function titularSummaryHasCapturedCarMeta(summaryEntry) {
   const cars = summaryEntry?.cars;
   if (!Array.isArray(cars) || !cars.length) return false;
@@ -691,6 +698,7 @@ export function buildMergedFamilyCarInventory({
   hostSourceKey,
   draftMetaByVehicleKey,
   draftCompanionKeys,
+  useBlankSlotMeta = false,
 }) {
   const base = buildBautizosFamilyCarInventory({
     hostPerson,
@@ -698,6 +706,7 @@ export function buildMergedFamilyCarInventory({
     plan,
     hostSourceKey,
     draftCompanionKeys,
+    useBlankSlotMeta,
   });
   return base.map((slot) => ({
     ...slot,
@@ -1800,6 +1809,7 @@ export function buildCarMetaPatchesAfterSave({
   draftMetaByVehicleKey,
   hostId,
   roster,
+  useBlankSlotMeta = false,
 }) {
   const hostSk = `p:${String(hostId || '').trim()}`;
   const linkedInherit = resolveLinkedCompanionCarInheritance(
@@ -1832,18 +1842,26 @@ export function buildCarMetaPatchesAfterSave({
     plan,
     hostSourceKey: manualCtx?.isAnchor ? manualCtx.anchorSk : hostSk,
     carCountOverride,
+    useBlankSlotMeta,
   });
-  const patches = inventory.map((slot) => ({
-    vehicleKey: slot.vehicleKey,
-    patch: normalizeCarMetaWithCrewDedupe(
-      {
-        ...slot.meta,
-        ...(draftMetaByVehicleKey?.[slot.vehicleKey] || {}),
-        ownerSourceKey: slot.ownerSourceKey,
-      },
-      roster
-    ),
-  }));
+  const patches = inventory.map((slot) => {
+    const draftKey = `p:draft-host|c${slot.carIndex}`;
+    const draftMeta =
+      draftMetaByVehicleKey?.[slot.vehicleKey] ||
+      draftMetaByVehicleKey?.[draftKey] ||
+      {};
+    return {
+      vehicleKey: slot.vehicleKey,
+      patch: normalizeCarMetaWithCrewDedupe(
+        {
+          ...slot.meta,
+          ...draftMeta,
+          ownerSourceKey: slot.ownerSourceKey,
+        },
+        roster
+      ),
+    };
+  });
   const draftOnly = Object.entries(draftMetaByVehicleKey || {})
     .filter(([k]) => !inventory.some((s) => s.vehicleKey === k))
     .map(([vehicleKey, meta]) => ({

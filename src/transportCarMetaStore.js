@@ -198,10 +198,23 @@ export function slotsFromTitularCarMetaSummary(summaryEntry) {
  * Lectura bajo demanda (getDocs + where) — no listener en tiempo real.
  * Razón: datos de carro solo se necesitan al expandir tarjeta/formulario.
  */
-export async function fetchCarMetaForTitular(eventId, titularSk) {
+export async function fetchCarMetaForTitular(eventId, titularSk, opts = {}) {
   const eid = String(eventId || '').trim();
   const owner = String(titularSk || '').trim();
   if (!eid || !owner) return {};
+
+  const preferV2 = opts.preferV2 !== false;
+  const ownerPid = owner.startsWith('p:') ? owner.slice(2) : owner;
+
+  if (preferV2) {
+    try {
+      const { fetchLegacyCarMetaForTitularV2 } = await import('./transport/v2/transportService.js');
+      const v2Map = await fetchLegacyCarMetaForTitularV2(eid, ownerPid);
+      if (Object.keys(v2Map).length) return v2Map;
+    } catch {
+      /* fallback v1 */
+    }
+  }
 
   const col = getTransportCarMetaColRef(eid);
   const q = query(col, where('ownerSourceKey', '==', owner));
@@ -215,9 +228,25 @@ export async function fetchCarMetaForTitular(eventId, titularSk) {
 }
 
 /** Toda la meta de carro del evento (subcolección); para sugerencias de color y lectura inicial. */
-export async function fetchAllCarMetaForEvent(eventId) {
+export async function fetchAllCarMetaForEvent(eventId, opts = {}) {
   const eid = String(eventId || '').trim();
   if (!eid) return {};
+
+  const useV2 =
+    opts.preferV2 === true || Number(opts.transportVersion) >= 2;
+
+  if (useV2) {
+    try {
+      const { fetchAllCarMetaForEventV2 } = await import('./transport/v2/transportService.js');
+      const v2Map = await fetchAllCarMetaForEventV2(eid);
+      const v2Keys = Object.keys(v2Map).length;
+      if (v2Keys > 0) {
+        return v2Map;
+      }
+    } catch {
+      /* fallback v1 */
+    }
+  }
 
   const snap = await getDocs(getTransportCarMetaColRef(eid));
   const out = {};
@@ -471,6 +500,7 @@ export async function persistCarMetaPatchesToSubcollection({
   roster,
   getDocRef,
   updateDoc,
+  deferEventDocUpdate = false,
 }) {
   const eid = String(eventId || '').trim();
   if (!eid || !patches?.length) return normalizeTransportPlanning(currentPlan);
@@ -486,10 +516,29 @@ export async function persistCarMetaPatchesToSubcollection({
     bautizosCarMetaSummaryByTitular: summary,
   });
 
+  const resultPlan = transportPlanningFromEventDoc({
+    ...nextPlan,
+    bautizosCarMetaSummaryByTitular: summary,
+    transportCarMetaStorageVersion: TRANSPORT_CAR_META_STORAGE_VERSION,
+  });
+
+  if (deferEventDocUpdate) {
+    return resultPlan;
+  }
+
   await updateDoc(getDocRef('app_events', eid), {
     transportPlanning: eventPlan,
   });
 
+  return resultPlan;
+}
+
+/** Plan en memoria tras parches (sin escribir Firestore). */
+export function applyCarMetaPatchesLocally(plan, patches, roster) {
+  if (!patches?.length) return normalizeTransportPlanning(plan);
+  const mergedPlan = mergeCarMetaPatchesIntoPlan(normalizeTransportPlanning(plan), patches);
+  const nextPlan = applyCarMetaPassengerInheritance(mergedPlan);
+  const summary = buildCarMetaSummaryByTitularFromPlan(nextPlan, roster);
   return transportPlanningFromEventDoc({
     ...nextPlan,
     bautizosCarMetaSummaryByTitular: summary,

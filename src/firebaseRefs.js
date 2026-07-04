@@ -41,6 +41,13 @@ export const getTransportCarMetaColRef = (eventId) =>
 export const getTransportCarMetaDocRef = (eventId, vehicleDocId) =>
   doc(db, 'app_events', String(eventId || '').trim(), 'transport_car_meta', String(vehicleDocId || '').trim());
 
+/** Subcolección v2: un doc por vehículo (`app_events/{eventId}/transport_vehicles`). */
+export const getTransportVehiclesColRef = (eventId) =>
+  collection(db, 'app_events', String(eventId || '').trim(), 'transport_vehicles');
+
+export const getTransportVehicleDocRef = (eventId, vehicleDocId) =>
+  doc(db, 'app_events', String(eventId || '').trim(), 'transport_vehicles', String(vehicleDocId || '').trim());
+
 export const getPublicColRef = (colName) => collection(publicDb, colName);
 
 export const getPublicDocRef = (colName, docId) => doc(publicDb, colName, docId);

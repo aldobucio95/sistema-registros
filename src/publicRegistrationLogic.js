@@ -389,19 +389,8 @@ function sanitizeEventIdForParticipantDocSuffix(eventId) {
  * Así no se sobrescribe la participación en el evento anterior.
  */
 export async function resolveParticipantDocumentIdForWrite(vnpRaw, eventId) {
-  const base = participantDocumentIdFromVnpPersonId(vnpRaw);
-  if (!base) return String(Date.now());
-  const ev = String(eventId || '').trim();
-  if (!ev) return base;
-  try {
-    const snap = await getDoc(getDocRef('app_participants', base));
-    if (!snap.exists()) return base;
-    const ex = snap.data();
-    if (String(ex?.eventId || '') === ev) return base;
-    return `${base}__e_${sanitizeEventIdForParticipantDocSuffix(ev)}`;
-  } catch {
-    return `${base}__e_${sanitizeEventIdForParticipantDocSuffix(ev)}`;
-  }
+  const { docId } = await resolveParticipantDocIdAndWriteGate(vnpRaw, eventId);
+  return docId;
 }
 
 function firestoreExistingBlocksSameEventRegistration(existing, eventId) {
@@ -418,7 +407,11 @@ function firestoreExistingBlocksSameEventRegistration(existing, eventId) {
 export async function loadParticipantRegistrationWriteGate(participantDocId, eventId) {
   const ref = getDocRef('app_participants', participantDocId);
   const snap = await getDoc(ref);
-  if (!snap.exists()) return { ok: true, snap: null };
+  return writeGateFromParticipantSnap(snap, participantDocId, eventId);
+}
+
+function writeGateFromParticipantSnap(snap, participantDocId, eventId) {
+  if (!snap || !snap.exists()) return { ok: true, snap: null };
   const ex = snap.data();
   if (firestoreExistingBlocksSameEventRegistration(ex, eventId)) {
     return {
@@ -428,6 +421,43 @@ export async function loadParticipantRegistrationWriteGate(participantDocId, eve
     };
   }
   return { ok: true, snap };
+}
+
+/** Resuelve docId y gate reutilizando la(s) misma(s) lectura(s) getDoc — evita getDoc duplicado. */
+export async function resolveParticipantDocIdAndWriteGate(vnpRaw, eventId) {
+  const base = participantDocumentIdFromVnpPersonId(vnpRaw);
+  if (!base) {
+    return { docId: String(Date.now()), gate: { ok: true, snap: null } };
+  }
+  const ev = String(eventId || '').trim();
+  if (!ev) {
+    const snap = await getDoc(getDocRef('app_participants', base));
+    return { docId: base, gate: writeGateFromParticipantSnap(snap, base, eventId) };
+  }
+  try {
+    const baseSnap = await getDoc(getDocRef('app_participants', base));
+    if (!baseSnap.exists()) {
+      return { docId: base, gate: { ok: true, snap: null } };
+    }
+    const ex = baseSnap.data();
+    if (String(ex?.eventId || '') === ev) {
+      return { docId: base, gate: writeGateFromParticipantSnap(baseSnap, base, eventId) };
+    }
+    const docId = `${base}__e_${sanitizeEventIdForParticipantDocSuffix(ev)}`;
+    if (docId === base) {
+      return { docId: base, gate: writeGateFromParticipantSnap(baseSnap, base, eventId) };
+    }
+    const suffixSnap = await getDoc(getDocRef('app_participants', docId));
+    return { docId, gate: writeGateFromParticipantSnap(suffixSnap, docId, eventId) };
+  } catch {
+    const docId = `${base}__e_${sanitizeEventIdForParticipantDocSuffix(ev)}`;
+    try {
+      const snap = await getDoc(getDocRef('app_participants', docId));
+      return { docId, gate: writeGateFromParticipantSnap(snap, docId, eventId) };
+    } catch {
+      return { docId, gate: { ok: true, snap: null } };
+    }
+  }
 }
 
 export const generateVnpPersonId = (personLike = {}) => {
@@ -2670,6 +2700,7 @@ export async function submitPublicRegistration({
         plan: eventSnapshot.transportPlanning,
         hostSourceKey: 'p:draft-host',
         draftMetaByVehicleKey: entry.draftCarMetaByVehicleKey || rawEntry.draftCarMetaByVehicleKey || {},
+        useBlankSlotMeta: true,
       }),
       { hostPerson: personData, companions: personData.bautizosCompanions }
     );
