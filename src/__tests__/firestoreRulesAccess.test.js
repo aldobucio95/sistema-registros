@@ -8,8 +8,9 @@ function matchBlock(collectionName) {
   const marker = `match /${collectionName}/{docId} {`;
   const start = rules.indexOf(marker);
   expect(start).toBeGreaterThanOrEqual(0);
+  const blockStart = start + marker.length - 1;
   let depth = 0;
-  for (let i = start; i < rules.length; i++) {
+  for (let i = blockStart; i < rules.length; i++) {
     const ch = rules[i];
     if (ch === '{') depth += 1;
     if (ch === '}') {
