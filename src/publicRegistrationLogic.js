@@ -1,4 +1,6 @@
 import { setDoc, getDoc, getDocs, query, where, limit, updateDoc } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { app } from './firebaseConfig.js';
 import { getDocRef, getColRef } from './firebaseRefs.js';
 import { buildLogId, writeSnapshotDoc } from './activityLogCore.js';
 import { withLogVisibleInPanel, buildLogEntityFields } from './activityLogsMeta.js';
@@ -1644,9 +1646,27 @@ function shouldRedirectPublicRegistrationToWaitlist(entry, loc, eventForCaps, pa
 }
 
 export async function fetchParticipantsForEvent(eventId) {
+  try {
+    const functions = getFunctions(app, 'us-central1');
+    const publicListParticipantsForEvent = httpsCallable(functions, 'publicListParticipantsForEvent');
+    const res = await publicListParticipantsForEvent({ eventId });
+    if (Array.isArray(res?.data?.participants)) return res.data.participants;
+  } catch (e) {
+    console.warn('publicListParticipantsForEvent callable failed; falling back to Firestore query', e);
+  }
   const q = query(getColRef('app_participants'), where('eventId', '==', eventId));
   const snap = await getDocs(q);
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+async function persistPublicEventCarMetaPatches(args) {
+  try {
+    return await persistEventCarMetaPatches(args);
+  } catch (e) {
+    // Anonymous public registration cannot be allowed to mutate event docs directly.
+    console.warn('public registration car metadata update skipped', e);
+    return null;
+  }
 }
 
 /** Misma forma que `addLog` en App.jsx. Fallos no bloquean el alta. */
@@ -2037,7 +2057,7 @@ async function submitPublicBautizosSplitRegistration({
       hostId: hostDocId,
     });
     if (carPatches.length) {
-      await persistEventCarMetaPatches({
+      await persistPublicEventCarMetaPatches({
         eventId: eventSnapshot.id,
         patches: carPatches,
         currentPlan: eventSnapshot.transportPlanning,
@@ -2484,7 +2504,7 @@ export async function submitPublicRegistration({
       hostId: docId,
     });
     if (carPatches.length) {
-      await persistEventCarMetaPatches({
+      await persistPublicEventCarMetaPatches({
         eventId: eventSnapshot.id,
         patches: carPatches,
         currentPlan: eventSnapshot.transportPlanning,
@@ -2819,7 +2839,7 @@ async function submitWaitlist({
       hostId: docId,
     });
     if (carPatches.length) {
-      await persistEventCarMetaPatches({
+      await persistPublicEventCarMetaPatches({
         eventId: eventSnapshot.id,
         patches: carPatches,
         currentPlan: eventSnapshot.transportPlanning,
@@ -2849,6 +2869,14 @@ async function submitWaitlist({
 export async function fetchParticipantsByVnpPersonId(rawVnpId) {
   const id = canonicalizeVnpPersonId(rawVnpId);
   if (!id || id.length < 6) return [];
+  try {
+    const functions = getFunctions(app, 'us-central1');
+    const publicFindParticipantsByVnpPersonId = httpsCallable(functions, 'publicFindParticipantsByVnpPersonId');
+    const res = await publicFindParticipantsByVnpPersonId({ vnpPersonId: id });
+    if (Array.isArray(res?.data?.participants)) return res.data.participants;
+  } catch (e) {
+    console.warn('publicFindParticipantsByVnpPersonId callable failed; falling back to Firestore query', e);
+  }
   const q = query(getColRef('app_participants'), where('vnpPersonId', '==', id), limit(25));
   const snap = await getDocs(q);
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));

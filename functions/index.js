@@ -202,6 +202,77 @@ function normalizeUsernameKey(username) {
   return safe || 'user';
 }
 
+function assertCallableAuth(request) {
+  if (!request.auth?.uid) {
+    throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
+  }
+}
+
+function sanitizePublicParticipantDoc(doc) {
+  const data = doc.data() || {};
+  const out = {};
+  for (const key of [
+    'id',
+    'eventId',
+    'status',
+    'name',
+    'location',
+    'age',
+    'phone',
+    'vnpPersonId',
+    'isServer',
+    'serverAssignment',
+    'ambosServeInSegment',
+    'attendanceSpecialType',
+    'bautizosAttendanceType',
+    'bautizosCompanions',
+    'wantsBautizosTransport',
+    'llegaEnCarro',
+    'carrosLlegada',
+    'registeredCost',
+    'registeredCostManual',
+  ]) {
+    if (data[key] !== undefined) out[key] = data[key];
+  }
+  out.id = String(data.id || doc.id);
+  return out;
+}
+
+async function assertPublicRegistrationLinkForEvent(eventId) {
+  const eid = String(eventId || '').trim();
+  if (!eid) {
+    throw new HttpsError('invalid-argument', 'Falta eventId.');
+  }
+  const direct = await db.collection('app_public_registration_links').doc(eid).get();
+  if (direct.exists && String(direct.data()?.eventId || eid) === eid) return eid;
+  const snap = await db.collection('app_public_registration_links').where('eventId', '==', eid).limit(1).get();
+  if (!snap.empty) return eid;
+  throw new HttpsError('permission-denied', 'El evento no tiene enlace público activo.');
+}
+
+/**
+ * Consulta pública acotada para el QR: evita conceder list directo sobre app_participants.
+ */
+exports.publicListParticipantsForEvent = onCall(async (request) => {
+  assertCallableAuth(request);
+  const eventId = await assertPublicRegistrationLinkForEvent(request.data?.eventId);
+  const snap = await db.collection('app_participants').where('eventId', '==', eventId).get();
+  return { participants: snap.docs.map(sanitizePublicParticipantDoc) };
+});
+
+/**
+ * Búsqueda pública acotada por VNPM para prevenir duplicados sin abrir queries directas.
+ */
+exports.publicFindParticipantsByVnpPersonId = onCall(async (request) => {
+  assertCallableAuth(request);
+  const vnp = String(request.data?.vnpPersonId || '').trim();
+  if (vnp.length < 6 || vnp.length > 80) {
+    throw new HttpsError('invalid-argument', 'VNPM inválido.');
+  }
+  const snap = await db.collection('app_participants').where('vnpPersonId', '==', vnp).limit(25).get();
+  return { participants: snap.docs.map(sanitizePublicParticipantDoc) };
+});
+
 
 /**
  * Login con «solo usuario»: resuelve el correo real de Firebase guardado en app_users (sin leer Firestore desde el cliente anónimo).
