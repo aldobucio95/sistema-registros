@@ -5,15 +5,17 @@ import {
   countUnsentWhatsAppNotificationsForQueue,
   dedupeUnsentCarDataNotifications,
   filterWhatsAppFinanceNotificationsForQueue,
+  getBautizosRegistrationCarValidationIssues,
   isCarDataNotificationSnoozed,
   participantMatchesCarDataCompleteFilter,
   participantMatchesCarDataFilter,
   participantMatchesCarDataPendingFilter,
   personInventoryNeedsCarDataAttention,
+  personCarDataNeedsAttentionFromPlan,
   personSubjectToCarDataProvision,
   titularCarDataVisibleInWhatsAppQueue,
 } from '../carDataWhatsApp.js';
-import { buildCarDataWaSubjectContext } from '../bautizosCarMeta.js';
+import { buildCarDataWaSubjectContext, markAllEmptyAsPending, normalizeCarVehicleMeta, resolveBautizosCarDataAnchor } from '../bautizosCarMeta.js';
 import { buildCarDataRequestWhatsAppMessage, buildMergedFinanceWhatsAppMessage } from '../whatsappFinanceMessages.js';
 
 const getMarkKey = (n) => (n?.id ? String(n.id) : `legacy-${n.createdAt}-${n.kind}`);
@@ -201,6 +203,123 @@ describe('buildMergedFinanceWhatsAppMessage datos_carro', () => {
     expect((text.match(/¡Hola!/g) || []).length).toBe(1);
     expect(text).toContain('────────────────');
     expect(text).toMatch(/revisa que TODA la información/i);
+  });
+});
+
+describe('personCarDataNeedsAttentionFromPlan', () => {
+  it('usa meta en memoria aunque el resumen del evento diga pendiente', () => {
+    const host = {
+      id: 'host-1',
+      name: 'Ana',
+      llegaEnCarro: true,
+      wantsBautizosTransport: 'No',
+      carrosLlegada: 1,
+    };
+    const roster = [host];
+    const event = {
+      eventType: 'Bautizos',
+      transportPlanning: {
+        transportCarMetaStorageVersion: 1,
+        bautizosCarMetaSummaryByTitular: {
+          'p:host-1': {
+            needsAttention: true,
+            cars: [{ carIndex: 1, vehiclePending: true, vehicleFieldsComplete: false }],
+          },
+        },
+        carMetaBySource: {
+          'p:host-1|c1': {
+            brand: 'Toyota',
+            model: 'Corolla',
+            color: 'Blanco',
+            plates: 'ABC123',
+            driverSourceKey: 'p:host-1',
+            passengerSourceKeys: [],
+          },
+        },
+      },
+    };
+    const anchor = resolveBautizosCarDataAnchor(host, roster, event);
+    expect(personCarDataNeedsAttentionFromPlan(event, anchor, roster, event.transportPlanning)).toBe(
+      false
+    );
+    expect(personInventoryNeedsCarDataAttention(host, event, roster)).toBe(true);
+  });
+});
+
+describe('getBautizosRegistrationCarValidationIssues', () => {
+  it('no bloquea edición al agregar acompañante si el titular ya tiene datos de carro', async () => {
+    const host = {
+      id: 'host-1',
+      name: 'Ana',
+      llegaEnCarro: true,
+      wantsBautizosTransport: 'No',
+      carrosLlegada: 1,
+      bautizosCompanions: [
+        { id: 'c1', name: 'Luis', llegaEnCarro: false, wantsBautizosTransport: 'Si' },
+      ],
+    };
+    const roster = [host];
+    const event = {
+      id: 'evt-1',
+      eventType: 'Bautizos',
+      transportPlanning: {
+        transportCarMetaStorageVersion: 1,
+        bautizosCarMetaSummaryByTitular: {
+          'p:host-1': {
+            needsAttention: true,
+            cars: [{ carIndex: 1, vehiclePending: true, vehicleFieldsComplete: false }],
+          },
+        },
+        carMetaBySource: {
+          'p:host-1|c1': {
+            brand: 'Toyota',
+            model: 'Corolla',
+            color: 'Blanco',
+            plates: 'ABC123',
+            driverSourceKey: 'p:host-1',
+            passengerSourceKeys: [],
+          },
+        },
+      },
+    };
+
+    const issues = await getBautizosRegistrationCarValidationIssues({
+      person: host,
+      eventSnapshot: event,
+      roster,
+      draftMetaByVehicleKey: {},
+    });
+    expect(issues).toEqual([]);
+  });
+
+  it('permite guardar cuando el borrador marca rubros vacíos como pendientes', async () => {
+    const host = {
+      id: 'host-2',
+      name: 'Luis',
+      llegaEnCarro: true,
+      wantsBautizosTransport: 'No',
+      carrosLlegada: 1,
+      bautizosCompanions: [],
+    };
+    const roster = [host];
+    const event = {
+      id: 'evt-2',
+      eventType: 'Bautizos',
+      transportPlanning: {
+        transportCarMetaStorageVersion: 1,
+        carMetaBySource: {},
+      },
+    };
+    const pendingMeta = markAllEmptyAsPending(normalizeCarVehicleMeta(null), {
+      requiresPassengers: false,
+    });
+    const issues = await getBautizosRegistrationCarValidationIssues({
+      person: host,
+      eventSnapshot: event,
+      roster,
+      draftMetaByVehicleKey: { 'p:host-2|c1': pendingMeta },
+    });
+    expect(issues).toEqual([]);
   });
 });
 

@@ -1,26 +1,33 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Church, Link2, Trash2, Users } from 'lucide-react';
+import { AlertTriangle, Church, Gift, Link2, Trash2, Users } from 'lucide-react';
 import {
   BAUTIZOS_ATTENDANCE,
   BAUTIZOS_UNDER_3_POLICY_NOTE,
   bautizosAttendanceCombinationLabel,
   bautizosAttendanceOptionDisabled,
   bautizosAttendanceOptionDisabledTitle,
+  bautizosCompanionHasCourtesyAttendance,
+  bautizosCompanionParticipatesAsServer,
+  bautizosHostAllowsCompanionCourtesy,
   bautizosServerToggleLocked,
   bautizosShowsCompanionServerParticipation,
+  bautizosShowsCompanionServerProfileFields,
   bautizosShowsServerParticipation,
   companionRowPhoneLooksValid,
   isBautizosUnder3YearsAtEvent,
   normalizeBautizosAttendanceType,
+  normalizeBautizosCompanionHealthFieldsForForm,
   syncBautizosAttendanceServerFields,
   syncBautizosCompanionServerFields,
 } from './bautizosParty.js';
 import { isSiValue, canonicalizeVnpPersonId, generateVnpPersonId } from './publicRegistrationLogic.js';
 import {
   DEFAULT_ALLERGY_OPTIONS,
+  DEFAULT_SERVE_AREA_OPTIONS,
   BLOOD_TYPE_UNSPECIFIED,
   BLOOD_TYPES_SELECT_OPTIONS,
 } from './registrationFormShared.js';
+import ServeAreaMultiSelect from './components/ServeAreaMultiSelect.jsx';
 import GenderSelectButtons from './components/GenderSelectButtons.jsx';
 import SedeAutocompleteInput from './components/SedeAutocompleteInput.jsx';
 import RegistryBirthDateField from './RegistryBirthDateField.jsx';
@@ -273,10 +280,12 @@ export function BautizosCompanionServerParticipationFields({
   variant = 'panel',
 }) {
   if (!bautizosShowsCompanionServerParticipation(companion)) return null;
+  const serverBtnActive = 'bg-amber-500 text-white border-amber-400 dark:bg-amber-600 dark:border-amber-500';
   const choiceBtnClass = (on) =>
     variant === 'public'
-      ? `${uiFormChoiceBtn.public} ${on ? uiFormChoiceBtn.activePublic : uiFormChoiceBtn.idlePublic}`
-      : `${uiFormChoiceBtn.panel} ${on ? 'bg-amber-500 text-white border-amber-400' : 'bg-white text-slate-600 border-slate-200'}`;
+      ? `${uiFormChoiceBtn.public} ${on ? serverBtnActive : uiFormChoiceBtn.idlePublic}`
+      : `${uiFormChoiceBtn.panel} ${on ? serverBtnActive : 'bg-white text-slate-600 border-slate-200 dark:bg-slate-900 dark:text-slate-200 dark:border-slate-600'}`;
+  const isServer = bautizosCompanionParticipatesAsServer(companion);
   return (
     <div className="space-y-2">
       <label className={labelClasses}>Participa como servidor</label>
@@ -284,10 +293,10 @@ export function BautizosCompanionServerParticipationFields({
         type="button"
         disabled={disabled}
         onClick={() => {
-          const next = isSiValue(companion?.isServer) ? 'No' : SI;
+          const next = isServer ? 'No' : SI;
           onCompanionChange(syncBautizosCompanionServerFields({ ...companion, isServer: next }));
         }}
-        className={choiceBtnClass(isSiValue(companion?.isServer))}
+        className={choiceBtnClass(isServer)}
       >
         <Users size={14} /> {formatSiNo(companion?.isServer)}
       </button>
@@ -299,6 +308,222 @@ export function BautizosCompanionServerParticipationFields({
           No contará en Servidores hasta promover a inscrito activo.
         </p>
       ) : null}
+    </div>
+  );
+}
+
+/** Campos extra de servidor (pareja, hijos, áreas) — mismo bloque para titular y acompañante. */
+export function BautizosServerProfileExtraFields({
+  entry,
+  onEntryChange,
+  disabled = false,
+  labelClasses,
+  inputClasses,
+  serveAreaOptions = DEFAULT_SERVE_AREA_OPTIONS,
+  /** Texto bajo el título; por defecto el del formulario de titular/acompañante Bautizos. */
+  helperIntro = 'Marque «Participa como servidor» arriba si aplica; aquí solo datos de pareja, hijos y áreas de servicio.',
+  borderTopClass = 'border-slate-200 dark:border-slate-600',
+}) {
+  const areaOpts = Array.isArray(serveAreaOptions) && serveAreaOptions.length ? serveAreaOptions : DEFAULT_SERVE_AREA_OPTIONS;
+  const patch = (partial) => onEntryChange({ ...entry, ...partial });
+  return (
+    <div className={`mt-4 pt-4 border-t ${borderTopClass} space-y-3`}>
+      <p className="text-[10px] font-black uppercase tracking-widest text-amber-900 dark:text-amber-200">
+        Información adicional de servidor <span className="font-normal normal-case text-slate-500">(opcional)</span>
+      </p>
+      <p className="text-[10px] text-slate-500 leading-snug -mt-1">{helperIntro}</p>
+      <div className="p-3 bg-amber-50/50 border border-amber-100 rounded-lg dark:bg-amber-950 dark:border-amber-700">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className={fieldStack}>
+            <label className={labelClasses}>¿Es casado y va con su esposo(a)?</label>
+            <select
+              className={inputClasses}
+              disabled={disabled}
+              value={entry?.isMarried || 'No'}
+              onChange={(e) =>
+                patch({
+                  isMarried: e.target.value,
+                  spouseName: isSiValue(e.target.value) ? entry?.spouseName || '' : '',
+                })
+              }
+            >
+              <option value="No">No</option>
+              <option value={SI}>Sí</option>
+            </select>
+          </div>
+          {isSiValue(entry?.isMarried) ? (
+            <div className={fieldStack}>
+              <label className={labelClasses}>Nombre de pareja</label>
+              <input
+                type="text"
+                className={inputClasses}
+                disabled={disabled}
+                value={entry?.spouseName || ''}
+                onChange={(e) => patch({ spouseName: e.target.value })}
+              />
+            </div>
+          ) : null}
+          <div className={fieldStack}>
+            <label className={labelClasses}>¿Va con hijos?</label>
+            <select
+              className={inputClasses}
+              disabled={disabled}
+              value={entry?.goesWithChildren || 'No'}
+              onChange={(e) =>
+                patch({
+                  goesWithChildren: e.target.value,
+                  childrenCount: isSiValue(e.target.value) ? entry?.childrenCount ?? '' : '',
+                })
+              }
+            >
+              <option value="No">No</option>
+              <option value={SI}>Sí</option>
+            </select>
+          </div>
+          {isSiValue(entry?.goesWithChildren) ? (
+            <div className={fieldStack}>
+              <label className={labelClasses}>¿Cuántos?</label>
+              <input
+                type="number"
+                min="1"
+                className={inputClasses}
+                disabled={disabled}
+                placeholder="Número"
+                value={entry?.childrenCount || ''}
+                onChange={(e) => patch({ childrenCount: e.target.value })}
+              />
+            </div>
+          ) : null}
+          <div className={fieldStack}>
+            <label className={labelClasses}>¿Han servido en otro campa?</label>
+            <select
+              className={inputClasses}
+              disabled={disabled}
+              value={entry?.servedOtherCampa || 'No'}
+              onChange={(e) =>
+                patch({
+                  servedOtherCampa: e.target.value,
+                  servedAreas: isSiValue(e.target.value) ? entry?.servedAreas || '' : '',
+                })
+              }
+            >
+              <option value="No">No</option>
+              <option value={SI}>Sí</option>
+            </select>
+          </div>
+          {isSiValue(entry?.servedOtherCampa) ? (
+            <div className="space-y-1 sm:col-span-2">
+              <label className={labelClasses}>¿En qué áreas?</label>
+              <ServeAreaMultiSelect
+                inputClasses={inputClasses}
+                disabled={disabled}
+                opts={areaOpts}
+                value={entry?.servedAreas || ''}
+                onChange={(next) => patch({ servedAreas: next })}
+              />
+            </div>
+          ) : null}
+          <div className="space-y-1 sm:col-span-2">
+            <label className={labelClasses}>¿En qué área les gustaría servir?</label>
+            <ServeAreaMultiSelect
+              inputClasses={inputClasses}
+              disabled={disabled}
+              opts={areaOpts}
+              value={entry?.preferredServeArea || ''}
+              onChange={(next) => patch({ preferredServeArea: next })}
+            />
+          </div>
+          <div className={fieldStack}>
+            <label className={labelClasses}>¿Sirve en su congre local?</label>
+            <select
+              className={inputClasses}
+              disabled={disabled}
+              value={entry?.servesInCongress || 'No'}
+              onChange={(e) =>
+                patch({
+                  servesInCongress: e.target.value,
+                  congressServeArea: isSiValue(e.target.value) ? entry?.congressServeArea || '' : '',
+                })
+              }
+            >
+              <option value="No">No</option>
+              <option value={SI}>Sí</option>
+            </select>
+          </div>
+          {isSiValue(entry?.servesInCongress) ? (
+            <div className={fieldStack}>
+              <label className={labelClasses}>¿En qué área?</label>
+              <input
+                type="text"
+                className={inputClasses}
+                disabled={disabled}
+                value={entry?.congressServeArea || ''}
+                onChange={(e) => patch({ congressServeArea: e.target.value })}
+              />
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Perfil de servidor en fila de acompañante (mismo bloque que titular). */
+export function BautizosCompanionServerProfileFields({
+  companion,
+  onCompanionChange,
+  disabled,
+  labelClasses,
+  inputClasses,
+  serveAreaOptions = DEFAULT_SERVE_AREA_OPTIONS,
+  borderTopClass,
+}) {
+  if (!bautizosShowsCompanionServerProfileFields(companion)) return null;
+  return (
+    <BautizosServerProfileExtraFields
+      entry={companion}
+      onEntryChange={onCompanionChange}
+      disabled={disabled}
+      labelClasses={labelClasses}
+      inputClasses={inputClasses}
+      serveAreaOptions={serveAreaOptions}
+      borderTopClass={borderTopClass}
+    />
+  );
+}
+
+/** Cortesía por fila de acompañante cuando el titular es empleado (sin cobro de comida ni transporte). */
+export function BautizosCompanionCourtesyFields({
+  companion,
+  onCompanionChange,
+  disabled,
+  labelClasses,
+  variant = 'panel',
+}) {
+  const choiceBtnClass = (on) =>
+    variant === 'public'
+      ? `${uiBautizosAttendanceBtn.btnPublic} ${on ? uiBautizosAttendanceBtn.activeCortesia : uiBautizosAttendanceBtn.idlePublic}`
+      : `${uiBautizosAttendanceBtn.btn} ${on ? uiBautizosAttendanceBtn.activeCortesia : uiBautizosAttendanceBtn.idle}`;
+  const isCourtesy = bautizosCompanionHasCourtesyAttendance(companion);
+  return (
+    <div className="space-y-2">
+      <label className={labelClasses}>Cortesía (sin cobro)</label>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => {
+          const next = isCourtesy
+            ? { ...companion, bautizosAttendanceType: '' }
+            : { ...companion, bautizosAttendanceType: BAUTIZOS_ATTENDANCE.cortesia };
+          onCompanionChange(syncBautizosCompanionServerFields(next));
+        }}
+        className={choiceBtnClass(isCourtesy)}
+      >
+        <Gift size={14} /> {isCourtesy ? 'Sí' : 'No'}
+      </button>
+      <p className="text-[10px] text-slate-500 leading-snug">
+        Marque si este acompañante no debe pagar comida ni transporte (beneficio de empleado).
+      </p>
     </div>
   );
 }
@@ -335,6 +560,15 @@ function newCompanionRow(loc) {
     travelTo: l,
     isServer: 'No',
     serverAssignment: '',
+    isMarried: 'No',
+    spouseName: '',
+    goesWithChildren: 'No',
+    childrenCount: '',
+    servedOtherCampa: 'No',
+    servedAreas: '',
+    preferredServeArea: '',
+    servesInCongress: 'No',
+    congressServeArea: '',
   };
 }
 
@@ -424,6 +658,10 @@ export function BautizosCompanionsField({
   birthDateVariant = 'registry',
   /** Documento del evento (fecha de inicio para política de menores de 3 años). */
   eventLike = null,
+  /** Titular del registro (para cortesía de acompañantes cuando es empleado). */
+  hostEntry = null,
+  /** Opciones de áreas de servicio (servidor acompañante). */
+  serveAreaOptions = DEFAULT_SERVE_AREA_OPTIONS,
 }) {
   if (optionalVisibility?.bautizosCompanions === false) return null;
 
@@ -431,7 +669,9 @@ export function BautizosCompanionsField({
   const list = Array.isArray(companions) ? companions : [];
   const listRef = useRef(list);
   listRef.current = list;
+  const showCompanionCourtesy = bautizosHostAllowsCompanionCourtesy(hostEntry);
   const showTrans = optionalVisibility?.bautizosTransport !== false;
+  const showServerProfileExtra = optionalVisibility?.serverProfileExtra !== false;
   const showFrom = optionalVisibility?.travelFrom !== false;
   const showTo = optionalVisibility?.travelTo !== false;
   const hideCarCountInTransport = optionalVisibility?.hideCarCountInTransport === true;
@@ -603,6 +843,28 @@ export function BautizosCompanionsField({
     });
   };
 
+  const companionRowCanUseCourtesy = (row) =>
+    showCompanionCourtesy &&
+    !(!!row?.linkedNoExtraCharge || !!String(row?.linkedCompanionSourceKey || '').trim()) &&
+    !isBautizosUnder3YearsAtEvent(row, eventLike);
+
+  const bulkCourtesyEligibleRows = list.filter(companionRowCanUseCourtesy);
+  const allEligibleRowsAreCourtesy =
+    bulkCourtesyEligibleRows.length > 0 && bulkCourtesyEligibleRows.every((row) => bautizosCompanionHasCourtesyAttendance(row));
+  const hasEligibleCourtesyRows = bulkCourtesyEligibleRows.length > 0;
+
+  const setAllEligibleCompanionsCourtesy = (enabled) => {
+    onChange(
+      listRef.current.map((row) => {
+        if (!companionRowCanUseCourtesy(row)) return row;
+        const next = enabled
+          ? { ...row, bautizosAttendanceType: BAUTIZOS_ATTENDANCE.cortesia }
+          : { ...row, bautizosAttendanceType: '' };
+        return syncBautizosCompanionServerFields(next);
+      })
+    );
+  };
+
   return (
     <section className={shellClass}>
       {hideSectionHeader ? null : (
@@ -622,9 +884,31 @@ export function BautizosCompanionsField({
             Por defecto el registrado va solo. Puedes agregar familiares u otros acompañantes; cada uno paga comida y puede elegir
             transporte por separado, salvo menores de 3 años al día del evento (sin cobro de comida ni transporte). Indica la fecha de
             nacimiento cuando aplique.
+            {showCompanionCourtesy ? (
+              <>
+                {' '}
+                Como el inscrito es empleado, puedes marcar acompañantes como cortesía para no cobrar su lugar.
+              </>
+            ) : null}
           </p>
         </>
       )}
+      {showCompanionCourtesy && hasEligibleCourtesyRows ? (
+        <div className="mb-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => setAllEligibleCompanionsCourtesy(!allEligibleRowsAreCourtesy)}
+            className={`rounded-lg px-3 py-1.5 text-[10px] font-black uppercase tracking-wide transition-colors ${
+              allEligibleRowsAreCourtesy
+                ? `${uiBautizosAttendanceBtn.btn} ${uiBautizosAttendanceBtn.activeCortesia}`
+                : `${uiBautizosAttendanceBtn.btn} ${uiBautizosAttendanceBtn.idle}`
+            } ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+          >
+            {allEligibleRowsAreCourtesy ? 'Quitar todas las cortesias' : 'Marcar todos como cortesias'}
+          </button>
+        </div>
+      ) : null}
       <div className={listSp}>
         {isMinor ? (
           <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5">
@@ -639,6 +923,7 @@ export function BautizosCompanionsField({
           const busHidden =
             showTrans && isSiValue(row.wantsBautizosTransport) && !!row.llegaEnCarro;
           const rowLinkedNoExtraCharge = !!row?.linkedNoExtraCharge || !!String(row?.linkedCompanionSourceKey || '').trim();
+          const rowCourtesy = bautizosCompanionHasCourtesyAttendance(row);
           const rowLinkedHint =
             String(row?.linkedCompanionName || '').trim() ||
             String(row?.name || '').trim() ||
@@ -683,6 +968,13 @@ export function BautizosCompanionsField({
                   <Link2 size={11} className="shrink-0" />
                   Vinculado: {rowLinkedHint}
                   <span className="font-black">· sin cobro extra</span>
+                </p>
+              ) : null}
+              {rowCourtesy && !rowLinkedNoExtraCharge ? (
+                <p className="text-[10px] font-semibold text-violet-800 dark:text-violet-200 bg-violet-50 dark:bg-violet-900/30 border border-violet-200 dark:border-violet-700 rounded-lg px-2 py-1 inline-flex items-center gap-1">
+                  <Gift size={11} className="shrink-0" />
+                  Cortesía
+                  <span className="font-black">· sin cobro</span>
                 </p>
               ) : null}
               <div className={`grid grid-cols-1 sm:grid-cols-2 ${nameGridGap}`}>
@@ -743,7 +1035,14 @@ export function BautizosCompanionsField({
                   value={row?.willBeBaptized || 'No'}
                   onChange={(willBeBaptized) => {
                     if (isSiValue(willBeBaptized)) {
-                      patchRow(i, { willBeBaptized, birthDate: row.birthDate || '' });
+                      patchRow(
+                        i,
+                        normalizeBautizosCompanionHealthFieldsForForm({
+                          ...row,
+                          willBeBaptized,
+                          birthDate: row.birthDate || '',
+                        })
+                      );
                     } else {
                       patchRow(i, { willBeBaptized, ...baptizedCompanionExtraFieldsClears() });
                     }
@@ -758,6 +1057,28 @@ export function BautizosCompanionsField({
                   disabled={disabled}
                   labelClasses={labelClasses}
                   formatSiNo={formatSiNo}
+                  variant={isTeal ? 'public' : 'panel'}
+                />
+              ) : null}
+              {showServerProfileExtra && bautizosShowsCompanionServerProfileFields(row) ? (
+                <BautizosCompanionServerProfileFields
+                  companion={row}
+                  onCompanionChange={(next) => patchRow(i, next)}
+                  disabled={disabled}
+                  labelClasses={labelClasses}
+                  inputClasses={inputClasses}
+                  serveAreaOptions={serveAreaOptions}
+                  borderTopClass={
+                    isTeal ? 'border-violet-200/80 dark:border-violet-500/40' : 'border-slate-200 dark:border-slate-600'
+                  }
+                />
+              ) : null}
+              {companionRowCanUseCourtesy(row) ? (
+                <BautizosCompanionCourtesyFields
+                  companion={row}
+                  onCompanionChange={(next) => patchRow(i, next)}
+                  disabled={disabled}
+                  labelClasses={labelClasses}
                   variant={isTeal ? 'public' : 'panel'}
                 />
               ) : null}
@@ -815,8 +1136,8 @@ export function BautizosCompanionsField({
                       <div className={fieldStack}>
                         <label className={labelClasses}>Tipo de sangre</label>
                         <select
-                          className={`${inputClasses} ${outlineReq(!String(row?.bloodType ?? '').trim())}`}
-                          value={row.bloodType || ''}
+                          className={`${inputClasses} ${outlineReq(!String(row?.bloodType || BLOOD_TYPE_UNSPECIFIED).trim())}`}
+                          value={row.bloodType || BLOOD_TYPE_UNSPECIFIED}
                           disabled={disabled}
                           onChange={(e) => patchRow(i, { bloodType: e.target.value })}
                         >
@@ -887,10 +1208,14 @@ export function BautizosCompanionsField({
                             allergyCategory={row.allergyCategory || ''}
                             allergyOptions={allergyOpts}
                             detailsMissing={
-                              !(row?.allergyDetails || '').trim() && !(row?.allergyCategory || '').trim()
+                              isSiValue(row?.hasAllergy) &&
+                              !(row?.allergyDetails || '').trim() &&
+                              !(row?.allergyCategory || '').trim()
                             }
                             detailsClassName={outlineReq(
-                              !(row?.allergyDetails || '').trim() && !(row?.allergyCategory || '').trim()
+                              isSiValue(row?.hasAllergy) &&
+                                !(row?.allergyDetails || '').trim() &&
+                                !(row?.allergyCategory || '').trim()
                             )}
                             onChange={(patch) => patchRow(i, patch)}
                           />
@@ -904,7 +1229,9 @@ export function BautizosCompanionsField({
                             hasDisease={row.hasDisease || 'No'}
                             diseaseDetails={row.diseaseDetails || ''}
                             diseaseMedication={row.diseaseMedication || ''}
-                            detailsClassName={outlineReq(!(row?.diseaseDetails || '').trim())}
+                            detailsClassName={outlineReq(
+                              isSiValue(row?.hasDisease) && !(row?.diseaseDetails || '').trim()
+                            )}
                             onChange={(patch) => patchRow(i, patch)}
                           />
                         </div>
@@ -916,7 +1243,9 @@ export function BautizosCompanionsField({
                             disabled={disabled}
                             hasDisability={row.hasDisability || 'No'}
                             disabilityDetails={row.disabilityDetails || ''}
-                            detailsClassName={outlineReq(!(row?.disabilityDetails || '').trim())}
+                            detailsClassName={outlineReq(
+                              isSiValue(row?.hasDisability) && !(row?.disabilityDetails || '').trim()
+                            )}
                             onChange={(patch) => patchRow(i, patch)}
                           />
                         </div>

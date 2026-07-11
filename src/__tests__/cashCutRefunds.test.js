@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCashCutRefundDisbursementRow,
+  getParticipantCreditPendingAmount,
   getParticipantNetPaidFromHistory,
   getParticipantPhysicalRecaudadoGross,
   getRefundDisbursedGrossAmount,
+  getRefundDonatedTotalAmount,
   participantHasRefundDisbursement,
   parsePaymentHistoryRecordedAtMs,
   REFUND_DISBURSEMENT_PAYMENT_KIND,
 } from '../cashCutRefunds.js';
+import { donationAddsToRecaudacionBalance } from '../donationHelpers.js';
 
 const identityNet = (gross) => gross;
 
@@ -27,6 +30,34 @@ describe('cashCutRefunds', () => {
     expect(getRefundDisbursedGrossAmount(person)).toBe(200);
     expect(getParticipantNetPaidFromHistory(person, identityNet)).toBe(300);
     expect(getParticipantPhysicalRecaudadoGross(person)).toBe(300);
+  });
+
+  it('suma devoluciones parciales múltiples', () => {
+    const person = {
+      id: 'p-partial',
+      paid: 500,
+      refundPendingAmount: 200,
+      paymentHistory: [
+        { id: 'ab1', amount: 500, method: 'Efectivo' },
+        { id: 'refund-disb-p-partial-1', amount: -80, kind: REFUND_DISBURSEMENT_PAYMENT_KIND },
+        { id: 'refund-disb-p-partial-2', amount: -50, kind: REFUND_DISBURSEMENT_PAYMENT_KIND },
+      ],
+    };
+    expect(getRefundDisbursedGrossAmount(person)).toBe(130);
+    expect(getParticipantCreditPendingAmount(person)).toBe(70);
+    expect(getParticipantPhysicalRecaudadoGross(person)).toBe(370);
+  });
+
+  it('saldo pendiente resta donaciones parciales', () => {
+    const person = {
+      id: 'p-don',
+      paid: 500,
+      refundPendingAmount: 150,
+      refundMarkedAsDonationAmount: 40,
+      paymentHistory: [{ id: 'ab1', amount: 500 }],
+    };
+    expect(getRefundDonatedTotalAmount(person)).toBe(40);
+    expect(getParticipantCreditPendingAmount(person)).toBe(110);
   });
 
   it('sin devolución el recaudado físico es el pagado', () => {
@@ -83,5 +114,14 @@ describe('cashCutRefunds', () => {
       recordedAt: new Date(sundayMs).toISOString(),
     };
     expect(parsePaymentHistoryRecordedAtMs(row)).toBe(sundayMs);
+  });
+});
+
+describe('donationHelpers', () => {
+  it('no suma donaciones derivadas de saldos', () => {
+    expect(donationAddsToRecaudacionBalance({ amount: 100 })).toBe(true);
+    expect(donationAddsToRecaudacionBalance({ amount: 100, fromCancelledRefundDonation: true })).toBe(false);
+    expect(donationAddsToRecaudacionBalance({ amount: 100, fromArchivedManualCredit: true })).toBe(false);
+    expect(donationAddsToRecaudacionBalance({ amount: 100, fromManualCredit: true })).toBe(false);
   });
 });

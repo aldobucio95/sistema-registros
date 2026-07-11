@@ -46,6 +46,7 @@ import {
   BautizosAttendanceTypeField,
   BautizosCompanionsField,
   BautizosServerParticipationFields,
+  BautizosServerProfileExtraFields,
 } from './BautizosEventFormBlocks.jsx';
 import { BautizosCarDataSection } from './BautizosCarDataSection.jsx';
 import { familyHasAnyCarTransport, collectCarColorSuggestions } from './bautizosCarMeta.js';
@@ -558,94 +559,14 @@ export default function PublicRegistrationFormSections({
               />
               {optionalVisibility.serverProfileExtra !== false &&
                 bautizosShowsServerProfileFields(form) && (
-                <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-600">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-amber-900 dark:text-amber-200 mb-1">
-                    {pubSectionLabel('Información adicional de servidor')} <span className="font-normal normal-case text-slate-500">(opcional)</span>
-                  </p>
-                  <p className="text-[10px] text-slate-500 mb-3 leading-snug">
-                    Marque «Participa como servidor» arriba si aplica; aquí solo datos de pareja, hijos y áreas de servicio.
-                  </p>
-                  <div className="p-3 bg-amber-50/50 border border-amber-100 rounded-lg dark:bg-amber-950 dark:border-amber-700">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div className={fieldStack}>
-                        <label className={labelClasses}>¿Es casado y va con su esposo(a)?</label>
-                        <select
-                          className={inputClasses}
-                          value={form.isMarried || 'No'}
-                          onChange={(e) =>
-                            setForm((prev) => ({
-                              ...prev,
-                              isMarried: e.target.value,
-                              spouseName: isSiValue(e.target.value) ? prev.spouseName : '',
-                            }))
-                          }
-                        >
-                          <option value="No">No</option>
-                          <option value={SI}>{SI_LABEL}</option>
-                        </select>
-                      </div>
-                      {isSiValue(form.isMarried) && (
-                        <div className={fieldStack}>
-                          <label className={labelClasses}>Nombre de pareja</label>
-                          <input className={inputClasses} value={form.spouseName || ''} onChange={(e) => setField('spouseName', e.target.value)} />
-                        </div>
-                      )}
-                      <div className={fieldStack}>
-                        <label className={labelClasses}>¿Va con hijos?</label>
-                        <select
-                          className={inputClasses}
-                          value={form.goesWithChildren || 'No'}
-                          onChange={(e) =>
-                            setForm((prev) => ({
-                              ...prev,
-                              goesWithChildren: e.target.value,
-                              childrenCount: isSiValue(e.target.value) ? prev.childrenCount : '',
-                            }))
-                          }
-                        >
-                          <option value="No">No</option>
-                          <option value={SI}>{SI_LABEL}</option>
-                        </select>
-                      </div>
-                      {isSiValue(form.goesWithChildren) && (
-                        <div className={fieldStack}>
-                          <label className={labelClasses}>¿Cuántos?</label>
-                          <input
-                            type="number"
-                            min="1"
-                            className={inputClasses}
-                            placeholder="Número"
-                            value={form.childrenCount || ''}
-                            onChange={(e) => setField('childrenCount', e.target.value)}
-                          />
-                        </div>
-                      )}
-                      <div className={fieldStack}>
-                        <label className={labelClasses}>¿Sirven en sus congresos?</label>
-                        <select
-                          className={inputClasses}
-                          value={form.servesInCongress || 'No'}
-                          onChange={(e) =>
-                            setForm((prev) => ({
-                              ...prev,
-                              servesInCongress: e.target.value,
-                              congressServeArea: isSiValue(e.target.value) ? prev.congressServeArea : '',
-                            }))
-                          }
-                        >
-                          <option value="No">No</option>
-                          <option value={SI}>{SI_LABEL}</option>
-                        </select>
-                      </div>
-                      {isSiValue(form.servesInCongress) && (
-                        <div className={fieldStack}>
-                          <label className={labelClasses}>¿En qué área?</label>
-                          <input className={inputClasses} value={form.congressServeArea || ''} onChange={(e) => setField('congressServeArea', e.target.value)} />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
+                <BautizosServerProfileExtraFields
+                  entry={form}
+                  onEntryChange={(next) => setForm(next)}
+                  disabled={submitting}
+                  labelClasses={labelClasses}
+                  inputClasses={inputClasses}
+                  serveAreaOptions={serveAreaOptionsList?.length ? serveAreaOptionsList : DEFAULT_SERVE_AREA_OPTIONS}
+                />
               )}
             </section>
           )}
@@ -780,7 +701,9 @@ export default function PublicRegistrationFormSections({
             <BautizosCompanionsField
               registrantAge={form.age}
               eventLike={eventSnapshot}
+              hostEntry={form}
               companions={form.bautizosCompanions || []}
+              serveAreaOptions={serveAreaOptionsList?.length ? serveAreaOptionsList : DEFAULT_SERVE_AREA_OPTIONS}
               fieldSuggestions={locFieldSuggestions}
               birthDateVariant="public"
               onChange={(next) => setForm((prev) => ({ ...prev, bautizosCompanions: next }))}
@@ -826,6 +749,9 @@ export default function PublicRegistrationFormSections({
                 }))
               }
               canEdit={!submitting}
+              alwaysExpanded
+              slotsDefaultExpanded
+              ignorePersistedCarMeta
               sectionTitle={pubSectionLabel('Datos de carros')}
               colorSuggestions={collectCarColorSuggestions(eventSnapshot?.transportPlanning)}
               labelClasses={labelClasses}

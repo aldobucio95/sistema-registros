@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { isParticipantSliceHit } from '../participantsVersionCache.js';
+import {
+  isParticipantSliceHit,
+  mergeParticipantRowsById,
+} from '../participantsVersionCache.js';
 
 describe('isParticipantSliceHit', () => {
   const localData = { version: 3, data: [{ id: 'p1', name: 'Ana' }] };
@@ -19,5 +22,17 @@ describe('isParticipantSliceHit', () => {
   it('rechaza sin datos locales', () => {
     expect(isParticipantSliceHit({ version: 1, data: [] }, 1)).toBe(false);
     expect(isParticipantSliceHit(null, 1)).toBe(false);
+  });
+});
+
+describe('mergeParticipantRowsById', () => {
+  it('deduplica por id conservando la última fila', () => {
+    const merged = mergeParticipantRowsById([
+      { id: 'a', name: 'Ana' },
+      { id: 'b', name: 'Bea' },
+      { id: 'a', name: 'Ana actualizada' },
+    ]);
+    expect(merged).toHaveLength(2);
+    expect(merged.find((p) => p.id === 'a')?.name).toBe('Ana actualizada');
   });
 });

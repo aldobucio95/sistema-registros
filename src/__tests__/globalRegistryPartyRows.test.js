@@ -2,9 +2,20 @@ import { describe, expect, it } from 'vitest';
 import {
   buildGlobalRegistryPartyRowsFromTitulars,
   buildGlobalRegistryPartySections,
+  countBautizosGlobalRegistryActivePartyRows,
+  countBautizosGlobalRegistryActivePeople,
+  countGlobalRegistryCoincidenceTotal,
+  filterGlobalRegistryPartyRowsByParticipantFilters,
   globalRegistryPartyRowsToPersons,
   sortGlobalRegistryPartyRows,
+  visibleBautizosActiveGlobalRegistryPartyRows,
+  globalRegistryCompanionExportIdentityKey,
 } from '../globalRegistryPartyRows.js';
+import {
+  participantMatchesBautizosTransportFilter,
+  participantMatchesRegistrationStatusFilter,
+} from '../rosterParticipantFilters.js';
+import { bautizosLineGoesByCar } from '../bautizosParty.js';
 
 describe('globalRegistryPartyRows', () => {
   it('lists titular plus nested companions without duplicates', () => {
@@ -130,6 +141,33 @@ describe('globalRegistryPartyRows', () => {
     expect(rows).toHaveLength(3);
   });
 
+  it('deduplicates same companion name under two hosts without link (export identity)', () => {
+    const ernestina = { id: 'c1', name: 'Ernestina Gonzalez', relationship: 'Hija' };
+    const hostA = {
+      id: 'hA',
+      eventId: 'ev1',
+      location: 'Norte',
+      status: 'active',
+      name: 'Host A',
+      bautizosCompanions: [ernestina],
+    };
+    const hostB = {
+      id: 'hB',
+      eventId: 'ev1',
+      location: 'Norte',
+      status: 'active',
+      name: 'Host B',
+      bautizosCompanions: [{ ...ernestina, id: 'c2' }],
+    };
+    const rows = buildGlobalRegistryPartyRowsFromTitulars([hostA, hostB], [hostA, hostB]);
+    const companionNames = globalRegistryPartyRowsToPersons(rows).filter(
+      (p) => p.__globalRegistryCompanionRow
+    );
+    expect(companionNames).toHaveLength(1);
+    expect(companionNames[0].name).toBe('Ernestina Gonzalez');
+    expect(globalRegistryCompanionExportIdentityKey(companionNames[0])).toBe('name:norte:ernestina gonzalez');
+  });
+
   it('includes waitlist companions under active titular with pending flag', () => {
     const host = {
       id: 'h1',
@@ -168,5 +206,186 @@ describe('globalRegistryPartyRows', () => {
     const sorted = sortGlobalRegistryPartyRows(rows, 'name-asc');
     const names = sorted.map((r) => r.person.name);
     expect(names).toEqual(['Alpha', 'Hijo Alpha', 'Zeta', 'Hijo Zeta']);
+  });
+
+  it('active count matches dashboard when waitlist roster would steal canonical companions', () => {
+    const activeHost = {
+      id: 'hActive',
+      eventId: 'ev1',
+      location: 'Sede A',
+      status: 'active',
+      name: 'Active Host',
+      bautizosAttendanceType: 'Bautizado',
+      bautizosCompanions: [{ id: 'c1', name: 'Shared Companion' }],
+    };
+    const waitlistHost = {
+      id: 'hWait',
+      eventId: 'ev1',
+      location: 'Sede A',
+      status: 'waitlist',
+      name: 'Waitlist Host',
+      bautizosAttendanceType: 'Bautizado',
+      bautizosCompanions: [
+        { id: 'c2', name: 'Shared Companion', linkedCompanionSourceKey: 'c:hActive::c1' },
+      ],
+    };
+    const fullRoster = [activeHost, waitlistHost];
+    const sections = buildGlobalRegistryPartySections({
+      isBautizos: true,
+      activeTitulars: [activeHost],
+      waitlistRows: [waitlistHost],
+      cancelledTitulars: [],
+      rosterForPlan: fullRoster,
+    });
+    const dashboardCount = countBautizosGlobalRegistryActivePeople([activeHost], fullRoster);
+    expect(dashboardCount).toBe(2);
+    expect(countBautizosGlobalRegistryActivePartyRows(sections.active)).toBe(dashboardCount);
+  });
+
+  it('active party stats exclude companionWaitlistPending rows (same as dashboard total)', () => {
+    const host = {
+      id: 'h1',
+      eventId: 'ev1',
+      location: 'Sede A',
+      status: 'active',
+      name: 'Titular',
+      bautizosAttendanceType: 'Bautizado',
+      bautizosCompanions: [
+        { id: 'c1', name: 'Acomp Activo' },
+        { id: 'c2', name: 'Acomp Espera', companionWaitlistPending: true },
+      ],
+    };
+    const rows = buildGlobalRegistryPartyRowsFromTitulars([host], [host], { section: 'active' });
+    expect(rows).toHaveLength(3);
+    expect(countBautizosGlobalRegistryActivePartyRows(rows)).toBe(2);
+  });
+
+  it('omits companion linked to cancelled titular from active host party rows', () => {
+    const cancelledTitular = {
+      id: 'canc1',
+      eventId: 'ev1',
+      location: 'Sede A',
+      status: 'cancelled',
+      name: 'Persona Cancelada',
+      bautizosAttendanceType: 'Bautizado',
+      cancelledFromLocation: 'Sede A',
+    };
+    const host = {
+      id: 'h1',
+      eventId: 'ev1',
+      location: 'Sede A',
+      status: 'active',
+      name: 'Titular Activo',
+      bautizosCompanions: [
+        {
+          id: 'c1',
+          name: 'Persona Cancelada',
+          linkedCompanionSourceKey: 'p:canc1',
+          linkedRegistrantId: 'canc1',
+        },
+      ],
+    };
+    const roster = [host, cancelledTitular];
+    const sections = buildGlobalRegistryPartySections({
+      isBautizos: true,
+      activeTitulars: [host],
+      waitlistRows: [],
+      cancelledTitulars: [cancelledTitular],
+      rosterForPlan: roster,
+    });
+    const activeNames = sections.active.map((r) => r.person.name);
+    expect(activeNames).toEqual(['Titular Activo']);
+    expect(sections.cancelled.some((r) => r.person.name === 'Persona Cancelada')).toBe(true);
+  });
+
+  it('coincidence total with active filter excludes cancelled companions under active titular', () => {
+    const host = {
+      id: 'h1',
+      eventId: 'ev1',
+      location: 'Sede A',
+      status: 'active',
+      name: 'Titular Activo',
+    };
+    const activeRows = [
+      { key: 'titular:h1', person: host, isSubRegistration: false },
+      {
+        key: 'nested:cancelled',
+        person: {
+          id: 'gr-companion:h1:c1',
+          name: 'Persona Cancelada',
+          status: 'cancelled',
+          __globalRegistryCompanionRow: true,
+        },
+        isSubRegistration: true,
+      },
+      {
+        key: 'nested:active',
+        person: {
+          id: 'gr-companion:h1:c2',
+          name: 'Acomp Activo',
+          status: 'active',
+          __globalRegistryCompanionRow: true,
+        },
+        isSubRegistration: true,
+      },
+    ];
+    expect(activeRows).toHaveLength(3);
+    expect(visibleBautizosActiveGlobalRegistryPartyRows(activeRows)).toHaveLength(2);
+    expect(countGlobalRegistryCoincidenceTotal({
+      isBautizos: true,
+      activeRows,
+      waitlistRows: [],
+      cancelledRows: [],
+      filterRegistrationStatus: 'active',
+    })).toBe(2);
+  });
+
+  it('per-person transport filter excludes car companion when titular uses evento transport', () => {
+    const host = {
+      id: 'h1',
+      eventId: 'ev1',
+      location: 'Norte',
+      status: 'active',
+      name: 'Titular Evento',
+      wantsBautizosTransport: 'Si',
+      llegaEnCarro: 'No',
+      travelFrom: 'Norte',
+      travelTo: 'Norte',
+      bautizosCompanions: [
+        {
+          id: 'c1',
+          name: 'Acomp Carro',
+          wantsBautizosTransport: 'No',
+          llegaEnCarro: 'Si',
+          travelFrom: 'Norte',
+          travelTo: 'Norte',
+        },
+      ],
+    };
+    const roster = [host];
+    const partyRows = buildGlobalRegistryPartyRowsFromTitulars([host], roster);
+    const filters = {
+      filterRegistrationStatus: 'active',
+      filterTransport: 'evento',
+      searchTerm: '',
+      sortBy: 'none',
+    };
+    const matchesPerson = (person) => {
+      if (!participantMatchesRegistrationStatusFilter(person, filters.filterRegistrationStatus)) return false;
+      return participantMatchesBautizosTransportFilter(person, filters.filterTransport, bautizosLineGoesByCar);
+    };
+    const filtered = filterGlobalRegistryPartyRowsByParticipantFilters(partyRows, matchesPerson);
+    const visible = visibleBautizosActiveGlobalRegistryPartyRows(filtered);
+    expect(visible).toHaveLength(1);
+    expect(visible[0].person.name).toBe('Titular Evento');
+    expect(
+      countGlobalRegistryCoincidenceTotal({
+        isBautizos: true,
+        activeRows: visible,
+        waitlistRows: [],
+        cancelledRows: [],
+        filterRegistrationStatus: 'active',
+      })
+    ).toBe(1);
   });
 });

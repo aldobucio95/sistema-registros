@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { GraduationCap, CheckCircle2 } from 'lucide-react';
 import {
   uiForm, uiShell,
@@ -7,6 +7,8 @@ import {
   uiKbd, uiControls, uiRosterMobile,
 } from '../../../ui/uiFormatClasses.js';
 import ListMobileCard from '../../../components/ListMobileCard.jsx';
+import VirtualizedList from '../../../components/VirtualizedList.jsx';
+import useMediaQuery from '../../../hooks/useMediaQuery.js';
 
 /**
  * Vista Becados (solo UI + tabla). La lógica de filtros y helpers viene por props explícitas desde App.
@@ -31,25 +33,96 @@ export default function BecadosPage({
   scholarshipRealCostBaseEffective,
   canEditScholarshipRealCost,
 }) {
+  const isMobile = useMediaQuery('(max-width: 767px)');
+
+  const { approvedRaw, approved, coincidenceTotal, totalCondonedApproved } = useMemo(() => {
+    if (!currentEvent?.id) {
+      return { approvedRaw: [], approved: [], coincidenceTotal: 0, totalCondonedApproved: 0 };
+    }
+    const eventId = currentEvent.id;
+    const raw = [];
+    for (const p of allParticipants) {
+      if (p.eventId !== eventId || !participantIsActiveInEvent(p) || !isSiValue(p.isScholarship)) continue;
+      if (participantIsActiveInRoster(p)) raw.push(p);
+    }
+    let filtered = applyGlobalRegistryLikeFilters(raw);
+    if (globalLocationFilters.length > 0) {
+      filtered = filtered.filter((p) => globalLocationFilters.includes(p.location));
+    }
+    let total = 0;
+    for (const p of filtered) total += getScholarshipCondonedAmount(p);
+    return {
+      approvedRaw: raw,
+      approved: filtered,
+      coincidenceTotal: filtered.length,
+      totalCondonedApproved: total,
+    };
+  }, [
+    allParticipants,
+    currentEvent,
+    participantIsActiveInEvent,
+    participantIsActiveInRoster,
+    isSiValue,
+    applyGlobalRegistryLikeFilters,
+    globalLocationFilters,
+    getScholarshipCondonedAmount,
+  ]);
+
   if (!currentEvent) return null;
-  const eventId = currentEvent.id;
-  const approvedRaw = [];
-  for (const p of allParticipants) {
-    if (p.eventId !== eventId || !participantIsActiveInEvent(p) || !isSiValue(p.isScholarship)) continue;
-    if (participantIsActiveInRoster(p)) approvedRaw.push(p);
-  }
-  let approved = applyGlobalRegistryLikeFilters(approvedRaw);
-  if (globalLocationFilters.length > 0) {
-    approved = approved.filter((p) => globalLocationFilters.includes(p.location));
-  }
-  const coincidenceTotal = approved.length;
-  let totalCondonedApproved = 0;
-  for (const p of approved) totalCondonedApproved += getScholarshipCondonedAmount(p);
 
   const rowSede = (p) => p.location || p.travelFrom || p.travelTo || '?';
   const rowTipo = (p) => {
     if (p.scholarshipType === 'partial') return 'Beca parcial';
     return 'Beca total';
+  };
+
+  const renderMobileRow = (p, i) => {
+    const list = resolveRegisteredCost(p, currentPricing);
+    const cond = getScholarshipCondonedAmount(p);
+    return (
+      <ListMobileCard
+        key={p.id}
+        title={
+          <span className="flex items-start gap-2">
+            <span className={`${uiKbd.base} min-w-[1.6rem] h-6 justify-center shrink-0`}>{i + 1}</span>
+            <span>{p.name || '?'}</span>
+          </span>
+        }
+        metaRows={[
+          { key: 'sede', label: 'Sede', value: rowSede(p) },
+          { key: 'tipo', label: 'Tipo', value: rowTipo(p) },
+          { key: 'lista', label: 'Costo lista', value: formatMoney(list) },
+          { key: 'cond', label: 'Condonado (beca)', value: formatMoney(cond) },
+        ]}
+      />
+    );
+  };
+
+  const renderDesktopRow = (p, i) => {
+    const list = resolveRegisteredCost(p, currentPricing);
+    const cond = getScholarshipCondonedAmount(p);
+    return (
+      <tr key={p.id} className={uiTable.tr}>
+        <td className={`${uiTable.td} align-top`}>
+          <div className="flex items-start gap-2">
+            <span
+              className={`${uiKbd.base} min-w-[1.6rem] h-6 justify-center shrink-0 mt-0.5`}
+              title="Número en esta lista (filtros y orden actuales)"
+            >
+              {i + 1}
+            </span>
+            <p className="font-bold text-slate-800 dark:text-slate-100">{p.name || '?'}</p>
+          </div>
+          <div className="flex flex-wrap gap-1 mt-1.5">{renderParticipantAssistanceBadges(p)}</div>
+        </td>
+        <td className={uiTable.td}>{rowSede(p)}</td>
+        <td className={uiTable.td}>
+          <span className={uiBadgeSoft('violet')}>{rowTipo(p)}</span>
+        </td>
+        <td className={uiTable.tdMoney}>{formatMoney(list)}</td>
+        <td className={`${uiTable.tdMoney} text-violet-700 dark:text-violet-300`}>{formatMoney(cond)}</td>
+      </tr>
+    );
   };
 
   const renderTable = (rows, emptyMsg) => {
@@ -62,32 +135,21 @@ export default function BecadosPage({
         </div>
       );
     }
-    return (
-      <>
+    if (isMobile) {
+      return (
         <div className={uiRosterMobile.list}>
-          {rows.map((p, i) => {
-            const list = resolveRegisteredCost(p, currentPricing);
-            const cond = getScholarshipCondonedAmount(p);
-            return (
-              <ListMobileCard
-                key={p.id}
-                title={
-                  <span className="flex items-start gap-2">
-                    <span className={`${uiKbd.base} min-w-[1.6rem] h-6 justify-center shrink-0`}>{i + 1}</span>
-                    <span>{p.name || '?'}</span>
-                  </span>
-                }
-                metaRows={[
-                  { key: 'sede', label: 'Sede', value: rowSede(p) },
-                  { key: 'tipo', label: 'Tipo', value: rowTipo(p) },
-                  { key: 'lista', label: 'Costo lista', value: formatMoney(list) },
-                  { key: 'cond', label: 'Condonado (beca)', value: formatMoney(cond) },
-                ]}
-              />
-            );
-          })}
+          <VirtualizedList
+            items={rows}
+            itemHeight={132}
+            overscan={10}
+            useParentScroll
+            renderItem={renderMobileRow}
+          />
         </div>
-        <div className={`${uiTable.wrap} hidden md:block`}>
+      );
+    }
+    return (
+      <div className={uiTable.wrap}>
         <table className={uiTable.table}>
           <thead className={uiTable.thead}>
             <tr>
@@ -99,38 +161,24 @@ export default function BecadosPage({
             </tr>
           </thead>
           <tbody className={uiTable.tbody}>
-            {rows.map((p, i) => {
-              const list = resolveRegisteredCost(p, currentPricing);
-              const cond = getScholarshipCondonedAmount(p);
-              return (
-                <tr key={p.id} className={uiTable.tr}>
-                  <td className={`${uiTable.td} align-top`}>
-                    <div className="flex items-start gap-2">
-                      <span
-                        className={`${uiKbd.base} min-w-[1.6rem] h-6 justify-center shrink-0 mt-0.5`}
-                        title="Número en esta lista (filtros y orden actuales)"
-                      >
-                        {i + 1}
-                      </span>
-                      <p className="font-bold text-slate-800 dark:text-slate-100">{p.name || '?'}</p>
-                    </div>
-                    <div className="flex flex-wrap gap-1 mt-1.5">{renderParticipantAssistanceBadges(p)}</div>
-                  </td>
-                  <td className={uiTable.td}>{rowSede(p)}</td>
-                  <td className={uiTable.td}>
-                    <span className={uiBadgeSoft('violet')}>
-                      {rowTipo(p)}
-                    </span>
-                  </td>
-                  <td className={uiTable.tdMoney}>{formatMoney(list)}</td>
-                  <td className={`${uiTable.tdMoney} text-violet-700 dark:text-violet-300`}>{formatMoney(cond)}</td>
-                </tr>
-              );
-            })}
+            <tr>
+              <td colSpan={5} className="p-0 align-top">
+                <VirtualizedList
+                  items={rows}
+                  itemHeight={72}
+                  overscan={10}
+                  useParentScroll
+                  renderItem={(p, i) => (
+                    <table className={uiTable.table}>
+                      <tbody>{renderDesktopRow(p, i)}</tbody>
+                    </table>
+                  )}
+                />
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>
-      </>
     );
   };
 
@@ -156,7 +204,8 @@ export default function BecadosPage({
 
       {renderGlobalRegistryListToolbar(
         approvedRaw,
-        'Solo afectan a esta vista de Becados (misma barra que Registro global).'
+        'Solo afectan a esta vista de Becados (misma barra que Registro global).',
+        coincidenceTotal
       )}
 
       <div className={`${uiShell.card} p-5`}>

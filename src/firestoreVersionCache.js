@@ -245,7 +245,8 @@ export function logCacheDecision(scope, detail) {
 
 export async function fetchRemoteCacheVersion(scope, opts = {}) {
   const ref = getDocRef('app_cache_versions', scope);
-  const preferServer = opts.preferServer !== false;
+  const preferServer = opts.preferServer === true;
+  const networkFallback = opts.networkFallback !== false;
   try {
     if (preferServer) {
       try {
@@ -261,6 +262,10 @@ export async function fetchRemoteCacheVersion(scope, opts = {}) {
       if (cached.exists()) return normalizeCacheVersion(cached.data()?.v);
     } catch {
       /* sin caché local de Firestore */
+    }
+    if (!networkFallback) {
+      const local = readLocalVersionCache(scope);
+      return normalizeCacheVersion(local?.version);
     }
     const snap = await getDoc(ref);
     if (!snap.exists()) return 0;

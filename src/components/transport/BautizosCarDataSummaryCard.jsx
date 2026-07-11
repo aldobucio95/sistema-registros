@@ -81,7 +81,7 @@ export default function BautizosCarDataSummaryCard({
       eventLike,
       forRosterDisplay: true,
     });
-    return String(summary.hostSourceKey || '').trim();
+    return String(summary.carMetaFetchSourceKey || summary.hostSourceKey || '').trim();
   }, [anchorContext, hostPerson, companions, plan, roster, eventLike]);
 
   const [planWithMeta, setPlanWithMeta] = useState(plan);

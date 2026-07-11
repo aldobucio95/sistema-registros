@@ -43,6 +43,8 @@ import {
   uiTonalSolid,
   uiTypography,
 } from '../ui/uiFormatClasses.js';
+import useMediaQuery from '../hooks/useMediaQuery.js';
+import VirtualizedList from '../components/VirtualizedList.jsx';
 
 const inputDateCompact = `${uiForm.inputCompact} w-[8.75rem] max-w-full py-1`;
 const inputMoneyCompact = `${uiForm.inputCompact} w-24 py-1`;
@@ -183,6 +185,7 @@ export default function PastoresPage({
   pastoresUiPrefs = createEmptyPastoresUiPrefs(),
   onPastoresUiPrefsChange = null,
 }) {
+  const isMobile = useMediaQuery('(max-width: 767px)');
   const eventType = event?.eventType;
   const isBautizos = eventType === 'Bautizos';
   const showStayDates = eventSupportsPastorStayDates(event);
@@ -720,12 +723,33 @@ export default function PastoresPage({
             </p>
             <span className={uiBadgeSoft('violet')}>{rows.length} registros</span>
           </div>
-          <div className={uiRosterMobile.list}>
-            {rows.map((person, i) => renderPastorCard(person, i + 1, { mobileShell: true }))}
-          </div>
-          <div className="hidden md:block space-y-1.5">
-            {rows.map((person, i) => renderPastorCard(person, i + 1, { mobileShell: false }))}
-          </div>
+          {isMobile ? (
+            <div className={uiRosterMobile.list}>
+              <VirtualizedList
+                items={rows}
+                itemHeight={88}
+                getItemHeight={(person) => {
+                  const id = String(person?.id || '').trim();
+                  return id && expandedPastorIds.has(id) ? 520 : 88;
+                }}
+                overscan={6}
+                useParentScroll
+                renderItem={(person, i) => renderPastorCard(person, i + 1, { mobileShell: true })}
+              />
+            </div>
+          ) : (
+            <VirtualizedList
+              items={rows}
+              itemHeight={72}
+              getItemHeight={(person) => {
+                const id = String(person?.id || '').trim();
+                return id && expandedPastorIds.has(id) ? 560 : 72;
+              }}
+              overscan={6}
+              useParentScroll
+              renderItem={(person, i) => renderPastorCard(person, i + 1, { mobileShell: false })}
+            />
+          )}
         </div>
       )}
     </div>

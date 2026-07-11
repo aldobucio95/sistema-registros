@@ -1,7 +1,11 @@
-import { familyHasAnyCarTransport } from '../../bautizosCarMeta.js';
-import { applyCarMetaPatchesLocally } from '../../transportCarMetaStore.js';
-import { buildCarMetaPatchesAfterSave } from '../../bautizosCarMeta.js';
-import { saveRegistrationTransport } from './transportService.js';
+import {
+  buildCarMetaPatchesAfterSave,
+  buildCarMetaSyncPatchesToLinkedCompanions,
+  familyHasAnyCarTransport,
+} from '../../bautizosCarMeta.js';
+import { applyCarMetaPatchesLocally, persistEventCarMetaPatches } from '../../transportCarMetaStore.js';
+import { getDocRef } from '../../firebaseRefs.js';
+import { saveRegistrationTransport, upsertCarMetaPatchesToTransportV2 } from './transportService.js';
 
 /**
  * Puente registro ↔ transporte v2.
@@ -17,6 +21,7 @@ export function scheduleRegistrationTransportSave({
   updateDoc,
   useBlankSlotMeta = true,
   onError,
+  skipLinkedSync = false,
 }) {
   if (event?.eventType !== 'Bautizos') return { scheduled: false };
   if (!familyHasAnyCarTransport(personData, personData?.bautizosCompanions)) {
@@ -35,10 +40,21 @@ export function scheduleRegistrationTransportSave({
     roster: rosterWithNew,
     useBlankSlotMeta,
   });
+  const syncPatches = skipLinkedSync
+    ? []
+    : buildCarMetaSyncPatchesToLinkedCompanions({
+    hostPerson: personData,
+    hostId,
+    companions: personData.bautizosCompanions,
+    plan: event.transportPlanning,
+    roster: rosterWithNew,
+    appliedPatches: carPatches,
+  });
+  const allPatches = [...carPatches, ...syncPatches];
 
-  if (carPatches.length && typeof patchEventTransportPlanningDeferred === 'function') {
+  if (allPatches.length && typeof patchEventTransportPlanningDeferred === 'function') {
     patchEventTransportPlanningDeferred(
-      applyCarMetaPatchesLocally(event.transportPlanning, carPatches, rosterWithNew)
+      applyCarMetaPatchesLocally(event.transportPlanning, allPatches, rosterWithNew)
     );
   }
 
@@ -56,13 +72,24 @@ export function scheduleRegistrationTransportSave({
         ensureV2: true,
         updateDoc,
       });
+      if (syncPatches.length) {
+        await persistEventCarMetaPatches({
+          eventId: event.id,
+          patches: syncPatches,
+          currentPlan: event.transportPlanning,
+          roster: rosterWithNew,
+          getDocRef,
+          updateDoc,
+        });
+        await upsertCarMetaPatchesToTransportV2(event.id, syncPatches);
+      }
     } catch (err) {
       if (typeof onError === 'function') onError(err);
       else console.error('[transport-v2] saveRegistrationTransport', err);
     }
   })();
 
-  return { scheduled: true, patchCount: carPatches.length };
+  return { scheduled: true, patchCount: carPatches.length, syncPatchCount: syncPatches.length };
 }
 
 export { validateRegistrationTransport } from './transportValidation.js';

@@ -1,13 +1,208 @@
 import {
+  applyCarMetaPassengerInheritance,
   buildBautizosFamilyCarInventory,
+  buildCarDataSummaryForRosterPerson,
   buildCarDataWaSubjectContext,
   buildCarMetaCrewOptsForTitular,
+  buildMergedFamilyCarInventory,
   carCrewRequiresPassengerSelection,
   familyCarInventoryNeedsAttention,
+  familyHasAnyCarTransport,
+  getFamilyCarInventoryValidationIssues,
+  isCarVehicleFullyCaptured,
+  manualGroupCrewRequiresPassengers,
+  mergeCarMetaPatchesIntoPlan,
   resolveBautizosCarDataAnchor,
+  resolveLinkedCompanionCarInheritance,
+  vehicleMetaFieldsAndDriverComplete,
 } from './bautizosCarMeta.js';
-import { titularSummaryNeedsAttention } from './transportCarMetaStore.js';
+import { getBautizosCompanionsArray } from './bautizosParty.js';
+import { normalizeTransportPlanning } from './transportPlanningCore.js';
+import {
+  fetchCarMetaForTitular,
+  mergeCarMetaCacheIntoPlan,
+  titularSummaryNeedsAttention,
+  TRANSPORT_CAR_META_STORAGE_VERSION,
+} from './transportCarMetaStore.js';
 import { buildCarDataRequestWhatsAppMessage } from './whatsappFinanceMessages.js';
+
+function planNeedsCarMetaSubcollectionFetch(plan) {
+  const normalized = normalizeTransportPlanning(plan);
+  if (Number(normalized.transportCarMetaStorageVersion) >= TRANSPORT_CAR_META_STORAGE_VERSION) {
+    return true;
+  }
+  return !Object.keys(normalized.carMetaBySource || {}).length;
+}
+
+/** Misma regla que la tarjeta de datos de carro en roster (meta cargada en memoria). */
+export function personCarDataNeedsAttentionFromPlan(eventSnapshot, anchor, roster, planWithMeta) {
+  if (!anchor?.eligible || !anchor.anchorPerson) return false;
+
+  const displayCompanions = anchor.companionsForCrew?.length
+    ? anchor.companionsForCrew
+    : anchor.inventoryCompanions;
+
+  const summary = buildCarDataSummaryForRosterPerson({
+    person: anchor.anchorPerson,
+    companions: displayCompanions,
+    plan: planWithMeta,
+    roster,
+    eventLike: eventSnapshot,
+    forRosterDisplay: true,
+  });
+
+  const manualGroupMemberCount = summary.manualGroupMemberCount || anchor.manualGroupMemberCount || 0;
+  const requiresPassengers =
+    manualGroupMemberCount > 1
+      ? manualGroupCrewRequiresPassengers(manualGroupMemberCount)
+      : carCrewRequiresPassengerSelection(summary.hostPerson, summary.companions);
+
+  return familyCarInventoryNeedsAttention(summary.inventory, {
+    hostPerson: summary.hostPerson,
+    companions: summary.companions,
+    requiresPassengers,
+  });
+}
+
+export async function personInventoryNeedsCarDataAttentionAsync(person, eventSnapshot, roster) {
+  if (!person || !eventSnapshot) return false;
+  const anchor = resolveBautizosCarDataAnchor(person, roster, eventSnapshot);
+  if (!anchor.eligible || !anchor.anchorPerson) return false;
+  if (String(anchor.waRecipient?.id || '').trim() !== String(person?.id || '').trim()) return false;
+
+  let planWithMeta = eventSnapshot.transportPlanning;
+  const anchorSk = `p:${String(anchor.anchorPerson?.id || '').trim()}`;
+
+  if (planNeedsCarMetaSubcollectionFetch(planWithMeta)) {
+    const eid = String(eventSnapshot?.id || '').trim();
+    if (eid) {
+      try {
+        const fetched = await fetchCarMetaForTitular(eid, anchorSk);
+        if (Object.keys(fetched).length) {
+          planWithMeta = mergeCarMetaCacheIntoPlan(planWithMeta, fetched);
+        }
+      } catch {
+        /* usar plan/resumen en memoria */
+      }
+    }
+  }
+
+  return personCarDataNeedsAttentionFromPlan(eventSnapshot, anchor, roster, planWithMeta);
+}
+
+/** Plan de transporte con meta lazy-loaded y borrador del formulario aplicado. */
+export async function resolveBautizosRegistrationCarPlan({
+  eventSnapshot,
+  hostSourceKey,
+  draftMetaByVehicleKey = {},
+  planOverride,
+}) {
+  let plan = planOverride ?? eventSnapshot?.transportPlanning;
+  const eid = String(eventSnapshot?.id || '').trim();
+  const owner = String(hostSourceKey || '').trim();
+  if (eid && owner && planNeedsCarMetaSubcollectionFetch(plan)) {
+    try {
+      const fetched = await fetchCarMetaForTitular(eid, owner);
+      if (Object.keys(fetched).length) {
+        plan = mergeCarMetaCacheIntoPlan(plan, fetched);
+      }
+    } catch {
+      /* usar plan en memoria */
+    }
+  }
+  const draft =
+    draftMetaByVehicleKey && typeof draftMetaByVehicleKey === 'object' ? draftMetaByVehicleKey : {};
+  const draftPatches = Object.entries(draft)
+    .filter(([vehicleKey]) => String(vehicleKey || '').trim())
+    .map(([vehicleKey, patch]) => ({ vehicleKey, patch }));
+  if (draftPatches.length) {
+    plan = mergeCarMetaPatchesIntoPlan(plan, draftPatches);
+  }
+  return applyCarMetaPassengerInheritance(normalizeTransportPlanning(plan));
+}
+
+function buildRegistrationCarCrewContext(anchor, hostPerson) {
+  const manualGroupMemberCount = anchor.manualGroupMemberCount || 0;
+  const companionsForCrew = anchor.companionsForCrew;
+  const requiresPassengers =
+    manualGroupMemberCount > 1
+      ? manualGroupCrewRequiresPassengers(manualGroupMemberCount)
+      : carCrewRequiresPassengerSelection(hostPerson, companionsForCrew);
+  return { hostPerson, companions: companionsForCrew, requiresPassengers };
+}
+
+/**
+ * Validación de datos de carro al guardar registro (edición / alta).
+ * Carga meta persistida del titular; si el vehículo ya está capturado, no exige reingresar al agregar acompañantes.
+ */
+export async function getBautizosRegistrationCarValidationIssues({
+  person,
+  eventSnapshot,
+  roster,
+  draftMetaByVehicleKey = {},
+  inheritLinkedCarData,
+}) {
+  const companions = getBautizosCompanionsArray(person);
+  if (!familyHasAnyCarTransport(person, companions, eventSnapshot)) return [];
+
+  const linkedCarInherit = resolveLinkedCompanionCarInheritance(
+    person,
+    roster,
+    eventSnapshot?.transportPlanning,
+    { inheritFlag: inheritLinkedCarData ?? person?.bautizosInheritLinkedCompanionCarData }
+  );
+  if (linkedCarInherit.active) return [];
+
+  const anchor = resolveBautizosCarDataAnchor(person, roster, eventSnapshot);
+  if (!anchor.eligible || !anchor.anchorPerson) return [];
+
+  const hostSourceKey = `p:${String(person?.id || anchor.anchorPerson?.id || '').trim()}`;
+  if (!hostSourceKey || hostSourceKey === 'p:') return [];
+
+  const planWithMeta = await resolveBautizosRegistrationCarPlan({
+    eventSnapshot,
+    hostSourceKey,
+    draftMetaByVehicleKey,
+  });
+
+  const crewContext = buildRegistrationCarCrewContext(anchor, person);
+  const inventoryCompanions = anchor.inventoryCompanions?.length ? anchor.inventoryCompanions : companions;
+  const inventory = buildMergedFamilyCarInventory({
+    hostPerson: person,
+    companions: inventoryCompanions,
+    plan: planWithMeta,
+    hostSourceKey,
+    draftMetaByVehicleKey: {},
+  });
+
+  const crewOpts = { requiresPassengers: crewContext.requiresPassengers };
+  const inventorySatisfiedForSave =
+    inventory.length > 0 &&
+    inventory.every(
+      (slot) => slot.meta?.maybeAbsent || isCarVehicleFullyCaptured(slot.meta, crewOpts)
+    );
+  if (inventorySatisfiedForSave) {
+    return [];
+  }
+
+  const hasDraftEdits = Object.keys(draftMetaByVehicleKey || {}).length > 0;
+  if (!hasDraftEdits) {
+    const anchorForCheck = { ...anchor, anchorPerson: person };
+    if (!personCarDataNeedsAttentionFromPlan(eventSnapshot, anchorForCheck, roster, planWithMeta)) {
+      return [];
+    }
+    const vehicleDataSufficient =
+      inventory.length > 0 &&
+      inventory.every(
+        (slot) => slot.meta?.maybeAbsent || vehicleMetaFieldsAndDriverComplete(slot.meta)
+      );
+    if (vehicleDataSufficient) {
+      return [];
+    }
+  }
+
+  return getFamilyCarInventoryValidationIssues(inventory, crewContext);
+}
 
 export const CAR_DATA_FILTER_OPTIONS = Object.freeze([
   { id: 'all', label: 'Todos' },
@@ -142,14 +337,16 @@ export function personInventoryNeedsCarDataAttention(person, eventSnapshot, rost
   const anchor = resolveBautizosCarDataAnchor(person, roster, eventSnapshot);
   if (!anchor.eligible || !anchor.anchorPerson) return false;
   if (String(anchor.waRecipient?.id || '').trim() !== String(person?.id || '').trim()) return false;
+
+  const plan = eventSnapshot.transportPlanning;
+  if (!planNeedsCarMetaSubcollectionFetch(plan)) {
+    return personCarDataNeedsAttentionFromPlan(eventSnapshot, anchor, roster, plan);
+  }
+
   const anchorSk = `p:${String(anchor.anchorPerson?.id || '').trim()}`;
-  const summary = eventSnapshot?.transportPlanning?.bautizosCarMetaSummaryByTitular?.[anchorSk];
+  const summary = plan?.bautizosCarMetaSummaryByTitular?.[anchorSk];
   if (summary) {
-    const crewOpts = buildCarMetaCrewOptsForTitular(
-      anchorSk,
-      eventSnapshot.transportPlanning,
-      roster
-    );
+    const crewOpts = buildCarMetaCrewOptsForTitular(anchorSk, plan, roster);
     return titularSummaryNeedsAttention(summary, crewOpts);
   }
   const inventory = buildCarDataInventoryForAnchor(anchor, eventSnapshot);

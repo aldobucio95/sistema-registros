@@ -30,6 +30,41 @@ function chromiumInstalledAppLabelEs(displayModeRaw) {
 }
 
 /**
+ * Id determinista por sesión/pestaña para evitar duplicados en reintentos o doble clic.
+ */
+export function buildStaffSessionLogId(kind, user) {
+  const uid = String(user?.id ?? '');
+  const tab = String(user?.tabSessionId ?? 'x');
+  const lt = Number(user?.loginTime) || 0;
+  return `sess_${kind}_${uid}_${tab}_${lt}`;
+}
+
+/** Marca en sessionStorage que ya se escribió un log de sesión (una vez por pestaña). */
+export function claimStaffSessionLogWrite(logId) {
+  try {
+    const key = `vnpm_wrote_${String(logId)}`;
+    if (sessionStorage.getItem(key) === '1') return false;
+    sessionStorage.setItem(key, '1');
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Escribe un log de inicio/cierre de sesión como máximo una vez por pestaña y sesión.
+ * @returns {Promise<boolean>} true si se intentó escribir (primera vez).
+ */
+export async function writeStaffSessionLogOnce(addLogFn, { kind, action, details, user, targetEvent }) {
+  if (!addLogFn || !user?.username) return false;
+  const logId = buildStaffSessionLogId(kind, user);
+  if (!claimStaffSessionLogWrite(logId)) return false;
+  const ev = targetEvent ?? { id: 'Global', name: 'Sistema' };
+  await addLogFn(action, details, user.username, ev, null, { logId });
+  return true;
+}
+
+/**
  * Sufijo para logs de inicio/cierre de sesión (mismo criterio que la telemetría del usuario).
  * @returns {string}
  */

@@ -146,3 +146,36 @@ function formatOne(ymd) {
     day: 'numeric',
   });
 }
+
+/** Fecha local de hoy en ISO (YYYY-MM-DD). */
+export function getLocalTodayIso(date = new Date()) {
+  const d = date instanceof Date ? date : new Date();
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Ventana para marcar asistencia al evento: solo entre inicio y fin del evento (inclusive).
+ * @param {object} eventLike
+ * @param {string} [todayIso] — YYYY-MM-DD; por defecto hoy (hora local).
+ */
+export function isEventAttendanceMarkingWindowOpen(eventLike, todayIso = getLocalTodayIso()) {
+  const start = getEventEffectiveStartDate(eventLike);
+  const end = getEventEffectiveEndDate(eventLike);
+  const today = String(todayIso || '').trim();
+  if (!start || !end || !today) return false;
+  return compareIsoDates(today, start) >= 0 && compareIsoDates(today, end) <= 0;
+}
+
+/** Mensaje breve cuando la asistencia no se puede marcar fuera del evento. */
+export function eventAttendanceMarkingWindowHint(eventLike) {
+  const start = getEventEffectiveStartDate(eventLike);
+  const end = getEventEffectiveEndDate(eventLike);
+  if (!start || !end) {
+    return 'Configure las fechas del evento para marcar asistencia.';
+  }
+  return `La asistencia solo se puede marcar durante el evento (${formatEventDateRangeLabel(eventLike)}).`;
+}

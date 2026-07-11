@@ -4,7 +4,7 @@
  *
  * Ruta: app_events/{eventId}/transport_car_meta/{vehicleDocId}
  */
-import { getDocs, getDoc, query, where, writeBatch } from 'firebase/firestore';
+import { deleteField, FieldPath, getDocs, getDoc, query, where, writeBatch } from 'firebase/firestore';
 import { db, getTransportCarMetaColRef, getTransportCarMetaDocRef } from './firebaseRefs.js';
 import {
   applyCarMetaPassengerInheritance,
@@ -16,13 +16,93 @@ import {
   normalizeCarMetaWithCrewDedupe,
   normalizeCarVehicleMeta,
   vehicleMetaFieldsAndDriverComplete,
+  vehicleMetaHasBasicVehicleFields,
 } from './bautizosCarMeta.js';
+import { coalesceVehiclePatchForPersist } from './transport/v2/transportVehicleModel.js';
 import {
   carVehicleMetaStorageKey,
+  collectTransportAttendanceAffectedKeys,
+  patchTransportAttendanceOnPlan,
+  buildTransportAttendanceMapFirestorePatch,
+  buildTransportPlanningGranularFirestorePatch,
+  buildTransportPlanningStructureFirestorePatch,
   normalizeTransportPlanning,
+  TRANSPORT_PLAN_MAP_KEY_DELETE,
 } from './transportPlanningCore.js';
 
 export const TRANSPORT_CAR_META_STORAGE_VERSION = 1;
+
+async function applyTransportPlanningGranularPatch(updateDoc, docRef, entries) {
+  if (!entries?.length) return;
+  const args = [];
+  for (const { segments, value } of entries) {
+    args.push(
+      new FieldPath(...segments),
+      value === TRANSPORT_PLAN_MAP_KEY_DELETE ? deleteField() : value
+    );
+  }
+  await updateDoc(docRef, ...args);
+}
+
+/** Persiste solo claves de asistencia (sin reescribir todo `transportPlanning`). */
+export async function saveTransportAttendancePatch({
+  eventId,
+  plan,
+  sourceKey,
+  confirmed,
+  confirmedBy = '',
+  getDocRef,
+  updateDoc,
+}) {
+  const eid = String(eventId || '').trim();
+  const sk = String(sourceKey || '').trim();
+  if (!eid || !sk) return normalizeTransportPlanning(plan);
+
+  const base = normalizeTransportPlanning(plan);
+  const next = patchTransportAttendanceOnPlan(base, sk, confirmed, confirmedBy);
+  const keys = collectTransportAttendanceAffectedKeys(base, sk);
+  const args = [];
+  for (const k of keys) {
+    const entry = next.transportAttendanceBySource?.[k];
+    args.push(
+      new FieldPath('transportPlanning', 'transportAttendanceBySource', k),
+      entry ? entry : deleteField()
+    );
+  }
+  if (args.length) {
+    await updateDoc(getDocRef('app_events', eid), ...args);
+  }
+  return transportPlanningFromEventDoc({
+    ...next,
+    bautizosCarMetaSummaryByTitular: base.bautizosCarMetaSummaryByTitular || {},
+    transportCarMetaStorageVersion:
+      base.transportCarMetaStorageVersion || TRANSPORT_CAR_META_STORAGE_VERSION,
+  });
+}
+
+/** Persiste diff de `transportAttendanceBySource` (varias claves en un solo updateDoc). */
+export async function saveTransportAttendanceMapDiff({
+  eventId,
+  localPlan,
+  remotePlan,
+  getDocRef,
+  updateDoc,
+}) {
+  const eid = String(eventId || '').trim();
+  if (!eid) return normalizeTransportPlanning(localPlan);
+
+  const local = normalizeTransportPlanning(localPlan);
+  const entries = buildTransportAttendanceMapFirestorePatch(local, remotePlan);
+  if (entries.length) {
+    await applyTransportPlanningGranularPatch(updateDoc, getDocRef('app_events', eid), entries);
+  }
+  return transportPlanningFromEventDoc({
+    ...local,
+    bautizosCarMetaSummaryByTitular: local.bautizosCarMetaSummaryByTitular || {},
+    transportCarMetaStorageVersion:
+      local.transportCarMetaStorageVersion || TRANSPORT_CAR_META_STORAGE_VERSION,
+  });
+}
 
 /** Codifica `p:id|c1` como id de documento Firestore. */
 export function vehicleKeyToDocId(vehicleKey) {
@@ -81,6 +161,37 @@ export function mergeCarMetaCacheIntoPlan(plan, carMetaCacheByKey) {
     // Plan edits (pending save) must win over lazy-loaded Firestore cache.
     carMetaBySource: { ...cache, ...(plan?.carMetaBySource || {}) },
   });
+}
+
+/** Lectura UI: conserva rubros del vehículo en caché si el plan solo trae tripulación vacía. */
+export function mergeCarMetaCacheIntoPlanForRead(plan, carMetaCacheByKey) {
+  const cache = carMetaCacheByKey && typeof carMetaCacheByKey === 'object' ? carMetaCacheByKey : {};
+  const fromPlan = plan?.carMetaBySource || {};
+  const keys = new Set([...Object.keys(cache), ...Object.keys(fromPlan)]);
+  if (!keys.size) return normalizeTransportPlanning(plan);
+  const carMetaBySource = {};
+  for (const vk of keys) {
+    carMetaBySource[vk] = normalizeCarVehicleMeta(
+      coalesceVehiclePatchForPersist(fromPlan[vk] || {}, cache[vk] || null)
+    );
+  }
+  return normalizeTransportPlanning({ ...plan, carMetaBySource });
+}
+
+export function titularCarMetaHasUsableVehicleData(plan, carMetaCacheByKey, titularSk, effectiveCars = 1) {
+  const owner = String(titularSk || '').trim();
+  if (!owner) return false;
+  const merged = mergeCarMetaCacheIntoPlanForRead(plan, carMetaCacheByKey);
+  const K = Math.max(1, parseInt(effectiveCars, 10) || 1);
+  for (let i = 1; i <= K; i += 1) {
+    const vk = carVehicleMetaStorageKey(owner, i);
+    const meta = merged?.carMetaBySource?.[vk];
+    if (vehicleMetaHasBasicVehicleFields(meta)) return true;
+    if (meta?.maybeAbsent) return true;
+    if (String(meta?.driverSourceKey || '').trim()) return true;
+    if (Array.isArray(meta?.passengerSourceKeys) && meta.passengerSourceKeys.length > 0) return true;
+  }
+  return false;
 }
 
 /** Copia meta lazy-loaded al plan editable (una sola fuente de verdad en memoria). */
@@ -198,6 +309,35 @@ export function slotsFromTitularCarMetaSummary(summaryEntry) {
  * Lectura bajo demanda (getDocs + where) — no listener en tiempo real.
  * Razón: datos de carro solo se necesitan al expandir tarjeta/formulario.
  */
+function carMetaFetchEntryHasUsableData(meta) {
+  const m = normalizeCarVehicleMeta(meta);
+  if (m.maybeAbsent) return true;
+  if (m.brand || m.model || m.color || m.plates || m.driverSourceKey) return true;
+  return Array.isArray(m.passengerSourceKeys) && m.passengerSourceKeys.length > 0;
+}
+
+/** Fusiona mapas de meta; un origen con datos reales gana sobre entradas vacías del otro. */
+export function mergeFetchedCarMetaMaps(...maps) {
+  const out = {};
+  for (const map of maps) {
+    if (!map || typeof map !== 'object') continue;
+    for (const [vehicleKey, meta] of Object.entries(map)) {
+      const key = String(vehicleKey || '').trim();
+      if (!key) continue;
+      const prev = out[key];
+      if (!prev) {
+        out[key] = normalizeCarVehicleMeta(meta);
+        continue;
+      }
+      const prevOk = carMetaFetchEntryHasUsableData(prev);
+      const nextOk = carMetaFetchEntryHasUsableData(meta);
+      if (nextOk && !prevOk) out[key] = normalizeCarVehicleMeta(meta);
+      else if (nextOk && prevOk) out[key] = normalizeCarVehicleMeta(meta);
+    }
+  }
+  return out;
+}
+
 export async function fetchCarMetaForTitular(eventId, titularSk, opts = {}) {
   const eid = String(eventId || '').trim();
   const owner = String(titularSk || '').trim();
@@ -206,11 +346,11 @@ export async function fetchCarMetaForTitular(eventId, titularSk, opts = {}) {
   const preferV2 = opts.preferV2 !== false;
   const ownerPid = owner.startsWith('p:') ? owner.slice(2) : owner;
 
+  let v2Map = {};
   if (preferV2) {
     try {
       const { fetchLegacyCarMetaForTitularV2 } = await import('./transport/v2/transportService.js');
-      const v2Map = await fetchLegacyCarMetaForTitularV2(eid, ownerPid);
-      if (Object.keys(v2Map).length) return v2Map;
+      v2Map = await fetchLegacyCarMetaForTitularV2(eid, ownerPid);
     } catch {
       /* fallback v1 */
     }
@@ -219,12 +359,12 @@ export async function fetchCarMetaForTitular(eventId, titularSk, opts = {}) {
   const col = getTransportCarMetaColRef(eid);
   const q = query(col, where('ownerSourceKey', '==', owner));
   const snap = await getDocs(q);
-  const out = {};
+  const v1Map = {};
   for (const d of snap.docs) {
     const vehicleKey = docIdToVehicleKey(d.id);
-    out[vehicleKey] = normalizeCarVehicleMeta(d.data());
+    v1Map[vehicleKey] = normalizeCarVehicleMeta(d.data());
   }
-  return out;
+  return mergeFetchedCarMetaMaps(v1Map, v2Map);
 }
 
 /** Toda la meta de carro del evento (subcolección); para sugerencias de color y lectura inicial. */
@@ -431,20 +571,53 @@ export async function saveTransportPlanStructure({
   getDocRef,
   updateDoc,
   crewOptsByTitular = {},
+  /** Solo cambios de estructura (camiones/asignación): reutiliza resumen existente sin re-merge de car meta. */
+  preserveCarMetaSummary = false,
+  /** Plan remoto para parche parcial (solo campos que cambiaron). */
+  remotePlan = null,
 }) {
   const eid = String(eventId || '').trim();
   if (!eid) return normalizeTransportPlanning(plan);
 
-  const normalized = applyCarMetaPassengerInheritance(normalizeTransportPlanning(plan));
-  const summary = buildCarMetaSummaryByTitularFromPlan(normalized, roster, crewOptsByTitular);
-  const eventPlan = transportPlanningForEventDoc({
-    ...normalized,
-    bautizosCarMetaSummaryByTitular: summary,
-  });
+  const normalized = preserveCarMetaSummary
+    ? normalizeTransportPlanning(plan)
+    : applyCarMetaPassengerInheritance(normalizeTransportPlanning(plan));
 
-  await updateDoc(getDocRef('app_events', eid), {
-    transportPlanning: eventPlan,
-  });
+  const existingSummary = normalized.bautizosCarMetaSummaryByTitular || {};
+  const remoteSummary =
+    remotePlan?.bautizosCarMetaSummaryByTitular &&
+    typeof remotePlan.bautizosCarMetaSummaryByTitular === 'object'
+      ? remotePlan.bautizosCarMetaSummaryByTitular
+      : {};
+  const preservedSummary =
+    preserveCarMetaSummary &&
+    (Object.keys(existingSummary).length > 0 || Object.keys(remoteSummary).length > 0);
+  const summary = preservedSummary
+    ? Object.keys(existingSummary).length > 0
+      ? existingSummary
+      : remoteSummary
+    : buildCarMetaSummaryByTitularFromPlan(normalized, roster, crewOptsByTitular);
+
+  const granularEntries =
+    preserveCarMetaSummary && remotePlan
+      ? buildTransportPlanningGranularFirestorePatch(normalized, remotePlan)
+      : [];
+
+  if (granularEntries.length > 0) {
+    await applyTransportPlanningGranularPatch(
+      updateDoc,
+      getDocRef('app_events', eid),
+      granularEntries
+    );
+  } else if (!preserveCarMetaSummary || !remotePlan) {
+    const eventPlan = transportPlanningForEventDoc({
+      ...normalized,
+      bautizosCarMetaSummaryByTitular: summary,
+    });
+    await updateDoc(getDocRef('app_events', eid), {
+      transportPlanning: eventPlan,
+    });
+  }
 
   return transportPlanningFromEventDoc({
     ...normalized,

@@ -23,7 +23,14 @@ import {
 } from '../eventDateHelpers.js';
 import { donationAddsToRecaudacionBalance } from '../donationHelpers.js';
 import { useWorkspaceShell } from './eventWorkspace/WorkspaceShellContext.jsx';
+import LocationRosterSheetContainer from '../components/roster/LocationRosterSheetContainer.jsx';
 import BautizosCarDataPromptModal from '../components/transport/BautizosCarDataPromptModal.jsx';
+import ExpenseRegistryQuantityFiltersDropdown from '../components/expenses/ExpenseRegistryQuantityFiltersDropdown.jsx';
+import {
+  EXPENSE_QUANTITY_MODE_MANUAL,
+  EXPENSE_QUANTITY_MODE_REGISTRY,
+  createEmptyExpenseRegistryQuantityFilters,
+} from '../expenseRegistryQuantity.js';
 import AppVersionBadge from '../AppVersionBadge.jsx';
 import { collectCarColorSuggestions } from '../bautizosCarMeta.js';
 import { isCardPaymentAllowedForLocation } from '../cardPaymentEligibility.js';
@@ -54,7 +61,7 @@ function preloadTransportPlanningChunk() {
 
 function donationIsSuperEditable(don) {
   if (!don || don._syntheticArchivedCredit || don._syntheticCancelledRefund) return false;
-  if (don.fromCancelledRefundDonation || don.fromArchivedManualCredit) return false;
+  if (don.fromCancelledRefundDonation || don.fromArchivedManualCredit || don.fromManualCredit) return false;
   return true;
 }
 
@@ -844,7 +851,8 @@ export default function EventWorkspaceScreen() {
               <button
                 type="button"
                 onClick={shell.handleLogout}
-                className="inline-flex items-center justify-center gap-1.5 min-h-[2.25rem] px-2.5 sm:px-3 rounded-full text-xs font-bold text-rose-800 bg-rose-100 hover:bg-rose-200 border border-rose-300 dark:border-rose-700 dark:bg-rose-600 dark:text-white dark:hover:bg-rose-700 transition-colors shadow-sm"
+                disabled={shell.logoutBusy}
+                className="inline-flex items-center justify-center gap-1.5 min-h-[2.25rem] px-2.5 sm:px-3 rounded-full text-xs font-bold text-rose-800 bg-rose-100 hover:bg-rose-200 border border-rose-300 dark:border-rose-700 dark:bg-rose-600 dark:text-white dark:hover:bg-rose-700 transition-colors shadow-sm disabled:opacity-50 disabled:pointer-events-none"
                 title="Cerrar Sesión"
               >
                 <LogOut size={14} className="shrink-0" />
@@ -925,7 +933,9 @@ export default function EventWorkspaceScreen() {
           {contentTab === 'RegistroGlobal' && shell.isPanelNavSectionAllowed('registroGlobal') && shell.renderGlobalRegistryPage()}
           {contentTab === "CashCut" && shell.isPanelNavSectionAllowed('cashCut') && shell.renderCashCutPage()}
           {contentTab === "ExpenseList" && shell.canAccessExpenses && shell.isPanelNavSectionAllowed('expenseList') && shell.renderExpenseListPage()}
-          {shell.visibleLocations.includes(contentTab) && shell.isPanelNavSectionAllowed('locations') && shell.renderLocationSheet(contentTab)}
+          {shell.visibleLocations.includes(contentTab) && shell.isPanelNavSectionAllowed('locations') && (
+            <LocationRosterSheetContainer loc={contentTab} renderLocationSheet={shell.renderLocationSheet} />
+          )}
             </>
           )}
         </div>
@@ -1311,7 +1321,7 @@ export default function EventWorkspaceScreen() {
       {shell.renderPromoteOverCapConfirmModal()}
 
       {/* PAYMENT MODAL */}
-      {shell.paymentModal.isOpen && !shell.bautizosCarDataPrompt?.isOpen && (
+      {shell.paymentModal.isOpen && !shell.bautizosCarDataPrompt?.isOpen && !shell.paymentSubmitInFlight && (
         <div className={uiOverlay.modalLight}>
           <form
             className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200"
@@ -1326,7 +1336,7 @@ export default function EventWorkspaceScreen() {
               const pm = shell.allParticipants.find((p) => String(p.id) === String(shell.paymentModal.id));
               return pm?.registeredCostManual ? (
                 <p className="text-[10px] text-sky-800 font-semibold -mt-4 mb-4 leading-snug border border-sky-100 bg-sky-50/80 rounded-lg px-3 py-2">
-                  Costo de lista fijado manualmente: puedes abonar por encima del costo; el excedente queda como saldo a favor y se refleja en gastos.
+                  Costo de lista fijado manualmente: puedes abonar por encima del costo; el excedente queda como saldo a favor (seguimiento en lista de gastos, sin restar del recaudado hasta devolución o donación).
                 </p>
               ) : null;
             })()}
@@ -1406,32 +1416,22 @@ export default function EventWorkspaceScreen() {
       {shell.bautizosCarDataPrompt?.isOpen ? (
         <BautizosCarDataPromptModal
           isOpen
+          isSubmitting={shell.paymentSubmitInFlight}
           hostPerson={shell.bautizosCarDataPrompt.hostPerson}
           companions={shell.bautizosCarDataPrompt.companions}
-          plan={shell.currentEvent?.transportPlanning}
+          companionsForCrew={shell.bautizosCarDataPrompt.companionsForCrew}
+          manualGroupMemberCount={shell.bautizosCarDataPrompt.manualGroupMemberCount || 0}
+          plan={shell.bautizosCarDataPrompt.plan ?? shell.currentEvent?.transportPlanning}
           hostSourceKey={shell.bautizosCarDataPrompt.hostSourceKey}
+          initialDraftMetaByVehicleKey={shell.bautizosCarDataPrompt.initialDraftMetaByVehicleKey || {}}
           colorSuggestions={collectCarColorSuggestions(shell.currentEvent?.transportPlanning)}
           onCancel={() => {
-            const resolve = shell.bautizosCarDataPrompt.onResolve;
-            shell.setBautizosCarDataPrompt({
-              isOpen: false,
-              hostPerson: null,
-              companions: [],
-              hostSourceKey: '',
-              onResolve: null,
-            });
-            resolve?.(false);
+            if (shell.paymentSubmitInFlight) return;
+            shell.bautizosCarDataPrompt.onResolve?.(false);
           }}
           onConfirm={(patches) => {
-            const resolve = shell.bautizosCarDataPrompt.onResolve;
-            shell.setBautizosCarDataPrompt({
-              isOpen: false,
-              hostPerson: null,
-              companions: [],
-              hostSourceKey: '',
-              onResolve: null,
-            });
-            resolve?.(patches);
+            if (shell.paymentSubmitInFlight) return;
+            shell.bautizosCarDataPrompt.onResolve?.(patches);
           }}
         />
       ) : null}
@@ -2185,10 +2185,39 @@ export default function EventWorkspaceScreen() {
       )}
 
       {/* EXPENSE EDIT MODAL */}
-      {shell.expenseEditModal.isOpen && (
+      {shell.expenseEditModal.isOpen && (() => {
+        const editDraftResolved = shell.resolveExpenseRowAmountsCached(
+          {
+            quantityMode: shell.expenseEditModal.quantityMode,
+            quantity: shell.expenseEditModal.quantity,
+            unitPrice: parseFloat(shell.expenseEditModal.unitPrice) || 0,
+            registryQuantityFilters: shell.expenseEditModal.registryQuantityFilters,
+            registryQuantityLocations: shell.expenseEditModal.registryQuantityLocations,
+          },
+          shell.expenseRegistryQuantityContext
+        );
+        const editDisplayQty =
+          shell.expenseEditModal.quantityMode === EXPENSE_QUANTITY_MODE_REGISTRY
+            ? editDraftResolved.quantity
+            : parseInt(shell.expenseEditModal.quantity, 10) || 0;
+        const editDisplayTotal = editDisplayQty * (parseFloat(shell.expenseEditModal.unitPrice) || 0);
+        const resetEditModal = () => {
+          shell.setExpenseEditRegistryFiltersOpen(false);
+          shell.setExpenseEditModal({
+            isOpen: false,
+            id: null,
+            name: '',
+            quantityMode: EXPENSE_QUANTITY_MODE_MANUAL,
+            quantity: 1,
+            unitPrice: '',
+            registryQuantityFilters: createEmptyExpenseRegistryQuantityFilters(),
+            registryQuantityLocations: [],
+          });
+        };
+        return (
         <div className={uiOverlay.modalLight}>
           <form
-            className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-md animate-in zoom-in-95 duration-200"
+            className="bg-white rounded-3xl p-8 shadow-2xl w-full max-w-lg animate-in zoom-in-95 duration-200 max-h-[min(92vh,48rem)] overflow-y-auto"
             onSubmit={(e) => {
               e.preventDefault();
               void shell.handleEditExpense();
@@ -2196,39 +2225,92 @@ export default function EventWorkspaceScreen() {
           >
             <div className="flex justify-between items-start mb-6">
               <h3 className="text-xl font-black text-slate-800 flex items-center gap-2"><Edit3 size={24} className="text-indigo-600" /> Editar Gasto</h3>
-              <button type="button" onClick={() => shell.setExpenseEditModal({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' })} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
+              <button type="button" onClick={resetEditModal} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full"><XCircle size={20} /></button>
             </div>
             <div className="space-y-4">
               <div>
                 <label className="text-xs font-bold text-slate-500 mb-1 block">Nombre</label>
                 <input type="text" autoFocus value={shell.expenseEditModal.name} onChange={e => shell.setExpenseEditModal({ ...shell.expenseEditModal, name: e.target.value })} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none" />
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-bold text-slate-500 mb-1 block">Cantidad</label>
+              <div>
+                <label className="text-xs font-bold text-slate-500 mb-1 block">Cantidad</label>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => shell.setExpenseEditModal({ ...shell.expenseEditModal, quantityMode: EXPENSE_QUANTITY_MODE_MANUAL })}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${shell.expenseEditModal.quantityMode === EXPENSE_QUANTITY_MODE_MANUAL ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-200'}`}
+                  >
+                    Manual
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => shell.setExpenseEditModal({ ...shell.expenseEditModal, quantityMode: EXPENSE_QUANTITY_MODE_REGISTRY })}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${shell.expenseEditModal.quantityMode === EXPENSE_QUANTITY_MODE_REGISTRY ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-200'}`}
+                  >
+                    Por filtros del registro
+                  </button>
+                </div>
+                {shell.expenseEditModal.quantityMode === EXPENSE_QUANTITY_MODE_REGISTRY ? (
+                  <div className="space-y-2">
+                    <ExpenseRegistryQuantityFiltersDropdown
+                      eventId={shell.currentEvent?.id}
+                      eventType={shell.currentEvent?.eventType}
+                      isCampa={shell.isCampa}
+                      isBautizos={shell.isBautizos}
+                      isResponsivaEnabled={shell.isResponsivaEnabled}
+                      genders={shell.GENDERS}
+                      visibleLocations={shell.visibleLocations}
+                      filters={shell.expenseEditModal.registryQuantityFilters}
+                      onFiltersChange={(next) =>
+                        shell.setExpenseEditModal((prev) => ({
+                          ...prev,
+                          registryQuantityFilters:
+                            typeof next === 'function' ? next(prev.registryQuantityFilters) : next,
+                        }))
+                      }
+                      locationFilters={shell.expenseEditModal.registryQuantityLocations}
+                      onLocationFiltersChange={(next) =>
+                        shell.setExpenseEditModal((prev) => ({
+                          ...prev,
+                          registryQuantityLocations:
+                            typeof next === 'function' ? next(prev.registryQuantityLocations) : next,
+                        }))
+                      }
+                      matchCount={editDisplayQty}
+                      showOptionCounts={false}
+                      open={shell.expenseEditRegistryFiltersOpen}
+                      onOpenChange={shell.setExpenseEditRegistryFiltersOpen}
+                      dropdownRootId="expense-edit-registry-qty-filters"
+                    />
+                    <p className="text-xs font-semibold text-indigo-800 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
+                      Cantidad actual: <span className="font-black tabular-nums">{editDisplayQty}</span>
+                    </p>
+                  </div>
+                ) : (
                   <input type="number" min="1" value={shell.expenseEditModal.quantity} onChange={e => shell.setExpenseEditModal({ ...shell.expenseEditModal, quantity: e.target.value })} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none" />
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-500 mb-1 block">Precio unitario</label>
-                  <input type="number" min="0" step="0.01" value={shell.expenseEditModal.unitPrice} onChange={e => shell.setExpenseEditModal({ ...shell.expenseEditModal, unitPrice: e.target.value })} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none" />
-                </div>
+                )}
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-500 mb-1 block">Precio unitario</label>
+                <input type="number" min="0" step="0.01" value={shell.expenseEditModal.unitPrice} onChange={e => shell.setExpenseEditModal({ ...shell.expenseEditModal, unitPrice: e.target.value })} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none" />
               </div>
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
                 <span className="text-[10px] font-bold text-slate-400 uppercase">Nuevo total: </span>
-                <span className="text-lg font-black text-slate-800">${((parseInt(shell.expenseEditModal.quantity) || 0) * (parseFloat(shell.expenseEditModal.unitPrice) || 0)).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
+                <span className="text-lg font-black text-slate-800">${editDisplayTotal.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
               </div>
               <div className="flex gap-3 pt-2">
-                <button type="button" onClick={() => shell.setExpenseEditModal({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' })} className={shell.btnSecondary}>Cancelar</button>
+                <button type="button" onClick={resetEditModal} className={shell.btnSecondary}>Cancelar</button>
                 <button type="submit" className="flex-1 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-sm transition-colors flex items-center justify-center gap-2"><CheckCircle2 size={18} /> Guardar</button>
               </div>
             </div>
           </form>
         </div>
-      )}
+        );
+      })()}
 
       {/* EXPENSE PARTIAL PAYMENT MODAL */}
       {shell.expensePartialModal.isOpen && (() => {
-        const exp = shell.expenses.find(e => e.id === shell.expensePartialModal.expenseId);
+        const exp = shell.getResolvedExpenseForActions?.(shell.expensePartialModal.expenseId);
         const remaining = exp ? (exp.totalPrice || 0) - (exp.paidAmount || 0) : 0;
         return (
           <div className={uiOverlay.modalLight}>

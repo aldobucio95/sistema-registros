@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef, lazy, Suspense, startTransition, useDeferredValue } from 'react';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef, lazy, Suspense, startTransition, useDeferredValue, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useLocation, Navigate } from 'react-router-dom';
 import {
@@ -81,6 +81,8 @@ import {
   countBautizosFifoLiquidationUnits,
   getBautizosGlobalRegistryRowOutstandingGross,
   resolveBautizosGlobalRegistryRowFinances,
+  isRosterPersonLiquidadoForListFilter,
+  isRosterSaldoAFavorForListFilter,
   accumulateDashboardParticipantDemographics,
   resolveDashboardParticipantAgeYears,
   attendanceSpecialChoiceButtonClass,
@@ -150,10 +152,14 @@ import {
   participantHasBaptismChip,
   normalizePersonNameKey,
   bautizosLineGoesByCar,
+  buildBautizosCompanionTransportLineLike,
+  buildBautizosCompanionListFilterPersonLike,
   isBautizosCompanionBaptized,
   bautizosCompanionIsAlsoBautizadoRegistrant,
   buildBautizosCanonicalCompanionPlan,
   buildBautizadoMetaForCanonical,
+  buildBautizosDashboardCanonicalCompanionPlan,
+  countBautizosActivePeopleUnits,
   buildActiveRegistrantMetaForCompanionDedupe,
   getBautizosBaptizedCompanionSubmitBlockingError,
   hasBautizosBaptizedCompanionInParty,
@@ -175,8 +181,12 @@ import {
   collectBautizosServidoresYEmpleadosRows,
   countBautizosServidoresYEmpleadosPeople,
   bautizosCompanionParticipatesAsServer,
+  bautizosTitularCountsInCortesiaTotal,
+  bautizosCompanionCountsInCortesiaTotal,
   countBautizosServersDeduped,
   collectBautizosParticipatingServerRows,
+  parseBautizosVirtualServerRegistryId,
+  patchBautizosCompanionInHostArray,
   getBautizosAttendanceTypeLabel,
   resolveBautizosAttendanceChipKind,
   getBautizosCompanionsVisibleForRegistrant,
@@ -202,6 +212,7 @@ import {
 } from './bautizosParty.js';
 import {
   buildRegistrationEditScalarChanges,
+  describeCarDraftMetaRegistrationChange,
   describeNewRegistrationCompanions,
   describeRegisteredCostChange,
 } from './registrationChangeLog.js';
@@ -253,18 +264,34 @@ import {
   planBautizosPartyCancelArchive,
 } from './bautizosCompanionBajaArchive.js';
 import {
+  applyResolvedExpenseAmounts,
+  buildExpenseRegistryCountCacheKey,
+  buildExpenseRegistryParticipantPool,
+  countExpenseRegistryQuantityMatches,
+  createEmptyExpenseRegistryQuantityFilters,
+  createExpenseRegistryCountCache,
+  EXPENSE_QUANTITY_MODE_MANUAL,
+  EXPENSE_QUANTITY_MODE_REGISTRY,
+  mergeExpenseRegistryQuantityFilters,
+  resolveExpenseRowAmounts,
+} from './expenseRegistryQuantity.js';
+import ExpenseRegistryQuantityFiltersDropdown from './components/expenses/ExpenseRegistryQuantityFiltersDropdown.jsx';
+import {
   ROSTER_EXTRA_FILTER_DEFAULTS,
   applyEventScopedRosterFilters,
   prepareBautizosRowsForRosterFilter,
   applyTitularOnlyBautizosRosterFilters,
+  applyLiquidationListFilters,
   BAUTIZOS_ATTENDANCE_FILTER_OPTIONS,
   BAUTIZOS_TRANSPORT_FILTER_OPTIONS,
   BAUTIZOS_AGE_FILTER_OPTIONS,
   PERSON_OF_INTEREST_FILTER_OPTIONS,
   REGISTRATION_STATUS_FILTER_OPTIONS,
+  EVENT_ATTENDANCE_FILTER_OPTIONS,
   participantMatchesBautizosTransportFilter,
   participantMatchesPersonOfInterestFilter,
   participantMatchesRegistrationStatusFilter,
+  countBautizosFilteredPeopleRows,
 } from './rosterParticipantFilters.js';
 import {
   allUnsentCarDataNotificationMarkKeys,
@@ -286,8 +313,28 @@ import {
   buildBusGroupSections,
   buildTransportPlanningLines,
   normalizeTransportPlanning,
+  patchTransportAttendanceOnPlan,
   passengersForBusGroup,
 } from './transportPlanningCore.js';
+import { buildTransportExcelCarGroupSections } from './transportExcelExport.js';
+import {
+  buildTransportExportPlan,
+  loadCarMetaCacheForTransportExport,
+} from './transportCarMetaExport.js';
+import {
+  isRegistryPersonEventAttendanceConfirmed,
+  participantMatchesEventAttendanceFilter,
+  resolveTransportAttendanceSourceKeyForRegistryPerson,
+} from './globalRegistryTransportAttendance.js';
+import GlobalRegistryEventAttendanceControl from './components/roster/GlobalRegistryEventAttendanceControl.jsx';
+import BautizosGlobalRegistryLiteRow from './components/roster/BautizosGlobalRegistryLiteRow.jsx';
+import { saveTransportAttendanceMapDiff } from './transportCarMetaStore.js';
+import {
+  getRegistryAttendancePlanSnapshot,
+  initRegistryAttendancePlan,
+  patchRegistryAttendancePlan,
+  syncRegistryAttendancePlanFromRemote,
+} from './registryAttendanceStore.js';
 import {
   BautizosAttendanceTypeField,
   BautizosCompanionsField,
@@ -302,17 +349,21 @@ import {
   buildCarDataSummaryForRosterPerson,
   buildCarDataWaSubjectContext,
   buildCarMetaPatchesAfterSave,
+  buildCarMetaSyncPatchesToLinkedCompanions,
   buildMergedFamilyCarInventory,
   carCrewRequiresPassengerSelection,
   collectCarColorSuggestions,
   familyCarInventoryNeedsAttention,
   familyHasAnyCarTransport,
   getFamilyCarInventoryValidationIssues,
+  normalizeCarVehicleMeta,
   resolveBautizosCarDataAnchor,
+  resolveCarDataValidationHostContext,
   resolveLinkedCompanionCarInheritance,
 } from './bautizosCarMeta.js';
-import { persistEventCarMetaPatches } from './transportCarMetaStore.js';
+import { applyCarMetaPatchesLocally, fetchCarMetaForTitular, persistEventCarMetaPatches } from './transportCarMetaStore.js';
 import { scheduleRegistrationTransportSave } from './transport/v2/registrationTransportBridge.js';
+import { upsertCarMetaPatchesToTransportV2 } from './transport/v2/transportService.js';
 import PastoresPage from './screens/PastoresPage.jsx';
 import {
   countPastorParticipants,
@@ -326,6 +377,7 @@ import {
   formatEventDateRangeLabel,
   formatCampaSegmentDateLines,
   isEventSingleDay,
+  isEventAttendanceMarkingWindowOpen,
 } from './eventDateHelpers.js';
 import { eventFirestoreDocIdFromHumanName, buildFirestoreDocId, sanitizeFirestoreDocId } from './firestoreDocId.js';
 import {
@@ -380,6 +432,7 @@ import {
   BLOOD_TYPE_STATS_OTHER,
 } from './registrationFormShared.js';
 import { donationAddsToRecaudacionBalance } from './donationHelpers.js';
+import { remapDraftRegistrationLocation, resolveRegistrationLocation } from './registrationLocation.js';
 import {
   CASH_CUT_NO_SERVICE_LABEL,
   DEFAULT_SERVICE_SLOTS as CASH_CUT_DEFAULT_SERVICE_SLOTS,
@@ -391,8 +444,13 @@ import {
   buildParticipantPaidFieldsFromHistory,
   collectCashCutRefundDisbursements,
   collectCancelledParticipantsWithPendingRefund,
+  collectParticipantsWithPendingCredit,
   enrichPaymentHistoryWithRefundDisbursements,
   getCancelledRefundPendingAmount,
+  getParticipantCreditPendingAmount,
+  getParticipantCreditBaseAmount,
+  getRefundDonatedTotalAmount,
+  resolveCreditRefundSede,
   getParticipantNetPaidFromHistory,
   getParticipantEffectivePaidNet,
   getParticipantOutstandingGross,
@@ -424,11 +482,12 @@ import { runComputeWorkerJob } from './workers/computeWorkerClient.js';
 import UserSessionSummaryCell from './UserSessionSummaryCell.jsx';
 import AppVersionBadge from './AppVersionBadge.jsx';
 import { formatBirthDateExcelLabel, normalizeBirthDateToIso } from './birthDateIsoUtils.js';
-import { applyExcelHyperlinkCellStyle, excelWhatsAppPendingCheckboxDisplay } from './excelExportSheetStyle.js';
+import { applyWhatsAppHyperlinksToWorksheet, excelWhatsAppPendingCheckboxDisplay } from './excelExportSheetStyle.js';
 import {
   buildExcelExportFilename,
   downloadExcelBytes,
   applyRosterSheetStyles,
+  applyRosterWorksheetLayout,
   formatBrowserLocalDateTimeLabel,
 } from './excelRosterXlsxEnhance.js';
 import { buildCashCutExcelSheet } from './excelCashCutExport.js';
@@ -458,6 +517,7 @@ import {
   getInstallPromptBrowserNameEs,
   getSessionLogClientSuffix,
   isClientPwaRuntime,
+  writeStaffSessionLogOnce,
 } from './clientTelemetry.js';
 import { WorkspaceShellProvider } from './screens/eventWorkspace/WorkspaceShellContext.jsx';
 import { mergeWorkspaceShellParts } from './screens/eventWorkspace/mergeWorkspaceShellParts.js';
@@ -514,10 +574,16 @@ import {
 } from './formFieldClasses.js';
 import RosterSortDropdown from './components/RosterSortDropdown.jsx';
 import RosterLocationSearchPanel from './components/RosterLocationSearchPanel.jsx';
+import {
+  readRosterLocationSearchTerm,
+  writeRosterLocationSearchTerm,
+  subscribeRosterLocationSearchTerm,
+} from './rosterLocationSearchBus.js';
 import RosterParticipantMobileCard from './components/RosterParticipantMobileCard.jsx';
 import CompanionWaitlistBadge from './components/CompanionWaitlistBadge.jsx';
 import ListMobileCard from './components/ListMobileCard.jsx';
 import ActivityLogMobileCard from './components/ActivityLogMobileCard.jsx';
+import VirtualizedList from './components/VirtualizedList.jsx';
 import MobileCompactToolbar, { MobileCompactToolbarPanel } from './components/mobile/MobileCompactToolbar.jsx';
 import MobileSearchField from './components/mobile/MobileSearchField.jsx';
 import MobileMenuSection from './components/mobile/MobileMenuSection.jsx';
@@ -580,12 +646,26 @@ import {
 import { logError as logErrorToActivity, setErrorLogContextProvider } from './errorLogger.js';
 import ActivityLogSnapshotDetails from './components/ActivityLogSnapshotDetails.jsx';
 import { deleteOldestLogsByCount, deleteLogsByIds } from './activityLogsDelete.js';
-import { buildLocationRosterTypeSummaryByStatus, getLocationRosterSectionCountsFromSummary, aggregateLocationRosterSectionCountsForLocations } from './locationRosterTypeSummary.js';
+import { buildLocationRosterTypeSummaryByStatus, getLocationRosterSectionCountsFromSummary } from './locationRosterTypeSummary.js';
+import {
+  computeLocationRosterSheetModel,
+  buildLocationRosterFinanceByPersonId,
+} from './locationRosterSheetData.js';
+import useMediaQuery from './hooks/useMediaQuery.js';
+import LocationRosterVirtualSection from './components/roster/location/LocationRosterVirtualSection.jsx';
 import {
   buildGlobalRegistryPartySections,
+  countBautizosGlobalRegistryActivePartyRows,
+  countGlobalRegistryCoincidenceTotal,
+  filterGlobalRegistryPartyRowsByParticipantFilters,
   globalRegistryPartyRowsToPersons,
   sortGlobalRegistryPartyRows,
+  visibleBautizosActiveGlobalRegistryPartyRows,
 } from './globalRegistryPartyRows.js';
+import { computeGlobalRegistryPageModel } from './globalRegistryPageData.js';
+import { buildGlobalRegistryFilteredPartyPersons } from './globalRegistryExportRows.js';
+import { computeBautizosDashboardLocationPersonStats, countBautizosEventWideFilteredPeople } from './bautizosDashboardLocationStats.js';
+import { buildDashboardNestedFilterCountsMap } from './dashboardNestedFilterCounts.js';
 import LocationRosterTypeSummary from './LocationRosterTypeSummary.jsx';
 import {
   LocationRosterActivosChip,
@@ -608,6 +688,7 @@ import {
   resolveSedeCapStatus,
 } from './cupoVsWaitlistDisplay.js';
 import { computeDashboardTodosRosterTotal } from './dashboardTodosRosterTotal.js';
+import { planActiveRosterUnitsSync } from './activeRosterUnitsSync.js';
 import {
   getAuth,
   signInWithCustomToken,
@@ -643,6 +724,8 @@ import {
   resolveVersionForStore,
   subscribeLogsHeadVersionDebounced,
   syncLocalVersionIndexFromIdb,
+  readLocalVersionCache,
+  normalizeCacheVersion,
 } from './firestoreVersionCache.js';
 import {
   loadEventParticipantsWithVersionCache,
@@ -654,9 +737,15 @@ import {
   loadArchivedParticipantsWithVersionCache,
   subscribeArchiveParticipantsVersion,
   suppressParticipantVersionListeners,
+  patchParticipantsInList,
+  isAssignedServeAreaOnlyPatch,
+  resolveParticipantLocationVersionForAck,
+  markParticipantLocationOwnWrite,
+  shouldSkipParticipantLocationOwnWriteRefetch,
 } from './participantsVersionCache.js';
 import {
   syncParticipantAfterWrite,
+  syncParticipantsBatchAfterWrite,
   syncDonationAfterWrite,
   syncExpenseAfterWrite,
   syncEventAfterWrite,
@@ -691,6 +780,8 @@ import {
   writeTransportUiToPrefs,
   listFiltersForEventApplication,
   countActiveDropdownListFilters,
+  pickSharedEventListDropdownFilters,
+  sharedEventListDropdownFiltersEqual,
 } from './userListFiltersPrefs.js';
 
 const secondaryAuth = getAuth(secondaryApp);
@@ -1616,6 +1707,7 @@ const EMPTY_ENTRY = {
   name: '', phone: '', age: '', birthDate: '', bloodType: BLOOD_TYPE_UNSPECIFIED, gender: '',
   responsivaStatus: '',
   alias: '',
+  location: '',
   emergencyContact: '', emergencyPhone: '', emergencyRelationship: '', canSwim: 'No', paid: '',
   attendanceSpecialType: ATTENDANCE_SPECIAL.ninguno,
   hasAllergy: 'No', allergyCategory: '', allergyDetails: '', hasDisease: 'No', diseaseDetails: '', diseaseMedication: '',
@@ -2074,6 +2166,7 @@ const createEmptyGlobalRegistryListFilters = () => ({
   filterScholarship: 'all',
   filterMedical: 'all',
   filterRegistrationStatus: 'all',
+  filterEventAttendance: 'all',
   ...ROSTER_EXTRA_FILTER_DEFAULTS,
 });
 
@@ -2730,7 +2823,7 @@ function collectCashCutAllPayments(
     const paidGross = parseFloat(person.paid) || 0;
 
     historyRows.forEach((h) => {
-      if (h.kind === REFUND_DISBURSEMENT_PAYMENT_KIND && participantIsCancelledForRefund(person)) return;
+      if (h.kind === REFUND_DISBURSEMENT_PAYMENT_KIND) return;
       const ts = getPaymentHistoryTimestamp(h, fb);
       if (ts == null || Number.isNaN(ts)) return;
       const method = h.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
@@ -4026,6 +4119,7 @@ const App = () => {
   const [loginError, setLoginError] = useState('');
   /** Solo SuperUsuario: sesiones activas (heartbeat reciente), actualizado en tiempo real. */
   const [superSessionCount, setSuperSessionCount] = useState(0);
+  const [logoutBusy, setLogoutBusy] = useState(false);
   const [newUser, setNewUser] = useState({
     username: '',
     password: '',
@@ -4419,6 +4513,9 @@ const App = () => {
     [currentUser]
   );
 
+  const dashboardScopeTableCacheRef = useRef({ sig: '', byKey: new Map() });
+  const dashboardSummaryCacheRef = useRef({ sig: '', content: null });
+
   const excelExportAccessibleLocations = useMemo(() => {
     const locs = (currentEvent?.locations || []).map((l) => String(l).trim()).filter(Boolean);
     if (!locs.length || !currentUser) return [];
@@ -4723,7 +4820,19 @@ const App = () => {
   const [logRecentBaseLimit, setLogRecentBaseLimit] = useState(20);
   const logsOldestCursorRef = useRef(null);
   const participantsVersionUnsubRef = useRef(null);
+  const eventTransportPlanRef = useRef(null);
+  const grAttendanceLastSavedPlanRef = useRef(null);
+  const grAttendanceSaveInFlightRef = useRef(false);
+  const grAttendanceSaveRescheduleRef = useRef(false);
+  const grAttendanceDebounceRef = useRef(null);
+  const grAttendanceInitEventIdRef = useRef('');
+  const grFirestoreEchoSkipRef = useRef({ tab: '', eventId: '' });
+  const currentEventForRegistryDebtRef = useRef(null);
+  const activeRosterSyncTimerRef = useRef(null);
+  const lastActiveRosterSyncKeyRef = useRef('');
   const participantsVersionAckRef = useRef(null);
+  /** Roster en memoria por evento: evita pantalla vacía al reabrir un evento en la misma sesión. */
+  const participantsByEventMemoryRef = useRef(new Map());
   const logsVersionUnsubRef = useRef(null);
   const staffSnapshotUnsubsRef = useRef([]);
 
@@ -4799,6 +4908,24 @@ const App = () => {
   const [logSpecificMonth, setLogSpecificMonth] = useState('');
   const [allParticipants, setAllParticipants] = useState([]);
   const carDataWaBackfillDoneRef = useRef(new Set());
+  /** Área de servicio pendiente de reflejar en `allParticipants` (evita recomputar índice Bautizos). */
+  const serverServeAreaByIdRef = useRef(Object.create(null));
+  const [serverServeAreaRev, setServerServeAreaRev] = useState(0);
+
+  useEffect(() => {
+    const overrides = serverServeAreaByIdRef.current;
+    const ids = Object.keys(overrides);
+    if (!ids.length) return;
+    let changed = false;
+    for (const id of ids) {
+      const p = allParticipants.find((x) => String(x.id) === id);
+      if (p && String(p.assignedServeArea || '').trim() === String(overrides[id] || '').trim()) {
+        delete overrides[id];
+        changed = true;
+      }
+    }
+    if (changed) setServerServeAreaRev((v) => v + 1);
+  }, [allParticipants]);
 
   useEffect(() => {
     if (!isBautizos || !currentEvent?.id || !allParticipants?.length) return;
@@ -4899,10 +5026,12 @@ const App = () => {
 
     return () => clearTimeout(timer);
   }, [isBautizos, currentEvent?.id, currentEvent?.transportPlanning, allParticipants]);
-  const refetchParticipantLocationsAfterWrite = useCallback((eventId, locations) => {
+  const refetchParticipantLocationsAfterWrite = useCallback((eventId, locations, opts = {}) => {
     return refetchAndMergeParticipantLocations(eventId, locations, setAllParticipants, {
       acknowledgeLocationVersion: (loc, remoteV) =>
         participantsVersionAckRef.current?.(loc, remoteV),
+      startTransition,
+      ...opts,
     });
   }, []);
 
@@ -4922,6 +5051,105 @@ const App = () => {
       }
     },
     [currentEvent?.id, refetchParticipantLocationsAfterWrite]
+  );
+
+  const refreshParticipantsCacheBatch = useCallback(
+    (entries, action, opts = {}) => {
+      const patches = (entries || []).filter((e) => e?.patch && (e.personId != null || e.person?.id != null));
+      let nextParticipants = allParticipants || [];
+      for (const entry of patches) {
+        const pid = String(entry.personId != null ? entry.personId : entry.person?.id || '').trim();
+        if (!pid) continue;
+        nextParticipants = patchParticipantsInList(nextParticipants, pid, entry.patch);
+      }
+      const eidForMem = String(
+        patches[0]?.eventId || patches[0]?.person?.eventId || currentEvent?.id || ''
+      ).trim();
+      if (eidForMem) {
+        const mem = participantsByEventMemoryRef.current.get(eidForMem);
+        if (mem?.length) {
+          let memNext = mem;
+          for (const entry of patches) {
+            const pid = String(entry.personId != null ? entry.personId : entry.person?.id || '').trim();
+            if (!pid) continue;
+            memNext = patchParticipantsInList(memNext, pid, entry.patch);
+          }
+          participantsByEventMemoryRef.current.set(eidForMem, memNext);
+        }
+      }
+      const skipGlobalState =
+        opts.skipGlobalState === true ||
+        (patches.length > 0 && patches.every((e) => isAssignedServeAreaOnlyPatch(e.patch)));
+      if (!skipGlobalState) {
+        setAllParticipants(nextParticipants);
+      }
+
+      const bumpLocs = new Set();
+      let eventId = '';
+      for (const entry of patches) {
+        eventId = String(entry.eventId || entry.person?.eventId || '').trim() || eventId;
+        const prevLoc = String(entry.previousLocation || '').trim();
+        const curLoc = String(
+          entry.location || entry.patch?.location || entry.person?.location || prevLoc
+        ).trim();
+        if (prevLoc) bumpLocs.add(prevLoc);
+        if (curLoc) bumpLocs.add(curLoc);
+      }
+      const eid = String(eventId || currentEvent?.id || '').trim();
+      const locs = [...bumpLocs];
+      if (!eid || !locs.length) return;
+
+      if (opts.skipRefetch === true) {
+        const releaseSuppress = suppressParticipantVersionListeners();
+        for (const loc of locs) {
+          markParticipantLocationOwnWrite(eid, loc);
+          const scope = scopeParticipantsLocation(eid, loc);
+          const localV = normalizeCacheVersion(readLocalVersionCache(scope)?.version);
+          if (localV > 0) participantsVersionAckRef.current?.(loc, localV);
+        }
+        releaseSuppress();
+        void (async () => {
+          try {
+            for (const loc of locs) {
+              const v = await resolveParticipantLocationVersionForAck(eid, loc, { maxWaitMs: 2000 });
+              if (v > 0) participantsVersionAckRef.current?.(loc, v);
+            }
+          } catch (err) {
+            console.error('[cache-version] ack versión en segundo plano', action, err);
+          }
+        })();
+        return;
+      }
+
+      void refetchParticipantLocationsAfterWrite(eid, locs).catch((err) => {
+        console.error('[cache-version] refetch batch tras escritura', action, err);
+      });
+    },
+    [allParticipants, currentEvent?.id, refetchParticipantLocationsAfterWrite]
+  );
+
+  /** Parche optimista + sync local de sede, sin refetch Firestore (escrituras propias con parche completo). */
+  const refreshParticipantCacheFast = useCallback(
+    (person, action, opts = {}) => {
+      const pid = opts.personId != null ? String(opts.personId) : String(person?.id || '').trim();
+      const patch = opts.patch;
+      if (!pid || !patch || typeof patch !== 'object') return;
+      refreshParticipantsCacheBatch(
+        [
+          {
+            person,
+            personId: pid,
+            patch,
+            eventId: opts.eventId || person?.eventId || currentEvent?.id,
+            location: opts.location || person?.location,
+            previousLocation: opts.previousLocation || person?.location,
+          },
+        ],
+        action,
+        { skipRefetch: true }
+      );
+    },
+    [currentEvent?.id, refreshParticipantsCacheBatch]
   );
 
   const handleSavePastorFields = useCallback(
@@ -4986,6 +5214,25 @@ const App = () => {
     const inEvent = allParticipants.filter((p) => String(p.eventId) === String(currentEvent.id));
     return filterParticipantsByLocationScope(inEvent, visibleLocations);
   }, [allParticipants, currentEvent?.id, visibleLocations]);
+  /** Plan canónico Bautizos para dashboard (evita reconstruir en cada render de `renderSummary`). */
+  const dashboardSummaryBautizosPlan = useMemo(() => {
+    if (!isBautizos || !currentEvent?.id) return new Map();
+    const rosterLocs = dashboardLocations.length ? dashboardLocations : currentEvent?.locations || [];
+    const eventRosterRows = allParticipants.filter(
+      (p) => p.eventId === currentEvent.id && participantIsActiveInRoster(p)
+    );
+    const rosterBase = eventRosterRows.filter((p) =>
+      rosterLocs.includes(String(p.location || '').trim())
+    );
+    return buildBautizosDashboardCanonicalCompanionPlan(rosterBase, {
+      includeBaptizedCompanions: true,
+      linkLookupRoster: (allParticipants || []).filter(
+        (p) =>
+          p.eventId === currentEvent.id &&
+          (p?.status || 'active') !== PARTICIPANT_STATUS_ARCHIVED
+      ),
+    });
+  }, [isBautizos, currentEvent?.id, currentEvent?.locations, allParticipants, dashboardLocations]);
   /**
    * Hub de eventos: unidades de inscripción activa por evento (misma base que cupo global en dashboard).
    * Bautizos: titular + acompañantes con nombre. Campa: ×2 si «Ambos» y opción de conteo del evento. Resto: 1 por registro.
@@ -5197,6 +5444,16 @@ function resolveEventName(eventId) {
   /** Contenido principal: un tick detrás del menú lateral para mejorar INP al cambiar sede / sección. */
   const deferredActiveTab = useDeferredValue(activeTab);
   const navContentPending = deferredActiveTab !== activeTab;
+  /** Pool Servidores memoizado (Campa: filtro isServer; Bautizos: collectBautizos…). */
+  const serverProfilesServidoresPool = useMemo(() => {
+    const onServersTab = deferredActiveTab === 'ServersPage' || activeTab === 'ServersPage';
+    if (!onServersTab) return null;
+    const activeRoster = scopedEventParticipants.filter(
+      (p) => participantIsActiveInEvent(p) && participantIsActiveInRoster(p)
+    );
+    if (isBautizos) return collectBautizosServidoresYEmpleadosRows(activeRoster);
+    return activeRoster.filter((p) => isSiValue(p.isServer));
+  }, [deferredActiveTab, activeTab, scopedEventParticipants, isBautizos]);
   useLayoutEffect(() => {
     navSnapshotRef.current = { systemView, selectedEventId, activeTab };
   });
@@ -5283,6 +5540,74 @@ function resolveEventName(eventId) {
     },
     [patchEventTransportPlanning]
   );
+
+  useEffect(() => {
+    eventTransportPlanRef.current = currentEvent?.transportPlanning ?? null;
+  }, [currentEvent?.id, currentEvent?.transportPlanning]);
+
+  useEffect(() => {
+    if (deferredActiveTab !== 'RegistroGlobal') {
+      grAttendanceInitEventIdRef.current = '';
+      return;
+    }
+    if (!currentEvent?.id) return;
+    const eid = String(currentEvent.id);
+    if (grAttendanceInitEventIdRef.current === eid) return;
+    grAttendanceInitEventIdRef.current = eid;
+    const plan = normalizeTransportPlanning(currentEvent.transportPlanning);
+    initRegistryAttendancePlan(plan);
+    grAttendanceLastSavedPlanRef.current = plan;
+    eventTransportPlanRef.current = plan;
+  }, [deferredActiveTab, currentEvent?.id]);
+
+  useEffect(() => {
+    grFirestoreEchoSkipRef.current = {
+      tab: deferredActiveTab,
+      eventId: String(selectedEventId || '').trim(),
+    };
+  }, [deferredActiveTab, selectedEventId]);
+
+  const flushGlobalRegistryAttendanceSave = useCallback(async () => {
+    const eid = String(currentEvent?.id || '').trim();
+    if (!eid) return;
+    if (grAttendanceSaveInFlightRef.current) {
+      grAttendanceSaveRescheduleRef.current = true;
+      return;
+    }
+    const localPlan = getRegistryAttendancePlanSnapshot();
+    const remotePlan = grAttendanceLastSavedPlanRef.current;
+    grAttendanceSaveInFlightRef.current = true;
+    grAttendanceSaveRescheduleRef.current = false;
+    try {
+      const saved = await saveTransportAttendanceMapDiff({
+        eventId: eid,
+        localPlan,
+        remotePlan,
+        getDocRef,
+        updateDoc,
+      });
+      grAttendanceLastSavedPlanRef.current = saved;
+      eventTransportPlanRef.current = saved;
+    } catch (e) {
+      console.error('[global-registry] attendance save', e);
+      showToast('No se pudo guardar la asistencia.');
+    } finally {
+      grAttendanceSaveInFlightRef.current = false;
+      if (grAttendanceSaveRescheduleRef.current) {
+        void flushGlobalRegistryAttendanceSave();
+      }
+    }
+  }, [currentEvent?.id, getDocRef, updateDoc, showToast]);
+
+  const queueGlobalRegistryAttendanceSave = useCallback(() => {
+    if (grAttendanceDebounceRef.current != null) {
+      window.clearTimeout(grAttendanceDebounceRef.current);
+    }
+    grAttendanceDebounceRef.current = window.setTimeout(() => {
+      grAttendanceDebounceRef.current = null;
+      void flushGlobalRegistryAttendanceSave();
+    }, 350);
+  }, [flushGlobalRegistryAttendanceSave]);
 
   const persistBautizosCarMetaPatches = useCallback(
     async (patches, opts = {}) => {
@@ -5441,9 +5766,7 @@ function resolveEventName(eventId) {
     campaigns: [],
   });
   const [customFieldsModal, setCustomFieldsModal] = useState({ isOpen: false });
-  const [searchTerm, setSearchTerm] = useState("");
-  /** Valor de búsqueda aplicado a filtros de lista por sede (debounce respecto a `searchTerm`). */
-  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
+  /** Búsqueda aplicada al roster por sede vive en `rosterLocationSearchBus` (no re-renderiza App.jsx al escribir). */
   /** Búsqueda para importar datos desde otro evento del mismo tipo */
   const [newRegProfileSearch, setNewRegProfileSearch] = useState('');
   /** SuperUsuario: filas expandidas en aviso de duplicado al nuevo registro (ids de participante). */
@@ -5473,6 +5796,7 @@ function resolveEventName(eventId) {
   /** all | single | married | pending-spouse — campamentos; pareja vinculada (id o enlace entrante). */
   const [filterMaritalStatus, setFilterMaritalStatus] = useState('all');
   const [filterRegistrationStatus, setFilterRegistrationStatus] = useState('all');
+  const [filterEventAttendance, setFilterEventAttendance] = useState('all');
   const [filterBautizosAttendance, setFilterBautizosAttendance] = useState('all');
   const [filterAge, setFilterAge] = useState('all');
   /** all | pending — datos de vehículo/tripulación pendientes (Bautizos). */
@@ -5480,6 +5804,8 @@ function resolveEventName(eventId) {
   const [filtersDropdownOpen, setFiltersDropdownOpen] = useState(false);
   /** Filtros solo del resumen del dashboard (Visualización de Datos Generales); independientes del registro por sede / registro global. */
   const [summaryFiltersDropdownOpen, setSummaryFiltersDropdownOpen] = useState(false);
+  const [dashboardNestedFilterCountsMap, setDashboardNestedFilterCountsMap] = useState(null);
+  const dashboardNestedCountsBuildRef = useRef(0);
   const summaryFiltersBtnRef = useRef(null);
   const [summaryFiltersMenuPos, setSummaryFiltersMenuPos] = useState(null);
   const updateSummaryFiltersMenuPos = useCallback(() => {
@@ -5563,7 +5889,10 @@ function resolveEventName(eventId) {
   });
   const listFiltersPrefsRef = useRef(createEmptyListFiltersPrefsRoot());
   const rosterFiltersContextRef = useRef({ eventId: null, loc: null });
+  /** Espejo del bus para prefs y filtros auxiliares sin `setState` en App.jsx. */
+  const rosterLocationSearchRef = useRef('');
   const listFiltersPrefsHydratedUidRef = useRef('');
+  const listFiltersSyncGuardRef = useRef(null);
   const listFiltersFirestorePersistTimerRef = useRef(null);
   const listFiltersFirestorePersistDisabledRef = useRef(false);
   const legacyLocalFiltersMigratedRef = useRef(false);
@@ -5788,6 +6117,19 @@ function resolveEventName(eventId) {
     datetimeLocal: '',
     busy: false,
   });
+  /** Devolución parcial o donación de saldo a favor / baja (lista de gastos). */
+  const [creditActionModal, setCreditActionModal] = useState({
+    isOpen: false,
+    action: null,
+    personId: '',
+    personName: '',
+    maxAmount: 0,
+    amountStr: '',
+    method: 'Efectivo',
+    datetimeLocal: '',
+    busy: false,
+    creditLabel: '',
+  });
   /** Por sede: { Primero: { start, end }, ... } */
   const [cashCutScheduleForm, setCashCutScheduleForm] = useState({});
   const [serveAreaOptionsModal, setServeAreaOptionsModal] = useState({ isOpen: false });
@@ -5810,10 +6152,28 @@ function resolveEventName(eventId) {
   const [cashCutTotalsView, setCashCutTotalsView] = useState(null);
   const [cashCutGross, setCashCutGross] = useState(true);
   const [expenses, setExpenses] = useState([]);
-  const [expenseForm, setExpenseForm] = useState({ name: '', quantity: 1, unitPrice: '' });
+  const [expenseForm, setExpenseForm] = useState(() => ({
+    name: '',
+    quantityMode: EXPENSE_QUANTITY_MODE_MANUAL,
+    quantity: 1,
+    unitPrice: '',
+    registryQuantityFilters: createEmptyExpenseRegistryQuantityFilters(),
+    registryQuantityLocations: [],
+  }));
   const [expenseSearch, setExpenseSearch] = useState('');
   const [expensePartialModal, setExpensePartialModal] = useState({ isOpen: false, expenseId: null, amount: '' });
-  const [expenseEditModal, setExpenseEditModal] = useState({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' });
+  const [expenseEditModal, setExpenseEditModal] = useState({
+    isOpen: false,
+    id: null,
+    name: '',
+    quantityMode: EXPENSE_QUANTITY_MODE_MANUAL,
+    quantity: 1,
+    unitPrice: '',
+    registryQuantityFilters: createEmptyExpenseRegistryQuantityFilters(),
+    registryQuantityLocations: [],
+  });
+  const [expenseFormRegistryFiltersOpen, setExpenseFormRegistryFiltersOpen] = useState(false);
+  const [expenseEditRegistryFiltersOpen, setExpenseEditRegistryFiltersOpen] = useState(false);
   const [superDateEditModal, setSuperDateEditModal] = useState({
     isOpen: false,
     mode: '',
@@ -5925,44 +6285,25 @@ function resolveEventName(eventId) {
       const rows = [];
       for (const p of allParticipants) {
         if (p.eventId !== eventId) continue;
-        if (participantIsArchived(p)) {
-          const snapAmt = Number(p.archivedManualCreditAmount) || 0;
-          if (snapAmt <= 0.005) continue;
-          const listRef = Number(p.archivedManualCreditListRef) || 0;
-          rows.push({
-            id: `manual-credit-${p.id}-${eventId}`,
-            eventId,
-            name: `Saldo a favor — ${p.name || 'Participante'} (costo lista ${formatMoney(listRef)})`,
-            quantity: 1,
-            unitPrice: snapAmt,
-            totalPrice: snapAmt,
-            paidAmount: 0,
-            paid: false,
-            countInTotals: true,
-            createdAt: '9999-12-31T00:00:00.002Z',
-            _manualCostCreditExpense: true,
-          });
-          continue;
-        }
-        if (!participantIsActiveInEvent(p) || participantIsCancelled(p)) continue;
-        if (p.registeredCostManual !== true) continue;
-        const liq = Number(getLiquidationTarget(p)) || 0;
-        const paidG = parseFloat(p.paid || 0) || 0;
-        const excess = Math.max(0, paidG - liq);
-        if (excess <= 0.005) continue;
-        const listRef = Number(resolveRegisteredCost(p, currentPricing)) || liq;
+        const pending = getParticipantCreditPendingAmount(p, getLiquidationTarget, participantIsArchived);
+        if (pending <= 0.005) continue;
+        const listRef =
+          participantIsArchived(p)
+            ? Number(p.archivedManualCreditListRef) || 0
+            : Number(resolveRegisteredCost(p, currentPricing)) || Number(getLiquidationTarget(p)) || 0;
         rows.push({
           id: `manual-credit-${p.id}-${eventId}`,
           eventId,
           name: `Saldo a favor — ${p.name || 'Participante'} (costo lista ${formatMoney(listRef)})`,
           quantity: 1,
-          unitPrice: excess,
-          totalPrice: excess,
+          unitPrice: pending,
+          totalPrice: pending,
           paidAmount: 0,
           paid: false,
-          countInTotals: true,
+          countInTotals: false,
           createdAt: '9999-12-31T00:00:00.002Z',
           _manualCostCreditExpense: true,
+          _sourceParticipantId: String(p.id),
         });
       }
       return rows;
@@ -6353,6 +6694,14 @@ function resolveEventName(eventId) {
       return allowedLocs.includes(loc);
     },
     [currentUser, currentEvent, events]
+  );
+  const selectableRegistrationLocations = useMemo(
+    () =>
+      (currentEvent?.locations || [])
+        .map((value) => String(value || '').trim())
+        .filter((value, index, arr) => value && arr.indexOf(value) === index)
+        .filter((value) => hasLocationAccess(value, currentEvent?.id)),
+    [currentEvent?.id, currentEvent?.locations, hasLocationAccess]
   );
 
   /** Sedes visibles para un evento concreto (p. ej. al sincronizar la URL antes de que actualice currentEvent). */
@@ -6880,10 +7229,16 @@ function resolveEventName(eventId) {
     navigate,
   ]);
 
+  const syncRosterLocationSearchTerm = useCallback((term) => {
+    const v = String(term ?? '');
+    rosterLocationSearchRef.current = v;
+    writeRosterLocationSearchTerm(v);
+  }, []);
+
   const rosterLocationFilterSetters = useMemo(
     () => ({
-      setSearchTerm,
-      setDebouncedSearchTerm,
+      setDebouncedSearchTerm: syncRosterLocationSearchTerm,
+      setSearchTerm: syncRosterLocationSearchTerm,
       setSortBy,
       setFilterSwim,
       setFilterMedical,
@@ -6904,18 +7259,19 @@ function resolveEventName(eventId) {
       setFilterBaptism,
       setFilterMaritalStatus,
       setFilterRegistrationStatus,
+      setFilterEventAttendance,
       setFilterPaymentMethod,
       setFilterBautizosAttendance,
       setFilterAge,
       setFilterCarDataPending,
     }),
-    []
+    [syncRosterLocationSearchTerm]
   );
 
   const getRosterFilterStateSnapshot = useCallback(
     () =>
       captureLocationRosterFiltersFromState({
-        searchTerm,
+        searchTerm: rosterLocationSearchRef.current,
         sortBy,
         filterSwim,
         filterMedical,
@@ -6936,13 +7292,13 @@ function resolveEventName(eventId) {
         filterBaptism,
         filterMaritalStatus,
         filterRegistrationStatus,
+        filterEventAttendance,
         filterPaymentMethod,
         filterBautizosAttendance,
         filterAge,
         filterCarDataPending,
       }),
     [
-      searchTerm,
       sortBy,
       filterSwim,
       filterMedical,
@@ -6963,6 +7319,7 @@ function resolveEventName(eventId) {
       filterBaptism,
       filterMaritalStatus,
       filterRegistrationStatus,
+      filterEventAttendance,
       filterPaymentMethod,
       filterBautizosAttendance,
       filterAge,
@@ -7007,6 +7364,19 @@ function resolveEventName(eventId) {
       void persistListFiltersPrefsToFirestore();
     }, LIST_FILTERS_PREFS_PERSIST_MS);
   }, [currentUser?.id, persistListFiltersPrefsToFirestore]);
+
+  const persistLocationRosterSearchToPrefs = useCallback(() => {
+    if (!currentUser?.id || !fbUser?.uid || !listFiltersPrefsHydratedUidRef.current) return;
+    const ctx = rosterFiltersContextRef.current;
+    if (!ctx.eventId || !ctx.loc) return;
+    listFiltersPrefsRef.current = writeLocationFiltersToPrefs(
+      listFiltersPrefsRef.current,
+      ctx.eventId,
+      ctx.loc,
+      getRosterFilterStateSnapshot()
+    );
+    scheduleListFiltersPrefsPersist();
+  }, [getRosterFilterStateSnapshot, scheduleListFiltersPrefsPersist, currentUser?.id, fbUser?.uid]);
 
   const flushRosterFiltersToPrefs = useCallback(
     (eventId, loc) => {
@@ -7163,7 +7533,6 @@ function resolveEventName(eventId) {
     );
     scheduleListFiltersPrefsPersist();
   }, [
-    searchTerm,
     sortBy,
     filterSwim,
     filterMedical,
@@ -7331,11 +7700,6 @@ function resolveEventName(eventId) {
       /* ignore */
     }
   }, [currentUser?.id]);
-
-  useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), ROSTER_SEARCH_DEBOUNCE_MS);
-    return () => window.clearTimeout(t);
-  }, [searchTerm]);
 
   useLayoutEffect(() => {
     rosterSectionsPrefsLoadedRef.current = '';
@@ -8239,17 +8603,26 @@ function resolveEventName(eventId) {
     };
   }, [fbUser, currentUser?.role]);
 
-  /** Hidrata eventos desde caché local (si existe) para menos espera antes del primer snapshot de red. */
+  /** Hidrata eventos: caché local primero y luego servidor (evita `activeRosterUnitsTotal` obsoleto tras re-login). */
   useEffect(() => {
     if (!fbUser) return;
     let cancelled = false;
     (async () => {
       try {
         const snap = await getDocsFromCache(getColRef('app_events'));
-        if (cancelled || snap.empty) return;
-        setEvents(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        if (!cancelled && !snap.empty) {
+          setEvents(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        }
       } catch {
         /* sin caché */
+      }
+      try {
+        const serverSnap = await getDocsFromServer(getColRef('app_events'));
+        if (!cancelled && !serverSnap.empty) {
+          setEvents(serverSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        }
+      } catch {
+        /* sin red */
       }
     })();
     return () => {
@@ -8312,6 +8685,24 @@ function resolveEventName(eventId) {
         setDoc(getDocRef('app_events', ev2.id), ev2);
       } else {
         setEvents((prev) => {
+          const skipCtx = grFirestoreEchoSkipRef.current;
+          const inGlobalRegistry =
+            skipCtx.tab === 'RegistroGlobal' && !!skipCtx.eventId;
+          if (inGlobalRegistry) {
+            const changes = snap.docChanges();
+            const onlyActiveEventAttendanceEcho =
+              changes.length === 1 &&
+              String(changes[0]?.doc?.id || '') === skipCtx.eventId &&
+              changes[0]?.type !== 'removed';
+            if (onlyActiveEventAttendanceEcho) {
+              const nextEv = { id: changes[0].doc.id, ...changes[0].doc.data() };
+              const plan = normalizeTransportPlanning(nextEv.transportPlanning);
+              syncRegistryAttendancePlanFromRemote(plan);
+              grAttendanceLastSavedPlanRef.current = plan;
+              eventTransportPlanRef.current = plan;
+              return prev;
+            }
+          }
           const merged = mergeRowsByDocChanges(prev, snap, (d) => ({ id: d.id, ...d.data() }));
           if (merged === null) return prev;
           return merged;
@@ -8411,9 +8802,16 @@ function resolveEventName(eventId) {
         const locations = [
           ...(currentEvent?.locations?.length ? currentEvent.locations : globalLocations || []),
         ];
+        const memoryCached = participantsByEventMemoryRef.current.get(eid);
+        if (memoryCached?.length) {
+          setAllParticipants(memoryCached);
+        }
         try {
           const rows = await loadEventParticipantsWithVersionCache(eid, locations);
-          if (!cancelled) setAllParticipants(rows);
+          if (!cancelled) {
+            setAllParticipants(rows);
+            participantsByEventMemoryRef.current.set(eid, rows);
+          }
         } catch (e) {
           console.error('[cache-version] carga participantes evento', e);
           if (!cancelled) setAllParticipants([]);
@@ -8423,25 +8821,41 @@ function resolveEventName(eventId) {
             eid,
             locations,
             async (eventId, staleItems) => {
+              const toRefetch = [];
+              for (const item of staleItems) {
+                if (shouldSkipParticipantLocationOwnWriteRefetch(eventId, item.loc)) {
+                  participantsVersionAckRef.current?.(item.loc, item.remoteV);
+                  continue;
+                }
+                toRefetch.push(item);
+              }
+              if (!toRefetch.length) {
+                return staleItems.map(({ loc, remoteV }) => ({
+                  loc,
+                  versionWritten: remoteV ?? 0,
+                }));
+              }
               const results = await Promise.all(
-                staleItems.map(({ loc, remoteV }) =>
+                toRefetch.map(({ loc, remoteV }) =>
                   refetchParticipantsForLocation(eventId, loc, { remoteV })
                 )
               );
               if (cancelled) {
-                return staleItems.map(({ loc }, i) => ({
+                return toRefetch.map(({ loc }, i) => ({
                   loc,
                   versionWritten: results[i]?.versionWritten ?? 0,
                 }));
               }
-              setAllParticipants((prev) => {
-                let next = prev;
-                staleItems.forEach(({ loc }, i) => {
-                  next = replaceParticipantsForLocation(next, eventId, loc, results[i]?.slice || []);
+              startTransition(() => {
+                setAllParticipants((prev) => {
+                  let next = prev;
+                  toRefetch.forEach(({ loc }, i) => {
+                    next = replaceParticipantsForLocation(next, eventId, loc, results[i]?.slice || []);
+                  });
+                  return next;
                 });
-                return next;
               });
-              return staleItems.map(({ loc }, i) => ({
+              return toRefetch.map(({ loc }, i) => ({
                 loc,
                 versionWritten: results[i]?.versionWritten ?? 0,
               }));
@@ -8480,22 +8894,45 @@ function resolveEventName(eventId) {
     };
   }, [fbUser, currentUser?.id, selectedEventId, systemView, currentEvent?.id, participantLocationsKey]);
 
-  /** Tras cargar roster completo del evento abierto, alinea el contador del hub con el dashboard (sin tocar el hub con datos parciales). */
+  /** Tras cargar roster del evento abierto, alinea `activeRosterUnitsTotal` del hub con el dashboard y lo persiste en Firestore. */
   useEffect(() => {
     if (!currentEvent?.id || selectedEventId == null || selectedEventId === '') return;
     const evId = String(currentEvent.id);
-    const rows = (allParticipants || []).filter((p) => String(p?.eventId || '') === evId);
-    if (rows.length === 0) return;
-    const computed = computeDashboardTodosRosterTotal(rows, currentEvent);
-    if (!Number.isFinite(computed)) return;
-    const stored = Math.floor(Number(currentEvent.activeRosterUnitsTotal) || 0);
-    if (computed === stored) return;
+    const { shouldSync, computed, stored } = planActiveRosterUnitsSync({
+      event: currentEvent,
+      participants: allParticipants,
+      visibleLocations,
+      hasAdminRights,
+    });
+    if (!shouldSync) return;
+
     setEvents((prev) =>
       prev.map((ev) =>
         String(ev.id) === evId ? { ...ev, activeRosterUnitsTotal: computed } : ev
       )
     );
-  }, [allParticipants, currentEvent, selectedEventId]);
+
+    const syncKey = `${evId}:${computed}`;
+    if (lastActiveRosterSyncKeyRef.current === syncKey) return;
+    if (activeRosterSyncTimerRef.current != null) {
+      window.clearTimeout(activeRosterSyncTimerRef.current);
+    }
+    activeRosterSyncTimerRef.current = window.setTimeout(() => {
+      activeRosterSyncTimerRef.current = null;
+      lastActiveRosterSyncKeyRef.current = syncKey;
+      updateDoc(getDocRef('app_events', evId), { activeRosterUnitsTotal: computed }).catch((e) => {
+        console.error('[activeRosterUnitsTotal] sync', evId, stored, '->', computed, e);
+        lastActiveRosterSyncKeyRef.current = '';
+      });
+    }, 1500);
+
+    return () => {
+      if (activeRosterSyncTimerRef.current != null) {
+        window.clearTimeout(activeRosterSyncTimerRef.current);
+        activeRosterSyncTimerRef.current = null;
+      }
+    };
+  }, [allParticipants, currentEvent, selectedEventId, visibleLocations, hasAdminRights]);
 
   useEffect(() => {
     if (!fbUser || !currentUser) return;
@@ -9137,6 +9574,15 @@ function resolveEventName(eventId) {
   /** Contadores barra lateral del workspace (Web Worker en eventos grandes). */
   const [workspaceSidebarBadges, setWorkspaceSidebarBadges] = useState(EMPTY_WORKSPACE_SIDEBAR_BADGES);
   const sidebarBadgesReqRef = useRef(0);
+  const sidebarBadgesCountSig = useMemo(() => {
+    if (!currentEvent?.id) return '';
+    const locs =
+      visibleLocations?.length > 0
+        ? visibleLocations
+        : (currentEvent.locations || []).map((x) => String(x).trim()).filter(Boolean);
+    const perLoc = locs.map((l) => `${String(l).trim()}:${(data[String(l).trim()]?.length || 0)}`);
+    return `${currentEvent.id}|${allParticipants.length}|${perLoc.join(',')}`;
+  }, [currentEvent?.id, currentEvent?.locations, visibleLocations, allParticipants.length, data]);
 
   useEffect(() => {
     if (!currentEvent?.id) {
@@ -9145,17 +9591,22 @@ function resolveEventName(eventId) {
     }
     const reqId = ++sidebarBadgesReqRef.current;
     const payload = { ev: currentEvent, visibleLocations, allParticipants, data };
-    runComputeWorkerJob('sidebarBadges', payload, { participantCount: allParticipants?.length ?? 0 })
-      .then((result) => {
-        if (sidebarBadgesReqRef.current === reqId) setWorkspaceSidebarBadges(result);
-      })
-      .catch(() => {
-        if (sidebarBadgesReqRef.current === reqId) {
-          setWorkspaceSidebarBadges(computeWorkspaceSidebarBadges(payload));
-        }
-      });
-    return undefined;
-  }, [currentEvent, visibleLocations, allParticipants, data]);
+    const timer = setTimeout(() => {
+      if (sidebarBadgesReqRef.current !== reqId) return;
+      runComputeWorkerJob('sidebarBadges', payload, { participantCount: allParticipants?.length ?? 0 })
+        .then((result) => {
+          if (sidebarBadgesReqRef.current === reqId) {
+            startTransition(() => setWorkspaceSidebarBadges(result));
+          }
+        })
+        .catch(() => {
+          if (sidebarBadgesReqRef.current === reqId) {
+            startTransition(() => setWorkspaceSidebarBadges(computeWorkspaceSidebarBadges(payload)));
+          }
+        });
+    }, 220);
+    return () => clearTimeout(timer);
+  }, [sidebarBadgesCountSig, currentEvent, visibleLocations, allParticipants, data]);
 
 
   const waitlistData = useMemo(() => {
@@ -9175,6 +9626,40 @@ function resolveEventName(eventId) {
     () => buildBautizosRosterIndex(allParticipants, currentEvent),
     [allParticipants, currentEvent?.id, currentEvent?.eventType]
   );
+
+  const eventParticipantsForSummary = useMemo(
+    () => (currentEvent?.id ? allParticipants.filter((p) => p.eventId === currentEvent.id) : []),
+    [allParticipants, currentEvent?.id]
+  );
+
+  const bautizosLocationTypeSummaryByLoc = useMemo(() => {
+    if (!isBautizos || !currentEvent?.id) return {};
+    const locs = visibleLocations.length ? visibleLocations : currentEvent?.locations || [];
+    const out = {};
+    for (const locKey of locs) {
+      const key = String(locKey || '').trim();
+      if (!key) continue;
+      out[key] = buildLocationRosterTypeSummaryByStatus({
+        activeTitularParticipants: data[key] || [],
+        allParticipants: eventParticipantsForSummary,
+        event: currentEvent,
+        loc: key,
+        globalConfig,
+        canonicalCompanionPlan: bautizosRosterIndex.canonicalPlanAll,
+        companionDedupeMeta: bautizosRosterIndex.meta,
+      });
+    }
+    return out;
+  }, [
+    isBautizos,
+    currentEvent,
+    globalConfig,
+    data,
+    eventParticipantsForSummary,
+    visibleLocations,
+    bautizosRosterIndex.canonicalPlanAll,
+    bautizosRosterIndex.meta,
+  ]);
 
   const resolveGlobalRegistryFinanceHost = useCallback(
     (person) => {
@@ -9331,15 +9816,24 @@ function resolveEventName(eventId) {
     return { byLocation: byLoc, groups, duplicateClusters, total };
   }, [allParticipants, currentEvent]);
 
+  const [expandedCompanionCollisionGroups, setExpandedCompanionCollisionGroups] = useState(new Set());
+  /** Dashboard resumen: colapsable; no calcular colisiones acompañante hasta expandir. */
+  const [dashboardCompanionCollisionsExpanded, setDashboardCompanionCollisionsExpanded] = useState(false);
+
+  const shouldComputeCompanionCollisions = Boolean(
+    currentEvent?.eventType === 'Bautizos' &&
+      (newRegModalOpen || activeTab !== 'Summary' || dashboardCompanionCollisionsExpanded)
+  );
+
   const companionCollisionsInEvent = useMemo(() => {
-    if (!currentEvent || currentEvent.eventType !== 'Bautizos') {
+    if (!shouldComputeCompanionCollisions || !currentEvent?.id) {
       return { clusters: [], byRegistrantId: new Map(), byHostId: new Map(), total: 0, actionableCount: 0 };
     }
     return buildCompanionRegistrantCollisionIndex(allParticipants, currentEvent.id, {
       canonicalizeVnpPersonId,
       minConfidence: 'possible',
     });
-  }, [allParticipants, currentEvent]);
+  }, [shouldComputeCompanionCollisions, allParticipants, currentEvent?.id, currentEvent?.eventType]);
 
   const campaFamilyCollisionsInEvent = useMemo(() => {
     if (!currentEvent || currentEvent.eventType !== 'Campa') {
@@ -9356,7 +9850,10 @@ function resolveEventName(eventId) {
     [companionCollisionsInEvent.clusters]
   );
 
-  const [expandedCompanionCollisionGroups, setExpandedCompanionCollisionGroups] = useState(new Set());
+  useEffect(() => {
+    setDashboardCompanionCollisionsExpanded(false);
+    setExpandedCompanionCollisionGroups(new Set());
+  }, [currentEvent?.id]);
 
   /**
    * Registros cuya sede no coincide con ninguna entrada de `currentEvent.locations` (o viene vacía).
@@ -9680,6 +10177,13 @@ function resolveEventName(eventId) {
       ...(globalConfig?.isDebugMode ? { isDebug: true, debugSessionId: globalConfig.debugSessionId } : {}),
       ...(logOptions?.isHidden ? { isHidden: true } : {}),
     });
+    const shouldMirrorLogInPanel =
+      systemView === 'logs' && (selectedEventId == null || selectedEventId === '');
+    if (shouldMirrorLogInPanel) {
+      startTransition(() => {
+        setLogs((prev) => mergeLogsDedupById([[newLog], prev]));
+      });
+    }
     // Escritura resiliente: si falla (permisos/offline) se encola para reintento.
     await writeLogDoc(newLog);
     if (
@@ -9700,7 +10204,6 @@ function resolveEventName(eventId) {
         console.error('app_log_reverts', e);
       }
     }
-    setLogs((prev) => mergeLogsDedupById([[newLog], prev]));
 
     const debugSid = globalConfig?.debugSessionId ?? pendingDebugSessionRef.current;
     if (revertInfo && debugSid && (globalConfig?.isDebugMode || pendingDebugSessionRef.current)) {
@@ -9717,7 +10220,7 @@ function resolveEventName(eventId) {
       }
     }
     return newLogId;
-  }, [currentUser, currentEvent, globalConfig]);
+  }, [currentUser, currentEvent, globalConfig, systemView, selectedEventId]);
 
   /**
    * Respaldo-primero: escribe el snapshot completo del payload ANTES del write principal,
@@ -10016,39 +10519,107 @@ function resolveEventName(eventId) {
         showToast('No tienes permisos para este evento.');
         return;
       }
+      const next = String(rawValue ?? '').trim();
+      const virt = parseBautizosVirtualServerRegistryId(person);
+      if (virt) {
+        const host = allParticipants.find(
+          (p) =>
+            String(p?.id) === virt.hostId && String(p?.eventId) === String(currentEvent?.id || '')
+        );
+        if (!host) {
+          showToast('No se encontró el titular de este acompañante servidor.');
+          return;
+        }
+        const hostLoc = String(host.location || '').trim();
+        if (!hasLocationAccess(hostLoc, currentEvent.id)) {
+          showToast('No tienes acceso a la sede de este registro.');
+          return;
+        }
+        const companions = getBautizosCompanionsArray(host);
+        const companion = companions.find((c) => String(c?.id || '') === virt.companionId);
+        const prev = String(companion?.assignedServeArea ?? '').trim();
+        if (next === prev) return;
+        const nextCompanions = patchBautizosCompanionInHostArray(companions, virt.companionId, {
+          assignedServeArea: next,
+        });
+        if (!nextCompanions) {
+          showToast('No se encontró el acompañante en el titular.');
+          return;
+        }
+        const compName = String(companion?.name || person?.name || '').trim() || 'Acompañante';
+        try {
+          markParticipantLocationOwnWrite(currentEvent.id, hostLoc);
+          await updateDoc(getDocRef('app_participants', virt.hostId), {
+            bautizosCompanions: nextCompanions,
+            ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
+          });
+          serverServeAreaByIdRef.current[virt.virtualRowId] = next;
+          setServerServeAreaRev((v) => v + 1);
+          refreshParticipantCacheFast(host, 'Área de servicio (acompañante)', {
+            personId: virt.hostId,
+            patch: { bautizosCompanions: nextCompanions },
+          });
+          const _srvAreaLog = `Asignó área de servicio de ${compName} (acompañante de ${host.name || 'titular'}): «${prev || '(sin asignar)'}» → «${next || '(sin asignar)'}».`;
+          queueMicrotask(() => {
+            void addLog(
+              'Servidores',
+              _srvAreaLog,
+              null,
+              null,
+              {
+                collectionName: 'app_participants',
+                docId: virt.hostId,
+                action: 'update',
+                previousData: host,
+              }
+            );
+            logParticipantActivity(virt.hostId, 'servidor', _srvAreaLog);
+          });
+          showToast(next ? 'Área de servicio actualizada.' : 'Área de servicio quitada.');
+        } catch (e) {
+          console.error(e);
+          showToast('No se pudo guardar. Revisa conexión o permisos.');
+        }
+        return;
+      }
       const personLoc = String(person.location || '').trim();
       if (!hasLocationAccess(personLoc, currentEvent.id)) {
         showToast('No tienes acceso a la sede de este registro.');
         return;
       }
-      const next = String(rawValue ?? '').trim();
       const prev = String(person.assignedServeArea ?? '').trim();
       if (next === prev) return;
       try {
+        markParticipantLocationOwnWrite(currentEvent.id, personLoc);
         await updateDoc(getDocRef('app_participants', String(person.id)), {
           assignedServeArea: next,
           ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
         });
-        refreshParticipantCache(person, 'Área de servicio', {
-          personId: person.id,
+        const pid = String(person.id);
+        serverServeAreaByIdRef.current[pid] = next;
+        setServerServeAreaRev((v) => v + 1);
+        refreshParticipantCacheFast(person, 'Área de servicio', {
+          personId: pid,
           patch: { assignedServeArea: next },
         });
         const _srvAreaLog = `Asignó área de servicio de ${person.name}: «${prev || '(sin asignar)'}» → «${next || '(sin asignar)'}».`;
-        addLog(
-          'Servidores',
-          _srvAreaLog,
-          null,
-          null,
-          { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
-        );
-        logParticipantActivity(String(person.id), 'servidor', _srvAreaLog);
+        queueMicrotask(() => {
+          void addLog(
+            'Servidores',
+            _srvAreaLog,
+            null,
+            null,
+            { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person }
+          );
+          logParticipantActivity(String(person.id), 'servidor', _srvAreaLog);
+        });
         showToast(next ? 'Área de servicio actualizada.' : 'Área de servicio quitada.');
       } catch (e) {
         console.error(e);
         showToast('No se pudo guardar. Revisa conexión o permisos.');
       }
     },
-    [currentEvent?.id, hasAdminRights, hasEventAccess, hasLocationAccess, globalConfig, showToast, addLog, logParticipantActivity, refreshParticipantCache]
+    [currentEvent?.id, hasAdminRights, hasEventAccess, hasLocationAccess, globalConfig, showToast, addLog, logParticipantActivity, refreshParticipantCacheFast, allParticipants]
   );
 
   useEffect(() => {
@@ -10079,52 +10650,67 @@ function resolveEventName(eventId) {
     if (!profile) return;
     let cancelled = false;
     (async () => {
-      const tabSessionId = getTabSessionId();
-      if (profile.role !== 'SuperUsuario') {
-        const max = getMaxConcurrentSessionsForUser(profile);
-        const others = await countOtherActiveSessions(profile.id, tabSessionId);
+      try {
+        const tabSessionId = getTabSessionId();
+        if (profile.role !== 'SuperUsuario') {
+          const max = getMaxConcurrentSessionsForUser(profile);
+          const others = await countOtherActiveSessions(profile.id, tabSessionId);
+          if (cancelled) return;
+          if (others >= max) {
+            await signOut(auth);
+            setLoginError(
+              max <= 1
+                ? 'Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» allí, o espera unos segundos e intenta de nuevo.'
+                : `Este usuario ya alcanzó el máximo de sesiones simultáneas (${max}). Cierra una sesión en otro dispositivo o pestaña, o espera unos segundos e intenta de nuevo.`
+            );
+            return;
+          }
+        }
+        await setDoc(getDocRef('app_sessions', sessionDocId(profile.id, tabSessionId)), {
+          userId: String(profile.id),
+          sessionId: tabSessionId,
+          username: profile.username,
+          lastHeartbeat: Date.now(),
+          createdAt: Date.now(),
+        });
+        const loginTime = Date.now();
+        const adminDefaultPref =
+          (profile.username || '').toLowerCase() === 'admin' && profile.role === 'Administrador'
+            ? 'Norte'
+            : profile.preferredLandingTab || 'Summary';
         if (cancelled) return;
-        if (others >= max) {
-          await signOut(auth);
+        setCurrentUser({
+          ...profile,
+          tabSessionId,
+          loginTime,
+          allowedEventIds: getUserAllowedEventIds(profile),
+          allowedLocations: getUserAllowedLocations(profile),
+          preferredLandingTab: adminDefaultPref,
+        });
+        void addLog(
+          'Inicio de Sesión',
+          `El usuario ${profile.username} recuperó sesión.${getSessionLogClientSuffix()}`,
+          profile.username,
+          { id: 'Global', name: 'Sistema' }
+        );
+        await updateDoc(getDocRef('app_users', String(profile.id)), {
+          isOnline: true,
+          onlineSince: Date.now(),
+          ...buildClientVersionPatch(),
+        });
+      } catch (err) {
+        if (cancelled || isLogoutPermissionNoise(err)) return;
+        console.warn('[vnpm] session restore', err);
+        const code = String(err?.code || '');
+        await signOut(auth).catch(() => {});
+        if (!cancelled) {
           setLoginError(
-            max <= 1
-              ? 'Ya hay una sesión activa con este usuario en otra pestaña o dispositivo. Cierra esa sesión, usa «Salir» allí, o espera unos segundos e intenta de nuevo.'
-              : `Este usuario ya alcanzó el máximo de sesiones simultáneas (${max}). Cierra una sesión en otro dispositivo o pestaña, o espera unos segundos e intenta de nuevo.`
+            code === 'permission-denied'
+              ? 'La sesión guardada ya no tiene permiso en Firestore. Vuelve a iniciar sesión.'
+              : 'No se pudo restaurar la sesión. Intenta de nuevo.'
           );
-          return;
         }
       }
-      await setDoc(getDocRef('app_sessions', sessionDocId(profile.id, tabSessionId)), {
-        userId: String(profile.id),
-        sessionId: tabSessionId,
-        username: profile.username,
-        lastHeartbeat: Date.now(),
-        createdAt: Date.now(),
-      });
-      const loginTime = Date.now();
-      const adminDefaultPref =
-        (profile.username || '').toLowerCase() === 'admin' && profile.role === 'Administrador'
-          ? 'Norte'
-          : profile.preferredLandingTab || 'Summary';
-      setCurrentUser({
-        ...profile,
-        tabSessionId,
-        loginTime,
-        allowedEventIds: getUserAllowedEventIds(profile),
-        allowedLocations: getUserAllowedLocations(profile),
-        preferredLandingTab: adminDefaultPref,
-      });
-      addLog(
-        'Inicio de Sesión',
-        `El usuario ${profile.username} recuperó sesión.${getSessionLogClientSuffix()}`,
-        profile.username,
-        { id: 'Global', name: 'Sistema' }
-      );
-      await updateDoc(getDocRef('app_users', String(profile.id)), {
-        isOnline: true,
-        onlineSince: Date.now(),
-        ...buildClientVersionPatch(),
-      });
     })();
     return () => {
       cancelled = true;
@@ -11198,6 +11784,30 @@ function resolveEventName(eventId) {
             }
           : baseNav;
 
+      let exportTransportPlan = normalizeTransportPlanning(currentEvent.transportPlanning);
+      if (isBautizos) {
+        try {
+          const rosterForCarMeta = (allParticipants || []).filter(
+            (p) => String(p.eventId) === String(currentEvent.id)
+          );
+          const { carLines: carLinesForMeta } = buildTransportPlanningLines(
+            rosterForCarMeta,
+            currentEvent.eventType,
+            currentEvent.locations || [],
+            currentEvent
+          );
+          const carMetaCache = await loadCarMetaCacheForTransportExport(
+            currentEvent.id,
+            exportTransportPlan,
+            {},
+            { carLines: carLinesForMeta, roster: rosterForCarMeta, isBautizos: true }
+          );
+          exportTransportPlan = buildTransportExportPlan(exportTransportPlan, carMetaCache);
+        } catch (e) {
+          console.error('excel export car meta prefetch', e);
+        }
+      }
+
       const exportParticipantLocKey = (p) => String(p?.location ?? '').trim();
       const listParticipantsForExportLoc = (loc, filterFn) =>
         (allParticipants || [])
@@ -11219,15 +11829,19 @@ function resolveEventName(eventId) {
       const rosterExcelColumnWidthOptions = (headers) => {
         const idx = (name) => (headers || []).findIndex((h) => String(h || '').trim() === name);
         const columnMin = {};
+        const columnMax = {};
         const nombre = idx('Nombre');
         if (nombre >= 0) columnMin[nombre] = 22;
         const msg = idx('Mensaje en cola');
-        if (msg >= 0) columnMin[msg] = 42;
+        if (msg >= 0) {
+          columnMin[msg] = 16;
+          columnMax[msg] = 28;
+        }
         const wa = idx('WhatsApp');
         if (wa >= 0) columnMin[wa] = 14;
         const participante = idx('Participante');
         if (participante >= 0) columnMin[participante] = 26;
-        return { columnMin, maxWidth: EXCEL_MAX_COL_WCH, padding: 3 };
+        return { columnMin, columnMax, maxWidth: EXCEL_MAX_COL_WCH, padding: 3 };
       };
 
       const finHeaderRe =
@@ -11418,6 +12032,27 @@ function resolveEventName(eventId) {
         }
         wsGeneralData.push(['MÉTRICAS PRINCIPALES (alcance de tu usuario)']);
         wsGeneralData.push(['Total Registrados', exportSummary.globalStats.all.count]);
+        if (isBautizos) {
+          const rosterBzExportScope = allParticipants.filter(
+            (p) =>
+              p.eventId === currentEvent.id &&
+              participantIsActiveInEvent(p) &&
+              participantIsActiveInRoster(p) &&
+              !participantIsCancelled(p) &&
+              locInExportScope(String(p?.location || '').trim())
+          );
+          const bautizosActiveUnitsExport = countBautizosActivePeopleUnits(rosterBzExportScope, {
+            includeBaptizedCompanions: true,
+          });
+          wsGeneralData.push([
+            'Inscritos activos (titulares + acompañantes canónicos)',
+            bautizosActiveUnitsExport,
+          ]);
+          wsGeneralData.push([
+            'Nota',
+            'Igual que «Registros totales» del dashboard. No incluye acompañantes con cupo en espera bajo titular activo.',
+          ]);
+        }
         if (isCampa) {
           wsGeneralData.push(['Total Becados', exportSummary.globalStats.all.scholarship]);
           wsGeneralData.push(['Total Servidores', exportSummary.globalStats.all.servers]);
@@ -11582,6 +12217,11 @@ function resolveEventName(eventId) {
       const exportResponsivaCol = isResponsivaEnabledForEvent(currentEvent);
 
       const participantExcelWaInfo = (p) => {
+        const truncateExcelCellText = (text, maxLen = 120) => {
+          const t = String(text || '').replace(/\s+/g, ' ').trim();
+          if (t.length <= maxLen) return t;
+          return `${t.slice(0, maxLen - 1)}…`;
+        };
         const loc = String(p?.location || '').trim();
         const waPhone = normalizeWhatsAppPhone(p?.phone);
         const unsent = (
@@ -11602,7 +12242,7 @@ function resolveEventName(eventId) {
         const messageForLink = body || defaultMsg;
         const url = waPhone && messageForLink ? buildWhatsAppMeUrl(waPhone, messageForLink) : '';
         const hasPending = unsent.length > 0;
-        const queueDetail = body || defaultMsg;
+        const queueDetail = truncateExcelCellText(body || defaultMsg);
         return {
           url,
           linkText: waPhone ? 'Abrir WhatsApp' : '',
@@ -11621,7 +12261,7 @@ function resolveEventName(eventId) {
         const inventory = buildBautizosFamilyCarInventory({
           hostPerson: anchor.anchorPerson,
           companions: anchor.inventoryCompanions,
-          plan: currentEvent.transportPlanning,
+          plan: exportTransportPlan,
           hostSourceKey: `p:${String(anchor.anchorPerson.id || '').trim()}`,
         });
         const needsAttention = familyCarInventoryNeedsAttention(inventory, {
@@ -11777,9 +12417,17 @@ function resolveEventName(eventId) {
           }
         } else {
           row.push(p.gender ?? '');
-          /** Titular en Bautizos: columnas de acompañante no aplican (vacías para alinear con encabezados). */
           if (isBautizos) {
-            row.push('', '', participantExcelTransportTypeLabel(p), participantExcelAttendanceTypeLabel(p));
+            if (p?.__globalRegistryCompanionRow) {
+              row.push(
+                String(p.__companionRelationship || p.relationship || '').trim(),
+                String(p.__sourceRegistrantName || '').trim(),
+                participantExcelTransportTypeLabel(p),
+                participantExcelAttendanceTypeLabel(p)
+              );
+            } else {
+              row.push('', '', participantExcelTransportTypeLabel(p), participantExcelAttendanceTypeLabel(p));
+            }
           } else {
             row.push(participantExcelAttendanceTypeLabel(p));
           }
@@ -11793,6 +12441,14 @@ function resolveEventName(eventId) {
               getLiquidationTarget,
               isSiValue,
               computeNetAmountByMethod,
+              bautizosFinanceCtx:
+                isBautizos && bautizosGlobalRegistryFinanceOpts
+                  ? {
+                      event: currentEvent,
+                      financeOpts: bautizosGlobalRegistryFinanceOpts,
+                      resolveHost: resolveGlobalRegistryFinanceHost,
+                    }
+                  : null,
             })
           );
         }
@@ -11807,25 +12463,6 @@ function resolveEventName(eventId) {
           : [];
         const lead = [estatusLabel, String(p?.location || '').trim(), wa.queueCheckbox, wa.linkText];
         return [...lead, ...buildParticipantRowCore(p), ...weeklyCells, wa.queueDetail];
-      };
-
-      const applyWhatsAppHyperlinksToWorksheet = (ws, aoa, linkTargets) => {
-        if (!ws || !linkTargets?.size) return;
-        for (const [key, url] of linkTargets) {
-          if (!url) continue;
-          const [r, c] = key.split(',').map((x) => parseInt(x, 10));
-          if (!Number.isFinite(r) || !Number.isFinite(c)) continue;
-          const addr = XLSX.utils.encode_cell({ r, c });
-          const row = aoa[r];
-          if (!row || row.length === 0) continue;
-          const label = String(row[c] ?? '').trim() || 'Abrir WhatsApp';
-          ws[addr] = {
-            t: 's',
-            v: label,
-            l: { Target: url, Tooltip: 'Abrir WhatsApp (mensaje en cola o mensaje por defecto)' },
-          };
-          applyExcelHyperlinkCellStyle(ws, addr);
-        }
       };
 
       const buildLocHeaders = () => {
@@ -11892,6 +12529,7 @@ function resolveEventName(eventId) {
       const whatsAppExcelColIndex = locHeadersTemplate.indexOf('WhatsApp');
       const waPendingExcelColIndex = locHeadersTemplate.indexOf('¿Whatsapp pendiente?');
       const estadoFinExcelColIndex = locHeadersTemplate.indexOf('Estado Financiero');
+      const messageExcelColIndex = locHeadersTemplate.indexOf('Mensaje en cola');
       const normalizeParticipantExcelRow = (cells) => {
         const out = cells.map((v) => (v == null || v === undefined ? '' : v));
         while (out.length < locHeadersTemplate.length) out.push('');
@@ -11907,12 +12545,18 @@ function resolveEventName(eventId) {
               !participantIsCancelled(p)
           )
         : [];
-      const bautizosCanonPlanExport = isBautizos
-        ? buildBautizosCanonicalCompanionPlan(
-            rosterForBautizosCanonExport,
-            buildActiveRegistrantMetaForCompanionDedupe(rosterForBautizosCanonExport),
-            { includeBaptizedCompanions: true }
+      const rosterForBautizosLinkLookup = isBautizos
+        ? allParticipants.filter(
+            (p) =>
+              p.eventId === currentEvent.id &&
+              (p?.status || 'active') !== PARTICIPANT_STATUS_ARCHIVED
           )
+        : [];
+      const bautizosCanonPlanExport = isBautizos
+        ? buildBautizosDashboardCanonicalCompanionPlan(rosterForBautizosCanonExport, {
+            includeBaptizedCompanions: true,
+            linkLookupRoster: rosterForBautizosLinkLookup,
+          })
         : null;
 
       if (nav.bautizados) {
@@ -12297,6 +12941,23 @@ function resolveEventName(eventId) {
           trRows.push([]);
         }
         trRows.push(['Llegada en carro / familiar']);
+        const transportPlan = normalizeTransportPlanning(currentEvent.transportPlanning);
+        const { summaryRows: carGroupSummaryRows, vehicleRows: carVehicleDetailRows } =
+          buildTransportExcelCarGroupSections({
+            plan: transportPlan,
+            carLines,
+            roster: rosterTransport,
+            isBautizos,
+            lineInExportScope,
+          });
+        if (carGroupSummaryRows.length) {
+          trRows.push(...carGroupSummaryRows);
+          trRows.push([]);
+        }
+        if (carVehicleDetailRows.length) {
+          trRows.push(...carVehicleDetailRows);
+          trRows.push([]);
+        }
         const transportCarWaColIndex = isBautizos ? 5 : -1;
         const transportCarWaLinkTargets = new Map();
         const hostByIdForTransport = new Map();
@@ -12305,6 +12966,8 @@ function resolveEventName(eventId) {
           if (hid) hostByIdForTransport.set(hid, p);
         }
         if (isBautizos) {
+          trRows.push(['Detalle por persona']);
+          trRows.push(['Detalle por persona']);
           trRows.push([
             'Sede inscrito',
             '¿Datos carro pendiente?',
@@ -12315,6 +12978,7 @@ function resolveEventName(eventId) {
             'Mensaje datos carro',
           ]);
         } else {
+          trRows.push(['Detalle por persona']);
           trRows.push(['Sede inscrito', 'Nombre', 'Tipo', 'Carros llegada']);
         }
         for (const line of carLines || []) {
@@ -12352,7 +13016,7 @@ function resolveEventName(eventId) {
         }
         const wsTransport = XLSX.utils.aoa_to_sheet(trRows);
         if (transportCarWaLinkTargets.size) {
-          applyWhatsAppHyperlinksToWorksheet(wsTransport, trRows, transportCarWaLinkTargets);
+          applyWhatsAppHyperlinksToWorksheet(wsTransport, trRows, transportCarWaLinkTargets, XLSX.utils.encode_cell);
         }
         applyWorksheetColumnWidths(wsTransport, trRows, {
           columnMin: { 0: 20, 1: 16, 4: 14, 6: 44 },
@@ -12510,78 +13174,44 @@ function resolveEventName(eventId) {
       }
 
       if (nav.registroGlobal) {
-        const eventLocs = new Set((currentEvent.locations || []).map((x) => String(x).trim()).filter(Boolean));
-        const globalExportPool = allParticipants.filter((p) => {
-          if (p.eventId !== currentEvent.id) return false;
-          const status = p?.status || 'active';
-          if (status === PARTICIPANT_STATUS_ARCHIVED) return false;
-          if (!(status === 'active' || status === 'waitlist' || status === PARTICIPANT_STATUS_CANCELLED)) return false;
-          const locRaw = String(p.location ?? '').trim();
-          const validLoc = locRaw && eventLocs.has(locRaw);
-          if (validLoc && !locInGlobalExportScope(locRaw)) return false;
-          return true;
-        });
         const gData = [[...locHeadersTemplate]];
         const globalWaLinkTargets = new Map();
         const catFor = (p) => {
+          if (p?.__companionWaitlistPending === true) return 'Lista de espera (acompañante)';
           if (participantIsCancelled(p)) return 'Cancelado';
           if (participantIsWaitlistRow(p)) return 'Lista de espera';
+          if (p?.__globalRegistryCompanionRow) return 'Acompañante';
           if (isBautizos && participantIsActiveInRoster(p) && isSiValue(p.isScholarship)) return 'Becado (activo)';
           return 'Inscrito (activo)';
         };
-        const sortGroupFor = (p) => {
-          if (participantIsCancelled(p)) return 4;
-          if (participantIsWaitlistRow(p)) return 3;
-          if (isBautizos && p?.__bautizosCompanionExport) return 2;
-          if (isBautizos && participantIsActiveInRoster(p) && !participantIsWaitlistRow(p) && isSiValue(p.isScholarship)) {
-            return 1;
+        const grExportSortDebt = (p) => {
+          if (isBautizos && p?.__globalRegistryCompanionRow && bautizosGlobalRegistryFinanceOpts) {
+            const host = resolveGlobalRegistryFinanceHost(p);
+            return getBautizosGlobalRegistryRowOutstandingGross(
+              p,
+              host,
+              currentEvent,
+              bautizosGlobalRegistryFinanceOpts
+            );
           }
-          return 0;
+          return getParticipantOutstandingGross(p, getLiquidationTarget, computeNetAmountByMethod);
         };
-        const entries = [];
-        for (const p of globalExportPool) {
-          entries.push({ p, g: sortGroupFor(p) });
-        }
-        if (isBautizos && bautizosCanonPlanExport) {
-          for (const info of bautizosCanonPlanExport.values()) {
-            const host = info.sourceRegistrant;
-            if (!host) continue;
-            const locRaw = String(host.location ?? '').trim();
-            if (!eventLocs.has(locRaw)) continue;
-            if (!locInGlobalExportScope(locRaw)) continue;
-            const c = info.sourceCompanion;
-            if (!c) continue;
-            const syn = {
-              __bautizosCompanionExport: true,
-              location: host.location,
-              name: String(c.name || '').trim(),
-              birthDate: c.birthDate || '',
-              phone: c.phone || '',
-              age: c.age != null && String(c.age).trim() !== '' ? String(c.age).trim() : '',
-              gender: c.gender || '',
-              __relationship: companionRelationshipExcel(c),
-              __hostName: String(host.name || '').trim(),
-              registeredAt: host.registeredAt,
-              id: String(info.canonKey || `c:${host.id}`),
-              wantsBautizosTransport: c.wantsBautizosTransport,
-              llegaEnCarro: c.llegaEnCarro,
-              regresaEnCarro: c.regresaEnCarro,
-              travelFrom: c.travelFrom || host.travelFrom,
-              travelTo: c.travelTo || host.travelTo,
-              transportType: c.transportType || host.transportType,
-            };
-            entries.push({ p: syn, g: 2 });
-          }
-        }
-        entries.sort((a, b) => {
-          if (a.g !== b.g) return a.g - b.g;
-          return compareParticipantsByRegisteredAtAsc(a.p, b.p);
+        const exportPersons = buildGlobalRegistryFilteredPartyPersons({
+          event: currentEvent,
+          allParticipants,
+          visibleLocations: exportLocsGlobal,
+          globalLocationFilters,
+          activeByLocation: data,
+          waitlistByLocation: waitlistData,
+          cancelledByLocation: cancelledData,
+          globalRegistryListFilters,
+          filterParticipantRows,
+          getSortedWaitlistForLocation,
+          getDebt: grExportSortDebt,
+          isBautizos,
         });
-        for (const { p } of entries) {
-          const estado =
-            p?.__bautizosCompanionExport
-              ? 'Acompañante'
-              : catFor(p);
+        for (const p of exportPersons) {
+          const estado = catFor(p);
           const rowIndex = gData.length;
           const wa = participantExcelWaInfo(p);
           if (wa.url && whatsAppExcelColIndex >= 0) {
@@ -12590,7 +13220,7 @@ function resolveEventName(eventId) {
           gData.push(normalizeParticipantExcelRow(buildParticipantExcelRow(p, estado)));
         }
         const wsGlobal = XLSX.utils.aoa_to_sheet(gData);
-        applyWhatsAppHyperlinksToWorksheet(wsGlobal, gData, globalWaLinkTargets);
+        applyWhatsAppHyperlinksToWorksheet(wsGlobal, gData, globalWaLinkTargets, XLSX.utils.encode_cell);
         applyWorksheetColumnWidths(wsGlobal, gData, rosterExcelColumnWidthOptions(locHeadersTemplate));
         applyFinanceFormatByHeaderRow(wsGlobal, gData, 0);
         const gLastRow = gData.length - 1;
@@ -12607,6 +13237,7 @@ function resolveEventName(eventId) {
           estadoFinancieroCol: estadoFinExcelColIndex,
           aoa: gData,
         });
+        applyRosterWorksheetLayout(XLSX, wsGlobal, { messageCol: messageExcelColIndex });
         enqueueExcelSheet(EXCEL_SHEET_ORDER.registroGlobal, globalSheetName, wsGlobal);
       }
 
@@ -12680,7 +13311,7 @@ function resolveEventName(eventId) {
 
           const sheetName = `Sede ${loc}`.substring(0, 31);
           const wsLoc = XLSX.utils.aoa_to_sheet(locData);
-          applyWhatsAppHyperlinksToWorksheet(wsLoc, locData, locWaLinkTargets);
+          applyWhatsAppHyperlinksToWorksheet(wsLoc, locData, locWaLinkTargets, XLSX.utils.encode_cell);
           applyWorksheetColumnWidths(wsLoc, locData, rosterExcelColumnWidthOptions(locHeaders));
           applyFinanceFormatByHeaderRow(wsLoc, locData, 0);
 
@@ -12726,6 +13357,7 @@ function resolveEventName(eventId) {
             estadoFinancieroCol: estadoFinExcelColIndex,
             aoa: locData,
           });
+          applyRosterWorksheetLayout(XLSX, wsLoc, { messageCol: messageExcelColIndex });
           const locSheetOrder = EXCEL_SHEET_ORDER.location + exportLocsOrdered.indexOf(loc);
           enqueueExcelSheet(locSheetOrder, sheetName, wsLoc);
         });
@@ -13571,19 +14203,21 @@ function resolveEventName(eventId) {
     await finalizeStaffLoginAfterAuth(trimUser, gmail);
   };
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
+    if (staffPanelLogoutInProgress) return;
     staffPanelLogoutInProgress = true;
+    setLogoutBusy(true);
     try {
       const userSnapshot = currentUser;
       if (userSnapshot) {
         const activeTime = Date.now() - (userSnapshot.loginTime || Date.now());
         const formattedTime = formatDuration(activeTime);
-        await addLog(
-          'Cierre de Sesión',
-          `El usuario ${userSnapshot.username} cerró sesión manualmente. (Tiempo activo: ${formattedTime})${getSessionLogClientSuffix()}`,
-          userSnapshot.username,
-          { id: 'Global', name: 'Sistema' }
-        );
+        await writeStaffSessionLogOnce(addLog, {
+          kind: 'logout_manual',
+          action: 'Cierre de Sesión',
+          details: `El usuario ${userSnapshot.username} cerró sesión manualmente. (Tiempo activo: ${formattedTime})${getSessionLogClientSuffix()}`,
+          user: userSnapshot,
+        });
         await broadcastSessionActivity('logout', userSnapshot.username, userSnapshot.tabSessionId);
         await removeCurrentUserSession(userSnapshot);
       }
@@ -13594,9 +14228,17 @@ function resolveEventName(eventId) {
     } finally {
       setTimeout(() => {
         staffPanelLogoutInProgress = false;
+        setLogoutBusy(false);
       }, 2500);
     }
-  };
+  }, [
+    currentUser,
+    addLog,
+    broadcastSessionActivity,
+    removeCurrentUserSession,
+    finalizeStaffPanelSignOut,
+    resetStaffPanelAfterSignOut,
+  ]);
 
   const dismissLogoutConfirmOnBack = useCallback(() => {
     setLogoutConfirmOnBackOpen(false);
@@ -13729,34 +14371,36 @@ function resolveEventName(eventId) {
     let isClosing = false;
 
     const handleBrowserClose = () => {
+      if (staffPanelLogoutInProgress) return;
       if (currentUser?.id && !isClosing) {
         isClosing = true;
         staffPanelLogoutInProgress = true;
         const activeTime = Date.now() - (currentUser.loginTime || Date.now());
         const formattedTime = formatDuration(activeTime);
         const u = currentUser;
-        void addLog(
-          'Cierre de Sesión Automático',
-          `Sesión finalizada por cierre de pestaña, ventana o navegador. (Tiempo activo: ${formattedTime})${getSessionLogClientSuffix()}`,
-          u.username,
-          { id: 'Global', name: 'Sistema' }
-        );
+        void writeStaffSessionLogOnce(addLog, {
+          kind: 'logout_pagehide',
+          action: 'Cierre de Sesión Automático',
+          details: `Sesión finalizada por cierre de pestaña, ventana o navegador. (Tiempo activo: ${formattedTime})${getSessionLogClientSuffix()}`,
+          user: u,
+        });
         removeCurrentUserSession(u).catch(() => {});
       }
     };
 
     const performLogout = async () => {
+      if (staffPanelLogoutInProgress) return;
       staffPanelLogoutInProgress = true;
       try {
         const userSnapshot = currentUser;
         const activeTime = Date.now() - (userSnapshot.loginTime || Date.now());
         const formattedTime = formatDuration(activeTime);
-        await addLog(
-          'Cierre de Sesión Automático',
-          `Sesión finalizada por inactividad. (Tiempo activo: ${formattedTime})${getSessionLogClientSuffix()}`,
-          userSnapshot.username,
-          { id: 'Global', name: 'Sistema' }
-        );
+        await writeStaffSessionLogOnce(addLog, {
+          kind: 'logout_inactivity',
+          action: 'Cierre de Sesión Automático',
+          details: `Sesión finalizada por inactividad. (Tiempo activo: ${formattedTime})${getSessionLogClientSuffix()}`,
+          user: userSnapshot,
+        });
         await broadcastSessionActivity('logout', userSnapshot.username, userSnapshot.tabSessionId);
         await removeCurrentUserSession(userSnapshot);
         await finalizeStaffPanelSignOut();
@@ -13781,16 +14425,17 @@ function resolveEventName(eventId) {
       midnightTimeoutId = setTimeout(async () => {
         const activeTime = Date.now() - (currentUser.loginTime || Date.now());
         if (activeTime >= 60 * 60 * 1000) {
+          if (staffPanelLogoutInProgress) return;
           staffPanelLogoutInProgress = true;
           const formattedTime = formatDuration(activeTime);
           const userSnapshot = currentUser;
           try {
-            await addLog(
-              'Cierre de Sesión Automático',
-              `Sesión finalizada por corte diario de las 12:00 AM (más de 1 hora activa). (Tiempo activo: ${formattedTime})${getSessionLogClientSuffix()}`,
-              userSnapshot.username,
-              { id: 'Global', name: 'Sistema' }
-            );
+            await writeStaffSessionLogOnce(addLog, {
+              kind: 'logout_midnight',
+              action: 'Cierre de Sesión Automático',
+              details: `Sesión finalizada por corte diario de las 12:00 AM (más de 1 hora activa). (Tiempo activo: ${formattedTime})${getSessionLogClientSuffix()}`,
+              user: userSnapshot,
+            });
             await broadcastSessionActivity('logout', userSnapshot.username, userSnapshot.tabSessionId);
             await removeCurrentUserSession(userSnapshot);
             await finalizeStaffPanelSignOut();
@@ -14518,14 +15163,37 @@ function resolveEventName(eventId) {
   const handleAddExpense = async () => {
     if (!canAccessExpenses) return;
     const name = expenseForm.name.trim();
-    const qty = parseInt(expenseForm.quantity) || 0;
     const price = parseFloat(expenseForm.unitPrice) || 0;
-    if (!name || qty <= 0 || price <= 0) { showToast('Completa nombre, cantidad y precio.'); return; }
+    const isRegistry = expenseForm.quantityMode === EXPENSE_QUANTITY_MODE_REGISTRY;
+    const registryFilters = mergeExpenseRegistryQuantityFilters(expenseForm.registryQuantityFilters);
+    const registryLocations = Array.isArray(expenseForm.registryQuantityLocations)
+      ? expenseForm.registryQuantityLocations
+      : [];
+    const draftResolved = resolveExpenseRowAmounts(
+      {
+        quantityMode: expenseForm.quantityMode,
+        quantity: expenseForm.quantity,
+        unitPrice: price,
+        registryQuantityFilters: registryFilters,
+        registryQuantityLocations: registryLocations,
+      },
+      expenseRegistryQuantityContext
+    );
+    const qty = isRegistry ? draftResolved.quantity : parseInt(expenseForm.quantity, 10) || 0;
+    if (!name || price <= 0) {
+      showToast('Completa nombre y precio unitario.');
+      return;
+    }
+    if (!isRegistry && qty <= 0) {
+      showToast('Indica una cantidad mayor a cero.');
+      return;
+    }
     const expId = buildFirestoreDocId(['exp', Date.now()], { fallback: `exp-${Date.now()}` });
     const expenseRow = {
       id: expId,
       eventId: currentEvent?.id || '',
       name,
+      quantityMode: isRegistry ? EXPENSE_QUANTITY_MODE_REGISTRY : EXPENSE_QUANTITY_MODE_MANUAL,
       quantity: qty,
       unitPrice: price,
       totalPrice: qty * price,
@@ -14535,6 +15203,12 @@ function resolveEventName(eventId) {
       createdAt: new Date().toISOString(),
       createdBy: currentUser?.username || 'Desconocido',
       createdByUserId: currentUser?.id != null ? String(currentUser.id) : '',
+      ...(isRegistry
+        ? {
+            registryQuantityFilters: registryFilters,
+            registryQuantityLocations: registryLocations,
+          }
+        : {}),
     };
     await setDoc(getDocRef('app_expenses', expId), expenseRow);
     syncExpenseAfterWrite(setExpenses, expId, expenseRow);
@@ -14544,13 +15218,21 @@ function resolveEventName(eventId) {
       'Gastos',
       isHideMyExpenseConceptsOn(currentUser)
         ? EXPENSE_ACTIVITY_GENERIC
-        : `Agregó gasto «${name}» (${qty} × $${fmt(price)} = $${fmt(total)}). id: ${expId}.`,
+        : `Agregó gasto «${name}» (${qty} × $${fmt(price)} = $${fmt(total)}${isRegistry ? ', cantidad dinámica por filtros' : ''}). id: ${expId}.`,
       null,
       null,
       { collectionName: 'app_expenses', docId: expId, action: 'create', previousData: null },
       { entityType: 'expense', entityId: expId, status: LOG_STATUS.OK, snapshot: { kind: 'gasto_nuevo', expense: expenseRow } }
     );
-    setExpenseForm({ name: '', quantity: 1, unitPrice: '' });
+    setExpenseForm({
+      name: '',
+      quantityMode: EXPENSE_QUANTITY_MODE_MANUAL,
+      quantity: 1,
+      unitPrice: '',
+      registryQuantityFilters: createEmptyExpenseRegistryQuantityFilters(),
+      registryQuantityLocations: [],
+    });
+    setExpenseFormRegistryFiltersOpen(false);
     showToast('Gasto agregado.');
   };
 
@@ -14811,7 +15493,7 @@ function resolveEventName(eventId) {
 
   const handleToggleExpensePaid = async (expenseId) => {
     if (!canAccessExpenses) return;
-    const exp = getExpenseForActions(expenseId);
+    const exp = getResolvedExpenseForActions(expenseId);
     if (!exp || !canMutateExpenseRecord(exp)) return;
     const newPaid = !exp.paid;
     const patch = {
@@ -14875,12 +15557,12 @@ function resolveEventName(eventId) {
     if (!canAccessExpenses || !expensePartialModal.expenseId) return;
     const amount = parseFloat(expensePartialModal.amount) || 0;
     if (amount <= 0) { showToast('Ingresa una cantidad válida.'); return; }
-    const exp = getExpenseForActions(expensePartialModal.expenseId);
+    const exp = getResolvedExpenseForActions(expensePartialModal.expenseId);
     if (!exp || !canMutateExpenseRecord(exp)) return;
     const newPaidAmount = Math.min((exp.paidAmount || 0) + amount, exp.totalPrice);
     const patch = {
       paidAmount: newPaidAmount,
-      paid: newPaidAmount >= exp.totalPrice,
+      paid: newPaidAmount >= exp.totalPrice - 0.005,
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido',
     };
@@ -14917,22 +15599,54 @@ function resolveEventName(eventId) {
   const handleEditExpense = async () => {
     if (!canAccessExpenses || !expenseEditModal.id) return;
     const name = expenseEditModal.name.trim();
-    const qty = parseInt(expenseEditModal.quantity) || 0;
     const price = parseFloat(expenseEditModal.unitPrice) || 0;
-    if (!name || qty <= 0 || price <= 0) { showToast('Completa nombre, cantidad y precio.'); return; }
+    const isRegistry = expenseEditModal.quantityMode === EXPENSE_QUANTITY_MODE_REGISTRY;
+    const registryFilters = mergeExpenseRegistryQuantityFilters(expenseEditModal.registryQuantityFilters);
+    const registryLocations = Array.isArray(expenseEditModal.registryQuantityLocations)
+      ? expenseEditModal.registryQuantityLocations
+      : [];
+    const draftResolved = resolveExpenseRowAmounts(
+      {
+        quantityMode: expenseEditModal.quantityMode,
+        quantity: expenseEditModal.quantity,
+        unitPrice: price,
+        registryQuantityFilters: registryFilters,
+        registryQuantityLocations: registryLocations,
+      },
+      expenseRegistryQuantityContext
+    );
+    const qty = isRegistry ? draftResolved.quantity : parseInt(expenseEditModal.quantity, 10) || 0;
+    if (!name || price <= 0) {
+      showToast('Completa nombre y precio unitario.');
+      return;
+    }
+    if (!isRegistry && qty <= 0) {
+      showToast('Indica una cantidad mayor a cero.');
+      return;
+    }
     const exp = getExpenseForActions(expenseEditModal.id);
     if (!exp || !canMutateExpenseRecord(exp)) return;
     const newTotal = qty * price;
     const newPaidAmount = Math.min(exp.paidAmount || 0, newTotal);
     const patch = {
       name,
+      quantityMode: isRegistry ? EXPENSE_QUANTITY_MODE_REGISTRY : EXPENSE_QUANTITY_MODE_MANUAL,
       quantity: qty,
       unitPrice: price,
       totalPrice: newTotal,
       paidAmount: newPaidAmount,
-      paid: newPaidAmount >= newTotal,
+      paid: newPaidAmount >= newTotal - 0.005,
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser?.username || 'Desconocido',
+      ...(isRegistry
+        ? {
+            registryQuantityFilters: registryFilters,
+            registryQuantityLocations: registryLocations,
+          }
+        : {
+            registryQuantityFilters: deleteField(),
+            registryQuantityLocations: deleteField(),
+          }),
     };
     try {
       const eid = expenseEditModal.id;
@@ -14962,7 +15676,17 @@ function resolveEventName(eventId) {
         { collectionName: 'app_expenses', docId: eid, action: 'update', previousData: exp },
         { entityType: 'expense', entityId: eid, status: LOG_STATUS.OK, snapshot: { kind: 'gasto_editado', expense: { ...exp, ...patch, id: eid }, previousExpense: exp } }
       );
-      setExpenseEditModal({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' });
+      setExpenseEditModal({
+        isOpen: false,
+        id: null,
+        name: '',
+        quantityMode: EXPENSE_QUANTITY_MODE_MANUAL,
+        quantity: 1,
+        unitPrice: '',
+        registryQuantityFilters: createEmptyExpenseRegistryQuantityFilters(),
+        registryQuantityLocations: [],
+      });
+      setExpenseEditRegistryFiltersOpen(false);
       showToast('Gasto actualizado.');
     } catch (e) {
       console.error(e);
@@ -16353,12 +17077,31 @@ function resolveEventName(eventId) {
         (p) => countUnsentWhatsAppNotificationsForQueue(p, currentEvent, allParticipants) > 0
       );
     }
-    if (f.filterLiquidation === 'liquidado') {
-      processedData = processedData.filter((p) => isRosterPersonLiquidadoForFilter(p, getLiquidationTarget));
-    } else if (f.filterLiquidation === 'pendiente') {
-      processedData = processedData.filter((p) => !isRosterPersonLiquidadoForFilter(p, getLiquidationTarget));
-    } else if (f.filterLiquidation === 'saldo-favor') {
-      processedData = processedData.filter((p) => isRosterSaldoAFavor(p, getLiquidationTarget));
+    const bautizosLiquidationCtx =
+      currentEvent?.eventType === 'Bautizos' && bautizosGlobalRegistryFinanceOpts
+        ? {
+            eventType: 'Bautizos',
+            event: currentEvent,
+            financeOpts: bautizosGlobalRegistryFinanceOpts,
+            resolveHost: resolveGlobalRegistryFinanceHost,
+          }
+        : null;
+    const deferBautizosLiquidation =
+      currentEvent?.eventType === 'Bautizos' && expandBautizosCompanions;
+    if (!deferBautizosLiquidation) {
+      if (f.filterLiquidation === 'liquidado') {
+        processedData = processedData.filter((p) =>
+          isRosterPersonLiquidadoForListFilter(p, getLiquidationTarget, bautizosLiquidationCtx)
+        );
+      } else if (f.filterLiquidation === 'pendiente') {
+        processedData = processedData.filter(
+          (p) => !isRosterPersonLiquidadoForListFilter(p, getLiquidationTarget, bautizosLiquidationCtx)
+        );
+      } else if (f.filterLiquidation === 'saldo-favor') {
+        processedData = processedData.filter((p) =>
+          isRosterSaldoAFavorForListFilter(p, getLiquidationTarget, bautizosLiquidationCtx)
+        );
+      }
     }
     if (f.filterFirstTimeId !== 'all') {
       processedData = processedData.filter((p) => {
@@ -16373,11 +17116,21 @@ function resolveEventName(eventId) {
         participantMatchesRegistrationStatusFilter(p, f.filterRegistrationStatus)
       );
     }
+    if (f.filterEventAttendance && f.filterEventAttendance !== 'all') {
+      const rosterForAttendance = (allParticipants || []).filter(
+        (p) => String(p?.eventId || '') === String(currentEvent?.id || '')
+      );
+      processedData = processedData.filter((p) =>
+        participantMatchesEventAttendanceFilter(p, f.filterEventAttendance, currentEvent?.transportPlanning, {
+          roster: rosterForAttendance,
+          eventType: currentEvent?.eventType,
+        })
+      );
+    }
     if (f.filterPendingRefund !== 'all') {
       processedData = processedData.filter((p) => {
-        const hasPendingRefund = participantIsCancelled(p)
-          ? getCancelledRefundPendingAmount(p) > 0
-          : (Number(p?.refundPendingAmount || 0) || 0) > 0;
+        const hasPendingRefund =
+          getParticipantCreditPendingAmount(p, getLiquidationTarget, participantIsArchived) > 0.005;
         if (f.filterPendingRefund === 'pending') return hasPendingRefund;
         if (f.filterPendingRefund === 'none') return !hasPendingRefund;
         return true;
@@ -16498,6 +17251,10 @@ function resolveEventName(eventId) {
         processedData = prepareBautizosRowsForRosterFilter(processedData, f, {
           roster: allParticipants,
         });
+        processedData = applyLiquidationListFilters(processedData, f, {
+          getLiquidationTarget,
+          bautizosLiquidationCtx,
+        });
       }
     }
     processedData = applyEventScopedRosterFilters(processedData, f, {
@@ -16533,44 +17290,21 @@ function resolveEventName(eventId) {
       else processedData.sort(compareParticipantsByRegisteredAtDesc);
     }
     return processedData;
-  }, [isCampa, getLiquidationTarget, getLastPaymentMethodForFilter, allParticipants, currentEvent, personOfInterestVnpSet]);
+  }, [
+    isCampa,
+    getLiquidationTarget,
+    getLastPaymentMethodForFilter,
+    allParticipants,
+    currentEvent,
+    personOfInterestVnpSet,
+    bautizosGlobalRegistryFinanceOpts,
+    resolveGlobalRegistryFinanceHost,
+    computeNetAmountByMethod,
+  ]);
 
-  const applyRosterLikeFilters = useCallback(
-    (rows, preserveOrder = false) =>
-      filterParticipantRows(
-        rows,
-        preserveOrder,
-        {
-        searchTerm: debouncedSearchTerm,
-        sortBy,
-        filterWhatsAppPending,
-        filterLiquidation,
-        filterFirstTimeId,
-        filterPendingRefund,
-        filterResponsiva,
-        filterPersonOfInterest,
-        filterGender,
-        filterTransport,
-        filterPaymentType,
-        filterTravelFrom,
-        filterTravelTo,
-        filterRosterRole,
-        filterAssignment,
-        filterSwim,
-        filterBaptism,
-        filterMaritalStatus,
-        filterRegistrationStatus,
-        filterScholarship,
-        filterMedical,
-        filterBautizosAttendance,
-        filterAge,
-        filterCarDataPending,
-      },
-        { expandBautizosCompanions: false }
-      ),
-    [
-      filterParticipantRows,
-      debouncedSearchTerm,
+  const buildRosterLikeFilterPayload = useCallback(
+    (searchTermOverride) => ({
+      searchTerm: searchTermOverride ?? rosterLocationSearchRef.current,
       sortBy,
       filterWhatsAppPending,
       filterLiquidation,
@@ -16589,6 +17323,33 @@ function resolveEventName(eventId) {
       filterBaptism,
       filterMaritalStatus,
       filterRegistrationStatus,
+      filterEventAttendance,
+      filterScholarship,
+      filterMedical,
+      filterBautizosAttendance,
+      filterAge,
+      filterCarDataPending,
+    }),
+    [
+      sortBy,
+      filterWhatsAppPending,
+      filterLiquidation,
+      filterFirstTimeId,
+      filterPendingRefund,
+      filterResponsiva,
+      filterPersonOfInterest,
+      filterGender,
+      filterTransport,
+      filterPaymentType,
+      filterTravelFrom,
+      filterTravelTo,
+      filterRosterRole,
+      filterAssignment,
+      filterSwim,
+      filterBaptism,
+      filterMaritalStatus,
+      filterRegistrationStatus,
+      filterEventAttendance,
       filterScholarship,
       filterMedical,
       filterBautizosAttendance,
@@ -16597,12 +17358,510 @@ function resolveEventName(eventId) {
     ]
   );
 
+  const canMarkEventAttendance =
+    userCanEditTransportOperations(currentUser) &&
+    isEventAttendanceMarkingWindowOpen(currentEvent);
+
+  const globalRegistryDebtDepsRef = useRef({
+    bautizosFinanceOpts: null,
+    getLiquidationTarget,
+    computeNetAmountByMethod,
+    resolveGlobalRegistryFinanceHost,
+  });
+  currentEventForRegistryDebtRef.current = currentEvent;
+  globalRegistryDebtDepsRef.current = {
+    bautizosFinanceOpts: bautizosGlobalRegistryFinanceOpts,
+    getLiquidationTarget,
+    computeNetAmountByMethod,
+    resolveGlobalRegistryFinanceHost,
+  };
+
+  const globalRegistryGetDebt = useCallback(
+    (p) => {
+      const ev = currentEventForRegistryDebtRef.current;
+      const {
+        bautizosFinanceOpts,
+        getLiquidationTarget: getLiquidationTargetLatest,
+        computeNetAmountByMethod: computeNetAmountByMethodLatest,
+        resolveGlobalRegistryFinanceHost: resolveGlobalRegistryFinanceHostLatest,
+      } = globalRegistryDebtDepsRef.current;
+      if (isBautizos && p?.__globalRegistryCompanionRow && bautizosFinanceOpts) {
+        const host = resolveGlobalRegistryFinanceHostLatest(p);
+        return getBautizosGlobalRegistryRowOutstandingGross(
+          p,
+          host,
+          ev,
+          bautizosFinanceOpts
+        );
+      }
+      return getParticipantOutstandingGross(
+        p,
+        getLiquidationTargetLatest,
+        computeNetAmountByMethodLatest
+      );
+    },
+    [isBautizos]
+  );
+
+  const globalRegistryRosterDataKey = useMemo(() => {
+    let n = 0;
+    for (const loc of visibleLocations) {
+      n += (data[loc] || []).length;
+      n += (cancelledData[loc] || []).length;
+    }
+    return `${scopedEventParticipants.length}:${n}:${visibleLocations.join('|')}`;
+  }, [scopedEventParticipants, visibleLocations, data, cancelledData]);
+
+  const globalRegistryPageModel = useMemo(() => {
+    return computeGlobalRegistryPageModel({
+      currentEvent,
+      allParticipants: scopedEventParticipants,
+      visibleLocations,
+      globalLocationFilters,
+      globalRegistryListFilters,
+      data,
+      cancelledData,
+      getSortedWaitlistForLocation,
+      filterParticipantRows,
+      resolveParticipantEffectiveLocation,
+      isBautizos,
+      getDebt: globalRegistryGetDebt,
+    });
+  }, [
+    currentEvent?.id,
+    currentEvent?.eventType,
+    currentEvent?.locations,
+    scopedEventParticipants,
+    visibleLocations,
+    globalLocationFilters,
+    globalRegistryListFilters,
+    globalRegistryRosterDataKey,
+    getSortedWaitlistForLocation,
+    filterParticipantRows,
+    resolveParticipantEffectiveLocation,
+    isBautizos,
+    globalRegistryGetDebt,
+  ]);
+
+  const globalRegistryExpandedRowsKey = useMemo(() => [...expandedRows].sort().join('|'), [expandedRows]);
+
+  const globalRegistryDebtRowsSig = useMemo(() => {
+    if (!isBautizos || !globalRegistryPageModel) return '';
+    const keys = [
+      ...(globalRegistryPageModel.activeRowsVisible || []).map((row) => String(row?.key || '').trim()),
+      ...(globalRegistryPageModel.waitlistRows || []).map((row) => String(row?.key || '').trim()),
+      ...(globalRegistryPageModel.cancelledRows || []).map((row) => String(row?.key || '').trim()),
+    ];
+    return keys.join('|');
+  }, [isBautizos, globalRegistryPageModel]);
+
+  const globalRegistryDebtByPartyKey = useMemo(() => {
+    if (!isBautizos || !globalRegistryPageModel) return null;
+    const debtMap = new Map();
+    const allRows = [
+      ...(globalRegistryPageModel.activeRowsVisible || []),
+      ...(globalRegistryPageModel.waitlistRows || []),
+      ...(globalRegistryPageModel.cancelledRows || []),
+    ];
+    for (const row of allRows) {
+      const partyKey = String(row?.key || '').trim();
+      if (!partyKey) continue;
+      debtMap.set(partyKey, globalRegistryGetDebt(row.person));
+    }
+    return debtMap;
+  }, [isBautizos, globalRegistryDebtRowsSig, globalRegistryGetDebt, currentEvent?.eventType]);
+
+  const toggleGlobalRegistryAttendanceBySourceKey = useCallback(
+    (sk, confirmed) => {
+      if (!canMarkEventAttendance || !currentEvent?.id) return;
+      const sourceKey = String(sk || '').trim();
+      if (!sourceKey) {
+        showToast('No se puede marcar asistencia para esta fila.');
+        return;
+      }
+      const confirmedBy = currentUser?.username || currentUser?.displayName || '';
+      patchRegistryAttendancePlan(sourceKey, confirmed, confirmedBy);
+      eventTransportPlanRef.current = getRegistryAttendancePlanSnapshot();
+      queueGlobalRegistryAttendanceSave();
+    },
+    [
+      canMarkEventAttendance,
+      currentEvent?.id,
+      currentUser,
+      queueGlobalRegistryAttendanceSave,
+      showToast,
+    ]
+  );
+
+  const toggleGlobalRegistryAttendance = useCallback(
+    (person, confirmed) => {
+      if (!canMarkEventAttendance || !currentEvent?.id) return;
+      const roster = (allParticipants || []).filter(
+        (p) => String(p?.eventId || '') === String(currentEvent.id)
+      );
+      const sk = resolveTransportAttendanceSourceKeyForRegistryPerson(
+        person,
+        roster,
+        currentEvent.eventType
+      );
+      toggleGlobalRegistryAttendanceBySourceKey(sk, confirmed);
+    },
+    [
+      canMarkEventAttendance,
+      currentEvent?.id,
+      currentEvent?.eventType,
+      allParticipants,
+      toggleGlobalRegistryAttendanceBySourceKey,
+    ]
+  );
+
+  const applyRosterLikeFilters = useCallback(
+    (rows, preserveOrder = false, searchTermOverride) =>
+      filterParticipantRows(
+        rows,
+        preserveOrder,
+        buildRosterLikeFilterPayload(searchTermOverride),
+        { expandBautizosCompanions: false }
+      ),
+    [filterParticipantRows, buildRosterLikeFilterPayload]
+  );
+
+  const rosterLocationSearchTerm = useSyncExternalStore(
+    subscribeRosterLocationSearchTerm,
+    readRosterLocationSearchTerm,
+    readRosterLocationSearchTerm
+  );
+  const deferredRosterLocationSearch = useDeferredValue(rosterLocationSearchTerm);
+
+  const locationRosterDataSig = useMemo(() => {
+    if (!currentEvent?.id) return '';
+    const locKey = isLocationRosterTab(deferredActiveTab) ? String(deferredActiveTab || '').trim() : '';
+    const locs = locKey
+      ? [locKey]
+      : visibleLocations.length
+        ? visibleLocations
+        : currentEvent?.locations || [];
+    const parts = locs.map((loc) => {
+      const k = String(loc || '').trim();
+      return `${k}:${(data[k] || []).length},${(waitlistData[k] || []).length},${(cancelledData[k] || []).length}`;
+    });
+    return `${currentEvent.id}|${sortBy}|${parts.join(';')}`;
+  }, [
+    currentEvent?.id,
+    deferredActiveTab,
+    visibleLocations,
+    currentEvent?.locations,
+    data,
+    waitlistData,
+    cancelledData,
+    sortBy,
+  ]);
+
+  const locationRosterFiltersSig = useMemo(
+    () => JSON.stringify(buildRosterLikeFilterPayload('')),
+    [buildRosterLikeFilterPayload]
+  );
+
+  const locationRosterSheetModel = useMemo(() => {
+    if (!currentEvent?.id || !isLocationRosterTab(deferredActiveTab)) return null;
+    const locKey = String(deferredActiveTab || '').trim();
+    if (!locKey) return null;
+    const model = computeLocationRosterSheetModel({
+      loc: locKey,
+      isBautizos,
+      locationTypeSummary: isBautizos ? (bautizosLocationTypeSummaryByLoc[locKey] ?? null) : null,
+      activeTitulars: data[locKey] || [],
+      sortedWaitlist: getSortedWaitlistForLocation(locKey),
+      sortedCancelled: getSortedCancelledForLocation(locKey),
+      applyRosterLikeFilters,
+      appliedSearch: deferredRosterLocationSearch,
+      sortBy,
+      filterParticipantRows,
+    });
+    if (isBautizos && model?.locationTypeSummary) {
+      const locationTypeSummary = model.locationTypeSummary;
+      return {
+        ...model,
+        rosterSectionDisplayCounts: getLocationRosterSectionCountsFromSummary(locationTypeSummary),
+      };
+    }
+    return model;
+  }, [
+    currentEvent?.id,
+    deferredActiveTab,
+    isBautizos,
+    bautizosLocationTypeSummaryByLoc,
+    data,
+    getSortedWaitlistForLocation,
+    getSortedCancelledForLocation,
+    applyRosterLikeFilters,
+    deferredRosterLocationSearch,
+    sortBy,
+    filterParticipantRows,
+    locationRosterDataSig,
+    locationRosterFiltersSig,
+  ]);
+
+  const locationRosterFinanceRowsSig = useMemo(() => {
+    const loc = String(locationRosterSheetModel?.loc || '').trim();
+    if (!loc) return '';
+    const allPersons = [
+      ...(data[loc] || []),
+      ...(waitlistData[loc] || []),
+      ...(cancelledData[loc] || []),
+    ];
+    return allPersons
+      .map(
+        (p) =>
+          `${String(p?.id || '')}:${parseFloat(p?.paid || 0)}:${Array.isArray(p?.paymentHistory) ? p.paymentHistory.length : 0}:${String(p?.isScholarship || '')}`
+      )
+      .join('|');
+  }, [locationRosterSheetModel?.loc, data, waitlistData, cancelledData]);
+
+  const locationRosterFinanceByPersonId = useMemo(() => {
+    const loc = String(locationRosterSheetModel?.loc || '').trim();
+    if (!loc) return null;
+    const allPersons = [
+      ...(data[loc] || []),
+      ...(waitlistData[loc] || []),
+      ...(cancelledData[loc] || []),
+    ];
+    return buildLocationRosterFinanceByPersonId(allPersons, getLiquidationTarget);
+  }, [locationRosterFinanceRowsSig, locationRosterSheetModel?.loc, getLiquidationTarget]);
+
+  const isRosterLocationMobile = useMediaQuery('(max-width: 767px)');
+
+  const resolveLocationRosterLiquidationTarget = useCallback(
+    (person) => {
+      const id = String(person?.id || '').trim();
+      const cached = locationRosterFinanceByPersonId?.get(id);
+      return cached ? cached.liquidationTarget : getLiquidationTarget(person);
+    },
+    [locationRosterFinanceByPersonId, getLiquidationTarget]
+  );
+
   const applyGlobalRegistryLikeFilters = useCallback(
     (rows, preserveOrder = false) =>
       filterParticipantRows(rows, preserveOrder, globalRegistryListFilters, {
         expandBautizosCompanions: true,
       }),
     [filterParticipantRows, globalRegistryListFilters]
+  );
+
+  const expenseRegistryCountCacheRef = useRef(createExpenseRegistryCountCache());
+  const expenseRegistryParticipantCount = allParticipants.length;
+
+  const expenseRegistryQuantityContext = useMemo(() => {
+    const base = {
+      event: currentEvent,
+      allParticipants,
+      visibleLocations,
+      filterParticipantRows,
+    };
+    if (currentEvent?.eventType !== 'Bautizos') return base;
+    const locs = visibleLocations.length ? visibleLocations : currentEvent?.locations || [];
+    const rosterBase = locs.flatMap((loc) =>
+      (data[loc] || []).filter((p) => (p?.status || 'active') === 'active')
+    );
+    const canonicalPlan = buildBautizosDashboardCanonicalCompanionPlan(rosterBase, {
+      includeBaptizedCompanions: true,
+      linkLookupRoster: (allParticipants || []).filter(
+        (p) =>
+          p.eventId === currentEvent?.id &&
+          (p?.status || 'active') !== PARTICIPANT_STATUS_ARCHIVED
+      ),
+    });
+    return {
+      ...base,
+      bautizosDataByLocation: data,
+      bautizosWaitlistByLocation: waitlistData,
+      bautizosCancelledByLocation: cancelledData,
+      bautizosCanonicalCompanionPlan: canonicalPlan,
+      bautizosDashboardScope: resolveBautizosDashboardGlobalScope(summaryCampaScopes),
+    };
+  }, [
+    currentEvent,
+    allParticipants,
+    visibleLocations,
+    filterParticipantRows,
+    data,
+    waitlistData,
+    cancelledData,
+    summaryCampaScopes,
+  ]);
+
+  const buildExpenseRegistryQuantityPool = useCallback(
+    (registryQuantityLocations = []) =>
+      buildExpenseRegistryParticipantPool({
+        event: currentEvent,
+        allParticipants,
+        visibleLocations,
+        registryQuantityLocations,
+      }),
+    [currentEvent, allParticipants, visibleLocations]
+  );
+
+  const countExpenseRegistryMatchesForDraft = useCallback(
+    (filters, registryQuantityLocations = []) => {
+      const pool = buildExpenseRegistryQuantityPool(registryQuantityLocations);
+      return countExpenseRegistryQuantityMatches(pool, filters, filterParticipantRows, {
+        eventType: currentEvent?.eventType,
+        event: currentEvent,
+        allParticipants,
+        dashboardLocs: visibleLocations,
+        data,
+        waitlistData,
+        cancelledData,
+        canonicalCompanionPlan: expenseRegistryQuantityContext.bautizosCanonicalCompanionPlan,
+        dashboardScope: expenseRegistryQuantityContext.bautizosDashboardScope,
+        registryQuantityLocations,
+      });
+    },
+    [
+      buildExpenseRegistryQuantityPool,
+      filterParticipantRows,
+      currentEvent,
+      allParticipants,
+      visibleLocations,
+      data,
+      waitlistData,
+      cancelledData,
+      expenseRegistryQuantityContext.bautizosCanonicalCompanionPlan,
+      expenseRegistryQuantityContext.bautizosDashboardScope,
+    ]
+  );
+
+  const countExpenseRegistryFilterOptionUncached = useCallback(
+    (filters, registryQuantityLocations, filterKey, optionValue) => {
+      const hypotheticalFilters = mergeExpenseRegistryQuantityFilters({
+        ...filters,
+        [filterKey]: optionValue,
+      });
+      const bautizosCtx = {
+        eventType: currentEvent?.eventType,
+        event: currentEvent,
+        allParticipants,
+        dashboardLocs: visibleLocations,
+        data,
+        waitlistData,
+        cancelledData,
+        canonicalCompanionPlan: expenseRegistryQuantityContext.bautizosCanonicalCompanionPlan,
+        dashboardScope: expenseRegistryQuantityContext.bautizosDashboardScope,
+        registryQuantityLocations:
+          filterKey === '__location__' && optionValue ? [String(optionValue).trim()] : registryQuantityLocations,
+      };
+      if (currentEvent?.eventType === 'Bautizos' && bautizosCtx.data) {
+        return countBautizosEventWideFilteredPeople({
+          dashboardLocs: visibleLocations,
+          data,
+          waitlistData,
+          cancelledData,
+          filters: hypotheticalFilters,
+          filterParticipantRowsFn: filterParticipantRows,
+          canonicalCompanionPlan: bautizosCtx.canonicalCompanionPlan,
+          event: currentEvent,
+          dashboardScope: bautizosCtx.dashboardScope,
+          locationFilter: bautizosCtx.registryQuantityLocations,
+          allParticipants,
+        });
+      }
+      if (filterKey === '__location__') {
+        const loc = String(optionValue || '').trim();
+        const locPool = buildExpenseRegistryParticipantPool({
+          event: currentEvent,
+          allParticipants,
+          visibleLocations,
+          registryQuantityLocations: loc ? [loc] : [],
+        });
+        return countExpenseRegistryQuantityMatches(locPool, filters, filterParticipantRows);
+      }
+      const pool = buildExpenseRegistryQuantityPool(registryQuantityLocations);
+      return countExpenseRegistryQuantityMatches(pool, hypotheticalFilters, filterParticipantRows);
+    },
+    [
+      buildExpenseRegistryQuantityPool,
+      filterParticipantRows,
+      currentEvent,
+      allParticipants,
+      visibleLocations,
+      data,
+      waitlistData,
+      cancelledData,
+      expenseRegistryQuantityContext.bautizosCanonicalCompanionPlan,
+      expenseRegistryQuantityContext.bautizosDashboardScope,
+    ]
+  );
+
+  const countExpenseRegistryFilterOption = useCallback(
+    (filters, registryQuantityLocations, filterKey, optionValue) => {
+      const cacheKey = buildExpenseRegistryCountCacheKey({
+        eventId: currentEvent?.id,
+        participantCount: expenseRegistryParticipantCount,
+        filters,
+        registryQuantityLocations,
+        filterKey,
+        optionValue,
+        scope: 'option',
+      });
+      return expenseRegistryCountCacheRef.current.get(cacheKey, () =>
+        countExpenseRegistryFilterOptionUncached(filters, registryQuantityLocations, filterKey, optionValue)
+      );
+    },
+    [countExpenseRegistryFilterOptionUncached, currentEvent?.id, expenseRegistryParticipantCount]
+  );
+
+  const resolveExpenseRowAmountsCached = useCallback(
+    (expenseLike) => {
+      const mode =
+        expenseLike?.quantityMode === EXPENSE_QUANTITY_MODE_REGISTRY
+          ? EXPENSE_QUANTITY_MODE_REGISTRY
+          : EXPENSE_QUANTITY_MODE_MANUAL;
+      if (mode !== EXPENSE_QUANTITY_MODE_REGISTRY) {
+        return resolveExpenseRowAmounts(expenseLike, expenseRegistryQuantityContext);
+      }
+      const cacheKey = buildExpenseRegistryCountCacheKey({
+        eventId: currentEvent?.id,
+        participantCount: expenseRegistryParticipantCount,
+        filters: expenseLike?.registryQuantityFilters,
+        registryQuantityLocations: expenseLike?.registryQuantityLocations,
+        filterKey: '',
+        optionValue: '',
+        scope: `resolve:${String(expenseLike?.unitPrice ?? '')}`,
+      });
+      return expenseRegistryCountCacheRef.current.get(cacheKey, () =>
+        resolveExpenseRowAmounts(expenseLike, expenseRegistryQuantityContext)
+      );
+    },
+    [currentEvent?.id, expenseRegistryParticipantCount, expenseRegistryQuantityContext]
+  );
+
+  const resolveExpenseRow = useCallback(
+    (exp) => {
+      if (exp?.quantityMode !== EXPENSE_QUANTITY_MODE_REGISTRY) {
+        return applyResolvedExpenseAmounts(exp, expenseRegistryQuantityContext);
+      }
+      const cacheKey = buildExpenseRegistryCountCacheKey({
+        eventId: currentEvent?.id,
+        participantCount: expenseRegistryParticipantCount,
+        filters: exp?.registryQuantityFilters,
+        registryQuantityLocations: exp?.registryQuantityLocations,
+        filterKey: '',
+        optionValue: '',
+        scope: `row:${String(exp?.id || '')}:${String(exp?.unitPrice ?? '')}`,
+      });
+      return expenseRegistryCountCacheRef.current.get(cacheKey, () =>
+        applyResolvedExpenseAmounts(exp, expenseRegistryQuantityContext)
+      );
+    },
+    [currentEvent?.id, expenseRegistryParticipantCount, expenseRegistryQuantityContext]
+  );
+
+  const getResolvedExpenseForActions = useCallback(
+    (expenseId) => {
+      const exp = getExpenseForActions(expenseId);
+      return exp ? resolveExpenseRow(exp) : null;
+    },
+    [getExpenseForActions, resolveExpenseRow]
   );
 
   const activeRosterFilterCount = useMemo(
@@ -16617,13 +17876,10 @@ function resolveEventName(eventId) {
 
   const activeSummaryDashboardFilterCount = useMemo(
     () =>
-      (summaryFilterScholarship !== 'all' ? 1 : 0) +
-      (summaryFilterServer !== 'all' ? 1 : 0) +
-      (summaryFilterAssignment !== 'all' ? 1 : 0) +
-      (summaryFilterBaptism !== 'all' ? 1 : 0) +
+      countActiveDropdownListFilters(globalRegistryListFilters, currentEvent?.eventType) +
       (isCampa && summaryCampaScopes.tableDetails && summaryCampaScopes.tableDetails !== 'all' ? 1 : 0) +
       (isBautizos && resolveBautizosDashboardGlobalScope(summaryCampaScopes) !== 'all' ? 1 : 0),
-    [summaryFilterScholarship, summaryFilterServer, summaryFilterAssignment, summaryFilterBaptism, isCampa, isBautizos, summaryCampaScopes]
+    [globalRegistryListFilters, currentEvent?.eventType, isCampa, isBautizos, summaryCampaScopes]
   );
 
   /** Base del resumen del dashboard (solo cruces Beca / Servidor / Asignación / Bautizo). Independiente de búsqueda y filtros de lista de registro por sede. */
@@ -16693,6 +17949,172 @@ function resolveEventName(eventId) {
     summaryFilterAssignment,
     summaryFilterBaptism,
   ]);
+
+  const getEventWideListFilterPayload = useCallback(() => {
+    const f = listFiltersForEventApplication(globalRegistryListFilters, currentEvent?.eventType);
+    return { ...f, searchTerm: '', sortBy: 'none' };
+  }, [globalRegistryListFilters, currentEvent?.eventType]);
+
+  const dashboardSummaryRenderSig = useMemo(() => {
+    const locs = dashboardLocations.length ? dashboardLocations : currentEvent?.locations || [];
+    const locCounts = locs
+      .map((l) => `${String(l).trim()}:${(data[String(l).trim()]?.length || 0)}`)
+      .join(',');
+    const agg = dashboardSummaryScoped?.all;
+    const aggSig = agg
+      ? [
+          agg.paidTotal,
+          agg.pendingTotal,
+          agg.globalStats?.all?.count,
+          agg.globalStats?.all?.scholarship,
+          agg.totalServers,
+        ].join(',')
+      : '';
+    return [
+      currentEvent?.id,
+      allParticipants.length,
+      locCounts,
+      aggSig,
+      JSON.stringify(getEventWideListFilterPayload()),
+      JSON.stringify(summaryCampaScopes),
+      JSON.stringify(viewPrefs),
+      JSON.stringify(summaryTableColumns),
+      showGrossWithoutCommission ? 1 : 0,
+      filterPaymentMethod.efectivo ? 1 : 0,
+      filterPaymentMethod.tarjeta ? 1 : 0,
+      summaryFilterScholarship,
+      summaryFilterServer,
+      summaryFilterAssignment,
+      summaryFilterBaptism,
+      isBautizos ? resolveBautizosDashboardGlobalScope(summaryCampaScopes) : '',
+      isBautizos ? dashboardSummaryBautizosPlan?.size ?? 0 : 0,
+      donations.length,
+      currentEvent?.realCost ?? '',
+    ].join('|');
+  }, [
+    currentEvent?.id,
+    currentEvent?.locations,
+    currentEvent?.realCost,
+    allParticipants.length,
+    dashboardLocations,
+    data,
+    getEventWideListFilterPayload,
+    summaryCampaScopes,
+    viewPrefs,
+    summaryTableColumns,
+    showGrossWithoutCommission,
+    filterPaymentMethod,
+    summaryFilterScholarship,
+    summaryFilterServer,
+    summaryFilterAssignment,
+    summaryFilterBaptism,
+    isBautizos,
+    donations.length,
+    dashboardSummaryScoped,
+    dashboardSummaryBautizosPlan,
+  ]);
+
+  /** Filtros anidados compartidos (sede, registro global, tabla del dashboard). */
+  const applyEventWideListFilters = useCallback(
+    (rows, preserveOrder = false, opts = null) =>
+      filterParticipantRows(rows, preserveOrder, getEventWideListFilterPayload(), opts || {}),
+    [filterParticipantRows, getEventWideListFilterPayload]
+  );
+
+  const dashboardNestedCountsInputSig = useMemo(() => {
+    if (!currentEvent?.id) return '';
+    const dashboardLocs = dashboardLocations.length ? dashboardLocations : currentEvent?.locations || [];
+    const locCounts = dashboardLocs
+      .map(
+        (l) =>
+          `${String(l).trim()}:${(data[String(l).trim()]?.length || 0)}:${(waitlistData[String(l).trim()]?.length || 0)}:${(cancelledData[String(l).trim()]?.length || 0)}`
+      )
+      .join(',');
+    return [
+      currentEvent.id,
+      currentEvent.eventType,
+      locCounts,
+      JSON.stringify(listFiltersForEventApplication(globalRegistryListFilters, currentEvent.eventType)),
+      isBautizos ? resolveBautizosDashboardGlobalScope(summaryCampaScopes) : '',
+      isBautizos ? dashboardSummaryBautizosPlan?.size ?? 0 : 0,
+      allParticipants.length,
+    ].join('|');
+  }, [
+    currentEvent?.id,
+    currentEvent?.eventType,
+    dashboardLocations,
+    currentEvent?.locations,
+    data,
+    waitlistData,
+    cancelledData,
+    globalRegistryListFilters,
+    isBautizos,
+    summaryCampaScopes,
+    dashboardSummaryBautizosPlan,
+    allParticipants.length,
+  ]);
+
+  useEffect(() => {
+    if (!summaryFiltersDropdownOpen || !currentEvent?.id) {
+      setDashboardNestedFilterCountsMap(null);
+      return undefined;
+    }
+    const dashboardLocs = dashboardLocations.length ? dashboardLocations : currentEvent?.locations || [];
+    if (!dashboardLocs.length) {
+      setDashboardNestedFilterCountsMap(new Map());
+      return undefined;
+    }
+    const evt = currentEvent;
+    const buildId = ++dashboardNestedCountsBuildRef.current;
+    const timer = window.setTimeout(() => {
+      const map = buildDashboardNestedFilterCountsMap({
+        eventType: evt.eventType,
+        event: evt,
+        dashboardLocs,
+        data,
+        waitlistData,
+        cancelledData,
+        globalRegistryListFilters,
+        filterParticipantRowsFn: filterParticipantRows,
+        canonicalCompanionPlan: dashboardSummaryBautizosPlan,
+        dashboardScope: resolveBautizosDashboardGlobalScope(summaryCampaScopes),
+        allParticipants,
+      });
+      if (dashboardNestedCountsBuildRef.current !== buildId) return;
+      setDashboardNestedFilterCountsMap(map);
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [summaryFiltersDropdownOpen, dashboardNestedCountsInputSig]);
+
+  useEffect(() => {
+    if (!listFiltersPrefsHydratedUidRef.current) return;
+    if (listFiltersSyncGuardRef.current === 'fromGlobal') {
+      listFiltersSyncGuardRef.current = null;
+      return;
+    }
+    const shared = pickSharedEventListDropdownFilters(getRosterFilterStateSnapshot());
+    setGlobalRegistryListFilters((prev) => {
+      if (sharedEventListDropdownFiltersEqual(prev, shared)) return prev;
+      listFiltersSyncGuardRef.current = 'fromRoster';
+      return { ...prev, ...shared };
+    });
+  }, [getRosterFilterStateSnapshot]);
+
+  useEffect(() => {
+    if (!listFiltersPrefsHydratedUidRef.current) return;
+    if (listFiltersSyncGuardRef.current === 'fromRoster') {
+      listFiltersSyncGuardRef.current = null;
+      return;
+    }
+    const shared = pickSharedEventListDropdownFilters(globalRegistryListFilters);
+    const current = pickSharedEventListDropdownFilters(getRosterFilterStateSnapshot());
+    if (sharedEventListDropdownFiltersEqual(shared, current)) return;
+    listFiltersSyncGuardRef.current = 'fromGlobal';
+    applyLocationRosterFilters(
+      { ...getRosterFilterStateSnapshot(), ...shared },
+      rosterLocationFilterSetters
+    );
+  }, [globalRegistryListFilters, getRosterFilterStateSnapshot, rosterLocationFilterSetters]);
 
   /** Cada fila = un movimiento pendiente de avisar por WhatsApp (registro, abono, promoción, baja, etc.). */
   const getPendingWhatsAppRowsForLocation = useCallback((loc) => {
@@ -17983,19 +19405,21 @@ function resolveEventName(eventId) {
 
   const handleAddEntry = async (loc, entrySource) => {
     if (isRegisteringRef.current) return;
-    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
+    const sourceEntry = entrySource ?? newEntry;
+    const targetLoc = resolveRegistrationLocation(sourceEntry?.location, loc, currentEvent?.locations || []);
+    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(targetLoc)) {
       showToast("No tienes permisos para registrar en esta sede/evento.");
       return;
     }
-    if (!isLocOpen(loc)) return;
+    if (!isLocOpen(targetLoc)) return;
     isRegisteringRef.current = true;
     try {
     const editorVis = currentUser?.role === 'Editor' ? editorRegistrationFieldVis : null;
-    const sourceEntry = entrySource ?? newEntry;
-    let entryPayload = { ...sourceEntry, paid: sourceEntry.paid || 0 };
+    let entryPayload = { ...sourceEntry, location: targetLoc, paid: sourceEntry.paid || 0 };
     if (editorVis) {
-      entryPayload = applyEditorRegistrationDefaults(entryPayload, editorVis, currentEvent.eventType, loc);
+      entryPayload = applyEditorRegistrationDefaults(entryPayload, editorVis, currentEvent.eventType, targetLoc);
     }
+    entryPayload.location = targetLoc;
     const regIssues = getRegistrationFormIssues(
       entryPayload,
       currentEvent.minDeposit || 0,
@@ -18052,17 +19476,17 @@ function resolveEventName(eventId) {
       return;
     }
     if (isCampa && isSiValue(entryPayload.isScholarship)) {
-      await handleAddToWaitlist(loc, true);
+      await handleAddToWaitlist(targetLoc, true, null, entryPayload);
       return;
     }
     const globalCap = getEventTotalCap();
     const vnpCapHelpers = { canonicalizeVnpPersonId, generateVnpPersonId };
-    const capSimulationRows = buildCapSimulationRows(entryPayload, currentEvent, loc, vnpCapHelpers);
+    const capSimulationRows = buildCapSimulationRows(entryPayload, currentEvent, targetLoc, vnpCapHelpers);
     const incomingUnits = computeIncomingRegistrationCapUnits(capSimulationRows, allParticipants, currentEvent);
     const nextGlobalFull = globalCap > 0 && getEventCapUsedUnits() + incomingUnits > globalCap;
-    const locCap = getLocationCap(loc);
+    const locCap = getLocationCap(targetLoc);
     const nextLocFull =
-      globalCap <= 0 && locCap > 0 && getCapUsedUnitsByLocation(loc) + incomingUnits > locCap;
+      globalCap <= 0 && locCap > 0 && getCapUsedUnitsByLocation(targetLoc) + incomingUnits > locCap;
     if (nextGlobalFull || nextLocFull) {
       const isPastorReg =
         currentEvent.eventType === 'Bautizos' &&
@@ -18073,7 +19497,7 @@ function resolveEventName(eventId) {
         hasAdminRights,
       });
       if (isPastorReg && canPastorOverCap) {
-        const capUsed = nextGlobalFull ? getEventCapUsedUnits() : getCapUsedUnitsByLocation(loc);
+        const capUsed = nextGlobalFull ? getEventCapUsedUnits() : getCapUsedUnitsByLocation(targetLoc);
         const capTotal = nextGlobalFull ? globalCap : locCap;
         const reason = nextGlobalFull ? 'global' : 'sede';
         const confirmed = await requestPromoteOverCapConfirm({
@@ -18081,7 +19505,7 @@ function resolveEventName(eventId) {
           capTotal,
           additionalUnits: incomingUnits,
           reason,
-          loc,
+          loc: targetLoc,
           personName: String(entryPayload.name || '').trim(),
           isCompanion: false,
         });
@@ -18090,7 +19514,7 @@ function resolveEventName(eventId) {
         let allowBautizosSplitCompanionWaitlist = false;
         if (currentEvent.eventType === 'Bautizos') {
           const hostOnlyPayload = { ...entryPayload, bautizosCompanions: [] };
-          const hostOnlyRows = buildCapSimulationRows(hostOnlyPayload, currentEvent, loc, vnpCapHelpers);
+          const hostOnlyRows = buildCapSimulationRows(hostOnlyPayload, currentEvent, targetLoc, vnpCapHelpers);
           const hostOnlyUnits = computeIncomingRegistrationCapUnits(
             hostOnlyRows,
             allParticipants,
@@ -18099,16 +19523,16 @@ function resolveEventName(eventId) {
           const hostFitsGlobal =
             globalCap <= 0 || getEventCapUsedUnits() + hostOnlyUnits <= globalCap;
           const hostFitsLoc =
-            globalCap > 0 || locCap <= 0 || getCapUsedUnitsByLocation(loc) + hostOnlyUnits <= locCap;
+            globalCap > 0 || locCap <= 0 || getCapUsedUnitsByLocation(targetLoc) + hostOnlyUnits <= locCap;
           allowBautizosSplitCompanionWaitlist = hostFitsGlobal && hostFitsLoc;
         }
         if (!allowBautizosSplitCompanionWaitlist) {
-          const capUsed = nextGlobalFull ? getEventCapUsedUnits() : getCapUsedUnitsByLocation(loc);
+          const capUsed = nextGlobalFull ? getEventCapUsedUnits() : getCapUsedUnitsByLocation(targetLoc);
           const capTotal = nextGlobalFull ? globalCap : locCap;
           const reason = nextGlobalFull ? 'global' : 'sede';
-          const confirmed = await requestCapFullWaitlistConfirm({ capUsed, capTotal, reason, loc });
+          const confirmed = await requestCapFullWaitlistConfirm({ capUsed, capTotal, reason, loc: targetLoc });
           if (!confirmed) return;
-          await handleAddToWaitlist(loc, true, { redirectedByCap: true });
+          await handleAddToWaitlist(targetLoc, true, { redirectedByCap: true }, entryPayload);
           return;
         }
       }
@@ -18120,9 +19544,9 @@ function resolveEventName(eventId) {
       const vnpHSplit = { canonicalizeVnpPersonId, generateVnpPersonId };
       const docIdBySlotKey = {};
       for (const d of splitDesc) {
-        let plSlot = buildParticipantLikeForBautizosSplitSlot(entryPayload, loc, d);
+        let plSlot = buildParticipantLikeForBautizosSplitSlot(entryPayload, targetLoc, d);
         if (editorVis) {
-          plSlot = applyEditorRegistrationDefaults({ ...plSlot }, editorVis, currentEvent.eventType, loc);
+          plSlot = applyEditorRegistrationDefaults({ ...plSlot }, editorVis, currentEvent.eventType, targetLoc);
         }
         if (d.slotKey !== 'host') {
           plSlot.age = calculateAgeFromBirthDate(plSlot.birthDate || '') || '';
@@ -18132,7 +19556,7 @@ function resolveEventName(eventId) {
       }
       const splitErr = getBautizosSplitPartySubmitBlockingError({
         personLike: entryPayload,
-        loc,
+        loc: targetLoc,
         participants: allParticipants,
         eventId: currentEvent.id,
         docIdBySlotKey,
@@ -18164,10 +19588,10 @@ function resolveEventName(eventId) {
       const hostDocIdSp = docIdBySlotKey.host;
       const initialPaidGrossSp = parseFloat(entryPayload.paid) || 0;
       let paymentMethodSp = entryPayload.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-      if (paymentMethodSp === 'Tarjeta' && !isCardPaymentAllowedForLocation(currentEvent, loc)) {
+      if (paymentMethodSp === 'Tarjeta' && !isCardPaymentAllowedForLocation(currentEvent, targetLoc)) {
         paymentMethodSp = 'Efectivo';
       }
-      const paymentServiceSp = getAutoPaymentService(new Date(), loc);
+      const paymentServiceSp = getAutoPaymentService(new Date(), targetLoc);
       const commissionRateSp = getCardCommissionRate();
       const commissionSp = paymentMethodSp === 'Tarjeta' ? (initialPaidGrossSp * commissionRateSp) : 0;
       const initialPaidNetSp = paymentMethodSp === 'Tarjeta' ? (initialPaidGrossSp - commissionSp) : initialPaidGrossSp;
@@ -18194,9 +19618,9 @@ function resolveEventName(eventId) {
       for (let si = 0; si < splitDesc.length; si++) {
         const d = splitDesc[si];
         const isHost = d.slotKey === 'host';
-        let plS = buildParticipantLikeForBautizosSplitSlot(entryPayload, loc, d);
+        let plS = buildParticipantLikeForBautizosSplitSlot(entryPayload, targetLoc, d);
         if (editorVis) {
-          plS = applyEditorRegistrationDefaults({ ...plS }, editorVis, currentEvent.eventType, loc);
+          plS = applyEditorRegistrationDefaults({ ...plS }, editorVis, currentEvent.eventType, targetLoc);
         }
         if (!isHost) plS.age = calculateAgeFromBirthDate(plS.birthDate || '') || '';
         const candVnp = canonicalizeVnpPersonId(plS.vnpPersonId || '') || generateVnpPersonId(plS);
@@ -18212,7 +19636,7 @@ function resolveEventName(eventId) {
 
         const compsPersisted = buildSplitPartyCompanionsForSlot({
           personLike: entryPayload,
-          loc,
+          loc: targetLoc,
           targetSlotKey: d.slotKey,
           docIdBySlotKey,
           vnpCompanionHelpers: vnpHSplit,
@@ -18227,9 +19651,9 @@ function resolveEventName(eventId) {
             registeredBy: currentUser?.username || '',
             vnpPersonId: candVnp,
             isFirstVnpId: !idExistsSp,
-            location: loc,
-            travelFrom: entryPayload.travelFrom || loc,
-            travelTo: entryPayload.travelTo || loc,
+            location: targetLoc,
+            travelFrom: entryPayload.travelFrom || targetLoc,
+            travelTo: entryPayload.travelTo || targetLoc,
             eventId: currentEvent.id,
             paymentHistory: initialHistorySp,
             registeredCost: baseRegisteredCostSp,
@@ -18322,7 +19746,7 @@ function resolveEventName(eventId) {
             getDocRef('app_participants', docIdS),
             prepareParticipantDocForFirestore(personDataH)
           );
-          const _splitHostLog = `${prevS ? 'Actualizó registro de' : 'Inscribió a'} ${entryPayload.name} en la sede ${loc} (grupo partido: titular).`;
+          const _splitHostLog = `${prevS ? 'Actualizó registro de' : 'Inscribió a'} ${entryPayload.name} en la sede ${targetLoc} (grupo partido: titular).`;
           addLog(
             'Nuevo Registro',
             _splitHostLog,
@@ -18346,15 +19770,15 @@ function resolveEventName(eventId) {
             registeredBy: currentUser?.username || '',
             vnpPersonId: candVnp,
             isFirstVnpId: !idExistsSp,
-            location: loc,
-            travelFrom: plS.travelFrom || loc,
-            travelTo: plS.travelTo || loc,
+            location: targetLoc,
+            travelFrom: plS.travelFrom || targetLoc,
+            travelTo: plS.travelTo || targetLoc,
             eventId: currentEvent.id,
             paymentHistory: [],
             paid: 0,
             paidNet: 0,
             paymentMethod: 'Efectivo',
-            paymentService: getAutoPaymentService(new Date(), loc),
+            paymentService: getAutoPaymentService(new Date(), targetLoc),
             cardReference: '',
             whatsAppFinanceNotifications: prevWaS,
             whatsAppMessageHistory: prevHistS,
@@ -18394,7 +19818,7 @@ function resolveEventName(eventId) {
             getDocRef('app_participants', docIdS),
             prepareParticipantDocForFirestore(personDataSat)
           );
-          const _splitSatLog = `${prevS ? 'Actualizó registro de' : 'Inscribió a'} ${plS.name} en la sede ${loc} (grupo partido: bautizado vinculado).`;
+          const _splitSatLog = `${prevS ? 'Actualizó registro de' : 'Inscribió a'} ${plS.name} en la sede ${targetLoc} (grupo partido: bautizado vinculado).`;
           addLog(
             'Nuevo Registro',
             _splitSatLog,
@@ -18415,11 +19839,11 @@ function resolveEventName(eventId) {
         newRegGeneralComment,
         newRegDraftCarMeta,
       });
-      resetRegistrationFormAfterSuccess(loc);
+      resetRegistrationFormAfterSuccess(targetLoc);
       refreshParticipantCache(
-        { id: hostDocIdSp, eventId: currentEvent.id, location: loc },
+        { id: hostDocIdSp, eventId: currentEvent.id, location: targetLoc },
         'Nuevo registro grupo partido',
-        { eventId: currentEvent.id, location: loc }
+        { eventId: currentEvent.id, location: targetLoc }
       );
       showToast(`Registro añadido: ${splitDesc.length} persona(s) del grupo (cada bautizado como registro propio).`);
       return;
@@ -18506,10 +19930,10 @@ function resolveEventName(eventId) {
       : [];
     const initialPaidGross = parseFloat(entryPayload.paid) || 0;
     let paymentMethod = entryPayload.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-    if (paymentMethod === 'Tarjeta' && !isCardPaymentAllowedForLocation(currentEvent, loc)) {
+    if (paymentMethod === 'Tarjeta' && !isCardPaymentAllowedForLocation(currentEvent, targetLoc)) {
       paymentMethod = 'Efectivo';
     }
-    const paymentService = getAutoPaymentService(new Date(), loc);
+    const paymentService = getAutoPaymentService(new Date(), targetLoc);
     const commissionRate = getCardCommissionRate();
     const commission = paymentMethod === 'Tarjeta' ? (initialPaidGross * commissionRate) : 0;
     const initialPaidNet = paymentMethod === 'Tarjeta' ? (initialPaidGross - commission) : initialPaidGross;
@@ -18562,9 +19986,9 @@ function resolveEventName(eventId) {
       registeredBy: currentUser?.username || '',
       vnpPersonId: finalVnpPersonId,
       isFirstVnpId: !idExistsAnywhere,
-      location: loc, 
-      travelFrom: (entryPayload.travelFrom || loc),
-      travelTo: (entryPayload.travelTo || loc),
+      location: targetLoc, 
+      travelFrom: (entryPayload.travelFrom || targetLoc),
+      travelTo: (entryPayload.travelTo || targetLoc),
       eventId: currentEvent.id, 
       paymentHistory: initialHistory,
       registeredCost,
@@ -18738,7 +20162,7 @@ function resolveEventName(eventId) {
     const _regSnapshot = {
       kind: previousParticipantData ? 'registro_actualizado' : 'registro_nuevo',
       isUpdate: !!previousParticipantData,
-      loc,
+      loc: targetLoc,
       eventId: currentEvent?.id,
       eventName: currentEvent?.name,
       participant: prepareParticipantDocForFirestore(personData),
@@ -18756,10 +20180,10 @@ function resolveEventName(eventId) {
         snapshot: _regSnapshot,
       }).catch((err) => logAppError('handleAddEntry.snapshotBackup', err, { docId }));
     } catch (e) {
-      logAppError('handleAddPerson.setDoc', e, { docId, name: personData?.name, loc, eventId: currentEvent?.id });
+      logAppError('handleAddPerson.setDoc', e, { docId, name: personData?.name, loc: targetLoc, eventId: currentEvent?.id });
       await addLog(
         'Nuevo Registro',
-        `FALLÓ guardar el registro de ${personData?.name || ''} en ${loc}. Los datos quedaron respaldados en el log (snapshot).`,
+        `FALLÓ guardar el registro de ${personData?.name || ''} en ${targetLoc}. Los datos quedaron respaldados en el log (snapshot).`,
         null,
         null,
         {
@@ -18786,7 +20210,7 @@ function resolveEventName(eventId) {
     const comentarioInicialLog = comentarioInicialNuevoReg
       ? ` Comentario inicial: «${comentarioInicialNuevoReg.length > 200 ? `${comentarioInicialNuevoReg.slice(0, 200)}…` : comentarioInicialNuevoReg}».`
       : '';
-    const _newRegLog = truncateActivityLogDetails(`${previousParticipantData ? 'Actualizó registro de' : 'Inscribió a'} ${entryPayload.name} en la sede ${loc}.${paymentService ? ` (Servicio: ${paymentService})` : ''} (Pago inicial: $${initialPaidGross} ${paymentMethod === 'Tarjeta' ? `(Tarjeta, Neto: $${initialPaidNet})` : '(Efectivo)'} )${isLiquidadoReg ? ' [LIQUIDADO]' : ''}${describeNewRegistrationCompanions(entryPayload.bautizosCompanions)}${comentarioInicialLog}`);
+    const _newRegLog = truncateActivityLogDetails(`${previousParticipantData ? 'Actualizó registro de' : 'Inscribió a'} ${entryPayload.name} en la sede ${targetLoc}.${paymentService ? ` (Servicio: ${paymentService})` : ''} (Pago inicial: $${initialPaidGross} ${paymentMethod === 'Tarjeta' ? `(Tarjeta, Neto: $${initialPaidNet})` : '(Efectivo)'} )${isLiquidadoReg ? ' [LIQUIDADO]' : ''}${describeNewRegistrationCompanions(entryPayload.bautizosCompanions)}${comentarioInicialLog}`);
 
     persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload, {
       newRegGeneralComment,
@@ -18802,11 +20226,11 @@ function resolveEventName(eventId) {
       useBlankSlotMeta: true,
       onError: (err) => logAppError('handleAddEntry.transportV2', err, { docId, eventId: currentEvent?.id }),
     });
-    resetRegistrationFormAfterSuccess(loc);
+    resetRegistrationFormAfterSuccess(targetLoc);
     startTransition(() => {
       refreshParticipantCache(personData, previousParticipantData ? 'Actualizar registro' : 'Nuevo registro', {
         eventId: currentEvent.id,
-        location: loc,
+        location: targetLoc,
         personId: docId,
         patch: personData,
         skipRefetch: true,
@@ -18859,7 +20283,7 @@ function resolveEventName(eventId) {
         );
         logParticipantActivity(docId, 'registro', _newRegLog);
       } catch (postErr) {
-        logAppError('handleAddEntry.postRegister', postErr, { docId, loc, eventId: currentEvent?.id });
+        logAppError('handleAddEntry.postRegister', postErr, { docId, loc: targetLoc, eventId: currentEvent?.id });
       }
     })();
     } finally {
@@ -18869,19 +20293,21 @@ function resolveEventName(eventId) {
 
   const handleAddToWaitlist = async (loc, _calledInternally = false, waitlistOptions = null, entrySource) => {
     if (!_calledInternally && isRegisteringRef.current) return;
-    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(loc)) {
+    const sourceEntry = entrySource ?? newEntry;
+    const targetLoc = resolveRegistrationLocation(sourceEntry?.location, loc, currentEvent?.locations || []);
+    if (!hasEventAccess(currentEvent?.id) || !hasLocationAccess(targetLoc)) {
       showToast("No tienes permisos para registrar en lista de espera en esta sede/evento.");
       return;
     }
-    if (!isLocOpen(loc)) return;
+    if (!isLocOpen(targetLoc)) return;
     if (!_calledInternally) isRegisteringRef.current = true;
     try {
     const editorVis = currentUser?.role === 'Editor' ? editorRegistrationFieldVis : null;
-    const sourceEntry = entrySource ?? newEntry;
-    let entryPayload = { ...sourceEntry, paid: sourceEntry.paid || 0 };
+    let entryPayload = { ...sourceEntry, location: targetLoc, paid: sourceEntry.paid || 0 };
     if (editorVis) {
-      entryPayload = applyEditorRegistrationDefaults(entryPayload, editorVis, currentEvent.eventType, loc);
+      entryPayload = applyEditorRegistrationDefaults(entryPayload, editorVis, currentEvent.eventType, targetLoc);
     }
+    entryPayload.location = targetLoc;
     const wlIssues = getRegistrationFormIssues(entryPayload, 0, currentEvent.eventType, editorVis, currentEvent, newRegPrivacyContext);
     if (wlIssues.length) {
       showRegistrationValidationIssues(wlIssues);
@@ -18943,9 +20369,9 @@ function resolveEventName(eventId) {
       const vnpHWlSplit = { canonicalizeVnpPersonId, generateVnpPersonId };
       const docIdBySlotKeyWl = {};
       for (const d of splitDescWl) {
-        let plWl0 = buildParticipantLikeForBautizosSplitSlot(entryPayload, loc, d);
+        let plWl0 = buildParticipantLikeForBautizosSplitSlot(entryPayload, targetLoc, d);
         if (editorVis) {
-          plWl0 = applyEditorRegistrationDefaults({ ...plWl0 }, editorVis, currentEvent.eventType, loc);
+          plWl0 = applyEditorRegistrationDefaults({ ...plWl0 }, editorVis, currentEvent.eventType, targetLoc);
         }
         if (d.slotKey !== 'host') {
           plWl0.age = calculateAgeFromBirthDate(plWl0.birthDate || '') || '';
@@ -18955,7 +20381,7 @@ function resolveEventName(eventId) {
       }
       const splitErrWl2 = getBautizosSplitPartySubmitBlockingError({
         personLike: entryPayload,
-        loc,
+        loc: targetLoc,
         participants: allParticipants,
         eventId: currentEvent.id,
         docIdBySlotKey: docIdBySlotKeyWl,
@@ -18989,9 +20415,9 @@ function resolveEventName(eventId) {
       for (let wi = 0; wi < splitDescWl.length; wi++) {
         const d = splitDescWl[wi];
         const isHostWl = d.slotKey === 'host';
-        let plWl = buildParticipantLikeForBautizosSplitSlot(entryPayload, loc, d);
+        let plWl = buildParticipantLikeForBautizosSplitSlot(entryPayload, targetLoc, d);
         if (editorVis) {
-          plWl = applyEditorRegistrationDefaults({ ...plWl }, editorVis, currentEvent.eventType, loc);
+          plWl = applyEditorRegistrationDefaults({ ...plWl }, editorVis, currentEvent.eventType, targetLoc);
         }
         if (!isHostWl) plWl.age = calculateAgeFromBirthDate(plWl.birthDate || '') || '';
         const candVnpWl = canonicalizeVnpPersonId(plWl.vnpPersonId || '') || generateVnpPersonId(plWl);
@@ -19006,7 +20432,7 @@ function resolveEventName(eventId) {
         const idExistsWl = await vnpPersonIdExistsInFirestore(candVnpWl);
         const compsWl = buildSplitPartyCompanionsForSlot({
           personLike: entryPayload,
-          loc,
+          loc: targetLoc,
           targetSlotKey: d.slotKey,
           docIdBySlotKey: docIdBySlotKeyWl,
           vnpCompanionHelpers: vnpHWlSplit,
@@ -19022,15 +20448,15 @@ function resolveEventName(eventId) {
             waitlistCreatedAt: Date.now(),
             vnpPersonId: candVnpWl,
             isFirstVnpId: !idExistsWl,
-            location: loc,
-            travelFrom: entryPayload.travelFrom || loc,
-            travelTo: entryPayload.travelTo || loc,
+            location: targetLoc,
+            travelFrom: entryPayload.travelFrom || targetLoc,
+            travelTo: entryPayload.travelTo || targetLoc,
             eventId: currentEvent.id,
             paymentHistory: [],
             paid: 0,
             paidNet: 0,
             paymentMethod: 'Efectivo',
-            paymentService: getAutoPaymentService(new Date(), loc),
+            paymentService: getAutoPaymentService(new Date(), targetLoc),
             cardReference: '',
             whatsAppFinanceNotifications: prevWaWl,
             whatsAppMessageHistory: prevHistWl,
@@ -19087,7 +20513,7 @@ function resolveEventName(eventId) {
             getDocRef('app_participants', docIdWl),
             prepareParticipantDocForFirestore(personDataWlH)
           );
-          const _wlSplitHostLog = `${prevWlS ? 'Actualizó lista de espera de' : 'Añadió a'} ${entryPayload.name} a la lista de espera en la sede ${loc} (grupo partido: titular).`;
+          const _wlSplitHostLog = `${prevWlS ? 'Actualizó lista de espera de' : 'Añadió a'} ${entryPayload.name} a la lista de espera en la sede ${targetLoc} (grupo partido: titular).`;
           addLog(
             'Lista de Espera',
             _wlSplitHostLog,
@@ -19112,15 +20538,15 @@ function resolveEventName(eventId) {
             waitlistCreatedAt: Date.now(),
             vnpPersonId: candVnpWl,
             isFirstVnpId: !idExistsWl,
-            location: loc,
-            travelFrom: plWl.travelFrom || loc,
-            travelTo: plWl.travelTo || loc,
+            location: targetLoc,
+            travelFrom: plWl.travelFrom || targetLoc,
+            travelTo: plWl.travelTo || targetLoc,
             eventId: currentEvent.id,
             paymentHistory: [],
             paid: 0,
             paidNet: 0,
             paymentMethod: 'Efectivo',
-            paymentService: getAutoPaymentService(new Date(), loc),
+            paymentService: getAutoPaymentService(new Date(), targetLoc),
             cardReference: '',
             whatsAppFinanceNotifications: prevWaWl,
             whatsAppMessageHistory: prevHistWl,
@@ -19160,7 +20586,7 @@ function resolveEventName(eventId) {
             getDocRef('app_participants', docIdWl),
             prepareParticipantDocForFirestore(personDataWlSat)
           );
-          const _wlSplitSatLog = `${prevWlS ? 'Actualizó lista de espera de' : 'Añadió a'} ${plWl.name} a la lista de espera en la sede ${loc} (grupo partido: bautizado vinculado).`;
+          const _wlSplitSatLog = `${prevWlS ? 'Actualizó lista de espera de' : 'Añadió a'} ${plWl.name} a la lista de espera en la sede ${targetLoc} (grupo partido: bautizado vinculado).`;
           addLog(
             'Lista de Espera',
             _wlSplitSatLog,
@@ -19272,15 +20698,15 @@ function resolveEventName(eventId) {
       waitlistCreatedAt: Date.now(),
       vnpPersonId: finalVnpPersonId,
       isFirstVnpId: !idExistsAnywhere,
-      location: loc,
-      travelFrom: (entryPayload.travelFrom || loc),
-      travelTo: (entryPayload.travelTo || loc),
+      location: targetLoc,
+      travelFrom: (entryPayload.travelFrom || targetLoc),
+      travelTo: (entryPayload.travelTo || targetLoc),
       eventId: currentEvent.id,
       paymentHistory: [],
       paid: 0,
       paidNet: 0,
       paymentMethod: 'Efectivo',
-      paymentService: getAutoPaymentService(new Date(), loc),
+      paymentService: getAutoPaymentService(new Date(), targetLoc),
       cardReference: '',
       whatsAppFinanceNotifications: prevWlWaNotifications,
       whatsAppMessageHistory: prevWlWaHistory,
@@ -19427,7 +20853,7 @@ function resolveEventName(eventId) {
         ),
       ]);
     } catch (e) {
-      logAppError('handleAddToWaitlist.setDoc', e, { docId, name: personData?.name, loc, eventId: currentEvent?.id });
+      logAppError('handleAddToWaitlist.setDoc', e, { docId, name: personData?.name, loc: targetLoc, eventId: currentEvent?.id });
       await addLog(
         'Lista de Espera',
         `FALLÓ guardar en lista de espera a ${personData?.name || ''} en ${loc}. Los datos (incluidos acompañantes y carro) quedaron respaldados en el log.`,
@@ -19462,17 +20888,17 @@ function resolveEventName(eventId) {
     const comentarioInicialEsperaLog = comentarioInicialEspera
       ? ` Comentario inicial: «${comentarioInicialEspera.length > 200 ? `${comentarioInicialEspera.slice(0, 200)}…` : comentarioInicialEspera}».`
       : '';
-    const _wlLog = `${previousWlData ? 'Actualizó lista de espera de' : 'Añadió a'} ${entryPayload.name} a la lista de espera en la sede ${loc}.${becaNote}${comentarioInicialEsperaLog}`;
+    const _wlLog = `${previousWlData ? 'Actualizó lista de espera de' : 'Añadió a'} ${entryPayload.name} a la lista de espera en la sede ${targetLoc}.${becaNote}${comentarioInicialEsperaLog}`;
 
     persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload, {
       newRegGeneralComment,
       newRegDraftCarMeta,
     });
-    resetRegistrationFormAfterSuccess(loc);
+    resetRegistrationFormAfterSuccess(targetLoc);
     refreshParticipantCache(
       personData,
       previousWlData ? 'Actualizar lista de espera' : 'Nueva lista de espera',
-      { eventId: currentEvent.id, location: loc, personId: docId, patch: personData, skipRefetch: true }
+      { eventId: currentEvent.id, location: targetLoc, personId: docId, patch: personData, skipRefetch: true }
     );
     showToast(
       currentEvent.eventType === 'Campa' && isSiValue(entryPayload.isScholarship)
@@ -19561,7 +20987,7 @@ function resolveEventName(eventId) {
         );
         logParticipantActivity(docId, 'lista_espera', _wlLog);
       } catch (postErr) {
-        logAppError('handleAddToWaitlist.postRegister', postErr, { docId, loc, eventId: currentEvent?.id });
+        logAppError('handleAddToWaitlist.postRegister', postErr, { docId, loc: targetLoc, eventId: currentEvent?.id });
       }
     })();
     } finally {
@@ -19662,15 +21088,32 @@ function resolveEventName(eventId) {
         { inheritFlag: editedPerson.bautizosInheritLinkedCompanionCarData }
       );
       if (!linkedCarInherit.active) {
+        const carCtx = resolveCarDataValidationHostContext(
+          editedPerson,
+          editedPerson.bautizosCompanions || [],
+          `p:${String(editedPerson.id || '').trim()}`,
+          allParticipants,
+          currentEvent.transportPlanning
+        );
+        let carMetaCacheByKey = {};
+        const eid = String(currentEvent?.id || '').trim();
+        if (eid && carCtx.metaFetchSourceKey) {
+          try {
+            carMetaCacheByKey = await fetchCarMetaForTitular(eid, carCtx.metaFetchSourceKey);
+          } catch (err) {
+            console.error('[car-meta] validación edición', err);
+          }
+        }
         const carIssues = getFamilyCarInventoryValidationIssues(
           buildMergedFamilyCarInventory({
-            hostPerson: editedPerson,
-            companions: editedPerson.bautizosCompanions || [],
+            hostPerson: carCtx.hostPerson,
+            companions: carCtx.companions,
             plan: currentEvent.transportPlanning,
-            hostSourceKey: `p:${String(editedPerson.id || '').trim()}`,
+            hostSourceKey: carCtx.hostSourceKey,
             draftMetaByVehicleKey: editRegDraftCarMeta,
+            carMetaCacheByKey,
           }),
-          { hostPerson: editedPerson, companions: editedPerson.bautizosCompanions || [] }
+          { hostPerson: carCtx.hostPerson, companions: carCtx.companions }
         );
         if (carIssues.length) {
           showRegistrationValidationIssues(carIssues);
@@ -20265,17 +21708,59 @@ function resolveEventName(eventId) {
         payloadWithPrivacy.bautizosCompanions || editedPerson.bautizosCompanions
       )
     ) {
-      const hostForCar = { ...editedPerson, ...payloadWithPrivacy };
+      const hostForCar = { ...editedPerson, ...payloadWithPrivacy, id: editedPerson.id };
+      const rosterForCar = (allParticipants || []).map((p) =>
+        String(p.id) === String(editedPerson.id) ? hostForCar : p
+      );
       const carPatches = buildCarMetaPatchesAfterSave({
         hostPerson: hostForCar,
         companions: hostForCar.bautizosCompanions,
         plan: currentEvent.transportPlanning,
         draftMetaByVehicleKey: editRegDraftCarMeta,
         hostId: editedPerson.id,
-        roster: allParticipants,
+        roster: rosterForCar,
       });
-      if (carPatches.length) {
-        await persistBautizosCarMetaPatches(carPatches);
+      const syncCarPatches = buildCarMetaSyncPatchesToLinkedCompanions({
+        hostPerson: hostForCar,
+        hostId: editedPerson.id,
+        companions: hostForCar.bautizosCompanions,
+        plan: currentEvent.transportPlanning,
+        roster: rosterForCar,
+        appliedPatches: carPatches,
+      });
+      const allCarPatches = [...carPatches, ...syncCarPatches];
+      const carChangeLine = describeCarDraftMetaRegistrationChange(editRegDraftCarMeta);
+      if (carChangeLine) changes.push(carChangeLine);
+      if (allCarPatches.length) {
+        patchEventTransportPlanning(
+          applyCarMetaPatchesLocally(currentEvent.transportPlanning, allCarPatches, rosterForCar)
+        );
+        try {
+          if (carPatches.length) {
+            await persistBautizosCarMetaPatches(carPatches, { rosterOverride: rosterForCar });
+          }
+          if (syncCarPatches.length) {
+            await persistBautizosCarMetaPatches(syncCarPatches, { rosterOverride: rosterForCar });
+            await upsertCarMetaPatchesToTransportV2(currentEvent.id, syncCarPatches);
+          }
+          scheduleRegistrationTransportSave({
+            event: currentEvent,
+            personData: hostForCar,
+            draftMetaByVehicleKey: editRegDraftCarMeta,
+            allParticipants: rosterForCar,
+            patchEventTransportPlanningDeferred,
+            updateDoc,
+            useBlankSlotMeta: false,
+            skipLinkedSync: syncCarPatches.length > 0,
+            onError: (err) => {
+              console.error(err);
+              showToast('Registro guardado, pero no se pudo sincronizar transporte v2. Los datos de carro quedaron en la subcolección principal.');
+            },
+          });
+        } catch (err) {
+          console.error(err);
+          showToast('Registro guardado, pero no se pudieron guardar los datos del carro. Intenta de nuevo desde Transporte o reabre la edición.');
+        }
       }
       setEditRegDraftCarMeta({});
     }
@@ -21233,7 +22718,13 @@ function resolveEventName(eventId) {
                       <BautizosCompanionsField
                         registrantAge={editRegistryModal.data.age}
                         eventLike={currentEvent}
+                        hostEntry={editRegistryModal.data}
                         companions={editRegistryModal.data.bautizosCompanions || []}
+                        serveAreaOptions={
+                          globalConfig?.serveAreaOptions?.length
+                            ? globalConfig.serveAreaOptions
+                            : DEFAULT_SERVE_AREA_OPTIONS
+                        }
                         fieldSuggestions={editFieldSuggestions}
                         registryBirthDateUserId={currentUser?.id}
                         onChange={(next) =>
@@ -21251,6 +22742,7 @@ function resolveEventName(eventId) {
                           travelFrom: true,
                           travelTo: true,
                           hideCarCountInTransport: true,
+                          serverProfileExtra: fv('serverProfileExtra'),
                         }}
                         inputClasses={inputClasses}
                         labelClasses={labelClasses}
@@ -21296,12 +22788,17 @@ function resolveEventName(eventId) {
                         roster={allParticipants}
                         draftMetaByVehicleKey={editRegDraftCarMeta}
                         onDraftMetaChange={(vehicleKey, patch) => {
-                          setEditRegDraftCarMeta((prev) => ({
-                            ...prev,
-                            [vehicleKey]: { ...(prev[vehicleKey] || {}), ...patch },
-                          }));
+                          setEditRegDraftCarMeta((prev) => {
+                            const cur = normalizeCarVehicleMeta(prev[vehicleKey] || {});
+                            return {
+                              ...prev,
+                              [vehicleKey]: normalizeCarVehicleMeta({ ...cur, ...patch }),
+                            };
+                          });
                         }}
                         canEdit
+                        alwaysExpanded
+                        slotsDefaultExpanded
                         sectionTitle="Datos de carros"
                         colorSuggestions={bautizosCarColorSuggestions}
                         labelClasses={labelClasses}
@@ -21999,6 +23496,8 @@ function resolveEventName(eventId) {
 
   const executeBautizosPartyCancelArchivePlan = async (plan) => {
     if (!plan || !plan.focalDocId) return;
+    const releaseSuppress = suppressParticipantVersionListeners();
+    try {
     const loc = plan.loc;
     const action = plan.action === 'archive_roster' ? 'archive_roster' : 'cancel_entry';
     const now = Date.now();
@@ -22023,6 +23522,9 @@ function resolveEventName(eventId) {
             return sum + (parseFloat(sp.patch.paid) || 0);
           }, 0)
         : 0;
+
+    const cancelMemoryPatches = [];
+    const promotionMemoryRows = [];
 
     for (const person of plan.cancelDocs || []) {
       const pid = String(person.id);
@@ -22063,6 +23565,21 @@ function resolveEventName(eventId) {
           ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
         };
         batch.update(ref, omitUndefinedDeep(archivePayload));
+        cancelMemoryPatches.push({
+          person,
+          personId: pid,
+          patch: patchForLocalParticipantCache({
+            status: PARTICIPANT_STATUS_ARCHIVED,
+            archivedAt: now,
+            archivedFromLocation: loc,
+            archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
+            paymentHistory: [],
+            whatsAppFinanceNotifications: [],
+            scholarshipPendingApproval: false,
+            responsivaStatus: '',
+            responsivaDigital: null,
+          }),
+        });
       } else {
         const refundPendingAmount =
           pid === String(plan.focalDocId)
@@ -22072,15 +23589,16 @@ function resolveEventName(eventId) {
               )
             : Math.max(0, parseFloat(person.paid || 0) || 0);
         const participantRef = ref;
-        const serverSnap = await getDoc(participantRef);
-        const serverWa = serverSnap.exists()
-          ? serverSnap.data()?.whatsAppFinanceNotifications
-          : undefined;
-        const existingNotifications = Array.isArray(serverWa)
-          ? [...serverWa]
-          : Array.isArray(person.whatsAppFinanceNotifications)
-            ? [...person.whatsAppFinanceNotifications]
-            : [];
+        let existingNotifications;
+        if (Array.isArray(person.whatsAppFinanceNotifications)) {
+          existingNotifications = [...person.whatsAppFinanceNotifications];
+        } else {
+          const serverSnap = await getDoc(participantRef);
+          const serverWa = serverSnap.exists()
+            ? serverSnap.data()?.whatsAppFinanceNotifications
+            : undefined;
+          existingNotifications = Array.isArray(serverWa) ? [...serverWa] : [];
+        }
         existingNotifications.push({
           id: `wa-bja-cancel-${now}-${pid}`,
           kind: 'baja',
@@ -22112,6 +23630,11 @@ function resolveEventName(eventId) {
           ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
         };
         batch.update(ref, omitUndefinedDeep(cancelPayload));
+        cancelMemoryPatches.push({
+          person,
+          personId: pid,
+          patch: patchForLocalParticipantCache(cancelPayload),
+        });
       }
       batchOps += 1;
     }
@@ -22172,6 +23695,7 @@ function resolveEventName(eventId) {
       Object.assign(personData, syncBautizosAttendanceServerFields(personData));
       applyParticipantNameFormattingForSave(personData);
       batch.set(getDocRef('app_participants', docId), omitUndefinedDeep(personData));
+      promotionMemoryRows.push(personData);
       batchOps += 1;
       const _promLog = `Promovió a ${personData.name} como registro independiente tras baja/archivo del grupo (sede ${loc}).`;
       addLog('Nuevo Registro', _promLog, null, null, {
@@ -22190,23 +23714,48 @@ function resolveEventName(eventId) {
       }
       batch.update(getDocRef('app_participants', sp.docId), omitUndefinedDeep(patch));
       batchOps += 1;
-      refreshParticipantCache(sp.previousData, 'Actualizar grupo Bautizos', {
-        personId: sp.docId,
-        patch,
-      });
     }
 
     if (batchOps > 0) await batch.commit();
 
-    const bumpLocs = new Set([loc]);
-    for (const person of plan.cancelDocs || []) {
-      if (person?.location) bumpLocs.add(String(person.location).trim());
-      refreshParticipantCache(person, action === 'archive_roster' ? 'Archivar participante' : 'Baja de registro', {
-        personId: person.id,
-        patch:
-          action === 'archive_roster'
-            ? { status: PARTICIPANT_STATUS_ARCHIVED, archivedAt: now }
-            : { status: PARTICIPANT_STATUS_CANCELLED, cancelledAt: now },
+    const cacheBatchEntries = [];
+    for (const sp of plan.survivorPatches || []) {
+      const patch = patchForLocalParticipantCache({
+        ...sp.patch,
+        ...(sp.patch?.bautizosSplitPartyHostParticipantId === null
+          ? { bautizosSplitPartyHostParticipantId: undefined }
+          : {}),
+      });
+      cacheBatchEntries.push({
+        person: sp.previousData,
+        personId: sp.docId,
+        patch,
+        eventId: currentEvent?.id,
+        location: loc,
+        previousLocation: sp.previousData?.location || loc,
+      });
+    }
+    for (const entry of cancelMemoryPatches) {
+      cacheBatchEntries.push({
+        ...entry,
+        eventId: currentEvent?.id,
+        location: loc,
+        previousLocation: entry.person?.location || loc,
+      });
+    }
+    for (const row of promotionMemoryRows) {
+      cacheBatchEntries.push({
+        person: row,
+        personId: row.id,
+        patch: row,
+        eventId: currentEvent?.id,
+        location: loc,
+        previousLocation: loc,
+      });
+    }
+    if (cacheBatchEntries.length) {
+      refreshParticipantsCacheBatch(cacheBatchEntries, action === 'archive_roster' ? 'Archivar participante' : 'Baja de registro', {
+        skipRefetch: true,
       });
     }
 
@@ -22231,6 +23780,9 @@ function resolveEventName(eventId) {
         { collectionName: 'app_participants', docId: pid, action: 'update', previousData: person }
       );
       logParticipantActivity(pid, action === 'archive_roster' ? 'archivo' : 'baja', _log);
+    }
+    } finally {
+      releaseSuppress();
     }
   };
 
@@ -22549,15 +24101,16 @@ function resolveEventName(eventId) {
     const cancelledAt = Date.now();
     const refundPendingAmount = Math.max(0, parseFloat(person.paid || 0) || 0);
     const participantRef = getDocRef('app_participants', String(id));
-    const serverSnap = await getDoc(participantRef);
-    const serverWa = serverSnap.exists()
-      ? serverSnap.data()?.whatsAppFinanceNotifications
-      : undefined;
-    const existingNotifications = Array.isArray(serverWa)
-      ? [...serverWa]
-      : Array.isArray(person.whatsAppFinanceNotifications)
-        ? [...person.whatsAppFinanceNotifications]
-        : [];
+    let existingNotifications;
+    if (Array.isArray(person.whatsAppFinanceNotifications)) {
+      existingNotifications = [...person.whatsAppFinanceNotifications];
+    } else {
+      const serverSnap = await getDoc(participantRef);
+      const serverWa = serverSnap.exists()
+        ? serverSnap.data()?.whatsAppFinanceNotifications
+        : undefined;
+      existingNotifications = Array.isArray(serverWa) ? [...serverWa] : [];
+    }
     const bajaNotification = {
       id: `wa-bja-cancel-${cancelledAt}`,
       kind: 'baja',
@@ -22586,7 +24139,12 @@ function resolveEventName(eventId) {
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
     };
     await updateDoc(participantRef, payload);
-    refreshParticipantCache(person, 'Baja de registro', { personId: id, patch: payload });
+    const localPatch = patchForLocalParticipantCache(payload);
+    refreshParticipantsCacheBatch(
+      [{ person, personId: id, patch: localPatch, eventId: currentEvent?.id, location: loc, previousLocation: loc }],
+      'Baja de registro',
+      { skipRefetch: true }
+    );
     const _bajaLog = `Dio de baja a ${person.name} en ${loc}.${refundPendingAmount > 0 ? ` Pendiente de devolución: $${refundPendingAmount}.` : ''}`;
     addLog(
       'Baja de Registro',
@@ -23132,83 +24690,161 @@ function resolveEventName(eventId) {
     showToast('Registro reactivado.');
   };
 
-  const markCancelledRefundAsDonation = async (personId) => {
+  const resolveCreditActionLabel = (person) => {
+    if (participantIsCancelled(person)) return 'baja';
+    if (participantIsArchived(person)) return 'archivo';
+    return 'saldo a favor';
+  };
+
+  const openCreditRefundModal = (personLike) => {
+    if (!canManageCancelledRefunds) return;
+    const person = allParticipants.find((p) => String(p.id) === String(personLike?.id ?? personLike));
+    if (!person) return;
+    const pendingAmount = getParticipantCreditPendingAmount(person, getLiquidationTarget, participantIsArchived);
+    if (pendingAmount <= 0.005) {
+      showToast('No hay saldo pendiente para devolver.');
+      return;
+    }
+    const sede = resolveCreditRefundSede(person) || '?';
+    if (!hasLocationAccess(sede)) {
+      showToast('No tienes permiso para registrar devoluciones en esta sede.');
+      return;
+    }
+    setCreditActionModal({
+      isOpen: true,
+      action: 'refund',
+      personId: String(person.id),
+      personName: person.name || 'Participante',
+      maxAmount: pendingAmount,
+      amountStr: pendingAmount.toFixed(2),
+      method: 'Efectivo',
+      datetimeLocal: msToDatetimeLocalValue(Date.now()),
+      busy: false,
+      creditLabel: resolveCreditActionLabel(person),
+    });
+  };
+
+  const openCreditDonationModal = (personLike) => {
+    if (!canManageCancelledRefunds) return;
+    const person = allParticipants.find((p) => String(p.id) === String(personLike?.id ?? personLike));
+    if (!person) return;
+    const pendingAmount = getParticipantCreditPendingAmount(person, getLiquidationTarget, participantIsArchived);
+    if (pendingAmount <= 0.005) {
+      showToast('No hay saldo pendiente para marcar como donación.');
+      return;
+    }
+    setCreditActionModal({
+      isOpen: true,
+      action: 'donation',
+      personId: String(person.id),
+      personName: person.name || 'Participante',
+      maxAmount: pendingAmount,
+      amountStr: pendingAmount.toFixed(2),
+      method: 'Efectivo',
+      datetimeLocal: '',
+      busy: false,
+      creditLabel: resolveCreditActionLabel(person),
+    });
+  };
+
+  const closeCreditActionModal = () => {
+    if (creditActionModal.busy) return;
+    setCreditActionModal({
+      isOpen: false,
+      action: null,
+      personId: '',
+      personName: '',
+      maxAmount: 0,
+      amountStr: '',
+      method: 'Efectivo',
+      datetimeLocal: '',
+      busy: false,
+      creditLabel: '',
+    });
+  };
+
+  const markCreditAsDonation = async (personId, donationAmount) => {
     if (!canManageCancelledRefunds) return;
     const person = allParticipants.find((p) => String(p.id) === String(personId));
-    if (!person || !participantIsCancelled(person)) return;
-    if (person.refundAsDonation) {
-      showToast('Este saldo ya estaba marcado como donación.');
+    if (!person) return;
+    const pendingAmount = getParticipantCreditPendingAmount(person, getLiquidationTarget, participantIsArchived);
+    const amt = Math.min(Math.abs(Number(donationAmount) || 0), pendingAmount);
+    if (amt <= 0.005) {
+      showToast('Indica un monto válido para la donación.');
       return;
     }
-    if (participantHasRefundDisbursement(person)) {
-      showToast('Este saldo ya fue devuelto; no se puede marcar como donación.');
-      return;
-    }
-    const pendingAmount = getCancelledRefundPendingAmount(person);
-    if (pendingAmount <= 0) {
-      showToast('No hay saldo pendiente de devolución para marcar como donación.');
-      return;
-    }
-    const sede = String(person.cancelledFromLocation || person.location || '').trim() || '?';
+    const prevDonated = getRefundDonatedTotalAmount(person);
+    const newDonated = prevDonated + amt;
+    const creditBase = getParticipantCreditBaseAmount(person, getLiquidationTarget, participantIsArchived);
+    const disbursed = getRefundDisbursedGrossAmount(person);
+    const fullyResolved = newDonated + disbursed >= creditBase - 0.005;
+    const sede = resolveCreditRefundSede(person) || '?';
     const markedAt = Date.now();
     const refundDonationPatch = {
-      refundAsDonation: true,
+      refundMarkedAsDonationAmount: newDonated,
       refundMarkedAsDonationAt: markedAt,
-      refundMarkedAsDonationAmount: pendingAmount,
-      refundPendingAmount: 0,
+      refundAsDonation: fullyResolved,
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
     };
     await updateDoc(getDocRef('app_participants', String(personId)), refundDonationPatch);
-    refreshParticipantCache(person, 'Saldo de baja como donación', {
-      personId,
-      patch: refundDonationPatch,
+    refreshParticipantCache(person, 'Saldo marcado como donación', { personId, patch: refundDonationPatch });
+    const donationId = buildFirestoreDocId(['don', 'credit', personId, markedAt], {
+      fallback: `don-credit-${markedAt}`,
     });
-    const donationId = buildFirestoreDocId(['don', 'refund', personId, markedAt], {
-      fallback: `don-refund-${markedAt}`,
-    });
+    const isCancelled = participantIsCancelled(person);
+    const isArchived = participantIsArchived(person);
     const donationRow = {
       id: donationId,
       eventId: currentEvent?.id,
-      amount: pendingAmount,
-      donorName: (person.name || '').trim() || 'Participante (baja)',
+      amount: amt,
+      donorName: (person.name || '').trim() || (isCancelled ? 'Participante (baja)' : 'Participante'),
       location: sede,
-      fromCancelledRefundDonation: true,
+      fromCancelledRefundDonation: isCancelled,
+      fromArchivedManualCredit: isArchived,
+      fromManualCredit: !isCancelled && !isArchived,
       sourceParticipantId: String(personId),
       createdAt: new Date(markedAt).toISOString(),
       createdBy: currentUser?.username || 'Desconocido',
     };
     await setDoc(getDocRef('app_donations', donationId), donationRow);
     syncDonationAfterWrite(setDonations, donationId, donationRow);
-    const _donBajaLog = `Donación por saldo de baja: ${formatMoney(pendingAmount)} — ${person.name || 'Participante'} (sede ${sede}). Doc app_donations/${donationId}.`;
+    const _donLog = `Donación por ${resolveCreditActionLabel(person)}: ${formatMoney(amt)} — ${person.name || 'Participante'} (sede ${sede}). Doc app_donations/${donationId}.`;
     await addLog(
       'Donación',
-      _donBajaLog,
+      _donLog,
       null,
       null,
       { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person }
     );
-    logParticipantActivity(String(personId), 'finanzas', _donBajaLog);
-    showToast('Saldo marcado como donación. Aparece en la lista de donaciones y en el balance por sede.');
+    logParticipantActivity(String(personId), 'finanzas', _donLog);
+    showToast('Saldo marcado como donación. No altera el total recaudado; aparece en la lista de donaciones.');
   };
 
-  const performRefundDisbursement = async (personId, method = 'Efectivo', disbursedAtMs = Date.now()) => {
+  const markCancelledRefundAsDonation = async (personId) => {
+    openCreditDonationModal(personId);
+  };
+
+  const performRefundDisbursement = async (
+    personId,
+    method = 'Efectivo',
+    disbursedAtMs = Date.now(),
+    grossAmount = null
+  ) => {
     if (!canManageCancelledRefunds) return;
     const person = allParticipants.find((p) => String(p.id) === String(personId));
-    if (!person || !participantIsCancelled(person)) return;
-    if (person.refundAsDonation) {
-      showToast('Este saldo ya fue marcado como donación.');
-      return;
-    }
-    if (participantHasRefundDisbursement(person)) {
-      showToast('Este saldo ya fue devuelto.');
-      return;
-    }
-    const pendingAmount = getCancelledRefundPendingAmount(person);
-    if (pendingAmount <= 0) {
+    if (!person) return;
+    const pendingAmount = getParticipantCreditPendingAmount(person, getLiquidationTarget, participantIsArchived);
+    if (pendingAmount <= 0.005) {
       showToast('No hay saldo pendiente de devolución.');
       return;
     }
-    const sede = resolveCancelledRefundSede(person) || '?';
+    const requested = grossAmount != null ? Math.abs(Number(grossAmount) || 0) : pendingAmount;
+    const refundGross = Math.min(requested, pendingAmount);
+    if (refundGross <= 0.005) {
+      showToast('Indica un monto válido para la devolución.');
+      return;
+    }
+    const sede = resolveCreditRefundSede(person) || '?';
     if (!hasLocationAccess(sede)) {
       showToast('No tienes permiso para registrar devoluciones en esta sede.');
       return;
@@ -23219,31 +24855,34 @@ function resolveEventName(eventId) {
       return;
     }
     const refundMethod = method === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+    const creditLabel = resolveCreditActionLabel(person);
     const refundHistoryRow = buildRefundDisbursementPaymentHistoryRow({
       personId,
-      grossAmount: pendingAmount,
+      grossAmount: refundGross,
       method: refundMethod,
       atMs,
       registeredBy: currentUser?.username || 'Desconocido',
       computeNetAmountByMethod,
       service: getAutoPaymentService(new Date(atMs), sede !== '?' ? sede : undefined),
+      note: creditLabel === 'baja' ? 'Devolución por baja de registro' : 'Devolución de saldo a favor',
     });
+    const nextHistory = refundHistoryRow
+      ? [...(person.paymentHistory || []), refundHistoryRow]
+      : [...(person.paymentHistory || [])];
+    const totalDisbursed = getRefundDisbursedGrossAmount({ ...person, paymentHistory: nextHistory });
     const payload = {
-      refundPendingAmount: 0,
       refundDisbursedAt: atMs,
-      refundDisbursedAmount: pendingAmount,
+      refundDisbursedAmount: totalDisbursed,
       refundDisbursedBy: currentUser?.username || 'Desconocido',
       refundDisbursedMethod: refundMethod,
       refundDisbursedLocation: sede,
-      ...(refundHistoryRow
-        ? { paymentHistory: [...(person.paymentHistory || []), refundHistoryRow] }
-        : {}),
+      paymentHistory: nextHistory,
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
     };
     await updateDoc(getDocRef('app_participants', String(personId)), payload);
-    refreshParticipantCache(person, 'Devolución de saldo por baja', { personId, patch: payload });
+    refreshParticipantCache(person, 'Devolución de saldo', { personId, patch: payload });
     const whenLabel = new Date(atMs).toLocaleString('es-MX');
-    const _refLog = `Devolución de saldo por baja: ${formatMoney(pendingAmount)} — ${person.name || 'Participante'} (sede ${sede}, ${refundMethod}). Fecha corte: ${whenLabel}.`;
+    const _refLog = `Devolución (${creditLabel}): ${formatMoney(refundGross)} — ${person.name || 'Participante'} (sede ${sede}, ${refundMethod}). Fecha corte: ${whenLabel}.`;
     addLog(
       'Corte de caja',
       _refLog,
@@ -23252,7 +24891,43 @@ function resolveEventName(eventId) {
       { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person }
     );
     logParticipantActivity(String(personId), 'finanzas', _refLog);
-    showToast('Devolución registrada. Aparece como egreso en el corte de caja y en el historial de pagos.');
+    showToast('Devolución registrada. Se resta del total recaudado y aparece en corte de caja e historial de pagos.');
+  };
+
+  const submitCreditActionModal = async () => {
+    if (!creditActionModal.isOpen || creditActionModal.busy) return;
+    const amt = Math.abs(parseFloat(String(creditActionModal.amountStr).replace(',', '.')) || 0);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      showToast('Indica un monto válido.');
+      return;
+    }
+    if (amt > creditActionModal.maxAmount + 0.005) {
+      showToast(`El monto no puede superar ${formatMoney(creditActionModal.maxAmount)}.`);
+      return;
+    }
+    setCreditActionModal((prev) => ({ ...prev, busy: true }));
+    try {
+      if (creditActionModal.action === 'refund') {
+        const atMs = parseDatetimeLocalToMs(creditActionModal.datetimeLocal) ?? Date.now();
+        await performRefundDisbursement(
+          creditActionModal.personId,
+          creditActionModal.method,
+          atMs,
+          amt
+        );
+      } else if (creditActionModal.action === 'donation') {
+        await markCreditAsDonation(creditActionModal.personId, amt);
+      }
+      closeCreditActionModal();
+    } catch (e) {
+      console.error(e);
+      showToast('No se pudo completar la acción.');
+      setCreditActionModal((prev) => ({ ...prev, busy: false }));
+    }
+  };
+
+  const openRefundDisbursementConfirm = (p) => {
+    openCreditRefundModal(p);
   };
 
   const updateRefundDisbursementDateTime = async (personId, newAtMs) => {
@@ -23314,36 +24989,6 @@ function resolveEventName(eventId) {
     );
     logParticipantActivity(String(personId), 'finanzas', _editLog);
     showToast('Fecha de devolución actualizada. El movimiento se reubicó en el corte de caja.');
-  };
-
-  const openRefundDisbursementConfirm = (p, refundMethod = 'Efectivo') => {
-    if (!canManageCancelledRefunds || registryConfirmBusy) return;
-    const person = allParticipants.find((x) => String(x.id) === String(p.id));
-    if (!person || !participantIsCancelled(person)) return;
-    const pendingAmount = getCancelledRefundPendingAmount(person);
-    if (pendingAmount <= 0) return;
-    const sede = resolveCancelledRefundSede(person);
-    if (!hasLocationAccess(sede)) {
-      showToast('No tienes permiso para registrar devoluciones en esta sede.');
-      return;
-    }
-    setRegistryConfirmModal({
-      isOpen: true,
-      type: 'register_refund_disbursement',
-      loc: sede,
-      personId: String(p.id),
-      personName: person.name || 'este registro',
-      donationId: '',
-      donationAmount: 0,
-      refundAmount: pendingAmount,
-      refundMethod: refundMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo',
-      paymentIndex: null,
-      paymentRowId: null,
-      fromDuplicateDiagnostic: false,
-      duplicateReasonsLine: '',
-      dupAcceptCluster: null,
-      ...REGISTRY_CONFIRM_BAUTIZOS_EMPTY,
-    });
   };
 
   const openRefundDateEditModal = (person) => {
@@ -24526,7 +26171,11 @@ function resolveEventName(eventId) {
   };
 
   const handleSavePaymentMethodEdit = async () => {
-    if (!canEditAbonosAndPaymentHistory || !paymentMethodEditModal.isOpen) return;
+    if (!canEditAbonosAndPaymentHistory || !paymentMethodEditModal.isOpen) {
+      if (!canEditAbonosAndPaymentHistory) showToast('No tienes permiso para editar abonos.');
+      return;
+    }
+    try {
     const person = allParticipants.find((p) => String(p.id) === String(paymentMethodEditModal.personId));
     if (!person) {
       showToast('Participante no encontrado.');
@@ -24584,6 +26233,7 @@ function resolveEventName(eventId) {
       Number.isFinite(parseFloat(row.netAmount))
         ? Math.abs(parseFloat(row.netAmount))
         : (oldMethod === 'Tarjeta' ? (oldGrossAbs - (oldGrossAbs * commissionRate)) : oldGrossAbs);
+    const oldNet = oldAmount < 0 ? -oldNetAbs : oldNetAbs;
     const newCommission = newMethod === 'Tarjeta' ? (newAmountAbs * commissionRate) : 0;
     const newNetAbs = newMethod === 'Tarjeta' ? (newAmountAbs - newCommission) : newAmountAbs;
     const nextReference = newMethod === 'Tarjeta' ? String(paymentMethodEditModal.cardReference || '').trim() : '';
@@ -24681,6 +26331,10 @@ function resolveEventName(eventId) {
     logParticipantActivity(String(person.id), 'finanzas', _pmEditLog);
     closePaymentMethodEditModal();
     showToast('Tipo de abono actualizado.');
+    } catch (err) {
+      console.error('handleSavePaymentMethodEdit', err);
+      showToast(err?.code === 'permission-denied' ? 'Sin permiso en Firestore para guardar el abono.' : 'No se pudo guardar el abono. Intenta de nuevo.');
+    }
   };
 
   const closeSuperDateEditModal = () =>
@@ -27237,7 +28891,17 @@ function resolveEventName(eventId) {
       return true;
     }
     if (expenseEditModal.isOpen) {
-      setExpenseEditModal({ isOpen: false, id: null, name: '', quantity: 1, unitPrice: '' });
+      setExpenseEditModal({
+        isOpen: false,
+        id: null,
+        name: '',
+        quantityMode: EXPENSE_QUANTITY_MODE_MANUAL,
+        quantity: 1,
+        unitPrice: '',
+        registryQuantityFilters: createEmptyExpenseRegistryQuantityFilters(),
+        registryQuantityLocations: [],
+      });
+      setExpenseEditRegistryFiltersOpen(false);
       return true;
     }
     if (superDateEditModal.isOpen) {
@@ -27850,6 +29514,88 @@ function resolveEventName(eventId) {
     );
   };
 
+  const renderCreditActionModal = () => {
+    if (!creditActionModal.isOpen) return null;
+    const isRefund = creditActionModal.action === 'refund';
+    return (
+      <div className={uiModal.overlayNested} role="dialog" aria-modal="true" aria-labelledby="credit-action-title">
+        <button type="button" className={uiModal.backdrop} onClick={closeCreditActionModal} aria-label="Cerrar" />
+        <div className={`${uiModal.panelSm} p-6`} onClick={(e) => e.stopPropagation()}>
+          <h2 id="credit-action-title" className="text-lg font-bold text-slate-900 dark:text-slate-100">
+            {isRefund ? 'Registrar devolución' : 'Marcar como donación'}
+          </h2>
+          <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+            <strong>{creditActionModal.personName}</strong> · {creditActionModal.creditLabel} · pendiente{' '}
+            <strong className="tabular-nums">{formatMoney(creditActionModal.maxAmount)}</strong>
+          </p>
+          <div className="mt-4 space-y-3">
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase">Monto</label>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                max={creditActionModal.maxAmount}
+                value={creditActionModal.amountStr}
+                onChange={(e) => setCreditActionModal((prev) => ({ ...prev, amountStr: e.target.value }))}
+                className="w-full mt-1 px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-amber-500 outline-none"
+              />
+              <p className="text-[10px] text-slate-400 mt-1">Puedes devolver o donar menos del total pendiente.</p>
+            </div>
+            {isRefund ? (
+              <>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase">Método</label>
+                  <select
+                    value={creditActionModal.method}
+                    onChange={(e) => setCreditActionModal((prev) => ({ ...prev, method: e.target.value }))}
+                    className="w-full mt-1 px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                  >
+                    <option value="Efectivo">Efectivo</option>
+                    <option value="Tarjeta">Tarjeta</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase">Fecha y hora (corte de caja)</label>
+                  <input
+                    type="datetime-local"
+                    value={creditActionModal.datetimeLocal}
+                    onChange={(e) => setCreditActionModal((prev) => ({ ...prev, datetimeLocal: e.target.value }))}
+                    className="w-full mt-1 px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                  />
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
+                La donación no aumenta el total recaudado: el dinero ya estaba contabilizado en los abonos del participante.
+              </p>
+            )}
+          </div>
+          <div className="mt-6 flex gap-3">
+            <button
+              type="button"
+              onClick={closeCreditActionModal}
+              disabled={creditActionModal.busy}
+              className="flex-1 py-3 px-4 font-bold rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-sm disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={() => { void submitCreditActionModal(); }}
+              disabled={creditActionModal.busy}
+              className={`flex-1 py-3 px-4 text-white font-bold rounded-xl text-sm shadow-lg disabled:opacity-60 ${
+                isRefund ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'
+              }`}
+            >
+              {creditActionModal.busy ? '…' : isRefund ? 'Registrar devolución' : 'Marcar donación'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderPromoteOverCapConfirmModal = () => {
     if (!promoteOverCapConfirmModal.isOpen) return null;
     const {
@@ -27984,6 +29730,7 @@ function resolveEventName(eventId) {
       goTo,
       hasAdminRights,
       handleLogout,
+      logoutBusy,
       renderUsers,
       renderLogs,
       archivedParticipantsForView,
@@ -28194,6 +29941,7 @@ function resolveEventName(eventId) {
           renderGlobalRegistryListToolbar={renderGlobalRegistryListToolbar}
           canEdit={userCanEditTransportPlanning(currentUser)}
           canEditTransportOps={userCanEditTransportOperations(currentUser)}
+          canMarkEventAttendance={canMarkEventAttendance}
           transportOpsUserLabel={currentUser?.username || currentUser?.displayName || ''}
           showToast={showToast}
           getDocRef={getDocRef}
@@ -28204,7 +29952,7 @@ function resolveEventName(eventId) {
           customCarCatalog={globalConfig?.customCarCatalog}
           transportUiPrefs={transportUiPrefs}
           onTransportUiPrefsChange={onTransportUiPrefsChange}
-          onTransportPlanSaved={patchEventTransportPlanning}
+          onTransportPlanSaved={patchEventTransportPlanningDeferred}
           canSendCarDataWhatsApp={userCanSendWhatsAppQuickAction(currentUser)}
           titularHasPendingCarData={(titular) =>
             titularCarDataVisibleInWhatsAppQueue(titular, currentEvent, allParticipants)
@@ -29234,7 +30982,7 @@ function resolveEventName(eventId) {
       ...scholarshipAutoExpenses,
       ...manualCostCreditAutoExpenses,
       ...orphanDerivedExpenses,
-    ];
+    ].map(resolveExpenseRow);
     const q = expenseSearch.toLowerCase().trim();
     let filtered = q ? eventExpenses.filter(e => (e.name || '').toLowerCase().includes(q)) : eventExpenses;
     const expenseStatusFilterActive = expenseFilters.paid || expenseFilters.pending;
@@ -29274,24 +31022,23 @@ function resolveEventName(eventId) {
       (includeCortesiaInRealCost ? cortesiaNonServerRows.length : 0) +
       (includeEmpleadoInRealCost ? empleadoRows.length : 0);
     const totalRealCostUnits = totalRegs + realCostExtraUnits;
-    const cancelledRefundRows = allParticipants
-      .filter((p) => p.eventId === eventId && participantIsCancelled(p))
-      .map((p) => {
-        const pendingAmount = p.refundAsDonation
-          ? 0
-          : Math.max(0, Number(p.refundPendingAmount ?? p.paid ?? 0) || 0);
-        return { ...p, _refundPendingAmount: pendingAmount };
-      });
-    const pendingRefundRows = cancelledRefundRows.filter((p) => p._refundPendingAmount > 0);
+    const pendingRefundRows = collectParticipantsWithPendingCredit(
+      allParticipants,
+      { id: eventId },
+      getLiquidationTarget,
+      participantIsArchived,
+      null,
+      null
+    );
     const totalPendingRefund = pendingRefundRows.reduce((sum, p) => sum + p._refundPendingAmount, 0);
 
     const recaudacionTotal = recaudacion;
     const recaudadoMenosListaGastos = recaudacionTotal - totalCost;
-    /** Orden clásico (lista de gastos no resta aquí): recaudado − costo unitario×unidades − devoluciones. */
-    const balanceNetoSinListaGastos = recaudacionTotal - (realCostNum * totalRealCostUnits) - totalPastorRealCost - totalPendingRefund;
-    /** Lista de gastos se resta primero del recaudado total; luego costo unitario, costos de pastores y devoluciones. */
+    /** Recaudado − costo unitario×unidades − pastores (sin restar saldos pendientes: el dinero sigue en caja). */
+    const balanceNetoSinListaGastos = recaudacionTotal - (realCostNum * totalRealCostUnits) - totalPastorRealCost;
+    /** Lista de gastos se resta primero del recaudado total; luego costo unitario y pastores. */
     const balanceFinal =
-      recaudadoMenosListaGastos - (realCostNum * totalRealCostUnits) - totalPastorRealCost - totalPendingRefund;
+      recaudadoMenosListaGastos - (realCostNum * totalRealCostUnits) - totalPastorRealCost;
 
     const campaBreakdownItems = Array.isArray(currentEvent?.campaRealCostBreakdownItems)
       ? currentEvent.campaRealCostBreakdownItems
@@ -29308,6 +31055,22 @@ function resolveEventName(eventId) {
       isCampa && Number.isFinite(manualDivisorParsed) && manualDivisorParsed > 0
         ? campaBreakdownTotal / manualDivisorParsed
         : null;
+
+    const expenseFormDraftResolved = resolveExpenseRowAmountsCached(
+      {
+        quantityMode: expenseForm.quantityMode,
+        quantity: expenseForm.quantity,
+        unitPrice: parseFloat(expenseForm.unitPrice) || 0,
+        registryQuantityFilters: expenseForm.registryQuantityFilters,
+        registryQuantityLocations: expenseForm.registryQuantityLocations,
+      },
+      expenseRegistryQuantityContext
+    );
+    const expenseFormDisplayQty =
+      expenseForm.quantityMode === EXPENSE_QUANTITY_MODE_REGISTRY
+        ? expenseFormDraftResolved.quantity
+        : parseInt(expenseForm.quantity, 10) || 0;
+    const expenseFormDisplayTotal = expenseFormDisplayQty * (parseFloat(expenseForm.unitPrice) || 0);
 
     return (
       <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
@@ -29394,24 +31157,81 @@ function resolveEventName(eventId) {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 items-end bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-500/45 rounded-xl p-3">
+          <div className="grid grid-cols-1 gap-3 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-500/45 rounded-xl p-3">
             <div>
               <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Nombre</label>
               <input type="text" placeholder="Nombre del gasto" value={expenseForm.name} onChange={e => setExpenseForm({ ...expenseForm, name: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-100 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
             </div>
             <div>
-              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Cantidad</label>
-              <input type="number" min="1" placeholder="1" value={expenseForm.quantity} onChange={e => setExpenseForm({ ...expenseForm, quantity: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-100 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase mb-1">Cantidad</p>
+              <div className="flex flex-wrap gap-2 mb-2">
+                <button
+                  type="button"
+                  onClick={() => setExpenseForm((f) => ({ ...f, quantityMode: EXPENSE_QUANTITY_MODE_MANUAL }))}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${expenseForm.quantityMode === EXPENSE_QUANTITY_MODE_MANUAL ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-600'}`}
+                >
+                  Manual
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExpenseForm((f) => ({ ...f, quantityMode: EXPENSE_QUANTITY_MODE_REGISTRY }))}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${expenseForm.quantityMode === EXPENSE_QUANTITY_MODE_REGISTRY ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-600'}`}
+                >
+                  Por filtros del registro
+                </button>
+              </div>
+              {expenseForm.quantityMode === EXPENSE_QUANTITY_MODE_REGISTRY ? (
+                <div className="space-y-2">
+                  <ExpenseRegistryQuantityFiltersDropdown
+                    eventId={currentEvent?.id}
+                    eventType={currentEvent?.eventType}
+                    isCampa={isCampa}
+                    isBautizos={isBautizos}
+                    isResponsivaEnabled={isResponsivaEnabled}
+                    genders={GENDERS}
+                    visibleLocations={visibleLocations}
+                    filters={expenseForm.registryQuantityFilters}
+                    onFiltersChange={(next) =>
+                      setExpenseForm((f) => ({
+                        ...f,
+                        registryQuantityFilters:
+                          typeof next === 'function' ? next(f.registryQuantityFilters) : next,
+                      }))
+                    }
+                    locationFilters={expenseForm.registryQuantityLocations}
+                    onLocationFiltersChange={(next) =>
+                      setExpenseForm((f) => ({
+                        ...f,
+                        registryQuantityLocations:
+                          typeof next === 'function' ? next(f.registryQuantityLocations) : next,
+                      }))
+                    }
+                    matchCount={expenseFormDisplayQty}
+                    showOptionCounts={false}
+                    open={expenseFormRegistryFiltersOpen}
+                    onOpenChange={setExpenseFormRegistryFiltersOpen}
+                    dropdownRootId="expense-form-registry-qty-filters"
+                  />
+                  <p className="text-xs font-semibold text-indigo-800 dark:text-indigo-200 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-800 rounded-lg px-3 py-2">
+                    Cantidad actual: <span className="font-black tabular-nums">{expenseFormDisplayQty}</span> persona
+                    {expenseFormDisplayQty === 1 ? '' : 's'} (se actualiza al registrarse más coincidencias)
+                  </p>
+                </div>
+              ) : (
+                <input type="number" min="1" placeholder="1" value={expenseForm.quantity} onChange={e => setExpenseForm({ ...expenseForm, quantity: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-100 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+              )}
             </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">
             <div>
               <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Precio unitario</label>
               <input type="number" min="0" step="0.01" placeholder="$0.00" value={expenseForm.unitPrice} onChange={e => setExpenseForm({ ...expenseForm, unitPrice: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-100 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
             </div>
             <div>
               <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Total</label>
-              <div className="px-3 py-2 rounded-lg bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-600 text-sm font-bold text-slate-700 dark:text-slate-100">${((parseInt(expenseForm.quantity) || 0) * (parseFloat(expenseForm.unitPrice) || 0)).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
+              <div className="px-3 py-2 rounded-lg bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-600 text-sm font-bold text-slate-700 dark:text-slate-100">${expenseFormDisplayTotal.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
             </div>
             <button onClick={handleAddExpense} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-colors"><Plus size={16} /> Agregar</button>
+            </div>
           </div>
 
           <div className="overflow-x-auto border border-slate-100 rounded-xl">
@@ -29479,6 +31299,10 @@ function resolveEventName(eventId) {
                           <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-purple-50 text-purple-700 border border-purple-100">
                             Automático
                           </span>
+                        ) : isManualCredit ? (
+                          <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-amber-50 text-amber-800 border border-amber-100">
+                            Saldo a favor
+                          </span>
                         ) : null}
                       </td>
                       {canSeeExpenseOwner ? (
@@ -29486,20 +31310,60 @@ function resolveEventName(eventId) {
                           {ownerLabel}
                         </td>
                       ) : null}
-                      <td className="px-4 py-3 text-sm text-slate-600 text-center">{exp.quantity}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600 text-center">
+                        {exp.quantity}
+                        {exp.quantityMode === EXPENSE_QUANTITY_MODE_REGISTRY ? (
+                          <span
+                            className="ml-1 inline-flex items-center px-1 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-100"
+                            title="Cantidad dinámica según filtros del registro"
+                          >
+                            Auto
+                          </span>
+                        ) : null}
+                      </td>
                       <td className="px-4 py-3 text-sm text-slate-600 text-right">${(exp.unitPrice || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
                       <td className="px-4 py-3 text-sm font-bold text-slate-800 text-right">${(exp.totalPrice || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
                       <td className="px-4 py-3 text-sm font-bold text-emerald-600 text-right">${(exp.paidAmount || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
                       <td className={`px-4 py-3 text-sm font-bold text-right ${pending > 0 ? 'text-amber-600' : 'text-slate-400'}`}>${pending.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
                       <td className="px-4 py-3 text-center">
-                        {isAutoScholarship && !canMutate ? (
+                        {isManualCredit && canManageCancelledRefunds ? (
+                          <div className="flex flex-wrap items-center justify-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openCreditRefundModal({ id: exp._sourceParticipantId })}
+                              className="px-2 py-1 rounded-lg text-[10px] font-black bg-white text-amber-800 border border-amber-300 hover:bg-amber-50 transition-colors"
+                            >
+                              Devolución
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openCreditDonationModal({ id: exp._sourceParticipantId })}
+                              className="px-2 py-1 rounded-lg text-[10px] font-black bg-white text-emerald-700 border border-emerald-300 hover:bg-emerald-50 transition-colors"
+                            >
+                              Donación
+                            </button>
+                          </div>
+                        ) : isAutoScholarship && !canMutate ? (
                           <span className="text-[10px] font-bold text-slate-400">Auto</span>
                         ) : (
                           <div className="flex items-center justify-center gap-1">
                             <button
                               type="button"
                               disabled={!canMutate}
-                              onClick={() => setExpenseEditModal({ isOpen: true, id: exp.id, name: exp.name, quantity: exp.quantity, unitPrice: exp.unitPrice })}
+                              onClick={() =>
+                                setExpenseEditModal({
+                                  isOpen: true,
+                                  id: exp.id,
+                                  name: exp.name,
+                                  quantityMode: exp.quantityMode === EXPENSE_QUANTITY_MODE_REGISTRY ? EXPENSE_QUANTITY_MODE_REGISTRY : EXPENSE_QUANTITY_MODE_MANUAL,
+                                  quantity: exp.quantity,
+                                  unitPrice: exp.unitPrice,
+                                  registryQuantityFilters: mergeExpenseRegistryQuantityFilters(exp.registryQuantityFilters),
+                                  registryQuantityLocations: Array.isArray(exp.registryQuantityLocations)
+                                    ? [...exp.registryQuantityLocations]
+                                    : [],
+                                })
+                              }
                               className={`p-1.5 rounded-lg transition-colors ${canMutate ? 'text-slate-400 hover:bg-slate-100 hover:text-slate-600' : 'text-slate-200 cursor-not-allowed'}`}
                               title={canMutate ? 'Editar' : expenseActionDisabledTitle}
                             >
@@ -29564,13 +31428,13 @@ function resolveEventName(eventId) {
 
         <div className="bg-white dark:bg-slate-900 rounded-2xl border border-amber-300 dark:border-amber-500/45 shadow-sm p-5 space-y-3">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-[10px] font-black text-amber-700 dark:text-amber-300 uppercase">Saldo pendiente de devolución</p>
+            <p className="text-[10px] font-black text-amber-700 dark:text-amber-300 uppercase">Saldo a devolver o donar</p>
             <p className="text-lg font-black text-amber-700 dark:text-amber-300">${totalPendingRefund.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
           </div>
           <p className="text-xs text-slate-600 dark:text-slate-300">
-            Este monto se resta del recaudado en el paso «costo unitario × unidades» del resumen financiero, pero sigue figurando como recaudado histórico.
-            Si se marca como donación, se elimina de esta lista y deja de restarse en ese cálculo.
-            El SuperUsuario puede eliminar un renglón (solo auditoría oculta).
+            Este monto sigue contando en el total recaudado hasta que registres una devolución (egreso en corte de caja e historial de pagos) o lo marques como donación.
+            Puedes devolver o donar solo una parte; el resto permanece pendiente. Las donaciones por saldo a favor no aumentan el recaudado.
+            El SuperUsuario puede eliminar un renglón de baja (solo auditoría oculta).
           </p>
           {pendingRefundRows.length === 0 ? (
             <p className="text-xs text-slate-400 dark:text-slate-500 italic">No hay saldos pendientes de devolución.</p>
@@ -29580,18 +31444,30 @@ function resolveEventName(eventId) {
                 <div key={`refund-${p.id}`} className="flex items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-500/40 rounded-xl px-3 py-2">
                   <div className="min-w-0">
                     <p className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">{p.name || 'Sin nombre'}</p>
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400">Sede: {p.location || '—'} · ID: {p.vnpPersonId || '—'}</p>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Sede: {p.location || '—'} · ID: {p.vnpPersonId || '—'}
+                      {participantIsCancelled(p) ? ' · Baja' : participantIsArchived(p) ? ' · Archivo' : ' · Saldo a favor'}
+                    </p>
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <span className="text-sm font-black text-amber-700 dark:text-amber-300">${p._refundPendingAmount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
+                    {canManageCancelledRefunds ? (
+                      <button
+                        type="button"
+                        onClick={() => openCreditRefundModal(p.id)}
+                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-black bg-white dark:bg-slate-900 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-500/45 hover:bg-amber-50 dark:hover:bg-amber-950/25 transition-colors"
+                      >
+                        Devolución
+                      </button>
+                    ) : null}
                     <button
                       type="button"
-                      onClick={() => markCancelledRefundAsDonation(p.id)}
+                      onClick={() => openCreditDonationModal(p.id)}
                       className="px-2.5 py-1.5 rounded-lg text-[11px] font-black bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/45 hover:bg-emerald-50 dark:hover:bg-emerald-950/25 transition-colors"
                     >
                       Marcar como donación
                     </button>
-                    {isSuperUser && (
+                    {isSuperUser && participantIsCancelled(p) ? (
                       <button
                         type="button"
                         onClick={() => openRemovePendingRefundConfirm(p)}
@@ -29600,7 +31476,7 @@ function resolveEventName(eventId) {
                       >
                         Eliminar
                       </button>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               ))}
@@ -29613,7 +31489,7 @@ function resolveEventName(eventId) {
             <div className="rounded-2xl border shadow-sm p-5 bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700">
               <p className="text-[10px] font-black text-slate-600 dark:text-slate-300 uppercase mb-1">Total recaudado ({expenseGross ? 'Bruto' : 'Neto'})</p>
               <p className="text-2xl font-black text-slate-800 dark:text-slate-100">${recaudacionTotal.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">Pagos de inscripción + donaciones que suman al recaudado (según el interruptor bruto/neto).</p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">Pagos de inscripción (menos devoluciones ya entregadas) + donaciones que suman al recaudado.</p>
             </div>
             <div className="rounded-2xl border shadow-sm p-5 bg-white dark:bg-slate-900 border-amber-200 dark:border-amber-700">
               <p className="text-[10px] font-black text-amber-600 dark:text-amber-300 uppercase mb-1">Lista de gastos (contabilizados)</p>
@@ -29633,7 +31509,7 @@ function resolveEventName(eventId) {
               <p className={`text-[10px] font-black uppercase mb-1 ${balanceNetoSinListaGastos >= 0 ? 'text-indigo-600 dark:text-indigo-300' : 'text-red-600 dark:text-red-300'}`}>Balance inscripción (sin descontar lista de gastos aquí)</p>
               <p className={`text-2xl font-black ${balanceNetoSinListaGastos >= 0 ? 'text-indigo-700 dark:text-indigo-200' : 'text-red-700 dark:text-red-200'}`}>${balanceNetoSinListaGastos.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
               <p className={`text-[10px] mt-1 leading-snug ${balanceNetoSinListaGastos >= 0 ? 'text-indigo-600 dark:text-indigo-300' : 'text-red-600 dark:text-red-300'}`}>
-                {formatMoney(recaudacionTotal)} − ({formatMoney(realCostNum)} × {totalRealCostUnits}) − {formatMoney(totalPastorRealCost)} pastores − {formatMoney(totalPendingRefund)}
+                {formatMoney(recaudacionTotal)} − ({formatMoney(realCostNum)} × {totalRealCostUnits}) − {formatMoney(totalPastorRealCost)} pastores
               </p>
               {isCampa ? (
                 <p className={`text-[10px] mt-1 ${balanceNetoSinListaGastos >= 0 ? 'text-indigo-500 dark:text-indigo-300' : 'text-red-500 dark:text-red-300'}`}>
@@ -29652,10 +31528,10 @@ function resolveEventName(eventId) {
               <p className={`text-[10px] font-black uppercase mb-1 ${balanceFinal >= 0 ? 'text-emerald-600 dark:text-emerald-300' : 'text-red-600 dark:text-red-300'}`}>Saldo final</p>
               <p className={`text-2xl font-black ${balanceFinal >= 0 ? 'text-emerald-700 dark:text-emerald-200' : 'text-red-700 dark:text-red-200'}`}>${balanceFinal.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
               <p className={`text-[10px] mt-1 leading-snug ${balanceFinal >= 0 ? 'text-emerald-600 dark:text-emerald-300' : 'text-red-600 dark:text-red-300'}`}>
-                (Recaudado − Lista de gastos) − Costo unitario × unidades − Devoluciones pendientes
+                (Recaudado − Lista de gastos) − Costo unitario × unidades
               </p>
               <p className={`text-[10px] mt-1 font-mono break-words ${balanceFinal >= 0 ? 'text-emerald-500 dark:text-emerald-300' : 'text-red-500 dark:text-red-300'}`}>
-                {formatMoney(recaudadoMenosListaGastos)} − ({formatMoney(realCostNum)} × {totalRealCostUnits}) − {formatMoney(totalPendingRefund)}
+                {formatMoney(recaudadoMenosListaGastos)} − ({formatMoney(realCostNum)} × {totalRealCostUnits}) − {formatMoney(totalPastorRealCost)}
               </p>
               <p className={`text-[10px] mt-1 ${balanceFinal >= 0 ? 'text-emerald-500 dark:text-emerald-300' : 'text-red-500 dark:text-red-300'}`}>{balanceFinal >= 0 ? 'Saldo positivo' : 'Saldo negativo'}</p>
             </div>
@@ -30229,7 +32105,7 @@ function resolveEventName(eventId) {
     );
   };
 
-  const renderSummary = () => {
+  const renderSummaryInner = () => {
     const sRegs = getDashboardSummaryForCampaScope('dashRegs');
     const totalRegs = sRegs.globalStats.all.count;
     const sSch = getDashboardSummaryForCampaScope('dashScholarship');
@@ -30290,15 +32166,7 @@ function resolveEventName(eventId) {
      * único host registrante. Se usa en todos los conteos del dashboard Bautizos para no
      * contar varias veces a quien aparece como acompañante de varios registros.
      */
-    const bautizosCanonicalPlan = !isBautizos
-      ? new Map()
-      : (() => {
-          const activeBautizadoRoster = bautizosPartyRosterBase.filter(
-            (p) => normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado
-          );
-          const meta = buildBautizadoMetaForCanonical(activeBautizadoRoster);
-          return buildBautizosCanonicalCompanionPlan(bautizosPartyRosterBase, meta, { includeBaptizedCompanions: true });
-        })();
+    const bautizosCanonicalPlan = dashboardSummaryBautizosPlan;
     const bautizosCanonicalCompanions = [...bautizosCanonicalPlan.values()];
     /** Filas sintéticas para listados/modales de bautizados (talla, transporte); el conteo «Todos» usa el plan canónico que ya incluye a estos acompañantes. */
     const bautizosCompanionBaptizedVirtualRows = !isBautizos
@@ -30366,9 +32234,19 @@ function resolveEventName(eventId) {
         });
     const bautizosDashCortesiaListForDash = !isBautizos
       ? []
-      : bautizosDashRowsForCardScope().filter(
-          (p) => normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.cortesia
-        );
+      : (() => {
+          const out = bautizosDashRowsForCardScope().filter((p) => bautizosTitularCountsInCortesiaTotal(p));
+          for (const info of bautizosCanonicalPlan.values()) {
+            const host = info?.sourceRegistrant;
+            if (!host || participantIsCancelled(host)) continue;
+            const comp = info?.sourceCompanion || {};
+            if (!String(comp?.name || '').trim()) continue;
+            if (!bautizosCompanionCountsInCortesiaTotal(comp, host)) continue;
+            if (!bautizosDashboardCompanionCountsForScope(comp, bautizosDashScope, host)) continue;
+            out.push(buildBautizosCompanionListFilterPersonLike(host, comp, info.canonKey));
+          }
+          return out;
+        })();
     const bautizosDashEmpleadoListForDash = !isBautizos
       ? []
       : bautizosDashRowsForCardScope().filter(
@@ -30712,25 +32590,38 @@ function resolveEventName(eventId) {
       return { efectivoGross, tarjetaGross, efectivoNet, tarjetaNet, hasEfectivoPayment, hasTarjetaPayment };
     };
 
-    const buildTableByLocation = (campaScope) => {
+    const buildTableByLocation = (campaScope, tableOpts = {}) => {
+      const { useEventWideListFilters = false } = tableOpts;
+      const applyTableRowFilters = (rows, campaSeg, filterOpts = {}) => {
+        const skipBautizosParty = filterOpts.skipBautizosParty === true;
+        let processed = useEventWideListFilters
+          ? applyEventWideListFilters(rows, true, {
+              expandBautizosCompanions: !skipBautizosParty,
+            })
+          : applySummaryLikeFilters(rows, campaSeg, { skipBautizosParty });
+        if (useEventWideListFilters) {
+          if (currentEvent?.eventType === 'Bautizos') {
+            processed = processed.filter((p) => bautizosDashboardTitularCountsForScope(p, bzScope));
+          }
+          if (isCampa) {
+            processed = processed.filter((p) => campaAttendanceScopeMatches(isCampa, p, campaSeg));
+          }
+          if (currentEvent?.eventType === 'Bautizos' && !skipBautizosParty) {
+            processed = processed.filter((p) => participantMatchesBautizosDashboardPartyScope(p, bzScope));
+          }
+        }
+        return processed;
+      };
       const bzScope = currentEvent?.eventType === 'Bautizos' ? bautizosDashScope : 'all';
       const allSummaryRowsFlat = dashboardLocs.flatMap((l) =>
-        applySummaryLikeFilters(data[l] || [], campaScope, { skipBautizosParty: true })
+        applyTableRowFilters(data[l] || [], campaScope, { skipBautizosParty: true })
       );
       const tableBzDedupeMeta =
         currentEvent?.eventType === 'Bautizos'
           ? buildActiveRegistrantMetaForCompanionDedupe(allSummaryRowsFlat.filter((p) => !participantIsCancelled(p)))
           : null;
-      const bautizosCanonPlanForScope =
-        currentEvent?.eventType === 'Bautizos'
-          ? buildBautizosCanonicalCompanionPlan(
-              allSummaryRowsFlat,
-              buildActiveRegistrantMetaForCompanionDedupe(allSummaryRowsFlat.filter((p) => !participantIsCancelled(p))),
-              { includeBaptizedCompanions: true }
-            )
-          : null;
       const filterSummaryStatusRows = (rows) => {
-        let sectionRows = applySummaryLikeFilters(rows || [], campaScope, { skipBautizosParty: true });
+        let sectionRows = applyTableRowFilters(rows || [], campaScope, { skipBautizosParty: true });
         if (currentEvent?.eventType === 'Bautizos') {
           sectionRows = sectionRows.filter((p) => bautizosDashboardTitularCountsForScope(p, bzScope));
         }
@@ -30756,11 +32647,7 @@ function resolveEventName(eventId) {
         }
       );
       return dashboardLocs.map((loc) => {
-      const filtered = applySummaryLikeFilters(data[loc] || [], campaScope, { skipBautizosParty: true });
-      const filteredBzParty =
-        currentEvent?.eventType === 'Bautizos'
-          ? applySummaryLikeFilters(data[loc] || [], campaScope)
-          : filtered;
+      const filtered = applyTableRowFilters(data[loc] || [], campaScope, { skipBautizosParty: true });
       const stats = filtered.reduce((acc, p) => {
         const allScopeDoubleWeight =
           currentEvent?.eventType === 'Campa' &&
@@ -30834,7 +32721,7 @@ function resolveEventName(eventId) {
               if (bautizosParticipatesAsServer(p)) acc.servers += allScopeDoubleWeight;
               const bzAtt = normalizeBautizosAttendanceType(p.bautizosAttendanceType);
               if (bzAtt === BAUTIZOS_ATTENDANCE.asistente) acc.asistentesBautizos += allScopeDoubleWeight;
-              if (bzAtt === BAUTIZOS_ATTENDANCE.cortesia) acc.cortesia += allScopeDoubleWeight;
+              if (bautizosTitularCountsInCortesiaTotal(p)) acc.cortesia += allScopeDoubleWeight;
               if (bzAtt === BAUTIZOS_ATTENDANCE.pastor) acc.pastores += allScopeDoubleWeight;
             } else if (isSiValue(p.isServer)) {
               acc.servers += allScopeDoubleWeight;
@@ -30925,71 +32812,33 @@ function resolveEventName(eventId) {
         cortesia: 0,
         pastores: 0,
       });
-      if (currentEvent?.eventType === 'Bautizos' && bautizosCanonPlanForScope) {
-        const locNorm = String(loc).trim();
-        /** Líneas de acompañante canónicas en la sede (incluye subregistros marcados para bautizo — solo para total inscritos / transporte). */
-        let compN = 0;
-        /** Acompañantes que no se bautizan en el evento — columna «Acompañantes», tortas y listados de la sección. */
-        let compNonBaptized = 0;
-        for (const info of bautizosCanonPlanForScope.values()) {
-          if (participantIsCancelled(info.sourceRegistrant)) continue;
-          if (String(info.sourceRegistrant.location || '').trim() !== locNorm) continue;
-          const host = info.sourceRegistrant;
-          const comp = info.sourceCompanion || {};
-          if (!bautizosDashboardCompanionCountsForScope(comp, bzScope, host)) continue;
-          compN += 1;
-          if (!isBautizosCompanionBaptized(comp)) compNonBaptized += 1;
-        }
-        let transportN = 0;
-        let carN = 0;
-        let empleadosN = 0;
-        let pastoresN = 0;
-        for (const p of filteredBzParty) {
-          if (participantIsCancelled(p)) continue;
-          const bzAtt = normalizeBautizosAttendanceType(p.bautizosAttendanceType);
-          if (bzAtt === BAUTIZOS_ATTENDANCE.empleado) empleadosN += 1;
-          if (bzAtt === BAUTIZOS_ATTENDANCE.pastor) pastoresN += 1;
-          if (isSiValue(p.wantsBautizosTransport)) transportN += 1;
-          if (bautizosLineGoesByCar(p)) carN += 1;
-        }
-        for (const info of bautizosCanonPlanForScope.values()) {
-          if (participantIsCancelled(info.sourceRegistrant)) continue;
-          if (String(info.sourceRegistrant.location || '').trim() !== locNorm) continue;
-          const comp = info.sourceCompanion || {};
-          const host = info.sourceRegistrant;
-          if (!bautizosDashboardCompanionCountsForScope(comp, bzScope, host)) continue;
-          const lineLike = {
-            ...comp,
-            travelFrom: comp.travelFrom || host.travelFrom,
-            travelTo: comp.travelTo || host.travelTo,
-            location: host.location,
-            transportType: comp.transportType || host.transportType,
-          };
-          if (isSiValue(comp.wantsBautizosTransport) && !isBautizosLapInfantCompanion(comp, currentEvent)) transportN += 1;
-          if (bautizosLineGoesByCar(lineLike)) carN += 1;
-        }
-        stats.activeRegistrants = stats.count;
-        stats.companions = compNonBaptized;
-        stats.companionsTotal = compNonBaptized;
-        stats.count = stats.count + compN;
-        stats.bautizosTransport = transportN;
-        stats.bautizosCarro = carN;
-        stats.empleadosBautizos = empleadosN;
-        stats.pastores = pastoresN;
-        let baptizedN = 0;
-        for (const p of filteredBzParty) {
-          if (participantIsCancelled(p)) continue;
-          if (participantHasBaptismChip(p, 'Bautizos')) baptizedN += 1;
-        }
-        for (const info of bautizosCanonPlanForScope.values()) {
-          if (participantIsCancelled(info.sourceRegistrant)) continue;
-          if (String(info.sourceRegistrant.location || '').trim() !== locNorm) continue;
-          const host = info.sourceRegistrant;
-          const comp = info.sourceCompanion || {};
-          if (!bautizosDashboardCompanionCountsForScope(comp, bzScope, host)) continue;
-          if (String(comp?.name || '').trim() && isBautizosCompanionBaptized(comp)) baptizedN += 1;
-        }
-        stats.bautizados = baptizedN;
+      if (currentEvent?.eventType === 'Bautizos' && bautizosCanonicalPlan) {
+        const matchesPerson = useEventWideListFilters
+          ? (person) =>
+              filterParticipantRows([person], true, getEventWideListFilterPayload(), {
+                expandBautizosCompanions: false,
+              }).length > 0
+          : undefined;
+        const personStats = computeBautizosDashboardLocationPersonStats({
+          activeTitularRows: data[loc] || [],
+          loc,
+          dashboardScope: bzScope,
+          canonicalCompanionPlan: bautizosCanonicalPlan,
+          matchesPerson,
+          event: currentEvent,
+        });
+        stats.count = personStats.count;
+        stats.activeRegistrants = personStats.activeRegistrants;
+        stats.bautizados = personStats.bautizados;
+        stats.companions = personStats.companions;
+        stats.companionsTotal = personStats.companionsTotal;
+        stats.asistentesBautizos = personStats.asistentesBautizos;
+        stats.servers = personStats.servers;
+        stats.empleadosBautizos = personStats.empleadosBautizos;
+        stats.pastores = personStats.pastores;
+        stats.cortesia = personStats.cortesia;
+        stats.bautizosTransport = personStats.bautizosTransport;
+        stats.bautizosCarro = personStats.bautizosCarro;
       }
       stats.waitlist = waitlistCountsForTable.bySede[loc]?.total ?? 0;
       const cancelledRows = filterSummaryStatusRows(cancelledData[loc]);
@@ -30998,6 +32847,16 @@ function resolveEventName(eventId) {
         (n, p) => (getCancelledRefundPendingAmount(p) > 0 ? n + summarySectionWeight(p) : n),
         0
       );
+      if (useEventWideListFilters) {
+        const regFilter = listFiltersForEventApplication(
+          globalRegistryListFilters,
+          currentEvent?.eventType
+        )?.filterRegistrationStatus;
+        if (regFilter === 'active') {
+          stats.cancelled = 0;
+          stats.refund = 0;
+        }
+      }
       const refundDonationForSede = eventDonations
         .filter(
           (d) =>
@@ -31019,14 +32878,87 @@ function resolveEventName(eventId) {
     });
     };
 
-    const tableByLocation = buildTableByLocation(summaryCampaScopes.tableDetails || 'all');
-    const tableByLocationLocChart = buildTableByLocation(summaryCampaScopes.chartLocations || 'all');
-    const tableByLocationBautizosCompSplit = buildTableByLocation('all');
-    const tableByLocationBautizosTransportCar = buildTableByLocation('all');
-    const tableByLocationIncomeChart = buildTableByLocation(summaryCampaScopes.chartIncome || 'all');
-    const tableByLocationRecaudado = buildTableByLocation(summaryCampaScopes.dashRecaudado || 'all');
-    const tableByLocationPendiente = buildTableByLocation(summaryCampaScopes.dashPendiente || 'all');
-    const tableByLocationBalance = buildTableByLocation(summaryCampaScopes.dashBalance || 'all');
+    const tableCacheSig = [
+      currentEvent?.id,
+      allParticipants.length,
+      showGrossWithoutCommission ? 1 : 0,
+      bautizosDashScope,
+      countAmbosDoubleInAllCounts ? 1 : 0,
+      JSON.stringify(getEventWideListFilterPayload()),
+      dashboardLocs.map((l) => `${l}:${(data[l]?.length || 0)}`).join('|'),
+    ].join('::');
+    const getCachedTableByLocation = (campaScope, tableOpts = {}) => {
+      const cacheKey = `${campaScope}|${tableOpts.useEventWideListFilters ? 'ew' : 'base'}`;
+      const cache = dashboardScopeTableCacheRef.current;
+      if (cache.sig !== tableCacheSig) {
+        cache.sig = tableCacheSig;
+        cache.byKey = new Map();
+      }
+      if (cache.byKey.has(cacheKey)) return cache.byKey.get(cacheKey);
+      const built = buildTableByLocation(campaScope, tableOpts);
+      cache.byKey.set(cacheKey, built);
+      return built;
+    };
+
+    const needsTableDetails = viewPrefs.tableDetails;
+    const needsLocChart = viewPrefs.chartLocations;
+    const needsIncomeChart = viewPrefs.chartIncome;
+    const needsBzCompChart = isBautizos && viewPrefs.chartBautizosCompanionSplit !== false;
+    const needsBzCarChart = isBautizos && viewPrefs.chartBautizosTransportCar !== false;
+    const recaudadoScope = summaryCampaScopes.dashRecaudado || 'all';
+    const pendienteScope = summaryCampaScopes.dashPendiente || 'all';
+    const balanceScope = summaryCampaScopes.dashBalance || 'all';
+    const tableByLocation = needsTableDetails
+      ? getCachedTableByLocation(summaryCampaScopes.tableDetails || 'all', { useEventWideListFilters: true })
+      : [];
+    const tableByLocationLocChart = needsLocChart
+      ? getCachedTableByLocation(summaryCampaScopes.chartLocations || 'all')
+      : [];
+    const tableByLocationAllScope =
+      needsBzCompChart || needsBzCarChart ? getCachedTableByLocation('all') : [];
+    const tableByLocationBautizosCompSplit = needsBzCompChart ? tableByLocationAllScope : [];
+    const tableByLocationBautizosTransportCar = needsBzCarChart ? tableByLocationAllScope : [];
+    const tableByLocationIncomeChart = needsIncomeChart
+      ? getCachedTableByLocation(summaryCampaScopes.chartIncome || 'all')
+      : [];
+    const tableByLocationRecaudado = getCachedTableByLocation(recaudadoScope);
+    const tableByLocationPendiente =
+      pendienteScope === recaudadoScope ? tableByLocationRecaudado : getCachedTableByLocation(pendienteScope);
+    const tableByLocationBalance =
+      balanceScope === recaudadoScope
+        ? tableByLocationRecaudado
+        : balanceScope === pendienteScope
+          ? tableByLocationPendiente
+          : getCachedTableByLocation(balanceScope);
+
+    const dashboardNestedCfo = (key, value) => {
+      if (!dashboardNestedFilterCountsMap) return null;
+      return dashboardNestedFilterCountsMap.get(`${key}\0${value}`) ?? 0;
+    };
+    const dashNestedCn = (num) => (
+      <span className="text-slate-400 font-bold tabular-nums text-[11px]">
+        ({num == null ? '…' : num})
+      </span>
+    );
+    const patchDashboardNestedFilters = (field, optionId) => {
+      setGlobalRegistryListFilters((prev) => ({
+        ...prev,
+        [field]: prev[field] === optionId ? 'all' : optionId,
+      }));
+    };
+    const dashNestedFilterOption = (filterKey, optionValue, checked, onChange, children) => (
+      <RosterFilterCheckboxOption
+        key={`dash-nested-${filterKey}-${optionValue}`}
+        eventId={currentEvent?.id}
+        filterKey={filterKey}
+        optionValue={optionValue}
+        checked={checked}
+        onChange={onChange}
+        className={uiFilter.optionRow}
+      >
+        {children}
+      </RosterFilterCheckboxOption>
+    );
 
     const locationChartColorMap = buildLocationChartColorMap(dashboardLocs);
     const makeLocPieHelpers = (tbl) => {
@@ -31106,6 +33038,7 @@ function resolveEventName(eventId) {
         acc.expected += stats.expected;
         acc.cortesia += stats.cortesia;
         acc.bautizados += stats.bautizados || 0;
+        acc.pastores += stats.pastores || 0;
         return acc;
       }, {
         count: 0,
@@ -31385,7 +33318,7 @@ function resolveEventName(eventId) {
           return (
             !isCancelled &&
             (currentEvent?.eventType === 'Bautizos'
-              ? normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.cortesia
+              ? bautizosTitularCountsInCortesiaTotal(p)
               : normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.cortesia)
           );
         case 'expected':
@@ -31420,8 +33353,23 @@ function resolveEventName(eventId) {
       const locs = scope === 'global' ? dashboardLocs : [locationLabel];
       const locSet = new Set(locs.map((l) => String(l).trim()));
 
+      const applyTableDetailCellFilters = (rows, opts = {}) => {
+        const skipBautizosParty = opts.skipBautizosParty === true;
+        let sectionRows = applyEventWideListFilters(rows, true, {
+          expandBautizosCompanions: !skipBautizosParty,
+        });
+        if (isCampa) {
+          sectionRows = sectionRows.filter((p) => campaAttendanceScopeMatches(isCampa, p, tableScope));
+        }
+        return sectionRows;
+      };
+      const matchesSummaryPerson = (person) =>
+        filterParticipantRows([person], true, getEventWideListFilterPayload(), {
+          expandBautizosCompanions: false,
+        }).length > 0;
+
       const buildBautizosCanonicalForTable = () => {
-        const allRows = dashboardLocs.flatMap((l) => applySummaryLikeFilters(data[l] || [], tableScope));
+        const allRows = dashboardLocs.flatMap((l) => applyTableDetailCellFilters(data[l] || []));
         return buildBautizosCanonicalCompanionPlan(
           allRows,
           buildActiveRegistrantMetaForCompanionDedupe(allRows.filter((p) => !participantIsCancelled(p))),
@@ -31431,10 +33379,10 @@ function resolveEventName(eventId) {
 
       const buildBautizosWaitlistCanonicalForTable = () => {
         const activeRows = dashboardLocs.flatMap((l) =>
-          applySummaryLikeFilters(data[l] || [], tableScope, { skipBautizosParty: true })
+          applyTableDetailCellFilters(data[l] || [], { skipBautizosParty: true })
         );
         const waitlistTitulars = dashboardLocs.flatMap((l) =>
-          applySummaryLikeFilters(waitlistData[l] || [], tableScope, { skipBautizosParty: true })
+          applyTableDetailCellFilters(waitlistData[l] || [], { skipBautizosParty: true })
         );
         const rosterById = new Map();
         for (const p of activeRows) {
@@ -31454,19 +33402,22 @@ function resolveEventName(eventId) {
       };
 
       if (isBautizos && metric === 'companions') {
-        const plan = buildBautizosCanonicalForTable();
         const out = [];
-        for (const info of plan.values()) {
+        for (const info of bautizosCanonicalPlan.values()) {
           if (participantIsCancelled(info.sourceRegistrant)) continue;
           const sloc = String(info.sourceRegistrant.location || '').trim();
           if (!locSet.has(sloc)) continue;
+          const host = info.sourceRegistrant;
           const c = info.sourceCompanion || {};
           if (isBautizosCompanionBaptized(c)) continue;
+          if (!bautizosDashboardCompanionCountsForScope(c, bautizosDashScope, host)) continue;
+          const lineLike = buildBautizosCompanionListFilterPersonLike(host, c, info.canonKey);
+          if (!matchesSummaryPerson(lineLike)) continue;
           out.push({
             id: `sum-comp-${String(info.canonKey).replace(/[^a-z0-9:]/gi, '_')}`,
             __summaryCompanionRow: true,
             displayName: String(c.name || '').trim(),
-            hostName: String(info.sourceRegistrant.name || '').trim(),
+            hostName: String(host.name || '').trim(),
             location: sloc,
           });
         }
@@ -31475,50 +33426,46 @@ function resolveEventName(eventId) {
       }
 
       if (isBautizos && metric === 'count') {
-        const parts = [];
-        const seen = new Set();
+        const out = [];
         for (const loc of locs) {
-          const filtered = applySummaryLikeFilters(data[loc] || [], tableScope);
-          for (const p of filtered) {
+          for (const p of data[loc] || []) {
+            if (participantIsCancelled(p)) continue;
+            if (!bautizosDashboardTitularCountsForScope(p, bautizosDashScope)) continue;
+            if (!matchesSummaryPerson(p)) continue;
             if (!participantMatchesSummaryMetric(p, 'count')) continue;
-            const id = String(p.id);
-            if (seen.has(id)) continue;
-            seen.add(id);
-            parts.push(p);
+            out.push(p);
           }
         }
-        const compRows = (() => {
-          const plan = buildBautizosCanonicalForTable();
-          const cOut = [];
-          for (const info of plan.values()) {
-            if (participantIsCancelled(info.sourceRegistrant)) continue;
-            const sloc = String(info.sourceRegistrant.location || '').trim();
-            if (!locSet.has(sloc)) continue;
-            const c = info.sourceCompanion || {};
-            cOut.push({
-              id: `sum-comp-${String(info.canonKey).replace(/[^a-z0-9:]/gi, '_')}-c`,
-              __summaryCompanionRow: true,
-              displayName: String(c.name || '').trim(),
-              hostName: String(info.sourceRegistrant.name || '').trim(),
-              location: sloc,
-            });
-          }
-          return cOut;
-        })();
-        const all = [...parts, ...compRows];
-        all.sort((a, b) => {
+        for (const info of bautizosCanonicalPlan.values()) {
+          if (participantIsCancelled(info.sourceRegistrant)) continue;
+          const sloc = String(info.sourceRegistrant.location || '').trim();
+          if (!locSet.has(sloc)) continue;
+          const host = info.sourceRegistrant;
+          const c = info.sourceCompanion || {};
+          if (!bautizosDashboardCompanionCountsForScope(c, bautizosDashScope, host)) continue;
+          const lineLike = buildBautizosCompanionListFilterPersonLike(host, c, info.canonKey);
+          if (!matchesSummaryPerson(lineLike)) continue;
+          out.push({
+            id: `sum-comp-${String(info.canonKey).replace(/[^a-z0-9:]/gi, '_')}`,
+            __summaryCompanionRow: true,
+            displayName: String(c.name || '').trim(),
+            hostName: String(host.name || '').trim(),
+            location: sloc,
+          });
+        }
+        out.sort((a, b) => {
           const na = a.__summaryCompanionRow ? a.displayName : a.name || '';
           const nb = b.__summaryCompanionRow ? b.displayName : b.name || '';
           return na.localeCompare(nb, 'es');
         });
-        return all;
+        return out;
       }
 
       if (isBautizos && metric === 'waitlist') {
         const parts = [];
         const seen = new Set();
         for (const loc of locs) {
-          const filtered = applySummaryLikeFilters(waitlistData[loc] || [], tableScope, { skipBautizosParty: true });
+          const filtered = applyTableDetailCellFilters(waitlistData[loc] || [], { skipBautizosParty: true });
           for (const p of filtered) {
             if (!bautizosDashboardTitularCountsForScope(p, bautizosDashScope)) continue;
             if (!participantMatchesSummaryMetric(p, 'waitlist')) continue;
@@ -31555,182 +33502,102 @@ function resolveEventName(eventId) {
       }
 
       if (isBautizos && metric === 'bautizados') {
-        const parts = [];
-        const seen = new Set();
+        const out = [];
         for (const loc of locs) {
-          const filtered = applySummaryLikeFilters(data[loc] || [], tableScope);
-          for (const p of filtered) {
-            if (!participantMatchesSummaryMetric(p, 'bautizados')) continue;
-            const id = String(p.id);
-            if (seen.has(id)) continue;
-            seen.add(id);
-            parts.push(p);
+          for (const p of data[loc] || []) {
+            if (participantIsCancelled(p)) continue;
+            if (!bautizosDashboardTitularCountsForScope(p, bautizosDashScope)) continue;
+            if (!participantHasBaptismChip(p, 'Bautizos')) continue;
+            if (!matchesSummaryPerson(p)) continue;
+            out.push(p);
           }
         }
-        const plan = buildBautizosCanonicalForTable();
-        const compRows = [];
-        for (const info of plan.values()) {
+        for (const info of bautizosCanonicalPlan.values()) {
           if (participantIsCancelled(info.sourceRegistrant)) continue;
           const sloc = String(info.sourceRegistrant.location || '').trim();
           if (!locSet.has(sloc)) continue;
+          const host = info.sourceRegistrant;
           const c = info.sourceCompanion || {};
           if (!String(c?.name || '').trim() || !isBautizosCompanionBaptized(c)) continue;
-          compRows.push({
+          if (!bautizosDashboardCompanionCountsForScope(c, bautizosDashScope, host)) continue;
+          const lineLike = buildBautizosCompanionListFilterPersonLike(host, c, info.canonKey);
+          if (!matchesSummaryPerson(lineLike)) continue;
+          out.push({
             id: `sum-bz-${String(info.canonKey).replace(/[^a-z0-9:]/gi, '_')}-bd`,
             __summaryCompanionRow: true,
             displayName: String(c.name || '').trim(),
-            hostName: String(info.sourceRegistrant.name || '').trim(),
+            hostName: String(host.name || '').trim(),
             location: sloc,
           });
         }
-        const all = [...parts, ...compRows];
-        all.sort((a, b) => {
+        out.sort((a, b) => {
           const na = a.__summaryCompanionRow ? a.displayName : a.name || '';
           const nb = b.__summaryCompanionRow ? b.displayName : b.name || '';
           return na.localeCompare(nb, 'es');
         });
-        return all;
-      }
-
-      if (isBautizos && metric === 'bautizosTransport') {
-        const out = [];
-        const seen = new Set();
-        const pushRow = (row) => {
-          if (seen.has(row.id)) return;
-          seen.add(row.id);
-          out.push(row);
-        };
-        for (const loc of locs) {
-          const filtered = applySummaryLikeFilters(data[loc] || [], tableScope);
-          for (const p of filtered) {
-            if (participantIsCancelled(p)) continue;
-            if (!isSiValue(p.wantsBautizosTransport)) continue;
-            pushRow({
-              id: `bzt-sum-${p.id}-reg`,
-              __summaryTransportRow: true,
-              displayName: String(p.name || '').trim() || '—',
-              lineKind: 'Inscrito',
-              registradoName: '',
-              location: String(p.location || '').trim() || '—',
-              transportSummary: resolveTransportSummary(p, 'Bautizos', currentEvent),
-            });
-          }
-          for (const p of filtered) {
-            if (participantIsCancelled(p)) continue;
-            const comps = getBautizosCompanionsArray(p);
-            for (let i = 0; i < comps.length; i += 1) {
-              const row = comps[i] || {};
-              if (!String(row?.name || '').trim() || !isBautizosCompanionBaptized(row)) continue;
-              if (!isSiValue(row.wantsBautizosTransport) || isBautizosLapInfantCompanion(row, currentEvent)) continue;
-              const vline = { ...row, travelFrom: row.travelFrom || p.travelFrom, travelTo: row.travelTo || p.travelTo, location: p.location };
-              pushRow({
-                id: `bzt-sum-${p.id}-vb-${i}`,
-                __summaryTransportRow: true,
-                displayName: String(row.name || '').trim(),
-                lineKind: 'Bautizado (acompañante)',
-                registradoName: String(p.name || '').trim(),
-                location: String(p.location || '').trim() || '—',
-                transportSummary: resolveTransportSummary(vline, 'Bautizos', currentEvent),
-              });
-            }
-          }
-        }
-        const plan = buildBautizosCanonicalForTable();
-        for (const info of plan.values()) {
-          if (participantIsCancelled(info.sourceRegistrant)) continue;
-          const sloc = String(info.sourceRegistrant.location || '').trim();
-          if (!locSet.has(sloc)) continue;
-          const c = info.sourceCompanion || {};
-          const companionName = String(c?.name || '').trim();
-          if (!companionName || !isSiValue(c?.wantsBautizosTransport) || isBautizosLapInfantCompanion(c, currentEvent)) continue;
-          const host = info.sourceRegistrant || {};
-          const lineLike = {
-            wantsBautizosTransport: c.wantsBautizosTransport,
-            llegaEnCarro: c.llegaEnCarro,
-            regresaEnCarro: c.regresaEnCarro,
-            travelFrom: c.travelFrom,
-            travelTo: c.travelTo,
-            location: host.location,
-          };
-          pushRow({
-            id: `bzt-sum-${String(info.canonKey).replace(/[^a-z0-9]/gi, '_')}`,
-            __summaryTransportRow: true,
-            displayName: companionName,
-            lineKind: 'Acompañante',
-            registradoName: String(host.name || '').trim(),
-            location: sloc || '—',
-            transportSummary: resolveTransportSummary(lineLike, 'Bautizos', currentEvent),
-          });
-        }
-        out.sort((a, b) => {
-          const la = String(a.location || '').localeCompare(String(b.location || ''));
-          if (la !== 0) return la;
-          return String(a.displayName || '').localeCompare(String(b.displayName || ''), 'es');
-        });
         return out;
       }
 
-      if (isBautizos && metric === 'bautizosCarro') {
+      if (isBautizos && (metric === 'bautizosTransport' || metric === 'bautizosCarro')) {
         const out = [];
         const seen = new Set();
-        const pushCar = (cid, displayName, lineKind, registradoName, location, lineLike) => {
-          if (!bautizosLineGoesByCar(lineLike)) return;
-          if (seen.has(cid)) return;
-          seen.add(cid);
-          out.push({
-            id: cid,
-            __summaryCarRow: true,
+        const pushTransportOrCarLine = (lineLike, baseId, displayName, lineKind, registradoName, location) => {
+          if (!matchesSummaryPerson(lineLike)) return;
+          const id = baseId;
+          if (seen.has(id)) return;
+          if (metric === 'bautizosTransport') {
+            if (!isSiValue(lineLike.wantsBautizosTransport) || isBautizosLapInfantCompanion(lineLike, currentEvent)) return;
+          } else if (!bautizosLineGoesByCar(lineLike)) {
+            return;
+          }
+          seen.add(id);
+          const base = {
+            id,
             displayName,
             lineKind,
             registradoName,
-            location: String(location || '').trim() || '—',
-            cars: resolveLlegaEnCarro(lineLike) ? normalizeArrivalCarCount(lineLike?.carrosLlegada) : 0,
+            location,
             transportSummary: resolveTransportSummary(lineLike, 'Bautizos', currentEvent),
-          });
+          };
+          if (metric === 'bautizosCarro') {
+            out.push({
+              ...base,
+              __summaryCarRow: true,
+              cars: resolveLlegaEnCarro(lineLike) ? normalizeArrivalCarCount(lineLike?.carrosLlegada) : 0,
+            });
+          } else {
+            out.push({ ...base, __summaryTransportRow: true });
+          }
         };
         for (const loc of locs) {
-          const filtered = applySummaryLikeFilters(data[loc] || [], tableScope);
-          for (const p of filtered) {
+          for (const p of data[loc] || []) {
             if (participantIsCancelled(p)) continue;
-            pushCar(`bzc-sum-${p.id}-reg`, String(p.name || '').trim() || '—', 'Inscrito', '', p.location, p);
-            const comps = getBautizosCompanionsArray(p);
-            for (let i = 0; i < comps.length; i += 1) {
-              const row = comps[i] || {};
-              if (!String(row?.name || '').trim() || !isBautizosCompanionBaptized(row)) continue;
-              const vline = {
-                ...row,
-                travelFrom: row.travelFrom || p.travelFrom,
-                travelTo: row.travelTo || p.travelTo,
-                location: p.location,
-                transportType: row.transportType || p.transportType,
-              };
-              pushCar(
-                `bzc-sum-${p.id}-vb-${i}`,
-                String(row.name || '').trim(),
-                'Bautizado (acompañante)',
-                String(p.name || '').trim(),
-                p.location,
-                vline
-              );
-            }
+            if (!bautizosDashboardTitularCountsForScope(p, bautizosDashScope)) continue;
+            pushTransportOrCarLine(
+              p,
+              `bz${metric === 'bautizosCarro' ? 'c' : 't'}-sum-${String(p.id).replace(/[^a-z0-9:_-]/gi, '_')}`,
+              String(p.name || '').trim() || '—',
+              'Inscrito',
+              '',
+              String(p.location || '').trim() || '—'
+            );
           }
         }
-        const plan = buildBautizosCanonicalForTable();
-        for (const info of plan.values()) {
+        for (const info of bautizosCanonicalPlan.values()) {
           if (participantIsCancelled(info.sourceRegistrant)) continue;
           const sloc = String(info.sourceRegistrant.location || '').trim();
           if (!locSet.has(sloc)) continue;
+          const host = info.sourceRegistrant;
           const c = info.sourceCompanion || {};
-          const companionName = String(c?.name || '').trim();
-          if (!companionName) continue;
-          const host = info.sourceRegistrant || {};
-          pushCar(
-            `bzc-sum-${String(info.canonKey).replace(/[^a-z0-9]/gi, '_')}`,
-            companionName,
+          if (!bautizosDashboardCompanionCountsForScope(c, bautizosDashScope, host)) continue;
+          const lineLike = buildBautizosCompanionListFilterPersonLike(host, c, info.canonKey);
+          pushTransportOrCarLine(
+            lineLike,
+            `bz${metric === 'bautizosCarro' ? 'c' : 't'}-canon-${String(info.canonKey).replace(/[^a-z0-9:]/gi, '_')}`,
+            String(c.name || '').trim() || '—',
             'Acompañante',
             String(host.name || '').trim(),
-            host.location,
-            c
+            sloc || '—'
           );
         }
         out.sort((a, b) => {
@@ -31745,7 +33612,7 @@ function resolveEventName(eventId) {
         const cxlOut = [];
         const cxlSeen = new Set();
         for (const loc of locs) {
-          let rows = applySummaryLikeFilters(cancelledData[loc] || [], tableScope, { skipBautizosParty: true });
+          let rows = applyTableDetailCellFilters(cancelledData[loc] || [], { skipBautizosParty: true });
           if (isBautizos) {
             rows = rows.filter((p) => bautizosDashboardTitularCountsForScope(p, bautizosDashScope));
           }
@@ -31768,10 +33635,9 @@ function resolveEventName(eventId) {
         return data[locLabel] || [];
       };
       for (const loc of locs) {
-        const filtered = applySummaryLikeFilters(
+        const filtered = applyTableDetailCellFilters(
           summaryRowsForMetric(loc),
-          tableScope,
-          metric === 'waitlist' ? { skipBautizosParty: true } : null
+          metric === 'waitlist' ? { skipBautizosParty: true } : {}
         );
         for (const p of filtered) {
           if (!participantMatchesSummaryMetric(p, metric)) continue;
@@ -33733,21 +35599,45 @@ function resolveEventName(eventId) {
           </div>
         )}
 
-        {companionCollisionsActionable.length > 0 && isBautizos && (
-          <div className="bg-violet-50 border border-violet-200 rounded-2xl px-5 py-4 mt-4">
-            <div className="flex items-start gap-3">
+        {isBautizos && (
+          <div className="bg-violet-50 border border-violet-200 rounded-2xl mt-4 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setDashboardCompanionCollisionsExpanded((v) => !v)}
+              className="w-full flex items-start gap-3 px-5 py-4 text-left hover:bg-violet-100/60 transition-colors"
+              aria-expanded={dashboardCompanionCollisionsExpanded}
+            >
               <Users size={22} className="text-violet-600 mt-0.5 shrink-0" />
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-bold text-violet-900">
-                  Posibles dobles: acompañante + registro activo ({companionCollisionsActionable.length})
+                  Posibles dobles: acompañante + registro activo
+                  {dashboardCompanionCollisionsExpanded && companionCollisionsActionable.length > 0
+                    ? ` (${companionCollisionsActionable.length})`
+                    : ''}
                 </p>
                 <p className="text-[11px] text-violet-800 mt-1 leading-relaxed">
-                  Una persona figura como acompañante en el registro de un titular y también tiene (o parece tener) ficha activa propia.
-                  Puedes vincular la fila de acompañante al registro activo para evitar doble conteo y cobro.
+                  {dashboardCompanionCollisionsExpanded
+                    ? 'Una persona figura como acompañante en el registro de un titular y también tiene (o parece tener) ficha activa propia. Puedes vincular la fila de acompañante al registro activo para evitar doble conteo y cobro.'
+                    : 'Expandir para buscar colisiones entre acompañantes y registros activos (no se calcula hasta desplegar).'}
                 </p>
-                {renderCompanionCollisionGroups(companionCollisionsActionable, 'dashboard')}
               </div>
-            </div>
+              {dashboardCompanionCollisionsExpanded ? (
+                <ChevronUp size={20} className="text-violet-500 shrink-0 mt-0.5" aria-hidden />
+              ) : (
+                <ChevronDown size={20} className="text-violet-500 shrink-0 mt-0.5" aria-hidden />
+              )}
+            </button>
+            {dashboardCompanionCollisionsExpanded ? (
+              <div className="px-5 pb-4 border-t border-violet-200/80">
+                {companionCollisionsActionable.length === 0 ? (
+                  <p className="text-[11px] text-violet-800/90 italic pt-3">
+                    No se detectaron colisiones acompañante ↔ registro activo con confianza probable o alta.
+                  </p>
+                ) : (
+                  renderCompanionCollisionGroups(companionCollisionsActionable, 'dashboard')
+                )}
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -34028,8 +35918,7 @@ function resolveEventName(eventId) {
                 <div>
                   <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100">Visualización de Datos Generales</h3>
                   <p className="text-xs text-slate-400 dark:text-slate-500">
-                    Resumen por sede. Las columnas cuentan dentro de la{' '}
-                    <span className="font-bold text-slate-600 dark:text-slate-300">base</span> que elijas abajo (p. ej. con «Cualquier becado» activo, Servidores y Teens muestran solo becados que sirven o en Teens).
+                    Resumen por sede. Usa los mismos filtros anidados que Registro por sede y Registro Global; los cambios se sincronizan entre las tres vistas.
                   </p>
                 </div>
               </div>
@@ -34076,99 +35965,194 @@ function resolveEventName(eventId) {
                       type="button"
                       className="w-full px-3 py-2 rounded-lg text-[10px] font-black bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                       onClick={() => {
-                        setSummaryFilterScholarship('all');
-                        setSummaryFilterServer('all');
-                        setSummaryFilterAssignment('all');
-                        setSummaryFilterBaptism('all');
-                        setSummaryCampaScopes({});
+                        const cleared = pickSharedEventListDropdownFilters(createEmptyGlobalRegistryListFilters());
+                        setGlobalRegistryListFilters((prev) => ({ ...prev, ...cleared }));
+                        applyLocationRosterFilters(
+                          { ...getRosterFilterStateSnapshot(), ...cleared },
+                          rosterLocationFilterSetters
+                        );
+                        setSummaryCampaScopes((prev) => ({ ...prev, tableDetails: 'all' }));
                       }}
                     >
                       Limpiar filtros
                     </button>
                     <div>
                       <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug mb-2">
-                        Solo se muestran en la tabla quienes cumplan{' '}
-                        <span className="font-bold text-slate-700 dark:text-slate-200">todas</span> las condiciones que marques. Así puedes ver, por ejemplo, becados que se bautizan o servidores en Teens.
+                        Filtros compartidos con Registro por sede y Registro Global. Solo cuenta en la tabla quien cumpla{' '}
+                        <span className="font-bold text-slate-700 dark:text-slate-200">todas</span> las condiciones activas.
                       </p>
                       <div className="space-y-2">
-                        {isBautizos ? (
-                          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-                            En Bautizos el resumen por sede usa el{' '}
-                            <span className="font-bold text-slate-700 dark:text-slate-200">alcance global</span> del dashboard (barra inferior). Los filtros de beca, Teens y Jóvenes no aplican.
-                          </p>
-                        ) : (
                         <div>
-                          <p className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase mb-1">Beca</p>
+                          <p className={uiDropdown.sectionTitle}>Estado de registro</p>
+                          {REGISTRATION_STATUS_FILTER_OPTIONS.map((op) =>
+                            dashNestedFilterOption(
+                              'filterRegistrationStatus',
+                              op.id,
+                              globalRegistryListFilters.filterRegistrationStatus === op.id,
+                              () => patchDashboardNestedFilters('filterRegistrationStatus', op.id),
+                              <>
+                                {op.label} {dashNestedCn(dashboardNestedCfo('filterRegistrationStatus', op.id))}
+                              </>
+                            )
+                          )}
+                        </div>
+                        <div>
+                          <p className={uiDropdown.sectionTitle}>Asistencia al evento</p>
+                          {EVENT_ATTENDANCE_FILTER_OPTIONS.map((op) =>
+                            dashNestedFilterOption(
+                              'filterEventAttendance',
+                              op.id,
+                              globalRegistryListFilters.filterEventAttendance === op.id,
+                              () => patchDashboardNestedFilters('filterEventAttendance', op.id),
+                              <>
+                                {op.label} {dashNestedCn(dashboardNestedCfo('filterEventAttendance', op.id))}
+                              </>
+                            )
+                          )}
+                        </div>
+                        <div>
+                          <p className={uiDropdown.sectionTitle}>Liquidación</p>
+                          <p className="text-[9px] text-slate-400 dark:text-slate-500 mb-1.5 leading-snug">
+                            «Saldo a favor»: pagado por encima del costo a liquidar.
+                          </p>
                           {[
                             { id: 'all', label: 'Todos' },
-                            { id: 'becado', label: 'Cualquier becado' },
-                            { id: 'partial', label: 'Beca parcial' },
-                            { id: 'total', label: 'Beca total' },
-                            { id: 'No', label: 'No becado' },
-                          ].map((op) => (
-                            <label key={op.id} className={uiFilter.optionRow}>
-                              <input
-                                type="checkbox"
-                                checked={summaryFilterScholarship === op.id}
-                                onChange={() => setSummaryFilterScholarship(summaryFilterScholarship === op.id ? 'all' : op.id)}
-                              />
-                              {op.label}
-                            </label>
-                          ))}
+                            { id: 'liquidado', label: 'Liquidado' },
+                            { id: 'pendiente', label: 'Falta por liquidar' },
+                            { id: 'saldo-favor', label: 'Saldo a favor' },
+                          ].map((op) =>
+                            dashNestedFilterOption(
+                              'filterLiquidation',
+                              op.id,
+                              globalRegistryListFilters.filterLiquidation === op.id,
+                              () => patchDashboardNestedFilters('filterLiquidation', op.id),
+                              <>
+                                {op.label} {dashNestedCn(dashboardNestedCfo('filterLiquidation', op.id))}
+                              </>
+                            )
+                          )}
                         </div>
-                        )}
                         {isCampa && (
                           <>
                             <div>
-                              <p className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase mb-1">Servidor / Campero</p>
-                              {[
-                                { id: 'all', label: 'Todos' },
-                                { id: SI, label: 'Solo servidores' },
-                                { id: 'No', label: 'Solo camperos' },
-                                { id: 'Teens', label: 'Servidor en Teens (incl. Ambos sirviendo en Teens)' },
-                                { id: 'Jóvenes', label: 'Servidor en Jóvenes (incl. Ambos sirviendo en Jóvenes)' },
-                                { id: 'Ambos', label: 'Servidor tarifa única Ambos' },
-                              ].map((op) => (
-                                <label key={String(op.id)} className={uiFilter.optionRow}>
-                                  <input
-                                    type="checkbox"
-                                    checked={summaryFilterServer === op.id}
-                                    onChange={() => setSummaryFilterServer(summaryFilterServer === op.id ? 'all' : op.id)}
-                                  />
-                                  {op.label}
-                                </label>
-                              ))}
+                              <p className={uiDropdown.sectionTitle}>Asignación</p>
+                              {['all', 'Teens', 'Jóvenes', 'Ambos'].map((op) =>
+                                dashNestedFilterOption(
+                                  'filterAssignment',
+                                  op,
+                                  globalRegistryListFilters.filterAssignment === op,
+                                  () => patchDashboardNestedFilters('filterAssignment', op),
+                                  <>
+                                    {op === 'all' ? 'Todas' : op}{' '}
+                                    {dashNestedCn(dashboardNestedCfo('filterAssignment', op))}
+                                  </>
+                                )
+                              )}
                             </div>
                             <div>
-                              <p className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase mb-1">Asignación campamento</p>
-                              {['all', 'Teens', 'Jóvenes', 'Ambos'].map((op) => (
-                                <label key={op} className={uiFilter.optionRow}>
-                                  <input
-                                    type="checkbox"
-                                    checked={summaryFilterAssignment === op}
-                                    onChange={() => setSummaryFilterAssignment(summaryFilterAssignment === op ? 'all' : op)}
-                                  />
-                                  {op === 'all' ? 'Todas' : op}
-                                </label>
-                              ))}
-                            </div>
-                            <div>
-                              <p className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase mb-1">Bautizo (conteo)</p>
+                              <p className={uiDropdown.sectionTitle}>Servidor</p>
                               {[
                                 { id: 'all', label: 'Todos' },
-                                { id: 'teens', label: 'Se bautiza en Teens' },
-                                { id: 'jovenes', label: 'Se bautiza en Jóvenes' },
+                                { id: 'camperos', label: 'Camperos' },
+                                { id: 'servidor-teens', label: 'Servidores en Teens' },
+                                { id: 'servidor-jovenes', label: 'Servidores en Jóvenes' },
+                                { id: 'servidor-ambos', label: 'Servidores (Ambos)' },
+                              ].map((op) =>
+                                dashNestedFilterOption(
+                                  'filterRosterRole',
+                                  op.id,
+                                  globalRegistryListFilters.filterRosterRole === op.id,
+                                  () => patchDashboardNestedFilters('filterRosterRole', op.id),
+                                  <>
+                                    {op.label} {dashNestedCn(dashboardNestedCfo('filterRosterRole', op.id))}
+                                  </>
+                                )
+                              )}
+                            </div>
+                            <div>
+                              <p className={uiDropdown.sectionTitle}>Beca</p>
+                              {[
+                                { id: 'all', label: 'Todos' },
+                                { id: 'becado', label: 'Cualquier becado' },
+                                { id: 'No', label: 'No' },
+                                { id: 'partial', label: 'Parcial' },
+                                { id: 'total', label: 'Total' },
+                              ].map((op) =>
+                                dashNestedFilterOption(
+                                  'filterScholarship',
+                                  op.id,
+                                  globalRegistryListFilters.filterScholarship === op.id,
+                                  () => patchDashboardNestedFilters('filterScholarship', op.id),
+                                  <>
+                                    {op.label} {dashNestedCn(dashboardNestedCfo('filterScholarship', op.id))}
+                                  </>
+                                )
+                              )}
+                            </div>
+                            <div>
+                              <p className={uiDropdown.sectionTitle}>Bautizo</p>
+                              {[
+                                { id: 'all', label: 'Todos' },
+                                { id: 'teens', label: 'Si se bautiza en Teens' },
+                                { id: 'jovenes', label: 'Si se bautiza en Jóvenes' },
                                 { id: 'no', label: 'No se bautiza' },
-                              ].map((op) => (
-                                <label key={op.id} className={uiFilter.optionRow}>
-                                  <input
-                                    type="checkbox"
-                                    checked={summaryFilterBaptism === op.id}
-                                    onChange={() => setSummaryFilterBaptism(summaryFilterBaptism === op.id ? 'all' : op.id)}
-                                  />
-                                  {op.label}
-                                </label>
-                              ))}
+                              ].map((op) =>
+                                dashNestedFilterOption(
+                                  'filterBaptism',
+                                  op.id,
+                                  globalRegistryListFilters.filterBaptism === op.id,
+                                  () => patchDashboardNestedFilters('filterBaptism', op.id),
+                                  <>
+                                    {op.label} {dashNestedCn(dashboardNestedCfo('filterBaptism', op.id))}
+                                  </>
+                                )
+                              )}
+                            </div>
+                          </>
+                        )}
+                        {isBautizos && (
+                          <>
+                            <div>
+                              <p className={uiDropdown.sectionTitle}>Tipo de asistencia</p>
+                              {BAUTIZOS_ATTENDANCE_FILTER_OPTIONS.map((op) =>
+                                dashNestedFilterOption(
+                                  'filterBautizosAttendance',
+                                  op.id,
+                                  globalRegistryListFilters.filterBautizosAttendance === op.id,
+                                  () => patchDashboardNestedFilters('filterBautizosAttendance', op.id),
+                                  <>
+                                    {op.label} {dashNestedCn(dashboardNestedCfo('filterBautizosAttendance', op.id))}
+                                  </>
+                                )
+                              )}
+                            </div>
+                            <div>
+                              <p className={uiDropdown.sectionTitle}>Transporte</p>
+                              {BAUTIZOS_TRANSPORT_FILTER_OPTIONS.map((op) =>
+                                dashNestedFilterOption(
+                                  'filterTransport',
+                                  op.id,
+                                  globalRegistryListFilters.filterTransport === op.id,
+                                  () => patchDashboardNestedFilters('filterTransport', op.id),
+                                  <>
+                                    {op.label} {dashNestedCn(dashboardNestedCfo('filterTransport', op.id))}
+                                  </>
+                                )
+                              )}
+                            </div>
+                            <div>
+                              <p className={uiDropdown.sectionTitle}>Edad</p>
+                              {BAUTIZOS_AGE_FILTER_OPTIONS.map((op) =>
+                                dashNestedFilterOption(
+                                  'filterAge',
+                                  op.id,
+                                  globalRegistryListFilters.filterAge === op.id,
+                                  () => patchDashboardNestedFilters('filterAge', op.id),
+                                  <>
+                                    {op.label} {dashNestedCn(dashboardNestedCfo('filterAge', op.id))}
+                                  </>
+                                )
+                              )}
                             </div>
                           </>
                         )}
@@ -35229,6 +37213,27 @@ function resolveEventName(eventId) {
     );
   };
 
+  const renderSummary = () => {
+    const cache = dashboardSummaryCacheRef.current;
+    const cacheBlockedByUi =
+      summaryFiltersDropdownOpen ||
+      summaryRosterModal.isOpen ||
+      summaryCellDetailModal.isOpen ||
+      dashBautizosScopeBarMobileOpen;
+    if (
+      !cacheBlockedByUi &&
+      cache.sig === dashboardSummaryRenderSig &&
+      cache.content != null
+    ) {
+      return cache.content;
+    }
+    const content = renderSummaryInner();
+    if (!cacheBlockedByUi) {
+      dashboardSummaryCacheRef.current = { sig: dashboardSummaryRenderSig, content };
+    }
+    return content;
+  };
+
   /**
    * Chip "Acompañantes" por registro:
    * - Excluye acompañantes que ya son registros activos del evento.
@@ -35401,8 +37406,12 @@ function resolveEventName(eventId) {
     const generalCommentsCollapsed = person.__globalRegistryVirtual
       ? []
       : getGeneralRegistrationCommentsForDisplay(person);
+    const eventAttendanceConfirmed = !!opts.eventAttendanceConfirmed;
+    const eventAttendanceControl = opts.eventAttendanceControl || null;
     return (
-      <div className={`space-y-1 ${isSubRegistration ? 'ml-5 pl-3 border-l-2 border-sky-300/80 dark:border-sky-600/70' : ''}`}>
+      <div
+        className={`space-y-1 ${isSubRegistration ? 'ml-5 pl-3 border-l-2 border-sky-300/80 dark:border-sky-600/70' : ''}${eventAttendanceConfirmed ? ' border-l-[3px] border-l-emerald-500 pl-2 -ml-0.5' : ''}`}
+      >
         <div className="flex items-center flex-wrap gap-2">
           <p className="font-bold text-slate-800 text-sm flex items-center gap-1.5 flex-wrap">
             {displayIndex != null ? (
@@ -35508,6 +37517,7 @@ function resolveEventName(eventId) {
             {renderDoubleRoleCollisionChip(person)}
           </p>
           {renderParticipantAssistanceBadges(person)}
+          {eventAttendanceControl ? <div className="mt-0.5">{eventAttendanceControl}</div> : null}
           {renderBautizosAttendanceTypeChip(person, opts)}
           {isSiValue(person.isServer) &&
           !(isBautizos && normalizeBautizosAttendanceType(person.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.servidor) ? (
@@ -35666,7 +37676,7 @@ function resolveEventName(eventId) {
                   {generalCommentsCollapsed.length}
                 </span>
               </p>
-              <ul className="space-y-1.5 max-h-36 overflow-y-auto pr-0.5">
+              <ul className="space-y-1.5 pr-0.5">
                 {generalCommentsCollapsed.map((c) => {
                   const canDeleteThisComment = userCanDeleteRegistrationComment(c, {
                     currentUser,
@@ -36532,7 +38542,20 @@ function resolveEventName(eventId) {
             ) : (
               <div className="divide-y divide-slate-50 dark:divide-slate-700">
                 {payHistory.map((pay, idx) => {
-                  const fullIdx = payHistoryFull.findIndex((h) => h && h.id === pay.id);
+                  const fullIdx = (() => {
+                    if (pay?.id != null) {
+                      const byId = payHistoryFull.findIndex((h) => h && h.id === pay.id);
+                      if (byId >= 0) return byId;
+                    }
+                    let nonCommentIdx = 0;
+                    for (let i = 0; i < payHistoryFull.length; i++) {
+                      const h = payHistoryFull[i];
+                      if (!h || h.kind === 'comment') continue;
+                      if (nonCommentIdx === idx) return i;
+                      nonCommentIdx++;
+                    }
+                    return -1;
+                  })();
                   return (
                   <div
                     key={pay.id ?? `pay-${idx}`}
@@ -36612,7 +38635,7 @@ function resolveEventName(eventId) {
                       {canEditRegistryDates && fullIdx >= 0 && (
                         <button
                           type="button"
-                          onClick={() => openSuperPaymentDateEdit(row, loc, fullIdx)}
+                          onClick={() => void openPaymentHistoryEditForPay(row, loc, pay, 'date')}
                           className="text-[9px] font-black dark:font-normal uppercase text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-lg hover:bg-violet-100 transition-colors"
                         >
                           Cambiar fecha
@@ -36621,7 +38644,7 @@ function resolveEventName(eventId) {
                       {canEditAbonosAndPaymentHistory && fullIdx >= 0 && (
                         <button
                           type="button"
-                          onClick={() => openPaymentMethodEditModal(row, loc, fullIdx)}
+                          onClick={() => void openPaymentHistoryEditForPay(row, loc, pay, 'method')}
                           className="text-[9px] font-black dark:font-normal uppercase text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-lg hover:bg-indigo-100 transition-colors"
                         >
                           Cambiar tipo
@@ -36771,7 +38794,7 @@ function resolveEventName(eventId) {
                       )}
                     </button>
                     {participantActivityExpandedId === String(row.id) && (
-                      <div className="max-h-36 overflow-y-auto px-2.5 py-2 space-y-1 border-t border-slate-200/80 dark:border-slate-600/60 bg-slate-50/50 dark:bg-slate-900/50">
+                      <div className="px-2.5 py-2 space-y-1 border-t border-slate-200/80 dark:border-slate-600/60 bg-slate-50/50 dark:bg-slate-900/50">
                         {participantActivityLoadingId === String(row.id) ? (
                           <p className="text-[9px] text-slate-500 text-center py-2">Cargando…</p>
                         ) : (participantActivityEntriesById[String(row.id)] || []).length === 0 ? (
@@ -37002,7 +39025,7 @@ function resolveEventName(eventId) {
       disableExpand = false,
     } = opts;
     const isBecado = isCampa && isSiValue(person.isScholarship);
-    const liquidationTarget = getLiquidationTarget(person);
+    const liquidationTarget = resolveLocationRosterLiquidationTarget(person);
     return (
       <RosterParticipantMobileCard
         key={opts.key || person.id}
@@ -37036,7 +39059,43 @@ function resolveEventName(eventId) {
     );
   };
 
-  const renderLocationSheet = (loc) => {
+  const renderLocationSheet = (loc, rosterViewOptions = {}) => {
+    const appliedSearch = rosterViewOptions.appliedSearch ?? readRosterLocationSearchTerm();
+    const sheetModel =
+      locationRosterSheetModel?.loc === loc
+        ? locationRosterSheetModel
+        : computeLocationRosterSheetModel({
+            loc,
+            isBautizos,
+            locationTypeSummary: isBautizos ? (bautizosLocationTypeSummaryByLoc[loc] ?? null) : null,
+            activeTitulars: data[loc] || [],
+            sortedWaitlist: getSortedWaitlistForLocation(loc),
+            sortedCancelled: getSortedCancelledForLocation(loc),
+            applyRosterLikeFilters,
+            appliedSearch,
+            sortBy,
+            filterParticipantRows,
+          });
+    const visibleParticipants = sheetModel?.visibleParticipants ?? [];
+    const visibleBautizedCompanionCount = sheetModel?.visibleBautizedCompanionCount ?? 0;
+    const waitlistFilteredForLoc = sheetModel?.waitlistFilteredForLoc ?? [];
+    const cancelledFilteredForLoc = sheetModel?.cancelledFilteredForLoc ?? [];
+    const flattenedActiveRowsForLoc = sheetModel?.flattenedActiveRowsForLoc ?? [];
+    const rosterSectionDisplayCounts = sheetModel?.rosterSectionDisplayCounts ?? {
+      active: 0,
+      waitlist: 0,
+      cancelled: 0,
+    };
+    const rosterSectionFilteredCounts = sheetModel?.rosterSectionFilteredCounts ?? rosterSectionDisplayCounts;
+    const rosterSearchMatchCount = sheetModel?.rosterSearchMatchCount ?? 0;
+    const rosterRegStatusFilterCount = sheetModel?.rosterRegStatusFilterCount ?? (() => 0);
+    const rosterEventAttendanceFilterCount = sheetModel?.rosterEventAttendanceFilterCount ?? (() => 0);
+    const rosterSearchActive = sheetModel?.rosterSearchActive ?? appliedSearch.trim().length > 0;
+    const locationTypeSummary = sheetModel?.locationTypeSummary ?? (isBautizos ? (bautizosLocationTypeSummaryByLoc[loc] ?? null) : null);
+    const sortPreservesWaitlistBaseDateOrder =
+      sheetModel?.sortPreservesWaitlistBaseDateOrder ?? (sortBy === 'registered-asc' || sortBy === 'none');
+    const sortedWaitlistForLoc = getSortedWaitlistForLocation(loc);
+    const sortedCancelledForLoc = getSortedCancelledForLocation(loc);
     const cardAllowedNewReg = isCardPaymentAllowedForLocation(currentEvent, loc);
     const locFieldSuggestions = collectLocationSuggestionsFromRosterSources({
       eventId: currentEvent?.id,
@@ -37046,22 +39105,6 @@ function resolveEventName(eventId) {
       cancelled: cancelledData[loc] || [],
     });
     const locSugList = (field) => `new-sug-${locationPrefsKey(loc).replace(/%/g, '')}-${field}`;
-    const visibleParticipants = getProcessedParticipantsForLocation(loc);
-    const visibleBautizedCompanionCount = isBautizos
-      ? visibleParticipants.reduce((sum, p) => sum + getBautizosBaptizedCompanionRows(p).length, 0)
-      : 0;
-    const sortPreservesWaitlistBaseDateOrder = sortBy === 'registered-asc' || sortBy === 'none';
-    const sortedWaitlistForLoc = getSortedWaitlistForLocation(loc);
-    const waitlistFilteredForLoc = applyRosterLikeFilters(
-      sortedWaitlistForLoc,
-      sortPreservesWaitlistBaseDateOrder
-    );
-    const cancelledFilteredForLoc = applyRosterLikeFilters(
-      getSortedCancelledForLocation(loc),
-      sortPreservesWaitlistBaseDateOrder
-    );
-    const rosterSearchMatchCount =
-      visibleParticipants.length + visibleBautizedCompanionCount + waitlistFilteredForLoc.length + cancelledFilteredForLoc.length;
     const rawActiveCountForLoc = getActiveCountByLocation(loc);
     const sedeCapChip = buildSedeCapChipViewModel({
       eventTotalCap: getEventTotalCap(),
@@ -37076,7 +39119,6 @@ function resolveEventName(eventId) {
         : sedeCapChip.status.tone === 'waitlist'
           ? 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-700/90 dark:text-white dark:border-amber-600'
           : 'bg-indigo-50 text-indigo-700 border-indigo-100 dark:bg-indigo-600 dark:text-white dark:border-indigo-700';
-    const rosterSearchActive = searchTerm.trim().length > 0;
     const rosterFilterOption = (filterKey, optionValue, checked, onChange, children, className = uiDropdown.optionRow) => (
       <RosterFilterCheckboxOption
         key={`${filterKey}-${optionValue}`}
@@ -37093,62 +39135,32 @@ function resolveEventName(eventId) {
     const showRosterActivos = rosterSearchActive ? visibleParticipants.length > 0 : rosterSectionExpanded.activos;
     const showRosterWaitlist = rosterSearchActive ? waitlistFilteredForLoc.length > 0 : rosterSectionExpanded.waitlist;
     const showRosterCancelled = rosterSearchActive ? cancelledFilteredForLoc.length > 0 : rosterSectionExpanded.cancelled;
-    const locationTypeSummary = isBautizos
-      ? buildLocationRosterTypeSummaryByStatus({
-          activeTitularParticipants: data[loc] || [],
-          allParticipants: allParticipants.filter((p) => p.eventId === currentEvent?.id),
-          event: currentEvent,
-          loc,
-          globalConfig,
-        })
-      : null;
-    const rosterSectionDisplayCounts = isBautizos && locationTypeSummary
-      ? getLocationRosterSectionCountsFromSummary(locationTypeSummary)
-      : {
-          active: rawActiveCountForLoc,
-          waitlist: (waitlistData[loc] || []).length,
-          cancelled: (cancelledData[loc] || []).length,
-        };
     const restrictEditorForm = currentUser?.role === 'Editor';
     const blockAdminInputs = currentUser?.role === 'Administrador';
     const fv = (key) => !restrictEditorForm || editorRegistrationFieldVis[key] !== false;
     const fieldBlocked = (key) => blockAdminInputs && editorRegistrationFieldVis[key] === false;
     let rosterDisplayNum = 1;
     const rosterLocSlug = String(loc).replace(/[^a-zA-Z0-9_-]/g, '_');
-    const buildFlattenedActiveRows = (participants) => {
-      const flattened = [];
-      for (const person of participants) {
-        flattened.push({ kind: 'main', person });
-        const branchRows = getBautizosBaptizedCompanionRows(person);
-        for (let i = 0; i < branchRows.length; i++) {
-          const c = branchRows[i] || {};
-          const nm = String(c?.name || '').trim();
-          if (!nm) continue;
-          flattened.push({
-            kind: 'branch',
-            parent: person,
-            companion: c,
-            branchPerson: {
-              id: `branch-${String(person.id)}-${String(c?.id || i)}`,
-              name: nm,
-              location: person.location,
-              relationship: String(c?.relationship || '').trim(),
-              willBeBaptized: SI,
-              bautizosAttendanceType: BAUTIZOS_ATTENDANCE.bautizado,
-              status: 'active',
-            },
-          });
-        }
-      }
-      return flattened;
-    };
-    const flattenedActiveRowsForLoc = buildFlattenedActiveRows(visibleParticipants);
+    const resolveRosterLiquidationTarget = resolveLocationRosterLiquidationTarget;
+    const rosterLocationExpandedIds = expandedRows;
     const renderActivosEmptyMessage = () => {
       if (filterWhatsAppPending === 'pending') {
-        return `No hay inscritos con aviso de WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`;
+        return `No hay inscritos con aviso de WhatsApp pendiente en ${loc}${appliedSearch.trim() ? ' (revisa la búsqueda)' : ''}.`;
       }
       return `No hay registros para mostrar en ${loc}.`;
     };
+    const waitlistVirtualEmptyMessage =
+      sortedWaitlistForLoc.length === 0
+        ? `Sin personas en lista de espera en ${loc}.`
+        : filterWhatsAppPending === 'pending'
+          ? `Nadie en lista de espera con WhatsApp pendiente en ${loc}${appliedSearch.trim() ? ' (revisa la búsqueda)' : ''}.`
+          : `Ninguna entrada coincide con la búsqueda o filtros en lista de espera (${loc}).`;
+    const cancelledVirtualEmptyMessage =
+      (cancelledData[loc] || []).length === 0
+        ? `No hay registros dados de baja en ${loc}.`
+        : filterWhatsAppPending === 'pending'
+          ? `Nadie cancelado con WhatsApp pendiente en ${loc}${appliedSearch.trim() ? ' (revisa la búsqueda)' : ''}.`
+          : `Ningún cancelado coincide con la búsqueda o filtros en ${loc}.`;
     return (
     <div className="p-6 space-y-6">
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
@@ -37236,8 +39248,13 @@ function resolveEventName(eventId) {
               flushNewRegDraftToParent(draftRef.current, profileSearch);
               setNewRegModalOpen(false);
             };
+            const draftRegistrationLocation = resolveRegistrationLocation(
+              draft.location,
+              loc,
+              selectableRegistrationLocations.length ? selectableRegistrationLocations : currentEvent?.locations || []
+            );
             const entryForCampaignPreview = restrictEditorForm
-              ? applyEditorRegistrationDefaults(draft, editorRegistrationFieldVis, currentEvent.eventType, loc)
+              ? applyEditorRegistrationDefaults(draft, editorRegistrationFieldVis, currentEvent.eventType, draftRegistrationLocation)
               : draft;
             const newRegCampaignsActive = getActiveDiscountCampaigns(currentEvent).filter((c) =>
               campaignMatchesPersonProfile(c, entryForCampaignPreview)
@@ -37255,7 +39272,7 @@ function resolveEventName(eventId) {
                 newRegEntryForValidation,
                 editorVisForNewReg,
                 currentEvent.eventType,
-                loc
+                draftRegistrationLocation
               );
             }
             const minDepForNewRegButton =
@@ -37283,9 +39300,9 @@ function resolveEventName(eventId) {
               ? 'grid grid-cols-2 sm:grid-cols-4 gap-2'
               : 'grid grid-cols-3 gap-2';
             const newRegSubmitBlocked = newRegFormIssues.length > 0;
-            const canSubmitNewRegistration = isLocOpen(loc) && !newRegSubmitBlocked;
+            const canSubmitNewRegistration = isLocOpen(draftRegistrationLocation) && !newRegSubmitBlocked;
             const newRegSubmitBlockedTooltip =
-              isLocOpen(loc) && newRegSubmitBlocked
+              isLocOpen(draftRegistrationLocation) && newRegSubmitBlocked
                 ? formatRegistrationValidationIssuesMessage(newRegFormIssues)
                 : undefined;
             const newRegDuplicateHint = buildNewEntryDuplicateHint(
@@ -37325,7 +39342,7 @@ function resolveEventName(eventId) {
             aria-label="Cerrar formulario"
           />
           <div
-            className={`${uiModal.panelXl} ${!isLocOpen(loc) ? 'opacity-60 pointer-events-none' : ''}`}
+            className={`${uiModal.panelXl} ${!isLocOpen(draftRegistrationLocation) ? 'opacity-60 pointer-events-none' : ''}`}
             onClick={(e) => e.stopPropagation()}
           >
             <div className={uiModal.header}>
@@ -37626,6 +39643,22 @@ function resolveEventName(eventId) {
             <section className="rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800 p-3">
               <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">{newRegSectionLabel('Datos generales')}</h4>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                {isBautizos ? (
+                  <div className={fieldStack}>
+                    <label className={labelClasses}>Sede de registro</label>
+                    <select
+                      className={inputClasses}
+                      value={draftRegistrationLocation}
+                      onChange={(e) => setDraft((prev) => remapDraftRegistrationLocation(prev, e.target.value, loc))}
+                    >
+                      {(selectableRegistrationLocations.length ? selectableRegistrationLocations : (currentEvent?.locations || [])).map((s) => (
+                        <option key={`new-reg-location-${s}`} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
                 <div className={fieldStack}>
                   <label className={labelClasses}>Nombre completo</label>
                   <input placeholder="Ej. Juan Pérez López" className={`${inputClasses} ${getRequiredFieldClass(!hasValidFullName(draft.name || ''))}`} value={draft.name} onChange={e => handleNameInput(e.target.value) && setDraft({ ...draft, name: e.target.value })} />
@@ -38104,7 +40137,7 @@ function resolveEventName(eventId) {
                               wantsBautizosTransport: next,
                               llegaEnCarro: isSiValue(next) ? false : true,
                               ...(isSiValue(next)
-                                ? { travelFrom: draft.travelFrom || loc, travelTo: draft.travelTo || loc }
+                                ? { travelFrom: draft.travelFrom || draftRegistrationLocation, travelTo: draft.travelTo || draftRegistrationLocation }
                                 : {}),
                             });
                           }}
@@ -38144,7 +40177,7 @@ function resolveEventName(eventId) {
                                   <label className={labelClasses}>Sale de sede</label>
                                   <select
                                     className={inputClasses}
-                                    value={draft.travelFrom || loc}
+                                    value={draft.travelFrom || draftRegistrationLocation}
                                     onChange={(e) => setDraft({ ...draft, travelFrom: e.target.value })}
                                   >
                                     {(currentEvent?.locations || []).map((s) => (
@@ -38160,7 +40193,7 @@ function resolveEventName(eventId) {
                                   <label className={labelClasses}>Regresa a sede</label>
                                   <select
                                     className={inputClasses}
-                                    value={draft.travelTo || loc}
+                                    value={draft.travelTo || draftRegistrationLocation}
                                     onChange={(e) => setDraft({ ...draft, travelTo: e.target.value })}
                                   >
                                     {(currentEvent?.locations || []).map((s) => (
@@ -38187,10 +40220,13 @@ function resolveEventName(eventId) {
                     eventLike={currentEvent}
                     draftMetaByVehicleKey={newRegDraftCarMeta}
                     onDraftMetaChange={(vehicleKey, patch) => {
-                      setNewRegDraftCarMeta((prev) => ({
-                        ...prev,
-                        [vehicleKey]: { ...(prev[vehicleKey] || {}), ...patch },
-                      }));
+                      setNewRegDraftCarMeta((prev) => {
+                        const cur = normalizeCarVehicleMeta(prev[vehicleKey] || {});
+                        return {
+                          ...prev,
+                          [vehicleKey]: normalizeCarVehicleMeta({ ...cur, ...patch }),
+                        };
+                      });
                     }}
                     canEdit={!fieldBlocked('bautizosTransport')}
                     sectionTitle={newRegSectionLabel('Datos de carros')}
@@ -38234,18 +40270,26 @@ function resolveEventName(eventId) {
                 {fv('bautizosCompanions') && (
                   <BautizosCompanionsField
                     registrantAge={draft.age}
+                    eventLike={currentEvent}
+                    hostEntry={draft}
                     companions={draft.bautizosCompanions || []}
+                    serveAreaOptions={
+                      globalConfig?.serveAreaOptions?.length
+                        ? globalConfig.serveAreaOptions
+                        : DEFAULT_SERVE_AREA_OPTIONS
+                    }
                     fieldSuggestions={locFieldSuggestions}
                     registryBirthDateUserId={currentUser?.id}
                     onChange={(next) => setDraft({ ...draft, bautizosCompanions: next })}
                     locations={currentEvent?.locations || []}
-                    loc={draft.location || loc}
+                    loc={draftRegistrationLocation}
                     optionalVisibility={{
                       bautizosCompanions: true,
                       bautizosTransport: fv('bautizosTransport'),
                       travelFrom: fv('travelFrom'),
                       travelTo: fv('travelTo'),
                       hideCarCountInTransport: true,
+                      serverProfileExtra: fv('serverProfileExtra'),
                     }}
                     inputClasses={inputClasses}
                     labelClasses={labelClasses}
@@ -38996,7 +41040,7 @@ function resolveEventName(eventId) {
                   {hasAdminRights && (
                     <button
                       type="button"
-                      onClick={() => setDonationModal({ isOpen: true, amount: '', donorName: '', location: loc })}
+                      onClick={() => setDonationModal({ isOpen: true, amount: '', donorName: '', location: draftRegistrationLocation })}
                       className={NEW_REG_DONATION_BTN}
                     >
                       <Receipt size={14} /> Donación
@@ -39022,7 +41066,7 @@ function resolveEventName(eventId) {
                         className="h-4 w-4 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
                         checked={sendToWaitlist}
                         onChange={(e) => setSendToWaitlist(e.target.checked)}
-                        disabled={!isLocOpen(loc) || (isCampa && isSiValue(draft.isScholarship))}
+                        disabled={!isLocOpen(draftRegistrationLocation) || (isCampa && isSiValue(draft.isScholarship))}
                       />
                       Lista de espera
                       {isCampa && isSiValue(draft.isScholarship) ? (
@@ -39078,13 +41122,17 @@ function resolveEventName(eventId) {
       <div className={uiRosterSearch.toolbarCard}>
         <RosterLocationSearchPanel
           loc={loc}
-          searchTerm={searchTerm}
-          debouncedSearchTerm={debouncedSearchTerm}
+          searchTerm={appliedSearch}
           rosterSearchActive={rosterSearchActive}
-          onSearchChange={setSearchTerm}
+          onSearchChange={(term) => {
+            rosterLocationSearchRef.current = String(term ?? '');
+            writeRosterLocationSearchTerm(term);
+            persistLocationRosterSearchToPrefs();
+          }}
           onClear={() => {
-            setSearchTerm('');
-            setDebouncedSearchTerm('');
+            rosterLocationSearchRef.current = '';
+            writeRosterLocationSearchTerm('');
+            persistLocationRosterSearchToPrefs();
           }}
           statsLine={
             <p className={uiRosterSearch.statsTitle}>
@@ -39166,11 +41214,47 @@ function resolveEventName(eventId) {
                     setFilterRosterRole('all');
                     setFilterBautizosAttendance('all');
                     setFilterAge('all');
+                    setFilterRegistrationStatus('all');
+                    setFilterEventAttendance('all');
                   }}
                   className={`w-full py-2 ${uiButtons.secondary}`}
                 >
                   Limpiar filtros
                 </button>
+                <div>
+                  <p className={uiDropdown.sectionTitle}>Estado de registro</p>
+                  {REGISTRATION_STATUS_FILTER_OPTIONS.map((op) =>
+                    rosterFilterOption(
+                      'filterRegistrationStatus',
+                      op.id,
+                      filterRegistrationStatus === op.id,
+                      () => setFilterRegistrationStatus(filterRegistrationStatus === op.id ? 'all' : op.id),
+                      <>
+                        {op.label}{' '}
+                        <span className="text-slate-400 font-bold tabular-nums text-[11px]">
+                          ({rosterRegStatusFilterCount(op.id)})
+                        </span>
+                      </>
+                    )
+                  )}
+                </div>
+                <div>
+                  <p className={uiDropdown.sectionTitle}>Asistencia al evento</p>
+                  {EVENT_ATTENDANCE_FILTER_OPTIONS.map((op) =>
+                    rosterFilterOption(
+                      'filterEventAttendance',
+                      op.id,
+                      filterEventAttendance === op.id,
+                      () => setFilterEventAttendance(filterEventAttendance === op.id ? 'all' : op.id),
+                      <>
+                        {op.label}{' '}
+                        <span className="text-slate-400 font-bold tabular-nums text-[11px]">
+                          ({rosterEventAttendanceFilterCount(op.id)})
+                        </span>
+                      </>
+                    )
+                  )}
+                </div>
                 {isCampa && (
                   <>
                     <div>
@@ -39452,18 +41536,23 @@ function resolveEventName(eventId) {
             <LocationRosterActivosChip
               isBautizos={isBautizos}
               activeCount={rosterSectionDisplayCounts.active}
+              rosterSearchActive={rosterSearchActive}
+              filteredCount={rosterSectionFilteredCounts.active}
             />
           </div>
           {showRosterActivos ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
         </button>
         {showRosterActivos && (
         <>
+        {isRosterLocationMobile ? (
         <div className={uiRosterMobile.list}>
-          {visibleParticipants.length === 0 ? (
-            <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">{renderActivosEmptyMessage()}</p>
-          ) : (
-            flattenedActiveRowsForLoc.map((rowItem) => {
-              const rowDisplayIndex = rosterDisplayNum++;
+          <LocationRosterVirtualSection
+            items={flattenedActiveRowsForLoc}
+            isMobile
+            emptyMessage={renderActivosEmptyMessage()}
+            expandedPersonIds={rosterLocationExpandedIds}
+            renderRow={(rowItem, index) => {
+              const rowDisplayIndex = index + 1;
               if (rowItem.kind === 'branch') {
                 const bp = rowItem.branchPerson;
                 const parentName = String(rowItem?.parent?.name || '').trim() || 'Registro origen';
@@ -39493,37 +41582,36 @@ function resolveEventName(eventId) {
                 displayIndex: rowDisplayIndex,
                 isExpanded,
               });
-            })
-          )}
+            }}
+          />
         </div>
-        <div className="hidden md:block overflow-x-auto">
-          <table className={ROSTER_LIST_TABLE_CLASS}>
-            <RosterListColgroup />
-            <thead>
-              <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                <th className={ROSTER_TH_PARTICIPANT}>Participante</th>
-                <th className={ROSTER_TH_FINANCES}>Finanzas</th>
-                <th className={ROSTER_TH_ACTIONS}>Acciones rápidas</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {(() => {
-                rosterDisplayNum = 1;
-                if (visibleParticipants.length === 0) {
-                  const emptyMsg =
-                    filterWhatsAppPending === 'pending'
-                      ? `No hay inscritos con aviso de WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
-                      : `No hay registros para mostrar en ${loc}.`;
-                  return <tr><td colSpan="3" className="px-6 py-16 text-center text-slate-400 italic font-medium">{emptyMsg}</td></tr>;
-                }
-
-                const flattenedActiveRows = flattenedActiveRowsForLoc;
-                return flattenedActiveRows.map((rowItem) => {
-                  const rowDisplayIndex = rosterDisplayNum++;
+        ) : (
+        <LocationRosterVirtualSection
+          items={flattenedActiveRowsForLoc}
+          isMobile={false}
+          emptyMessage={renderActivosEmptyMessage()}
+          expandedPersonIds={rosterLocationExpandedIds}
+          desktopTableHeader={
+            <>
+              <RosterListColgroup />
+              <thead>
+                <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                  <th className={ROSTER_TH_PARTICIPANT}>Participante</th>
+                  <th className={ROSTER_TH_FINANCES}>Finanzas</th>
+                  <th className={ROSTER_TH_ACTIONS}>Acciones rápidas</th>
+                </tr>
+              </thead>
+            </>
+          }
+          renderRow={(rowItem, index) => {
+            const rowDisplayIndex = index + 1;
                   if (rowItem.kind === 'branch') {
                     const bp = rowItem.branchPerson;
                     const parentName = String(rowItem?.parent?.name || '').trim() || 'Registro origen';
                     return (
+                      <table className={ROSTER_LIST_TABLE_CLASS}>
+                        <RosterListColgroup />
+                        <tbody className="divide-y divide-slate-50">
                       <tr key={bp.id} className="bg-sky-50/40 dark:bg-sky-950/15">
                         <td className="px-4 py-3 align-top">
                           {renderRegistrationParticipantColumn(bp, { displayIndex: rowDisplayIndex, isSubRegistration: true, rosterLocation: loc })}
@@ -39539,14 +41627,18 @@ function resolveEventName(eventId) {
                           <span className="text-[10px] font-bold text-slate-400">—</span>
                         </td>
                       </tr>
+                        </tbody>
+                      </table>
                     );
                   }
                   const person = rowItem.person;
                   const isExpanded = expandedRows.has(person.id);
                   const isBecado = isCampa && isSiValue(person.isScholarship);
-                  const liquidationTarget = getLiquidationTarget(person);
+                  const liquidationTarget = resolveRosterLiquidationTarget(person);
                   return (
-                    <React.Fragment key={person.id}>
+                    <table className={ROSTER_LIST_TABLE_CLASS}>
+                      <RosterListColgroup />
+                      <tbody className="divide-y divide-slate-50">
                       <tr
                         id={rosterRowAnchorId(loc, person.id)}
                         className={`hover:bg-slate-50/50 transition-colors group cursor-pointer ${isExpanded ? 'bg-slate-50/50' : ''}`}
@@ -39677,13 +41769,12 @@ function resolveEventName(eventId) {
                         </td>
                       </tr>
                       {isExpanded && renderExpandedRosterDetailTableRow(person, loc, { displayIndex: rowDisplayIndex })}
-                    </React.Fragment>
+                      </tbody>
+                    </table>
                   );
-                });
-              })()}
-            </tbody>
-          </table>
-        </div>
+          }}
+        />
+        )}
         </>
         )}
       </div>
@@ -39706,7 +41797,7 @@ function resolveEventName(eventId) {
               <LocationRosterWaitlistChip
                 waitlistCount={rosterSectionDisplayCounts.waitlist}
                 rosterSearchActive={rosterSearchActive}
-                filteredCount={waitlistFilteredForLoc.length}
+                filteredCount={rosterSectionFilteredCounts.waitlist}
               />
             </div>
             {showRosterWaitlist ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
@@ -39726,56 +41817,50 @@ function resolveEventName(eventId) {
         </div>
         {showRosterWaitlist && (
         <>
+        {isRosterLocationMobile ? (
         <div className={uiRosterMobile.list}>
-          {sortedWaitlistForLoc.length === 0 ? (
-            <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">Sin personas en lista de espera en {loc}.</p>
-          ) : waitlistFilteredForLoc.length === 0 ? (
-            <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">
-              {filterWhatsAppPending === 'pending'
-                ? `Nadie en lista de espera con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
-                : `Ninguna entrada coincide con la búsqueda o filtros en lista de espera (${loc}).`}
-            </p>
-          ) : (
-            waitlistFilteredForLoc.map((person) => {
+          <LocationRosterVirtualSection
+            items={waitlistFilteredForLoc}
+            isMobile
+            emptyMessage={waitlistVirtualEmptyMessage}
+            expandedPersonIds={rosterLocationExpandedIds}
+            renderRow={(person, index) => {
               const isExpanded = expandedRows.has(person.id);
-              const rowDisplayIndex = rosterDisplayNum++;
               return renderRosterPersonMobileCard(person, loc, {
                 key: `wait-m-${person.id}`,
-                displayIndex: rowDisplayIndex,
+                displayIndex: index + 1,
                 isExpanded,
               });
-            })
-          )}
+            }}
+          />
         </div>
-        <div className="hidden md:block overflow-x-auto">
-          <table className={ROSTER_LIST_TABLE_CLASS}>
-            <RosterListColgroup />
-            <thead>
-              <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                <th className={ROSTER_TH_PARTICIPANT}>Participante</th>
-                <th className={ROSTER_TH_FINANCES}>Finanzas</th>
-                <th className={ROSTER_TH_ACTIONS}>Acciones rápidas</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {sortedWaitlistForLoc.length === 0 ? (
-                <tr><td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">Sin personas en lista de espera en {loc}.</td></tr>
-              ) : waitlistFilteredForLoc.length === 0 ? (
-                    <tr>
-                      <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">
-                        {filterWhatsAppPending === 'pending'
-                          ? `Nadie en lista de espera con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
-                          : `Ninguna entrada coincide con la búsqueda o filtros en lista de espera (${loc}).`}
-                      </td>
-                    </tr>
-                  ) : (
-                waitlistFilteredForLoc.map((person) => {
-                    const isExpanded = expandedRows.has(person.id);
-                    const isBecado = isCampa && isSiValue(person.isScholarship);
-                    const liquidationTarget = getLiquidationTarget(person);
-                    const rowDisplayIndex = rosterDisplayNum++;
-                    return (
-                    <React.Fragment key={`wait-${person.id}`}>
+        ) : (
+        <LocationRosterVirtualSection
+          items={waitlistFilteredForLoc}
+          isMobile={false}
+          emptyMessage={waitlistVirtualEmptyMessage}
+          expandedPersonIds={rosterLocationExpandedIds}
+          desktopTableHeader={
+            <>
+              <RosterListColgroup />
+              <thead>
+                <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                  <th className={ROSTER_TH_PARTICIPANT}>Participante</th>
+                  <th className={ROSTER_TH_FINANCES}>Finanzas</th>
+                  <th className={ROSTER_TH_ACTIONS}>Acciones rápidas</th>
+                </tr>
+              </thead>
+            </>
+          }
+          renderRow={(person, index) => {
+            const isExpanded = expandedRows.has(person.id);
+            const isBecado = isCampa && isSiValue(person.isScholarship);
+            const liquidationTarget = resolveRosterLiquidationTarget(person);
+            const rowDisplayIndex = index + 1;
+            return (
+              <table className={ROSTER_LIST_TABLE_CLASS}>
+                <RosterListColgroup />
+                <tbody className="divide-y divide-slate-50">
                       <tr
                         id={rosterRowAnchorId(loc, person.id)}
                         className={`hover:bg-slate-50/50 transition-colors group cursor-pointer ${isExpanded ? 'bg-slate-50/50' : ''}`}
@@ -39894,13 +41979,12 @@ function resolveEventName(eventId) {
                         </td>
                       </tr>
                       {isExpanded && renderExpandedRosterDetailTableRow(person, loc, { displayIndex: rowDisplayIndex })}
-                    </React.Fragment>
-                    );
-                  })
-              )}
-            </tbody>
-          </table>
-        </div>
+                </tbody>
+              </table>
+            );
+          }}
+        />
+        )}
         </>
         )}
       </div>
@@ -39920,65 +42004,55 @@ function resolveEventName(eventId) {
             <LocationRosterCancelledChip
               cancelledCount={rosterSectionDisplayCounts.cancelled}
               rosterSearchActive={rosterSearchActive}
-              filteredCount={cancelledFilteredForLoc.length}
+              filteredCount={rosterSectionFilteredCounts.cancelled}
             />
           </div>
           {showRosterCancelled ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
         </button>
         {showRosterCancelled && (
         <>
+        {isRosterLocationMobile ? (
         <div className={uiRosterMobile.list}>
-          {(cancelledData[loc] || []).length === 0 ? (
-            <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">No hay registros dados de baja en {loc}.</p>
-          ) : cancelledFilteredForLoc.length === 0 ? (
-            <p className="px-3 py-10 text-center text-slate-400 italic font-medium text-sm">
-              {filterWhatsAppPending === 'pending'
-                ? `Nadie cancelado con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
-                : `Ningún cancelado coincide con la búsqueda o filtros en ${loc}.`}
-            </p>
-          ) : (
-            cancelledFilteredForLoc.map((person) => {
+          <LocationRosterVirtualSection
+            items={cancelledFilteredForLoc}
+            isMobile
+            emptyMessage={cancelledVirtualEmptyMessage}
+            expandedPersonIds={rosterLocationExpandedIds}
+            renderRow={(person, index) => {
               const isExpanded = expandedRows.has(person.id);
-              const rowDisplayIndex = rosterDisplayNum++;
               return renderRosterPersonMobileCard(person, loc, {
                 key: `cxl-m-${person.id}`,
-                displayIndex: rowDisplayIndex,
+                displayIndex: index + 1,
                 isExpanded,
               });
-            })
-          )}
+            }}
+          />
         </div>
-        <div className="hidden md:block overflow-x-auto">
-          <table className={ROSTER_LIST_TABLE_CLASS}>
-            <RosterListColgroup />
-            <thead>
-              <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                <th className={ROSTER_TH_PARTICIPANT}>Participante</th>
-                <th className={ROSTER_TH_FINANCES}>Finanzas</th>
-                <th className={ROSTER_TH_ACTIONS}>Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {(cancelledData[loc] || []).length === 0 ? (
-                <tr>
-                  <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">
-                    No hay registros dados de baja en {loc}.
-                  </td>
+        ) : (
+        <LocationRosterVirtualSection
+          items={cancelledFilteredForLoc}
+          isMobile={false}
+          emptyMessage={cancelledVirtualEmptyMessage}
+          expandedPersonIds={rosterLocationExpandedIds}
+          desktopTableHeader={
+            <>
+              <RosterListColgroup />
+              <thead>
+                <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
+                  <th className={ROSTER_TH_PARTICIPANT}>Participante</th>
+                  <th className={ROSTER_TH_FINANCES}>Finanzas</th>
+                  <th className={ROSTER_TH_ACTIONS}>Acciones</th>
                 </tr>
-              ) : cancelledFilteredForLoc.length === 0 ? (
-                <tr>
-                  <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">
-                    {filterWhatsAppPending === 'pending'
-                      ? `Nadie cancelado con WhatsApp pendiente en ${loc}${searchTerm.trim() ? ' (revisa la búsqueda)' : ''}.`
-                      : `Ningún cancelado coincide con la búsqueda o filtros en ${loc}.`}
-                  </td>
-                </tr>
-              ) : (
-                cancelledFilteredForLoc.map((person) => {
-                  const isExpanded = expandedRows.has(person.id);
-                  const rowDisplayIndex = rosterDisplayNum++;
-                  return (
-                    <React.Fragment key={`cxl-${person.id}`}>
+              </thead>
+            </>
+          }
+          renderRow={(person, index) => {
+            const isExpanded = expandedRows.has(person.id);
+            const rowDisplayIndex = index + 1;
+            return (
+              <table className={ROSTER_LIST_TABLE_CLASS}>
+                <RosterListColgroup />
+                <tbody className="divide-y divide-slate-50">
                       <tr
                         id={rosterRowAnchorId(loc, person.id)}
                         className={`group hover:bg-rose-50/40 transition-colors cursor-pointer ${isExpanded ? 'bg-rose-50/60' : ''}`}
@@ -40081,13 +42155,12 @@ function resolveEventName(eventId) {
                       </td>
                     </tr>
                     {isExpanded && renderExpandedRosterDetailTableRow(person, loc, { displayIndex: rowDisplayIndex })}
-                    </React.Fragment>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                </tbody>
+              </table>
+            );
+          }}
+        />
+        )}
         </>
         )}
       </div>
@@ -40155,7 +42228,7 @@ function resolveEventName(eventId) {
 };
 
   const renderGlobalRegistryListToolbar = (baseRowsForCounts, filtersNote, options = {}) => {
-    const { extraMobilePanelSections = null, sectionStats = null } = options;
+    const { extraMobilePanelSections = null, sectionStats = null, matchCount: matchCountOverride = null } = options;
     const emptyF = createEmptyGlobalRegistryListFilters();
     const cfo = (key, value) =>
       filterParticipantRows(baseRowsForCounts, true, { ...emptyF, [key]: value }).length;
@@ -40164,7 +42237,9 @@ function resolveEventName(eventId) {
     const cn = (num) => <span className="text-slate-400 font-bold tabular-nums text-[11px]">({num})</span>;
     const grSearchId = globalRegistrySearchFieldId(currentEvent?.id);
     const grSearchActive = !!String(globalRegistryListFilters.searchTerm || '').trim();
-    const grMatchCount = filterParticipantRows(baseRowsForCounts, true, globalRegistryListFilters).length;
+    const grMatchCount =
+      matchCountOverride ??
+      filterParticipantRows(baseRowsForCounts, true, globalRegistryListFilters).length;
     const grFilterOption = (filterKey, optionValue, checked, onChange, children, className = uiDropdown.optionRow) => (
       <RosterFilterCheckboxOption
         key={`${filterKey}-${optionValue}`}
@@ -40241,6 +42316,38 @@ function resolveEventName(eventId) {
                   <p className="text-[10px] text-slate-500 leading-snug border-b border-slate-100 pb-2">
                     {filtersNote}
                   </p>
+                  <div>
+                    <p className={uiDropdown.sectionTitle}>Estado de registro</p>
+                    {REGISTRATION_STATUS_FILTER_OPTIONS.map((op) =>
+                      grFilterOption(
+                        'filterRegistrationStatus',
+                        op.id,
+                        globalRegistryListFilters.filterRegistrationStatus === op.id,
+                        () =>
+                          setGlobalRegistryListFilters((prev) => ({
+                            ...prev,
+                            filterRegistrationStatus: prev.filterRegistrationStatus === op.id ? 'all' : op.id,
+                          })),
+                        <>{op.label}{' '}{cn(cfo('filterRegistrationStatus', op.id))}</>
+                      )
+                    )}
+                  </div>
+                  <div>
+                    <p className={uiDropdown.sectionTitle}>Asistencia al evento</p>
+                    {EVENT_ATTENDANCE_FILTER_OPTIONS.map((op) =>
+                      grFilterOption(
+                        'filterEventAttendance',
+                        op.id,
+                        globalRegistryListFilters.filterEventAttendance === op.id,
+                        () =>
+                          setGlobalRegistryListFilters((prev) => ({
+                            ...prev,
+                            filterEventAttendance: prev.filterEventAttendance === op.id ? 'all' : op.id,
+                          })),
+                        <>{op.label}{' '}{cn(cfo('filterEventAttendance', op.id))}</>
+                      )
+                    )}
+                  </div>
                   {isCampa && (
                     <>
                       <div><p className={uiDropdown.sectionTitle}>Asignación</p>{['all', 'Teens', 'Jóvenes', 'Ambos'].map((op) => grFilterOption('filterAssignment', op, globalRegistryListFilters.filterAssignment === op, () => setGlobalRegistryListFilters((prev) => ({ ...prev, filterAssignment: prev.filterAssignment === op ? 'all' : op })), <>{op === 'all' ? 'Todas' : op}{' '}{cn(cfo('filterAssignment', op))}</>))}</div>
@@ -40541,103 +42648,27 @@ function resolveEventName(eventId) {
   );
 
   const renderGlobalRegistryPage = () => {
-    const eventLocs = new Set((currentEvent?.locations || []).map((x) => String(x).trim()).filter(Boolean));
-    const rosterForEvent = (allParticipants || []).filter(
-      (p) => String(p?.eventId || '') === String(currentEvent?.id || '')
-    );
-    const isValidEventLocation = (p) => {
-      const r = resolveParticipantEffectiveLocation(p, rosterForEvent);
-      return r && eventLocs.has(r);
-    };
-    const sourceRows = rosterForEvent.filter((p) => {
-      if (isCompanionWaitlistPhantomStoredParticipant(p)) return false;
-      const status = p?.status || 'active';
-      if (status === PARTICIPANT_STATUS_ARCHIVED) return false;
-      if (!(status === 'active' || status === 'waitlist' || status === PARTICIPANT_STATUS_CANCELLED)) return false;
-      const locRaw = resolveParticipantEffectiveLocation(p, rosterForEvent);
-      const validLoc = locRaw && eventLocs.has(locRaw);
-      if (validLoc && !visibleLocations.includes(locRaw)) return false;
-      return true;
-    });
-    const invalidSource = sourceRows.filter((p) => !isValidEventLocation(p));
-    const validSource = sourceRows.filter((p) => isValidEventLocation(p));
-    const locsInScope = (() => {
-      const base =
-        globalLocationFilters.length > 0
-          ? globalLocationFilters.filter((loc) => visibleLocations.includes(loc))
-          : [...visibleLocations];
-      return base.map((l) => String(l).trim()).filter(Boolean);
-    })();
-    const globalSectionDisplayCounts = aggregateLocationRosterSectionCountsForLocations({
-      locations: locsInScope,
-      event: currentEvent,
-      globalConfig,
-      allParticipants,
-      activeTitularParticipantsByLocation: data,
-      waitlistParticipantsByLocation: waitlistData,
-      cancelledParticipantsByLocation: cancelledData,
-    });
-    const activosTitularsInScope = locsInScope.flatMap((loc) => data[loc] || []);
-    const grSortKey = String(globalRegistryListFilters.sortBy || 'registered-desc').trim();
-    const grSortDebt = (p) => {
-      if (isBautizos && p?.__globalRegistryCompanionRow && bautizosGlobalRegistryFinanceOpts) {
-        const host = resolveGlobalRegistryFinanceHost(p);
-        return getBautizosGlobalRegistryRowOutstandingGross(
-          p,
-          host,
-          currentEvent,
-          bautizosGlobalRegistryFinanceOpts
-        );
-      }
-      return getParticipantOutstandingGross(p, getLiquidationTarget, computeNetAmountByMethod);
-    };
-    const filterGlobalRegistrySectionRows = (rows, preserveOrder = false) =>
-      filterParticipantRows(rows, preserveOrder, globalRegistryListFilters, {
-        expandBautizosCompanions: false,
-      });
-    const activosTitularsFiltered = filterGlobalRegistrySectionRows(activosTitularsInScope, false);
-    const waitlistSortedFiltered = (() => {
-      const sorted = locsInScope.flatMap((loc) => getSortedWaitlistForLocation(loc));
-      const filteredIdSet = new Set(
-        filterGlobalRegistrySectionRows(sorted, true).map((p) => String(p?.id || ''))
+    const model = globalRegistryPageModel;
+    if (!model) {
+      return (
+        <div className="p-6">
+          <p className="text-slate-500 text-sm">Cargando registro global…</p>
+        </div>
       );
-      return sorted.filter((p) => filteredIdSet.has(String(p?.id || '')));
-    })();
-    const cancelledTitularsFiltered = filterGlobalRegistrySectionRows(
-      locsInScope.flatMap((loc) => cancelledData[loc] || []),
-      false
-    );
-    const applyGlobalRegistryPartySort = (partyRows) =>
-      sortGlobalRegistryPartyRows(partyRows, grSortKey, { getDebt: grSortDebt });
-    const partySections = buildGlobalRegistryPartySections({
-      isBautizos,
-      activeTitulars: activosTitularsFiltered,
-      waitlistRows: waitlistSortedFiltered,
-      cancelledTitulars: cancelledTitularsFiltered,
-      rosterForPlan: validSource,
-    });
-    const activeRows = applyGlobalRegistryPartySort(partySections.active);
-    const waitlistRows = applyGlobalRegistryPartySort(partySections.waitlist);
-    const cancelledRows = applyGlobalRegistryPartySort(partySections.cancelled);
-    const validSourceParty = buildGlobalRegistryPartySections({
-      isBautizos,
-      activeTitulars: activosTitularsInScope,
-      waitlistRows: locsInScope.flatMap((loc) => getSortedWaitlistForLocation(loc)),
-      cancelledTitulars: locsInScope.flatMap((loc) => cancelledData[loc] || []),
-      rosterForPlan: validSource,
-    });
-    const validSourceExpanded = [
-      ...globalRegistryPartyRowsToPersons(validSourceParty.active),
-      ...globalRegistryPartyRowsToPersons(validSourceParty.waitlist),
-      ...globalRegistryPartyRowsToPersons(validSourceParty.cancelled),
-    ];
-    // Sin expandir acompañantes: expandBautizosWaitlistRegistryRows inyecta cw:* de titulares activos
-    // aunque invalidSource esté vacío, lo que duplicaba filas con sede válida en esta sección.
-    const invalidFiltered = filterGlobalRegistrySectionRows(invalidSource);
-    const coincidenceTotal =
-      invalidFiltered.length + activeRows.length + waitlistRows.length + cancelledRows.length;
+    }
+    const {
+      rosterForEvent,
+      validSource,
+      activeRowsVisible,
+      waitlistRows,
+      cancelledRows,
+      validSourceExpanded,
+      invalidFiltered,
+      coincidenceTotal,
+      globalRegistryActiveCount,
+    } = model;
     const grSearchActive = !!String(globalRegistryListFilters.searchTerm || '').trim();
-    const showGrActivos = grSearchActive ? activeRows.length > 0 : rosterSectionExpanded.activos;
+    const showGrActivos = grSearchActive ? activeRowsVisible.length > 0 : rosterSectionExpanded.activos;
     const showGrWaitlist = grSearchActive ? waitlistRows.length > 0 : rosterSectionExpanded.waitlist;
     const showGrCancelled = grSearchActive ? cancelledRows.length > 0 : rosterSectionExpanded.cancelled;
     const fallbackLoc =
@@ -40646,6 +42677,45 @@ function resolveEventName(eventId) {
       useUnspecifiedPlaceholder: true,
       hideBautizosCompanionCountChip: true,
     };
+    const globalRegistryAttendanceRowAccent = 'border-l-[3px] border-l-emerald-500';
+    const resolveGlobalRegistryRowAttendance = (person) => {
+      if (!person) return { sourceKey: '', confirmed: false };
+      const sourceKey = resolveTransportAttendanceSourceKeyForRegistryPerson(
+        person,
+        rosterForEvent,
+        currentEvent?.eventType
+      );
+      return {
+        sourceKey,
+        confirmed: sourceKey
+          ? isRegistryPersonEventAttendanceConfirmed(
+              person,
+              getRegistryAttendancePlanSnapshot(),
+              rosterForEvent,
+              currentEvent?.eventType
+            )
+          : false,
+      };
+    };
+    const buildGlobalRegistryAttendanceColumnOpts = (person) => {
+      const attMeta = resolveGlobalRegistryRowAttendance(person);
+      const opts = { eventAttendanceConfirmed: !!attMeta.confirmed };
+      if (canMarkEventAttendance && attMeta.sourceKey) {
+        opts.eventAttendanceControl = (
+          <GlobalRegistryEventAttendanceControl
+            sourceKey={attMeta.sourceKey}
+            initialConfirmed={!!attMeta.confirmed}
+            onToggleBySourceKey={toggleGlobalRegistryAttendanceBySourceKey}
+          />
+        );
+      }
+      return opts;
+    };
+    const globalRegistryColumnOptsFor = (person, _partyKey, extra = {}) => ({
+      ...globalRegistryColumnOpts,
+      ...extra,
+      ...buildGlobalRegistryAttendanceColumnOpts(person),
+    });
     const globalRegistryRowLoc = (person) => {
       const effective = resolveParticipantEffectiveLocation(person, rosterForEvent);
       if (effective) return effective;
@@ -40661,8 +42731,108 @@ function resolveEventName(eventId) {
       );
     };
 
+    const renderBautizosGlobalRegistryRowsBlockLite = (
+      sectionPartyRows,
+      { emptyMessage, emptyFilteredMessage, sectionKey }
+    ) => {
+      const renderLiteMobile =
+        typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches;
+      const virtualRowHeight = renderLiteMobile ? 116 : 72;
+      const sectionRows = sectionPartyRows.map((partyRow, partyRowIndex) => {
+        const person = partyRow.person;
+        const rowLoc = globalRegistryRowLoc(person);
+        const attendanceMeta = resolveGlobalRegistryRowAttendance(person);
+        const partyKey = String(partyRow?.key || '').trim();
+        const debt =
+          (partyKey && globalRegistryDebtByPartyKey?.has(partyKey))
+            ? globalRegistryDebtByPartyKey.get(partyKey)
+            : globalRegistryGetDebt(person);
+        return {
+          key: partyKey || `global-lite-${sectionKey}-${partyRowIndex}`,
+          partyRow,
+          person,
+          rowLoc,
+          rowDisplayIndex: partyRowIndex + 1,
+          attendanceMeta,
+          debt,
+        };
+      });
+
+      return (
+        <>
+          {renderLiteMobile ? (
+            sectionRows.length === 0 ? (
+              <p className="px-3 py-14 text-center text-slate-400 italic font-medium text-sm">{emptyMessage}</p>
+            ) : (
+              <VirtualizedList
+                items={sectionRows}
+                itemHeight={virtualRowHeight}
+                overscan={8}
+                useParentScroll
+                className={uiRosterMobile.list}
+                renderItem={(row) => (
+                  <div className="pb-3">
+                    <BautizosGlobalRegistryLiteRow
+                      key={`global-lite-${sectionKey}-m-${row.partyRow.key}`}
+                      mobile
+                      rowKey={`global-lite-${sectionKey}-m-${row.partyRow.key}`}
+                      rowDisplayIndex={row.rowDisplayIndex}
+                      name={row.person?.name || ''}
+                      locationLabel={rosterDisplayUnspecified(row.rowLoc)}
+                      subRegistrationLabel={row.partyRow.isSubRegistration ? (row.partyRow.subRegistrationLabel || 'Acompañante') : ''}
+                      debtText={formatMoney(row.debt)}
+                      confirmed={!!row.attendanceMeta.confirmed}
+                      sourceKey={row.attendanceMeta.sourceKey || ''}
+                      canMarkEventAttendance={canMarkEventAttendance}
+                      onToggleBySourceKey={toggleGlobalRegistryAttendanceBySourceKey}
+                    />
+                  </div>
+                )}
+              />
+            )
+          ) : (
+            <div className="rounded-2xl border border-slate-100 overflow-hidden">
+              {sectionRows.length === 0 ? (
+                <p className="px-3 py-14 text-center text-slate-400 italic font-medium text-sm">{emptyMessage}</p>
+              ) : (
+                <div>
+                  <div className="grid grid-cols-[minmax(0,2.3fr)_minmax(120px,1fr)_minmax(120px,0.9fr)_minmax(110px,0.8fr)] gap-3 bg-slate-50 px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-slate-100">
+                    <div>Participante</div>
+                    <div>Sede</div>
+                    <div>Asistencia</div>
+                    <div>Saldo</div>
+                  </div>
+                  <VirtualizedList
+                    items={sectionRows}
+                    itemHeight={virtualRowHeight}
+                    overscan={10}
+                    useParentScroll
+                    renderItem={(row) => (
+                      <BautizosGlobalRegistryLiteRow
+                        key={`global-lite-${sectionKey}-${row.partyRow.key}`}
+                        rowKey={`global-lite-${sectionKey}-${row.partyRow.key}`}
+                        rowDisplayIndex={row.rowDisplayIndex}
+                        name={row.person?.name || ''}
+                        locationLabel={rosterDisplayUnspecified(row.rowLoc)}
+                        subRegistrationLabel={row.partyRow.isSubRegistration ? (row.partyRow.subRegistrationLabel || 'Acompañante') : ''}
+                        debtText={formatMoney(row.debt)}
+                        confirmed={!!row.attendanceMeta.confirmed}
+                        sourceKey={row.attendanceMeta.sourceKey || ''}
+                        canMarkEventAttendance={canMarkEventAttendance}
+                        onToggleBySourceKey={toggleGlobalRegistryAttendanceBySourceKey}
+                      />
+                    )}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      );
+    };
+
     const renderGlobalRegistryRowsBlock = (sectionPartyRows, { emptyMessage, emptyFilteredMessage, sectionKey }) => (
-      <>
+      isBautizos ? renderBautizosGlobalRegistryRowsBlockLite(sectionPartyRows, { emptyMessage, emptyFilteredMessage, sectionKey }) : <>
         <div className={uiRosterMobile.list}>
           {sectionPartyRows.length === 0 ? (
             <p className="px-3 py-14 text-center text-slate-400 italic font-medium text-sm">{emptyMessage}</p>
@@ -40673,6 +42843,7 @@ function resolveEventName(eventId) {
                 !partyRow.disableExpand && !person.__globalRegistryCompanionRow && expandedRows.has(person.id);
               const rowLoc = globalRegistryRowLoc(person);
               const rowDisplayIndex = partyRowIndex + 1;
+              const attendanceConfirmed = resolveGlobalRegistryRowAttendance(person).confirmed;
               return renderRosterPersonMobileCard(person, rowLoc, {
                 key: `global-${sectionKey}-m-${partyRow.key}`,
                 displayIndex: rowDisplayIndex,
@@ -40682,10 +42853,10 @@ function resolveEventName(eventId) {
                 sedeLabel: rosterDisplayUnspecified(rowLoc),
                 isSubRegistration: partyRow.isSubRegistration,
                 disableExpand: partyRow.disableExpand,
-                participantColumnOpts: {
-                  ...globalRegistryColumnOpts,
+                className: attendanceConfirmed ? globalRegistryAttendanceRowAccent : '',
+                participantColumnOpts: globalRegistryColumnOptsFor(person, partyRow.key, {
                   subRegistrationLabel: partyRow.subRegistrationLabel,
-                },
+                }),
                 branchMeta: partyRow.subRegistrationLabel && !partyRow.isSubRegistration ? partyRow.subRegistrationLabel : undefined,
               });
             })
@@ -40714,18 +42885,18 @@ function resolveEventName(eventId) {
                     !partyRow.disableExpand && !person.__globalRegistryCompanionRow && expandedRows.has(person.id);
                   const rowLoc = globalRegistryRowLoc(person);
                   const rowDisplayIndex = partyRowIndex + 1;
-                  const columnOpts = {
+                  const columnOpts = globalRegistryColumnOptsFor(person, partyRow.key, {
                     displayIndex: rowDisplayIndex,
                     rosterLocation: rowLoc,
                     isSubRegistration: partyRow.isSubRegistration,
                     subRegistrationLabel: partyRow.subRegistrationLabel,
-                    ...globalRegistryColumnOpts,
-                  };
+                  });
+                  const attendanceConfirmed = !!columnOpts.eventAttendanceConfirmed;
                   return (
                     <React.Fragment key={`global-${sectionKey}-${partyRow.key}`}>
                       <tr
                         id={rosterRowAnchorId(rowLoc, person.id)}
-                        className={`hover:bg-slate-50/60 transition-colors ${partyRow.disableExpand ? '' : 'cursor-pointer'} ${isExpanded ? 'bg-slate-50/90' : ''}`}
+                        className={`hover:bg-slate-50/60 transition-colors ${partyRow.disableExpand ? '' : 'cursor-pointer'} ${isExpanded ? 'bg-slate-50/90' : ''}${attendanceConfirmed ? ` ${globalRegistryAttendanceRowAccent}` : ''}`}
                         title={partyRow.disableExpand ? undefined : 'Clic en la fila para ver u ocultar detalles'}
                         onClick={
                           partyRow.disableExpand
@@ -40762,7 +42933,7 @@ function resolveEventName(eventId) {
       </>
     );
 
-    return (
+    const pageElement = (
       <div className="p-6 space-y-6">
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
@@ -40786,8 +42957,9 @@ function resolveEventName(eventId) {
         </div>
 
         {renderGlobalRegistryListToolbar(validSourceExpanded, 'Solo afectan a esta vista de Registro Global.', {
+          matchCount: coincidenceTotal,
           sectionStats: {
-            activos: activeRows.length,
+            activos: globalRegistryActiveCount,
             waitlist: waitlistRows.length,
             cancelled: cancelledRows.length,
           },
@@ -40815,18 +42987,23 @@ function resolveEventName(eventId) {
                     const isExpanded = expandedRows.has(person.id);
                     const rowLoc = globalRegistryRowLoc(person) || fallbackLoc;
                     const rowDisplayIndex = invalidLocDisplayNum++;
+                    const invalidColumnOpts = globalRegistryColumnOptsFor(person, '', {
+                      displayIndex: rowDisplayIndex,
+                      rosterLocation: rowLoc,
+                    });
+                    const invalidAttendanceConfirmed = !!invalidColumnOpts.eventAttendanceConfirmed;
                     return (
                       <React.Fragment key={`global-badloc-${person.id}`}>
                         <tr
                           id={rosterRowAnchorId(rowLoc, person.id)}
-                          className="hover:bg-amber-50/80 cursor-pointer"
+                          className={`hover:bg-amber-50/80 cursor-pointer${invalidAttendanceConfirmed ? ` ${globalRegistryAttendanceRowAccent}` : ''}`}
                           title="Clic en la fila para ver u ocultar detalles"
                           onClick={(e) => {
                             if (isRosterRowInteractiveClickTarget(e.target)) return;
                             toggleRosterRowExpand(person, rowLoc);
                           }}
                         >
-                          <td className="px-3 py-2 align-top">{renderRegistrationParticipantColumn(person, { displayIndex: rowDisplayIndex, rosterLocation: rowLoc })}</td>
+                          <td className="px-3 py-2 align-top">{renderRegistrationParticipantColumn(person, invalidColumnOpts)}</td>
                           <td className="px-3 py-2 align-top">
                             <span className="inline-flex items-center gap-1 text-[10px] font-black text-amber-900 bg-amber-100 border border-amber-200 rounded-lg px-2 py-1">
                               <MapPin size={12} />
@@ -40881,18 +43058,18 @@ function resolveEventName(eventId) {
               <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Activos (inscritos)</span>
               <LocationRosterActivosChip
                 isBautizos={isBautizos}
-                activeCount={globalSectionDisplayCounts.active}
+                activeCount={globalRegistryActiveCount}
               />
-              {grSearchActive && activeRows.length > 0 ? (
+              {grSearchActive && activeRowsVisible.length > 0 ? (
                 <span className="chip-roster-count-filter-hit text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-lg">
-                  {activeRows.length} coincidencia{activeRows.length === 1 ? '' : 's'}
+                  {activeRowsVisible.length} coincidencia{activeRowsVisible.length === 1 ? '' : 's'}
                 </span>
               ) : null}
             </div>
             {showGrActivos ? <ChevronUp size={20} className="text-slate-400 shrink-0" /> : <ChevronDown size={20} className="text-slate-400 shrink-0" />}
           </button>
           {showGrActivos &&
-            renderGlobalRegistryRowsBlock(activeRows, {
+            renderGlobalRegistryRowsBlock(activeRowsVisible, {
               sectionKey: 'activos',
               emptyMessage:
                 globalRegistryListFilters.filterWhatsAppPending === 'pending'
@@ -40914,7 +43091,7 @@ function resolveEventName(eventId) {
               <GraduationCap size={18} className="text-amber-600 shrink-0" />
               <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Lista de espera(Becados)</span>
               <LocationRosterWaitlistChip
-                waitlistCount={globalSectionDisplayCounts.waitlist}
+                waitlistCount={waitlistRows.length}
                 rosterSearchActive={grSearchActive}
                 filteredCount={waitlistRows.length}
               />
@@ -40945,7 +43122,7 @@ function resolveEventName(eventId) {
               <Ban size={18} className="text-rose-600 shrink-0" />
               <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Cancelados / dados de baja</span>
               <LocationRosterCancelledChip
-                cancelledCount={globalSectionDisplayCounts.cancelled}
+                cancelledCount={cancelledRows.length}
                 rosterSearchActive={grSearchActive}
                 filteredCount={cancelledRows.length}
               />
@@ -40965,15 +43142,18 @@ function resolveEventName(eventId) {
         </RosterSectionScrollWrap>
       </div>
     );
+    return pageElement;
   };
 
   const renderServerProfilesPage = () => {
     const activeRoster = scopedEventParticipants.filter(
       (p) => participantIsActiveInEvent(p) && participantIsActiveInRoster(p)
     );
-    const basePool = isBautizos
-      ? collectBautizosServidoresYEmpleadosRows(activeRoster)
-      : activeRoster.filter((p) => isSiValue(p.isServer));
+    const basePool =
+      serverProfilesServidoresPool ??
+      (isBautizos
+        ? collectBautizosServidoresYEmpleadosRows(activeRoster)
+        : activeRoster.filter((p) => isSiValue(p.isServer)));
     let rows = filterParticipantRows(basePool, false, globalRegistryListFilters, {
       expandBautizosCompanions: false,
     });
@@ -40983,6 +43163,18 @@ function resolveEventName(eventId) {
     }
     if (globalLocationFilters.length > 0) {
       rows = rows.filter((p) => globalLocationFilters.includes(p.location));
+    }
+    void serverServeAreaRev;
+    const serveAreaOverrides = serverServeAreaByIdRef.current;
+    const overrideIds = Object.keys(serveAreaOverrides);
+    if (overrideIds.length) {
+      rows = rows.map((p) => {
+        const id = String(p?.id || '').trim();
+        if (!id || !Object.prototype.hasOwnProperty.call(serveAreaOverrides, id)) return p;
+        const nextArea = serveAreaOverrides[id];
+        if (String(p.assignedServeArea || '').trim() === String(nextArea || '').trim()) return p;
+        return { ...p, assignedServeArea: nextArea };
+      });
     }
     const coincidenceTotal = rows.length;
     const sedeScopeHint =
@@ -41040,6 +43232,136 @@ function resolveEventName(eventId) {
       { label: 'Área asignada', value: assignedCount, color: '#10b981' },
       { label: 'Pendiente de asignar', value: pendingAssign, color: '#f97316' },
     ].filter((s) => s.value > 0);
+
+    const renderServerProfileTableRow = (p) => {
+      const ageLabel = (() => {
+        const age = getEffectiveParticipantAge(p);
+        return age ? String(age) : '—';
+      })();
+      const congTxt = isSiValue(p.servesInCongress)
+        ? `${SI_LABEL}${
+            p.congressServeArea && String(p.congressServeArea).trim()
+              ? ` (${String(p.congressServeArea).trim()})`
+              : ''
+          }`
+        : 'No';
+      return (
+        <tr key={`srv-${p.id}`} className="hover:bg-slate-50/60">
+          <td className="px-3 py-2 align-top">
+            <p className="font-bold text-slate-700">{p.name}</p>
+            <div className="flex flex-wrap gap-1 mt-1">
+              {renderPublicLinkExtChip(p)}
+              {renderDoubleRoleCollisionChip(p)}
+              {renderParticipantAssistanceBadges(p)}
+            </div>
+          </td>
+          <td className="px-3 py-2 text-slate-600 tabular-nums">{ageLabel}</td>
+          <td className="px-3 py-2 text-slate-600">{isBautizos ? getBautizosAttendanceTypeLabel(p) : p.serverAssignment || '?'}</td>
+          <td className="px-3 py-2 text-slate-600">{p.preferredServeArea || '?'}</td>
+          <td className="px-3 py-2 text-slate-600">{p.servedOtherCampa || 'No'}</td>
+          <td className="px-3 py-2 text-slate-600">{p.servedAreas || '?'}</td>
+          <td className="px-3 py-2 text-slate-600">{congTxt}</td>
+          <td className="px-3 py-2 text-slate-600 align-top">
+            {!isSiValue(p.isMarried) ? (
+              'No'
+            ) : (
+              <div>
+                <span>
+                  {SI_LABEL}
+                  {p.spouseName ? ` (${p.spouseName})` : ''}
+                </span>
+                {(() => {
+                  const sid = String(p.spouseParticipantId || '').trim();
+                  const partner = sid ? allParticipants.find((x) => String(x.id) === sid) : null;
+                  const linkedFromOther =
+                    !sid &&
+                    allParticipants.find((x) => String(x.spouseParticipantId || '').trim() === String(p.id));
+                  if ((sid && partner) || linkedFromOther) {
+                    const show = partner || linkedFromOther;
+                    return (
+                      <span className="block text-[10px] text-emerald-700 font-semibold mt-0.5">
+                        Vinculado: {show?.name || '?'}
+                        {!sid && linkedFromOther ? ' (enlace desde pareja)' : ''}
+                      </span>
+                    );
+                  }
+                  if (sid && !partner) {
+                    return (
+                      <span className="block text-[10px] text-amber-700 mt-0.5">Ref. pareja: {sid}</span>
+                    );
+                  }
+                  return (
+                    <span className="block text-[10px] text-slate-500 mt-0.5">
+                      Pendiente de asignar pareja
+                      {p.spousePhone && String(p.spousePhone).trim()
+                        ? ` · Tel. ${String(p.spousePhone).trim()}`
+                        : ''}
+                    </span>
+                  );
+                })()}
+              </div>
+            )}
+          </td>
+          <td className="px-3 py-2 text-slate-600">
+            {isSiValue(p.goesWithChildren)
+              ? `${SI_LABEL}${p.childrenCount && String(p.childrenCount).trim() ? ` (${p.childrenCount})` : ''}`
+              : 'No'}
+          </td>
+          <td className="px-3 py-2 align-top" onClick={(e) => e.stopPropagation()}>
+            {!hasAdminRights ? (
+              <span className="text-slate-400">{String(p.assignedServeArea || '').trim() || '—'}</span>
+            ) : (
+              <select
+                className={`w-full max-w-[11rem] text-[10px] font-bold border border-amber-200 rounded-lg px-2 py-1.5 bg-white text-slate-800 dark:bg-slate-800 dark:border-indigo-700 dark:text-slate-100 dark:shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-500/80 dark:focus:ring-2 dark:focus:ring-indigo-500 ${QUICK_ACTION_DARK_INTERACTION}`}
+                value={String(p.assignedServeArea || '').trim()}
+                onChange={(e) => void handleAssignServerServeArea(p, e.target.value)}
+              >
+                <option value="">Sin asignar</option>
+                {(function pickOpts() {
+                  const cur = String(p.assignedServeArea || '').trim();
+                  const base = [...serveAreaPickList];
+                  if (cur && !base.includes(cur)) base.unshift(cur);
+                  return base;
+                })().map((opt) => (
+                  <option key={`srv-area-${p.id}-${opt}`} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+              </select>
+            )}
+          </td>
+        </tr>
+      );
+    };
+
+    const serverProfilesDesktopTableClass = 'w-full text-left text-xs table-fixed border-collapse';
+    const serverProfilesColgroup = isBautizos ? (
+      <colgroup>
+        <col style={{ width: '17%' }} />
+        <col style={{ width: '5%' }} />
+        <col style={{ width: '10%' }} />
+        <col style={{ width: '9%' }} />
+        <col style={{ width: '8%' }} />
+        <col style={{ width: '8%' }} />
+        <col style={{ width: '9%' }} />
+        <col style={{ width: '12%' }} />
+        <col style={{ width: '6%' }} />
+        <col style={{ width: '10%' }} />
+      </colgroup>
+    ) : (
+      <colgroup>
+        <col style={{ width: '18%' }} />
+        <col style={{ width: '5%' }} />
+        <col style={{ width: '10%' }} />
+        <col style={{ width: '9%' }} />
+        <col style={{ width: '8%' }} />
+        <col style={{ width: '8%' }} />
+        <col style={{ width: '9%' }} />
+        <col style={{ width: '13%' }} />
+        <col style={{ width: '6%' }} />
+        <col style={{ width: '10%' }} />
+      </colgroup>
+    );
 
     return (
       <div className="p-6 space-y-5">
@@ -41153,138 +43475,43 @@ function resolveEventName(eventId) {
         )}
 
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-x-auto">
-          <table className="w-full text-left text-xs">
+          <table className={serverProfilesDesktopTableClass}>
+            {serverProfilesColgroup}
             <thead>
               <tr className="bg-slate-50 text-slate-500 uppercase tracking-wider font-black">
                 <th className="px-3 py-3">{isBautizos ? 'Persona' : 'Servidor'}</th>
+                <th className="px-3 py-3">Edad</th>
                 <th className="px-3 py-3">{isBautizos ? 'Tipo asistencia' : 'Asignación'}</th>
-                {isBautizos ? <th className="px-3 py-3">Participa servidor</th> : null}
                 <th className="px-3 py-3">Área deseada</th>
                 <th className="px-3 py-3">Sirvió en otro campa</th>
                 <th className="px-3 py-3">Áreas previas</th>
                 <th className="px-3 py-3">Sirve en congre</th>
                 <th className="px-3 py-3">Casado / Pareja</th>
                 <th className="px-3 py-3">Hijos</th>
-                <th className="px-3 py-3">Sale de</th>
-                <th className="px-3 py-3">Regresa a</th>
                 <th className="px-3 py-3 min-w-[9rem]">Área para servir</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
-              {rows.length === 0 ? (
-                <tr>
-                  <td className="px-4 py-8 text-slate-400 italic" colSpan={isBautizos ? 12 : 11}>
-                    {isBautizos ? 'Sin servidores ni empleados con esos filtros.' : 'Sin servidores con esos filtros.'}
-                  </td>
-                </tr>
-              ) : (
-                rows.map((p) => {
-                  const saleLoc = p.travelFrom || p.location || '?';
-                  const regresaLoc = p.travelTo || p.location || '?';
-                  const saleTxt = resolveLlegaEnCarro(p) ? `${saleLoc} (auto)` : saleLoc;
-                  const regresaTxt = resolveRegresaEnCarro(p) ? `${regresaLoc} (auto)` : regresaLoc;
-                  const congTxt = isSiValue(p.servesInCongress)
-                    ? `${SI_LABEL}${
-                        p.congressServeArea && String(p.congressServeArea).trim()
-                          ? ` (${String(p.congressServeArea).trim()})`
-                          : ''
-                      }`
-                    : 'No';
-                  return (
-                    <tr key={`srv-${p.id}`} className="hover:bg-slate-50/60">
-                      <td className="px-3 py-2 align-top">
-                        <p className="font-bold text-slate-700">{p.name}</p>
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {renderPublicLinkExtChip(p)}
-                          {renderDoubleRoleCollisionChip(p)}
-                          {renderParticipantAssistanceBadges(p)}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 text-slate-600">{isBautizos ? getBautizosAttendanceTypeLabel(p) : p.serverAssignment || '?'}</td>
-                      {isBautizos ? (
-                        <td className="px-3 py-2 text-slate-600">{formatSiNo(p.isServer)}</td>
-                      ) : null}
-                      <td className="px-3 py-2 text-slate-600">{p.preferredServeArea || '?'}</td>
-                      <td className="px-3 py-2 text-slate-600">{p.servedOtherCampa || 'No'}</td>
-                      <td className="px-3 py-2 text-slate-600">{p.servedAreas || '?'}</td>
-                      <td className="px-3 py-2 text-slate-600">{congTxt}</td>
-                      <td className="px-3 py-2 text-slate-600 align-top">
-                        {!isSiValue(p.isMarried) ? (
-                          'No'
-                        ) : (
-                          <div>
-                            <span>
-                              {SI_LABEL}
-                              {p.spouseName ? ` (${p.spouseName})` : ''}
-                            </span>
-                            {(() => {
-                              const sid = String(p.spouseParticipantId || '').trim();
-                              const partner = sid ? allParticipants.find((x) => String(x.id) === sid) : null;
-                              const linkedFromOther =
-                                !sid &&
-                                allParticipants.find((x) => String(x.spouseParticipantId || '').trim() === String(p.id));
-                              if ((sid && partner) || linkedFromOther) {
-                                const show = partner || linkedFromOther;
-                                return (
-                                  <span className="block text-[10px] text-emerald-700 font-semibold mt-0.5">
-                                    Vinculado: {show?.name || '?'}
-                                    {!sid && linkedFromOther ? ' (enlace desde pareja)' : ''}
-                                  </span>
-                                );
-                              }
-                              if (sid && !partner) {
-                                return (
-                                  <span className="block text-[10px] text-amber-700 mt-0.5">Ref. pareja: {sid}</span>
-                                );
-                              }
-                              return (
-                                <span className="block text-[10px] text-slate-500 mt-0.5">
-                                  Pendiente de asignar pareja
-                                  {p.spousePhone && String(p.spousePhone).trim()
-                                    ? ` · Tel. ${String(p.spousePhone).trim()}`
-                                    : ''}
-                                </span>
-                              );
-                            })()}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-slate-600">
-                        {isSiValue(p.goesWithChildren)
-                          ? `${SI_LABEL}${p.childrenCount && String(p.childrenCount).trim() ? ` (${p.childrenCount})` : ''}`
-                          : 'No'}
-                      </td>
-                      <td className="px-3 py-2 text-slate-600">{saleTxt}</td>
-                      <td className="px-3 py-2 text-slate-600">{regresaTxt}</td>
-                      <td className="px-3 py-2 align-top" onClick={(e) => e.stopPropagation()}>
-                        {!hasAdminRights ? (
-                          <span className="text-slate-400">{String(p.assignedServeArea || '').trim() || '—'}</span>
-                        ) : (
-                          <select
-                            className={`w-full max-w-[11rem] text-[10px] font-bold border border-amber-200 rounded-lg px-2 py-1.5 bg-white text-slate-800 dark:bg-slate-800 dark:border-indigo-700 dark:text-slate-100 dark:shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-500/80 dark:focus:ring-2 dark:focus:ring-indigo-500 ${QUICK_ACTION_DARK_INTERACTION}`}
-                            value={String(p.assignedServeArea || '').trim()}
-                            onChange={(e) => void handleAssignServerServeArea(p, e.target.value)}
-                          >
-                            <option value="">Sin asignar</option>
-                            {(function pickOpts() {
-                              const cur = String(p.assignedServeArea || '').trim();
-                              const base = [...serveAreaPickList];
-                              if (cur && !base.includes(cur)) base.unshift(cur);
-                              return base;
-                            })().map((opt) => (
-                              <option key={`srv-area-${p.id}-${opt}`} value={opt}>
-                                {opt}
-                              </option>
-                            ))}
-                          </select>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
           </table>
+          {rows.length === 0 ? (
+            <p className="px-4 py-8 text-slate-400 italic text-xs">
+              {isBautizos ? 'Sin servidores ni empleados con esos filtros.' : 'Sin servidores con esos filtros.'}
+            </p>
+          ) : (
+            <VirtualizedList
+              items={rows}
+              itemHeight={72}
+              overscan={10}
+              useParentScroll
+              renderItem={(p) => (
+                <table className={serverProfilesDesktopTableClass}>
+                  {serverProfilesColgroup}
+                  <tbody className="divide-y divide-slate-100 border-b border-slate-100">
+                    {renderServerProfileTableRow(p)}
+                  </tbody>
+                </table>
+              )}
+            />
+          )}
         </div>
       </div>
     );
@@ -41362,6 +43589,14 @@ function resolveEventName(eventId) {
       editRegistryModal,
       editorRegFieldsModalEl,
       expenseEditModal,
+      expenseEditRegistryFiltersOpen,
+      setExpenseEditRegistryFiltersOpen,
+      expenseRegistryQuantityContext,
+      countExpenseRegistryFilterOption,
+      resolveExpenseRowAmountsCached,
+      getResolvedExpenseForActions,
+      isResponsivaEnabled,
+      GENDERS,
       expensePartialModal,
       expenses,
       mergeEventDonationsForEvent,
@@ -41384,6 +43619,7 @@ function resolveEventName(eventId) {
       excelExportModalEl,
       serveAreaOptionsForm,
       serveAreaOptionsModal,
+      bautizosCarDataPrompt,
     },
     {
       btnPrimary,
@@ -41436,6 +43672,7 @@ function resolveEventName(eventId) {
       setServeAreaOptionsModal,
       setSuperDateEditModal,
       setWhatsAppModal,
+      setBautizosCarDataPrompt,
       handleAddCustomField,
       handleAddDonation,
       handleUpdateDonationSuper,
@@ -41446,6 +43683,7 @@ function resolveEventName(eventId) {
       handleExportExcel,
       openExcelExportPicker,
       handleLogout,
+      logoutBusy,
       handleRemoveCustomField,
       handleSaveAllergyOptions,
       handleSaveCashCutScheduleByLocation,
@@ -41489,6 +43727,7 @@ function resolveEventName(eventId) {
           currentUser={currentUser}
         />
         {logoutConfirmOnBackModalEl}
+        {renderCreditActionModal()}
       </>
     </SystemViewGuard>
   );

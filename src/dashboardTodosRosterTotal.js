@@ -10,6 +10,7 @@ import {
   normalizeBautizosAttendanceType,
   buildBautizadoMetaForCanonical,
   buildBautizosCanonicalCompanionPlan,
+  countBautizosActivePeopleUnits,
 } from './bautizosParty.js';
 
 function isCompanionWaitlistPhantomStoredParticipant(personLike) {
@@ -87,13 +88,17 @@ export function filterEventCapRosterBase(participantRows, eventRow) {
   return filterDashboardTodosRosterRows(scoped, eventRow);
 }
 
-function computeBautizosTodosTotal(rosterBase) {
-  const activeBautizadoRoster = rosterBase.filter(
-    (p) => normalizeBautizosAttendanceType(p?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado
-  );
-  const meta = buildBautizadoMetaForCanonical(activeBautizadoRoster);
-  const plan = buildBautizosCanonicalCompanionPlan(rosterBase, meta, { includeBaptizedCompanions: true });
-  return rosterBase.length + plan.size;
+function buildBautizosLinkLookupRoster(scopedParticipants) {
+  return (scopedParticipants || []).filter((p) => (p?.status || 'active') !== PARTICIPANT_STATUS_ARCHIVED);
+}
+
+function computeBautizosTodosTotal(rosterBase, linkLookupRoster) {
+  return countBautizosActivePeopleUnits(rosterBase, {
+    includeBaptizedCompanions: true,
+    linkLookupRoster: buildBautizosLinkLookupRoster(
+      Array.isArray(linkLookupRoster) ? linkLookupRoster : rosterBase
+    ),
+  });
 }
 
 function computeCampaTodosTotal(rosterBase, eventRow) {
@@ -112,7 +117,7 @@ function computeCampaTodosTotal(rosterBase, eventRow) {
  * @param {object[]} participantRows — participantes del evento (`eventId` coherente; puede incluir otras sedes si se filtra antes)
  * @param {object} eventRow — documento del evento; debe incluir `id` si `participantRows` son de varios eventos
  */
-export function computeDashboardTodosRosterTotal(participantRows, eventRow) {
+export function computeDashboardTodosRosterTotal(participantRows, eventRow, options = {}) {
   if (!eventRow || typeof eventRow !== 'object') return 0;
   const eid = String(eventRow.id || '').trim();
   const scoped =
@@ -121,9 +126,12 @@ export function computeDashboardTodosRosterTotal(participantRows, eventRow) {
       : (participantRows || []).filter((p) => String(p?.eventId || '').trim() === eid);
   const rosterBase = filterDashboardTodosRosterRows(scoped, eventRow);
   const evType = String(eventRow.eventType || '');
+  const linkLookupSource = Array.isArray(options.linkLookupParticipants)
+    ? options.linkLookupParticipants
+    : scoped;
 
   if (evType === 'Bautizos') {
-    return computeBautizosTodosTotal(rosterBase);
+    return computeBautizosTodosTotal(rosterBase, linkLookupSource);
   }
   if (evType === 'Campa') {
     return computeCampaTodosTotal(rosterBase, eventRow);

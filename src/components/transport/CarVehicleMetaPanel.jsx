@@ -68,6 +68,8 @@ export default function CarVehicleMetaPanel({
   onMaybeAbsentChange,
   compact = false,
   carCatalogView,
+  /** Si true, color/placas se confirman al escribir (evita perder datos al guardar sin blur). */
+  immediateTextCommit = false,
 }) {
   const catalog = carCatalogView || createCarCatalogView();
   const b = String(meta?.brand || '');
@@ -153,8 +155,16 @@ export default function CarVehicleMetaPanel({
     (value) => onFieldChange?.('model', value),
     [onFieldChange]
   );
-  const [localColor, setLocalColor, cancelColorCommit] = useDebouncedTextField(color, commitColor);
-  const [localPlates, setLocalPlates, cancelPlatesCommit] = useDebouncedTextField(plates, commitPlates);
+  const [localColor, setLocalColor, cancelColorCommit] = useDebouncedTextField(
+    color,
+    commitColor,
+    immediateTextCommit ? 0 : CAR_META_TEXT_DEBOUNCE_MS
+  );
+  const [localPlates, setLocalPlates, cancelPlatesCommit] = useDebouncedTextField(
+    plates,
+    commitPlates,
+    immediateTextCommit ? 0 : CAR_META_TEXT_DEBOUNCE_MS
+  );
   const [localBrandText, setLocalBrandText, cancelBrandCommit] = useDebouncedTextField(knownBrand ? '' : b, commitBrandText);
   const [localModelText, setLocalModelText, cancelModelCommit] = useDebouncedTextField(m, commitModelText);
 
@@ -317,8 +327,16 @@ export default function CarVehicleMetaPanel({
               suggestions={colorSuggestions}
               value={pendingColor ? '' : localColor}
               disabled={pendingColor || !canEdit}
-              onChange={(e) => setLocalColor(e.target.value)}
-              onBlur={(e) => setLocalColor(e.target.value, true)}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (immediateTextCommit) commitColor(v);
+                else setLocalColor(v);
+              }}
+              onBlur={(e) => {
+                const v = e.target.value;
+                if (immediateTextCommit) commitColor(v);
+                else setLocalColor(v, true);
+              }}
             />
           </div>
           <div className="flex flex-col gap-1">
@@ -329,8 +347,16 @@ export default function CarVehicleMetaPanel({
               placeholder="—"
               value={pendingPlates ? '' : localPlates}
               disabled={pendingPlates}
-              onChange={(e) => setLocalPlates(e.target.value)}
-              onBlur={(e) => setLocalPlates(e.target.value, true)}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (immediateTextCommit) commitPlates(v);
+                else setLocalPlates(v);
+              }}
+              onBlur={(e) => {
+                const v = e.target.value;
+                if (immediateTextCommit) commitPlates(v);
+                else setLocalPlates(v, true);
+              }}
             />
           </div>
         </div>

@@ -5,6 +5,8 @@ import { AUTH_EMAIL_DOMAIN } from '../firebaseConfig.js';
 import { mergePanelSectionLayers } from '../rbac/permissions.js';
 import { panelNavSidebarItemAppliesToEvent, resolvePanelNavConfigItemCopy } from '../panelNavUi.js';
 import { uiControls, uiUserAccountForm } from '../ui/uiFormatClasses.js';
+import PreferredLandingTabSelect from './PreferredLandingTabSelect.jsx';
+import { isLandingLocationTab } from '../preferredLandingTab.js';
 
 /**
  * Campos del formulario de alta de usuario (móvil inline y modal escritorio).
@@ -22,6 +24,8 @@ export default function NewUserAccountFormFields({
   EDITOR_LECTOR_PANEL_DEFAULT,
   DEFAULT_PANEL_NAV,
   PANEL_NAV_SIDEBAR_ITEMS,
+  globalPanelNav = {},
+  editorConfig = null,
   variant = 'desktop',
   fieldStack,
   inputClasses,
@@ -72,17 +76,6 @@ export default function NewUserAccountFormFields({
       return;
     }
     setNewUser({ ...newUser, role, allowedPanelSections: { ...DEFAULT_PANEL_NAV }, allowedPanelSectionsByEvent: {} });
-  };
-
-  const landingOptions = () => {
-    let locs = ['Administrador', 'SuperUsuario'].includes(newUser.role)
-      ? allKnownLocationNames
-      : (newUser.allowedLocations || []).length
-        ? newUser.allowedLocations
-        : allKnownLocationNames;
-    const p = String(newUser.preferredLandingTab || '').trim();
-    if (p && p !== 'Summary' && !locs.includes(p)) locs = [...locs, p];
-    return locs;
   };
 
   return (
@@ -148,28 +141,27 @@ export default function NewUserAccountFormFields({
           </div>
           <div className={fieldStack}>
             <label className={uiUserAccountForm.sectionTitle}>Ventana inicial</label>
-            <select
+            <PreferredLandingTabSelect
               className={inputCls}
               value={newUser.preferredLandingTab || 'Summary'}
-              onChange={(e) => {
-                const v = e.target.value;
+              user={newUser}
+              events={sortedEvents}
+              globalPanelNav={globalPanelNav}
+              allKnownLocationNames={allKnownLocationNames}
+              editorConfig={editorConfig}
+              sessionIsSuperUser={isSuperUser}
+              hasAdminRights={hasAdminRights}
+              onChange={(v) => {
                 setNewUser((prev) => {
-                  if (v === 'Summary') return { ...prev, preferredLandingTab: v };
+                  if (v === 'Summary' || !isLandingLocationTab(v)) return { ...prev, preferredLandingTab: v };
                   return applyLandingSedeToNewUserState({ ...prev, preferredLandingTab: v });
                 });
               }}
-            >
-              <option value="Summary">Dashboard</option>
-              {landingOptions().map((loc) => (
-                <option key={`pref-new-${loc}`} value={loc}>
-                  {loc}
-                </option>
-              ))}
-            </select>
+            />
           </div>
         </div>
         <p className={uiUserAccountForm.sectionHelper}>
-          Al elegir una sede como inicio, quedará solo esa sede en cada evento asignado por defecto.
+          Puede ser cualquier sección del menú lateral o una sede a la que tenga acceso. Al elegir una sede como inicio, quedará solo esa sede en cada evento asignado por defecto.
         </p>
       </div>
 

@@ -334,12 +334,19 @@ export function vehicleMetaFieldsAndDriverComplete(meta) {
   return Boolean(String(m.driverSourceKey || '').trim());
 }
 
-function vehicleMetaHasCapturedValues(meta) {
+/** Al menos un rubro de vehículo capturado (marca, modelo, color o placas). */
+export function vehicleMetaHasBasicVehicleFields(meta) {
   const m = normalizeCarVehicleMeta(meta);
-  if (m.maybeAbsent) return false;
   for (const field of CAR_META_VEHICLE_FIELDS) {
     if (String(m[field] || '').trim()) return true;
   }
+  return false;
+}
+
+function vehicleMetaHasCapturedValues(meta) {
+  const m = normalizeCarVehicleMeta(meta);
+  if (m.maybeAbsent) return false;
+  if (vehicleMetaHasBasicVehicleFields(m)) return true;
   if (String(m.driverSourceKey || '').trim()) return true;
   if ((m.passengerSourceKeys || []).length > 0) return true;
   return false;
@@ -691,6 +698,36 @@ export function getFamilyCarInventoryValidationIssues(inventory, crewContext = {
 }
 
 /** Inventario con borrador del formulario aplicado. */
+export function mergeCarMetaCacheIntoTransportPlan(plan, carMetaCacheByKey) {
+  const cache = carMetaCacheByKey && typeof carMetaCacheByKey === 'object' ? carMetaCacheByKey : {};
+  if (!Object.keys(cache).length) return normalizeTransportPlanning(plan);
+  return normalizeTransportPlanning({
+    ...plan,
+    carMetaBySource: { ...cache, ...(plan?.carMetaBySource || {}) },
+  });
+}
+
+/** Misma resolución de titular / sede que `BautizosCarDataSection` para validar al guardar. */
+export function resolveCarDataValidationHostContext(hostPerson, companions, hostSourceKey, roster, plan) {
+  const inbound = resolveInboundLinkedCompanionCarInheritance(hostPerson, roster, plan);
+  if (inbound.active) {
+    return {
+      hostPerson: inbound.hostPerson,
+      companions: getBautizosCompanionsArray(inbound.hostPerson),
+      hostSourceKey: inbound.sourceSk,
+      metaFetchSourceKey: inbound.sourceSk,
+    };
+  }
+  const resolvedSk = resolveHostSourceKey(hostPerson, hostSourceKey);
+  return {
+    hostPerson,
+    companions,
+    hostSourceKey: resolvedSk,
+    metaFetchSourceKey: resolvedSk,
+  };
+}
+
+/** Inventario con borrador del formulario aplicado. */
 export function buildMergedFamilyCarInventory({
   hostPerson,
   companions,
@@ -699,11 +736,13 @@ export function buildMergedFamilyCarInventory({
   draftMetaByVehicleKey,
   draftCompanionKeys,
   useBlankSlotMeta = false,
+  carMetaCacheByKey,
 }) {
+  const planWithCache = mergeCarMetaCacheIntoTransportPlan(plan, carMetaCacheByKey);
   const base = buildBautizosFamilyCarInventory({
     hostPerson,
     companions,
-    plan,
+    plan: planWithCache,
     hostSourceKey,
     draftCompanionKeys,
     useBlankSlotMeta,
@@ -1310,6 +1349,131 @@ export function buildLinkedCompanionCarInheritPatches(plan, fromTitularSk, toTit
   return buildCopyTitularCarMetaPatches(plan, fromTitularSk, toTitularSk, carCount);
 }
 
+/** Titulares activos que vincularon a `targetPersonId` como acompañante (`linkedCompanionSourceKey`). */
+export function findHostsLinkingPersonAsLinkedCompanion(targetPersonId, roster) {
+  const tid = String(targetPersonId || '').trim();
+  if (!tid) return [];
+  const targetSk = `p:${tid}`;
+  const out = [];
+  for (const host of roster || []) {
+    const hid = String(host?.id || '').trim();
+    if (!hid || hid === tid) continue;
+    const st = String(host?.status || 'active').trim();
+    if (st === 'cancelled' || st === 'archived') continue;
+    let linkedCompanion = null;
+    for (const c of getBautizosCompanionsArray(host)) {
+      if (companionRowIsEffectivelyEmpty(c)) continue;
+      if (String(c?.linkedCompanionSourceKey || '').trim() !== targetSk) continue;
+      linkedCompanion = c;
+      break;
+    }
+    if (!linkedCompanion) continue;
+    out.push({ host, linkedCompanion });
+  }
+  return out;
+}
+
+/** ¿El titular tiene datos de carro en el plan (inline, resumen o inventario)? */
+export function titularCarMetaCapturedInPlan(plan, titularSk, titularPerson, roster) {
+  const owner = String(titularSk || '').trim();
+  if (!owner) return false;
+  if (titularSourceKeyHasCarMetaCaptured(plan, owner)) return true;
+  const hostId = owner.startsWith('p:') ? owner.slice(2) : '';
+  const person =
+    titularPerson ||
+    (roster || []).find((p) => String(p?.id || '').trim() === hostId) ||
+    null;
+  if (!person) return false;
+  const inventory = buildBautizosFamilyCarInventory({
+    hostPerson: person,
+    companions: getBautizosCompanionsArray(person),
+    plan,
+    hostSourceKey: owner,
+  });
+  return inventory.some((slot) => {
+    const m = normalizeCarVehicleMeta(slot?.meta);
+    if (m.maybeAbsent) return false;
+    return vehicleMetaHasCapturedValues(m) || carMetaHasCrewAssignments(m);
+  });
+}
+
+/**
+ * Herencia entrante: otro titular activo vinculó a esta persona como acompañante y ya tiene datos de carro.
+ */
+export function resolveInboundLinkedCompanionCarInheritance(person, roster, plan, opts = {}) {
+  const inactive = {
+    active: false,
+    hostPerson: null,
+    hostName: '',
+    sourceSk: '',
+  };
+  if (opts._skipInboundInherit === true) return inactive;
+  const personId = String(person?.id || '').trim();
+  if (!personId) return inactive;
+  const personSk = `p:${personId}`;
+  const normalizedPlan = normalizeTransportPlanning(plan);
+  if (titularCarMetaCapturedInPlan(normalizedPlan, personSk, person, roster)) return inactive;
+
+  for (const { host } of findHostsLinkingPersonAsLinkedCompanion(personId, roster)) {
+    const hostSk = `p:${String(host?.id || '').trim()}`;
+    if (!titularCarMetaCapturedInPlan(normalizedPlan, hostSk, host, roster)) continue;
+    return {
+      active: true,
+      hostPerson: host,
+      hostName: String(host?.name || '').trim() || 'Registro vinculado',
+      sourceSk: hostSk,
+    };
+  }
+  return inactive;
+}
+
+/**
+ * Copia datos de carro del titular hacia registros vinculados como acompañante sin datos propios.
+ */
+export function buildCarMetaSyncPatchesToLinkedCompanions({
+  hostPerson,
+  hostId,
+  companions,
+  plan,
+  roster,
+  appliedPatches = [],
+}) {
+  const hostSk = `p:${String(hostId || '').trim()}`;
+  if (!hostSk || hostSk === 'p:') return [];
+
+  let mergedPlan = normalizeTransportPlanning(plan);
+  if (appliedPatches.length) {
+    mergedPlan = applyCarMetaPassengerInheritance(
+      mergeCarMetaPatchesIntoPlan(mergedPlan, appliedPatches)
+    );
+  }
+
+  if (!titularCarMetaCapturedInPlan(mergedPlan, hostSk, hostPerson, roster)) return [];
+
+  const carCount = normalizeArrivalCarCount(hostPerson?.carrosLlegada);
+  const comps = Array.isArray(companions) ? companions : getBautizosCompanionsArray(hostPerson);
+  const patches = [];
+  const seenTargets = new Set();
+
+  for (const c of comps) {
+    const targetSk = String(c?.linkedCompanionSourceKey || '').trim();
+    if (!targetSk.startsWith('p:') || seenTargets.has(targetSk)) continue;
+    seenTargets.add(targetSk);
+    const targetId = targetSk.slice(2);
+    if (!targetId || targetId === String(hostId || '').trim()) continue;
+
+    const linkedPerson = (roster || []).find((p) => String(p?.id || '').trim() === targetId);
+    if (!linkedPerson) continue;
+    const st = String(linkedPerson?.status || 'active').trim();
+    if (st === 'cancelled' || st === 'archived') continue;
+    if (titularCarMetaCapturedInPlan(mergedPlan, targetSk, linkedPerson, roster)) continue;
+
+    patches.push(...buildCopyTitularCarMetaPatches(mergedPlan, hostSk, targetSk, carCount));
+  }
+
+  return patches;
+}
+
 /**
  * Inventario y contexto de la tarjeta «Datos de carros» en el resumen expandido del roster.
  * Pasajeros (bautizados derivados, grupo manual) heredan la vista del titular del carro.
@@ -1322,6 +1486,7 @@ export function buildCarDataSummaryForRosterPerson({
   eventLike = null,
   forRosterDisplay = false,
   _skipLinkedInherit = false,
+  _skipInboundInherit = false,
 }) {
   const normalizedPlan = applyCarMetaPassengerInheritance(normalizeTransportPlanning(plan));
   const personSk = `p:${String(person?.id || '').trim()}`;
@@ -1384,6 +1549,7 @@ export function buildCarDataSummaryForRosterPerson({
         eventLike,
         forRosterDisplay,
         _skipLinkedInherit: true,
+        _skipInboundInherit: true,
       });
       if ((fromLinked.inventory || []).length) {
         return {
@@ -1393,6 +1559,37 @@ export function buildCarDataSummaryForRosterPerson({
           companions: comps,
           inheritedFromTitular: true,
           titularName: linkedInherit.linkedName,
+          carMetaFetchSourceKey: fromLinked.carMetaFetchSourceKey || linkedInherit.sourceSk,
+        };
+      }
+    }
+  }
+
+  if (!_skipInboundInherit) {
+    const inboundInherit = resolveInboundLinkedCompanionCarInheritance(person, roster, normalizedPlan);
+    if (inboundInherit.active && inboundInherit.hostPerson) {
+      const fromHost = buildCarDataSummaryForRosterPerson({
+        person: inboundInherit.hostPerson,
+        companions: getBautizosCompanionsArray(inboundInherit.hostPerson),
+        plan: normalizedPlan,
+        roster,
+        eventLike,
+        forRosterDisplay,
+        _skipLinkedInherit: true,
+        _skipInboundInherit: true,
+      });
+      if (
+        (fromHost.inventory || []).length ||
+        titularCarMetaCapturedInPlan(normalizedPlan, inboundInherit.sourceSk, inboundInherit.hostPerson, roster)
+      ) {
+        return {
+          ...fromHost,
+          hostPerson: person,
+          hostSourceKey: personSk,
+          companions: comps,
+          inheritedFromTitular: true,
+          titularName: inboundInherit.hostName,
+          carMetaFetchSourceKey: fromHost.carMetaFetchSourceKey || inboundInherit.sourceSk,
         };
       }
     }
@@ -1802,6 +1999,16 @@ export function formatTransportCarMemberRole(member) {
   return 'Titular';
 }
 
+function draftMetaByVehicleHasCapturedValues(draftMetaByVehicleKey) {
+  for (const meta of Object.values(draftMetaByVehicleKey || {})) {
+    const m = normalizeCarVehicleMeta(meta);
+    if (m.maybeAbsent) return true;
+    if (m.brand || m.model || m.color || m.plates || m.driverSourceKey) return true;
+    if (Array.isArray(m.passengerSourceKeys) && m.passengerSourceKeys.length > 0) return true;
+  }
+  return false;
+}
+
 export function buildCarMetaPatchesAfterSave({
   hostPerson,
   companions,
@@ -1812,12 +2019,13 @@ export function buildCarMetaPatchesAfterSave({
   useBlankSlotMeta = false,
 }) {
   const hostSk = `p:${String(hostId || '').trim()}`;
+  const userEditedCarMeta = draftMetaByVehicleHasCapturedValues(draftMetaByVehicleKey);
   const linkedInherit = resolveLinkedCompanionCarInheritance(
     { ...hostPerson, id: hostId },
     roster,
     plan
   );
-  if (linkedInherit.active && linkedInherit.sourceSk) {
+  if (!userEditedCarMeta && linkedInherit.active && linkedInherit.sourceSk) {
     const carCount = normalizeArrivalCarCount(hostPerson?.carrosLlegada);
     const copyPatches = buildLinkedCompanionCarInheritPatches(
       plan,

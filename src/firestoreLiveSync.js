@@ -29,8 +29,45 @@ export function syncParticipantAfterWrite(setAllParticipants, person, action, op
   }
 }
 
-export function syncParticipantsBatchAfterWrite(_eventId, _locations, _action = '') {
-  /* invalidación en Cloud Function */
+/**
+ * Varios parches en un solo setState + un refetch de sede(s) al final (p. ej. baja de grupo Bautizos).
+ * @param {Array<{ person?: object, personId?: string, patch?: object, previousLocation?: string, location?: string, eventId?: string }>} entries
+ */
+export function syncParticipantsBatchAfterWrite(setAllParticipants, entries = {}, opts = {}) {
+  const patches = (entries || []).filter((e) => e?.patch && (e.personId != null || e.person?.id != null));
+  if (!patches.length) return { eventId: '', locations: [], nextParticipants: null };
+
+  let nextParticipants = null;
+  const apply = (prev) => {
+    let next = prev || [];
+    for (const entry of patches) {
+      const pid = String(entry.personId != null ? entry.personId : entry.person?.id || '').trim();
+      if (!pid) continue;
+      next = patchParticipantsInList(next, pid, entry.patch);
+    }
+    nextParticipants = next;
+    return next;
+  };
+
+  if (typeof opts.startTransition === 'function') {
+    opts.startTransition(() => setAllParticipants(apply));
+  } else {
+    setAllParticipants(apply);
+  }
+
+  const bumpLocs = new Set();
+  let eventId = '';
+  for (const entry of patches) {
+    eventId = String(entry.eventId || entry.person?.eventId || '').trim() || eventId;
+    const prevLoc = String(entry.previousLocation || '').trim();
+    const curLoc = String(
+      entry.location || entry.patch?.location || entry.person?.location || prevLoc
+    ).trim();
+    if (prevLoc) bumpLocs.add(prevLoc);
+    if (curLoc) bumpLocs.add(curLoc);
+  }
+
+  return { eventId, locations: [...bumpLocs], nextParticipants };
 }
 
 export function syncArchiveParticipantsAfterWrite(_action = '') {

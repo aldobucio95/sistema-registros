@@ -486,15 +486,12 @@ export function applyRegistrationConsentPolicy(payload, opts = {}) {
   out = { ...out, ...privacyFields };
 
   if (isSiValue(sensitiveConsent)) {
-    if (!out.sensitiveDataConsent) {
-      out.sensitiveDataConsent = 'Si';
-      out.sensitiveDataConsentAt = now;
-    }
-    return out;
+    out.sensitiveDataConsent = 'Si';
+    if (!out.sensitiveDataConsentAt) out.sensitiveDataConsentAt = now;
+  } else {
+    out.sensitiveDataConsent = 'No';
+    out.sensitiveDataConsentAt = now;
   }
-
-  out.sensitiveDataConsent = 'No';
-  out.sensitiveDataConsentAt = now;
   return out;
 }
 
@@ -520,10 +517,15 @@ export function buildRegistrationPrivacyActivityMessage(privacyNotice, privacyAc
 export function sanitizeParticipantConsentForFirestoreWrite(payload) {
   const out = { ...(payload || {}) };
   delete out.sensitiveDataPurgedAt;
+  delete out.privacyRetentionPurgedAt;
   const c = normalizeSensitiveConsentValue(out.sensitiveDataConsent);
-  if (c === 'Si' || c === 'No') out.sensitiveDataConsent = c;
-  else {
+  if (c === 'Si' || c === 'No') {
+    out.sensitiveDataConsent = c;
+  } else {
     delete out.sensitiveDataConsent;
+    if (out.sensitiveDataConsentAt === '' || out.sensitiveDataConsentAt == null) {
+      delete out.sensitiveDataConsentAt;
+    }
   }
   return out;
 }

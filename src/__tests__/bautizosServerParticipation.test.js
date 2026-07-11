@@ -9,6 +9,7 @@ import {
   bautizosDashboardTitularCountsForScope,
   bautizosParticipatesAsServer,
   bautizosShowsCompanionServerParticipation,
+  bautizosShowsCompanionServerProfileFields,
   buildActiveRegistrantMetaForCompanionDedupe,
   buildBautizosCanonicalCompanionPlan,
   collectBautizosParticipatingServerRows,
@@ -18,6 +19,10 @@ import {
   getBautizosAttendanceTypeLabel,
   isFreeBautizosAttendance,
   syncBautizosAttendanceServerFields,
+  syncBautizosCompanionServerFields,
+  normalizeBautizosCompanionsForPersist,
+  parseBautizosVirtualServerRegistryId,
+  patchBautizosCompanionInHostArray,
   bautizosShowsServerProfileFields,
 } from '../bautizosParty.js';
 import { prepareBautizosRowsForRosterFilter } from '../rosterParticipantFilters.js';
@@ -215,6 +220,32 @@ describe('bautizos server participation', () => {
     ).toBe(true);
   });
 
+  it('companion servidor + cortesía muestra perfil de servidor y persiste ambos', () => {
+    const companion = syncBautizosCompanionServerFields({
+      id: 'c1',
+      name: 'Ana',
+      relationship: 'Esposa',
+      isServer: 'Si',
+      bautizosAttendanceType: BAUTIZOS_ATTENDANCE.cortesia,
+      preferredServeArea: 'Alabanza',
+      servesInCongress: 'Si',
+      congressServeArea: 'Protocolo',
+    });
+    expect(bautizosShowsCompanionServerProfileFields(companion)).toBe(true);
+    expect(bautizosCompanionParticipatesAsServer(companion)).toBe(true);
+    const [persisted] = normalizeBautizosCompanionsForPersist(
+      { bautizosCompanions: [companion], location: 'Sede' },
+      'Sede'
+    );
+    expect(persisted.isServer).toBe('Si');
+    expect(persisted.bautizosAttendanceType).toBe(BAUTIZOS_ATTENDANCE.cortesia);
+    expect(persisted.preferredServeArea).toBe('Alabanza');
+    expect(persisted.servedOtherCampa).toBe('No');
+    expect(persisted.isMarried).toBe('No');
+    expect(persisted.servesInCongress).toBe('Si');
+    expect(persisted.congressServeArea).toBe('Protocolo');
+  });
+
   it('waitlist companion with isServer does not count until promoted', () => {
     const roster = [
       {
@@ -268,5 +299,34 @@ describe('bautizos server participation', () => {
     };
     expect(bautizosAttendanceOptionDisabled(BAUTIZOS_ATTENDANCE.pastor, entry)).toBe(true);
     expect(bautizosAttendanceCombinationLabel(entry)).toBe('Bautizado · participa como servidor');
+  });
+
+  it('parseBautizosVirtualServerRegistryId resolves virt-srv companion row', () => {
+    const virtualId = 'virt-srv:c:id_VNPM-VACR780514H::bc-1783531690747-lf7zd7a';
+    expect(
+      parseBautizosVirtualServerRegistryId({
+        id: virtualId,
+        __hostRegistrantId: 'id_VNPM-VACR780514H',
+        __companionId: 'bc-1783531690747-lf7zd7a',
+      })
+    ).toEqual({
+      virtualRowId: virtualId,
+      canonKey: 'c:id_VNPM-VACR780514H::bc-1783531690747-lf7zd7a',
+      hostId: 'id_VNPM-VACR780514H',
+      companionId: 'bc-1783531690747-lf7zd7a',
+    });
+  });
+
+  it('patchBautizosCompanionInHostArray updates assignedServeArea on matching row', () => {
+    const companions = [
+      { id: 'c1', name: 'Ana', assignedServeArea: '' },
+      { id: 'c2', name: 'Luis', assignedServeArea: 'Protocolo' },
+    ];
+    const next = patchBautizosCompanionInHostArray(companions, 'c1', { assignedServeArea: 'Alabanza' });
+    expect(next).toEqual([
+      { id: 'c1', name: 'Ana', assignedServeArea: 'Alabanza' },
+      { id: 'c2', name: 'Luis', assignedServeArea: 'Protocolo' },
+    ]);
+    expect(patchBautizosCompanionInHostArray(companions, 'missing', { assignedServeArea: 'X' })).toBeNull();
   });
 });

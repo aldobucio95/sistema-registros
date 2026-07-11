@@ -1,5 +1,6 @@
 import { buildParticipantChangeLogEntries } from './participantEventFieldScope.js';
 import { getFilledBautizosCompanions } from './bautizosParty.js';
+import { normalizeCarVehicleMeta } from './bautizosCarMeta.js';
 import { formatFieldChange, formatLogScalar, logScalarsEquivalent } from './activityLogDiff.js';
 import { normalizeBirthDateToIso } from './birthDateIsoUtils.js';
 import { formatPersonNameString } from './participantNameFormat.js';
@@ -145,6 +146,30 @@ function companionsLogEquivalent(prevRaw, nextRaw) {
     if (!prevKeys.includes(nextKeys[i])) return false;
   }
   return true;
+}
+
+/** Resumen legible de datos de carro capturados en el formulario de edición/alta. */
+export function describeCarDraftMetaRegistrationChange(carDraftMeta) {
+  if (!carDraftMeta || typeof carDraftMeta !== 'object') return null;
+  const parts = [];
+  for (const [vehicleKey, raw] of Object.entries(carDraftMeta)) {
+    const m = normalizeCarVehicleMeta(raw);
+    const carLabel = String(vehicleKey || '').includes('|c')
+      ? `carro ${String(vehicleKey).split('|c').pop()}`
+      : 'carro';
+    const bits = [];
+    if (m.brand) bits.push(`marca ${m.brand}`);
+    if (m.model) bits.push(`modelo ${m.model}`);
+    if (m.color) bits.push(`color ${m.color}`);
+    if (m.plates) bits.push(`placas ${m.plates}`);
+    if (m.driverSourceKey) bits.push('conductor asignado');
+    if (Array.isArray(m.passengerSourceKeys) && m.passengerSourceKeys.length) {
+      bits.push(`${m.passengerSourceKeys.length} pasajero(s)`);
+    }
+    if (bits.length) parts.push(`${carLabel}: ${bits.join(', ')}`);
+  }
+  if (!parts.length) return null;
+  return `Datos de carro (${parts.join('; ')})`;
 }
 
 export function describeBautizosCompanionsRegistrationChange(prevRaw, nextRaw) {

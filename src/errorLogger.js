@@ -145,6 +145,19 @@ export function installGlobalErrorHandlers(options = {}) {
 
   window.addEventListener('unhandledrejection', (event) => {
     const reason = event?.reason;
+    const code =
+      reason && typeof reason === 'object' ? String(reason.code || '').trim() : '';
+    if (code === 'permission-denied') {
+      try {
+        const path = String(window.location?.pathname || '');
+        if (path === '/login' || path.endsWith('/login')) {
+          event.preventDefault();
+          return;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
     void logError('unhandledrejection', reason instanceof Error ? reason : String(reason), {}, { usePublic });
   });
 

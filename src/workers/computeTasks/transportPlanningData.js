@@ -14,14 +14,13 @@ export function computeTransportPlanningData({ roster, eventType, locations, eve
   return { busLines, carLines, bautizosCarDisplayGroups };
 }
 
-/** Campos mínimos del evento para serializar al worker. */
+/** Campos mínimos del evento para serializar al worker (sin transportPlanning: no afecta líneas bus/carro). */
 export function slimEventForTransportWorker(eventLike) {
   if (!eventLike || typeof eventLike !== 'object') return null;
   return {
     id: eventLike.id,
     eventType: eventLike.eventType,
     locations: eventLike.locations,
-    transportPlanning: eventLike.transportPlanning,
     bautizosLapInfantMaxAge: eventLike.bautizosLapInfantMaxAge,
     bautizosLapInfantPolicy: eventLike.bautizosLapInfantPolicy,
   };

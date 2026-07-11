@@ -203,11 +203,117 @@ export function normalizeTransportAttendanceEntry(raw) {
 export function getTransportAttendanceEntry(plan, sourceKey) {
   const sk = String(sourceKey || '').trim();
   if (!sk) return normalizeTransportAttendanceEntry(null);
-  return normalizeTransportAttendanceEntry(plan?.transportAttendanceBySource?.[sk]);
+  const direct = normalizeTransportAttendanceEntry(plan?.transportAttendanceBySource?.[sk]);
+  if (direct.confirmed) return direct;
+  const pipe = sk.indexOf('|');
+  if (pipe > 0) {
+    const base = sk.slice(0, pipe);
+    const viaBase = normalizeTransportAttendanceEntry(plan?.transportAttendanceBySource?.[base]);
+    if (viaBase.confirmed) return viaBase;
+  } else {
+    const prefix = `${sk}|`;
+    const map = plan?.transportAttendanceBySource;
+    if (map && typeof map === 'object') {
+      for (const [k, v] of Object.entries(map)) {
+        if (String(k).startsWith(prefix)) {
+          const seg = normalizeTransportAttendanceEntry(v);
+          if (seg.confirmed) return seg;
+        }
+      }
+    }
+  }
+  return direct;
 }
 
 export function isTransportAttendanceConfirmed(plan, sourceKey) {
   return getTransportAttendanceEntry(plan, sourceKey).confirmed === true;
+}
+
+/** Claves de `transportAttendanceBySource` afectadas al marcar/quitar asistencia (incl. segmentos Campa Ambos). */
+export function collectTransportAttendanceAffectedKeys(plan, sourceKey) {
+  const sk = String(sourceKey || '').trim();
+  if (!sk) return [];
+  const keys = new Set([sk]);
+  const transportAttendanceBySource =
+    plan?.transportAttendanceBySource && typeof plan.transportAttendanceBySource === 'object'
+      ? plan.transportAttendanceBySource
+      : {};
+  const pipe = sk.indexOf('|');
+  const base = pipe > 0 ? sk.slice(0, pipe) : sk;
+  keys.add(base);
+  for (const k of Object.keys(transportAttendanceBySource)) {
+    if (k.startsWith(`${base}|`)) keys.add(k);
+  }
+  return [...keys];
+}
+
+/** Marca o quita asistencia (sincroniza claves base y segmentadas Campa Ambos). */
+export function patchTransportAttendanceOnPlan(plan, sourceKey, confirmed, confirmedBy = '') {
+  const sk = String(sourceKey || '').trim();
+  if (!sk) return normalizeTransportPlanning(plan);
+  const next = normalizeTransportPlanning(plan);
+  const transportAttendanceBySource = { ...(next.transportAttendanceBySource || {}) };
+  const keys = collectTransportAttendanceAffectedKeys(plan, sourceKey);
+  if (confirmed) {
+    const entry = {
+      confirmed: true,
+      confirmedAt: new Date().toISOString(),
+      confirmedBy: String(confirmedBy || '').trim(),
+    };
+    for (const k of keys) transportAttendanceBySource[k] = entry;
+  } else {
+    for (const k of keys) delete transportAttendanceBySource[k];
+  }
+  return { ...next, transportAttendanceBySource };
+}
+
+/** Parche Firestore solo de claves cambiadas en `transportAttendanceBySource`. */
+export function buildTransportAttendanceMapFirestorePatch(localPlan, remotePlan) {
+  const local = normalizeTransportPlanning(localPlan);
+  const remote = normalizeTransportPlanning(remotePlan);
+  const lv = local.transportAttendanceBySource || {};
+  const rv = remote.transportAttendanceBySource || {};
+  const keys = new Set([...Object.keys(lv), ...Object.keys(rv)]);
+  const entries = [];
+  for (const mapKey of keys) {
+    const hasLocal = Object.prototype.hasOwnProperty.call(lv, mapKey);
+    const hasRemote = Object.prototype.hasOwnProperty.call(rv, mapKey);
+    if (!hasLocal && !hasRemote) continue;
+    if (hasLocal && hasRemote && mapFieldValuesEqual(lv[mapKey], rv[mapKey])) continue;
+    if (!hasLocal && hasRemote) {
+      entries.push({
+        segments: ['transportPlanning', 'transportAttendanceBySource', mapKey],
+        value: TRANSPORT_PLAN_MAP_KEY_DELETE,
+      });
+    } else {
+      entries.push({
+        segments: ['transportPlanning', 'transportAttendanceBySource', mapKey],
+        value: lv[mapKey],
+      });
+    }
+  }
+  return entries;
+}
+
+function cloneEventWithoutTransportAttendanceMap(ev) {
+  if (!ev || typeof ev !== 'object') return ev;
+  const { transportPlanning, ...rest } = ev;
+  if (!transportPlanning || typeof transportPlanning !== 'object') return ev;
+  const { transportAttendanceBySource: _omit, ...tpRest } = transportPlanning;
+  return { ...rest, transportPlanning: tpRest };
+}
+
+/** True si dos eventos solo difieren en `transportPlanning.transportAttendanceBySource`. */
+export function eventsEqualExceptTransportAttendanceMap(prevEv, nextEv) {
+  if (String(prevEv?.id || '') !== String(nextEv?.id || '')) return false;
+  try {
+    return (
+      JSON.stringify(cloneEventWithoutTransportAttendanceMap(prevEv)) ===
+      JSON.stringify(cloneEventWithoutTransportAttendanceMap(nextEv))
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Grupos familiares Bautizos derivados de vínculos (ids `fam-auto-*`). */
@@ -299,6 +405,131 @@ export function transportPlanningStructureSignature(plan, context = {}) {
   } catch {
     return '';
   }
+}
+
+/** Igual que arriba pero sin auto-normalización Bautizos (más rápido en UI al editar camiones). */
+export function transportPlanningStructureSignatureFast(plan) {
+  try {
+    const { carMetaBySource: _omit, ...structure } = normalizeTransportPlanning(plan);
+    return JSON.stringify(structure);
+  } catch {
+    return '';
+  }
+}
+
+/** Campos de estructura persistibles sin reescribir `bautizosCarMetaSummaryByTitular`. */
+export const TRANSPORT_PLANNING_STRUCTURE_SAVE_FIELDS = [
+  'v',
+  'defaultBusCap',
+  'defaultVanCap',
+  'bautizosCarCapacity',
+  'unitsByLocation',
+  'busAssign',
+  'carGroups',
+  'familyCarOverride',
+  'bautizosGroupTitularByGroupId',
+  'campaAmbosTransitBySource',
+  'transportAttendanceBySource',
+  'transportCarMetaStorageVersion',
+];
+
+/** Parche Firestore con solo campos de estructura que cambiaron (evita reescribir el plan completo). */
+export function buildTransportPlanningStructureFirestorePatch(localPlan, remotePlan) {
+  const local = normalizeTransportPlanning(localPlan);
+  const remote = normalizeTransportPlanning(remotePlan);
+  const patch = {};
+  for (const field of TRANSPORT_PLANNING_STRUCTURE_SAVE_FIELDS) {
+    let changed = false;
+    try {
+      changed = JSON.stringify(local[field]) !== JSON.stringify(remote[field]);
+    } catch {
+      changed = true;
+    }
+    if (changed) {
+      patch[`transportPlanning.${field}`] = local[field];
+    }
+  }
+  return patch;
+}
+
+export const TRANSPORT_PLAN_MAP_KEY_DELETE = '__TRANSPORT_PLAN_MAP_KEY_DELETE__';
+
+const TRANSPORT_PLANNING_SCALAR_SAVE_FIELDS = [
+  'v',
+  'defaultBusCap',
+  'defaultVanCap',
+  'bautizosCarCapacity',
+  'carGroups',
+  'familyCarOverride',
+  'bautizosGroupTitularByGroupId',
+  'campaAmbosTransitBySource',
+  'transportCarMetaStorageVersion',
+];
+
+const TRANSPORT_PLANNING_MAP_SAVE_FIELDS = [
+  'unitsByLocation',
+  'busAssign',
+  'transportAttendanceBySource',
+];
+
+function mapFieldValuesEqual(a, b) {
+  if (a === b) return true;
+  if (a === undefined && b === undefined) return true;
+  if (a === undefined || b === undefined) return false;
+  if (typeof a !== 'object' || typeof b !== 'object') return String(a) === String(b);
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Parche granular: solo claves de mapas que cambiaron (p. ej. quitar 3 asignaciones de busAssign
+ * en lugar de reescribir cientos de entradas).
+ * @returns {{ segments: string[], value: unknown }[]}
+ */
+export function buildTransportPlanningGranularFirestorePatch(localPlan, remotePlan) {
+  const local = normalizeTransportPlanning(localPlan);
+  const remote = normalizeTransportPlanning(remotePlan);
+  const entries = [];
+
+  for (const field of TRANSPORT_PLANNING_SCALAR_SAVE_FIELDS) {
+    let changed = false;
+    try {
+      changed = JSON.stringify(local[field]) !== JSON.stringify(remote[field]);
+    } catch {
+      changed = true;
+    }
+    if (changed) {
+      entries.push({ segments: ['transportPlanning', field], value: local[field] });
+    }
+  }
+
+  for (const mapField of TRANSPORT_PLANNING_MAP_SAVE_FIELDS) {
+    const lv = local[mapField] && typeof local[mapField] === 'object' ? local[mapField] : {};
+    const rv = remote[mapField] && typeof remote[mapField] === 'object' ? remote[mapField] : {};
+    const keys = new Set([...Object.keys(lv), ...Object.keys(rv)]);
+    for (const mapKey of keys) {
+      const hasLocal = Object.prototype.hasOwnProperty.call(lv, mapKey);
+      const hasRemote = Object.prototype.hasOwnProperty.call(rv, mapKey);
+      if (!hasLocal && !hasRemote) continue;
+      if (hasLocal && hasRemote && mapFieldValuesEqual(lv[mapKey], rv[mapKey])) continue;
+      if (!hasLocal && hasRemote) {
+        entries.push({
+          segments: ['transportPlanning', mapField, mapKey],
+          value: TRANSPORT_PLAN_MAP_KEY_DELETE,
+        });
+      } else {
+        entries.push({
+          segments: ['transportPlanning', mapField, mapKey],
+          value: lv[mapKey],
+        });
+      }
+    }
+  }
+
+  return entries;
 }
 
 export function normalizeTransportPlanning(raw) {

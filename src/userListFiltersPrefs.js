@@ -45,6 +45,7 @@ export function createEmptyLocationRosterFilters() {
     filterScholarship: 'all',
     filterMedical: 'all',
     filterRegistrationStatus: 'all',
+    filterEventAttendance: 'all',
     filterPaymentMethod: { efectivo: true, tarjeta: true },
     ...ROSTER_EXTRA_FILTER_DEFAULTS,
   };
@@ -77,6 +78,33 @@ export function mergeLocationRosterFilters(saved) {
   return out;
 }
 
+/** Claves de filtros anidados compartidas entre sede, registro global y tabla del dashboard. */
+export const SHARED_EVENT_LIST_DROPDOWN_FILTER_KEYS = Object.freeze(
+  Object.keys(createEmptyLocationRosterFilters()).filter(
+    (key) => key !== 'searchTerm' && key !== 'sortBy' && key !== 'filterPaymentMethod'
+  )
+);
+
+export function pickSharedEventListDropdownFilters(snapshot) {
+  const merged = mergeLocationRosterFilters(snapshot);
+  const out = {};
+  for (const key of SHARED_EVENT_LIST_DROPDOWN_FILTER_KEYS) {
+    out[key] = merged[key];
+  }
+  return out;
+}
+
+export function sharedEventListDropdownFiltersEqual(a, b) {
+  try {
+    return (
+      JSON.stringify(pickSharedEventListDropdownFilters(a)) ===
+      JSON.stringify(pickSharedEventListDropdownFilters(b))
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Filtros de lista listos para aplicar: rellena defaults y anula filtros de Campa en eventos Bautizos. */
 export function listFiltersForEventApplication(saved, eventType) {
   const merged = mergeLocationRosterFilters(saved);
@@ -106,6 +134,7 @@ export function listFiltersForEventApplication(saved, eventType) {
 
 const CAMP_DROPDOWN_FILTER_COUNT_KEYS = [
   'filterRegistrationStatus',
+  'filterEventAttendance',
   'filterAssignment',
   'filterRosterRole',
   'filterScholarship',
@@ -138,6 +167,7 @@ export function countActiveDropdownListFilters(saved, eventType) {
         ? CAMP_DROPDOWN_FILTER_COUNT_KEYS
         : [
             'filterRegistrationStatus',
+            'filterEventAttendance',
             'filterRosterRole',
             'filterLiquidation',
             'filterWhatsAppPending',
@@ -343,6 +373,7 @@ export function applyLocationRosterFilters(snapshot, setters) {
   if (typeof setters.setFilterBaptism === 'function') setters.setFilterBaptism(f.filterBaptism);
   if (typeof setters.setFilterMaritalStatus === 'function') setters.setFilterMaritalStatus(f.filterMaritalStatus);
   if (typeof setters.setFilterRegistrationStatus === 'function') setters.setFilterRegistrationStatus(f.filterRegistrationStatus);
+  if (typeof setters.setFilterEventAttendance === 'function') setters.setFilterEventAttendance(f.filterEventAttendance);
   if (typeof setters.setFilterPaymentMethod === 'function') setters.setFilterPaymentMethod(f.filterPaymentMethod);
   if (typeof setters.setFilterBautizosAttendance === 'function') setters.setFilterBautizosAttendance(f.filterBautizosAttendance);
   if (typeof setters.setFilterBloodType === 'function') setters.setFilterBloodType(f.filterBloodType);
@@ -379,6 +410,7 @@ export function captureLocationRosterFiltersFromState(state) {
     filterBaptism: state.filterBaptism,
     filterMaritalStatus: state.filterMaritalStatus,
     filterRegistrationStatus: state.filterRegistrationStatus,
+    filterEventAttendance: state.filterEventAttendance,
     filterPaymentMethod: state.filterPaymentMethod,
     filterBautizosAttendance: state.filterBautizosAttendance,
     filterBloodType: state.filterBloodType,

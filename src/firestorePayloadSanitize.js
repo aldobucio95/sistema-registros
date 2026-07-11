@@ -1,7 +1,11 @@
 /**
  * Elimina `undefined` y normaliza valores no soportados antes de escribir en Firestore.
  */
-import { sanitizeParticipantConsentForFirestoreWrite } from './privacyNotice.js';
+import {
+  applySensitiveConsentToParticipantPayload,
+  normalizeSensitiveConsentValue,
+  sanitizeParticipantConsentForFirestoreWrite,
+} from './privacyNotice.js';
 
 const isPlainObject = (v) =>
   v !== null && typeof v === 'object' && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
@@ -56,6 +60,18 @@ export function isFirestoreDeleteFieldValue(value) {
 /** Documento completo de `app_participants` listo para `setDoc` / `batch.set`. */
 export function prepareParticipantDocForFirestore(payload) {
   return omitUndefinedDeep(sanitizeParticipantConsentForFirestoreWrite(payload));
+}
+
+/**
+ * Documento de participante listo para escribir: aplica política de consentimiento médico
+ * y normaliza campos que las reglas de Firestore rechazan (`sensitiveDataConsent`, purgas).
+ */
+export function buildParticipantFirestoreWriteDoc(personData, { sensitiveConsent } = {}) {
+  const consent = normalizeSensitiveConsentValue(sensitiveConsent);
+  const consentForPersist = consent === 'Si' ? 'Si' : 'No';
+  return prepareParticipantDocForFirestore(
+    applySensitiveConsentToParticipantPayload(personData, consentForPersist)
+  );
 }
 
 /** Parche seguro para estado local tras `setDoc`/`updateDoc` (sin FieldValue ni undefined). */

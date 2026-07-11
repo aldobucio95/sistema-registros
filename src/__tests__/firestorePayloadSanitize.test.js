@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeBautizosCompanionsForPersist } from '../bautizosParty.js';
-import { omitUndefinedDeep, prepareParticipantDocForFirestore } from '../firestorePayloadSanitize.js';
+import {
+  omitUndefinedDeep,
+  prepareParticipantDocForFirestore,
+  buildParticipantFirestoreWriteDoc,
+} from '../firestorePayloadSanitize.js';
 
 function assertNoUndefinedDeep(value, path = 'root') {
   if (value === undefined) {
@@ -29,6 +33,46 @@ describe('prepareParticipantDocForFirestore', () => {
       list: [{ ok: 1 }, {}],
     });
     assertNoUndefinedDeep(out);
+  });
+
+  it('normalizes accented consent and strips purge markers', () => {
+    const out = prepareParticipantDocForFirestore({
+      name: 'Test',
+      sensitiveDataConsent: 'Sí',
+      sensitiveDataPurgedAt: '2026-01-01',
+      privacyRetentionPurgedAt: '2026-01-02',
+    });
+    expect(out.sensitiveDataConsent).toBe('Si');
+    expect(out.sensitiveDataPurgedAt).toBeUndefined();
+    expect(out.privacyRetentionPurgedAt).toBeUndefined();
+  });
+
+  it('removes invalid consent values for Firestore rules', () => {
+    const out = prepareParticipantDocForFirestore({
+      name: 'Test',
+      sensitiveDataConsent: '',
+      sensitiveDataConsentAt: '',
+    });
+    expect(out.sensitiveDataConsent).toBeUndefined();
+    expect(out.sensitiveDataConsentAt).toBeUndefined();
+  });
+});
+
+describe('buildParticipantFirestoreWriteDoc', () => {
+  it('clears health fields when consent is No', () => {
+    const out = buildParticipantFirestoreWriteDoc(
+      {
+        name: 'Test',
+        bloodType: 'O+',
+        hasAllergy: 'Si',
+        allergyDetails: 'Nuez',
+        sensitiveDataConsent: 'Sí',
+      },
+      { sensitiveConsent: 'No' }
+    );
+    expect(out.sensitiveDataConsent).toBe('No');
+    expect(out.bloodType).toBe('Sin especificar');
+    expect(out.allergyDetails).toBe('');
   });
 });
 

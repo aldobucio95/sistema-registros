@@ -43,6 +43,44 @@ describe('computeDashboardTodosRosterTotal (Bautizos)', () => {
     expect(computeDashboardTodosRosterTotal(participants, event)).toBe(2);
   });
 
+  it('does not count companions linked to a cancelled titular', () => {
+    const participants = [
+      {
+        id: 'host-active',
+        eventId: 'ev1',
+        status: 'active',
+        location: 'Norte',
+        name: 'Titular activo',
+        bautizosAttendanceType: 'bautizado',
+        bautizosCompanions: [{ id: 'c1', name: 'Acomp Libre' }],
+      },
+      {
+        id: 'host-cancelled',
+        eventId: 'ev1',
+        status: 'cancelled',
+        location: 'Norte',
+        name: 'Titular baja',
+        bautizosAttendanceType: 'bautizado',
+      },
+      {
+        id: 'host-linked',
+        eventId: 'ev1',
+        status: 'active',
+        location: 'Norte',
+        name: 'Otro titular',
+        bautizosAttendanceType: 'bautizado',
+        bautizosCompanions: [
+          {
+            id: 'c2',
+            name: 'Acomp de baja',
+            linkedCompanionSourceKey: 'p:host-cancelled',
+          },
+        ],
+      },
+    ];
+    expect(computeDashboardTodosRosterTotal(participants, event, { linkLookupParticipants: participants })).toBe(3);
+  });
+
   it('ignores phantom cw documents in roster total', () => {
     const participants = [
       {

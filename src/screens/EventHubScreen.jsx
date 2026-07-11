@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Bug, ArrowLeft, ArrowRight, LayoutDashboard, UserCog, Archive, History, LogOut, UserCircle,
   Search, Trash2, CalendarRange, Edit3, Plus, GripVertical, ShieldAlert, Eye, EyeOff,
@@ -21,6 +21,7 @@ import PanelNoticeToast from '../components/PanelNoticeToast.jsx';
 import MobileCompactToolbar, { MobileCompactToolbarPanel } from '../components/mobile/MobileCompactToolbar.jsx';
 import MobileMenuSection from '../components/mobile/MobileMenuSection.jsx';
 import MobileSearchField from '../components/mobile/MobileSearchField.jsx';
+import PreferredLandingTabSelect from '../components/PreferredLandingTabSelect.jsx';
 
 /** Valores del documento Firestore del participante archivado (incl. objetos anidados). */
 function formatArchiveDetailValue(value) {
@@ -217,7 +218,7 @@ function ArchivedParticipantDetailPanel({
 export default function EventHubScreen() {
   const {
     debugToast, navHistory, forwardNavStack, goBack, goForward, systemView, currentUser, superSessionCount, isSuperUser,
-    globalConfig, toggleDebugMode, goTo, hasAdminRights, handleLogout, renderUsers, renderLogs,
+    globalConfig, toggleDebugMode, goTo, hasAdminRights, handleLogout, logoutBusy, renderUsers, renderLogs,
     archivedParticipantsForView, archivedParticipantsArchiveViewList, archiveViewSearch,
     setArchiveViewSearch, archiveViewSort, setArchiveViewSort, events,
     openPermanentDeleteArchivedParticipantConfirm, visibleEvents, activeRosterUnitsByEventId, getPricingFromSnapshot,
@@ -238,6 +239,11 @@ export default function EventHubScreen() {
     handleBackfillEventActiveRosterTotals,
     backfillActiveRosterBusy,
   } = useAppShellBindings();
+
+  const panelNavMerged = useMemo(() => {
+    const o = globalConfig?.panelNav && typeof globalConfig.panelNav === 'object' ? globalConfig.panelNav : {};
+    return { ...DEFAULT_PANEL_NAV, ...o };
+  }, [globalConfig?.panelNav, DEFAULT_PANEL_NAV]);
 
   const [networkOnline, setNetworkOnline] = useState(
     typeof navigator !== 'undefined' ? navigator.onLine : true
@@ -351,7 +357,13 @@ export default function EventHubScreen() {
                   >
                     {darkMode ? <Sun size={16} className="text-amber-400" /> : <Moon size={16} className="text-indigo-400" />}
                   </button>
-                  <button type="button" onClick={handleLogout} className={hubPillRose} title="Cerrar sesión">
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    disabled={logoutBusy}
+                    className={hubPillRose}
+                    title="Cerrar sesión"
+                  >
                     <LogOut size={14} />
                     Salir
                   </button>
@@ -549,6 +561,7 @@ export default function EventHubScreen() {
                 )}
                 <button
                   type="button"
+                  disabled={logoutBusy}
                   onClick={() => {
                     setHubMobileOptionsOpen(false);
                     handleLogout();
@@ -1045,21 +1058,19 @@ export default function EventHubScreen() {
 
                           <div className="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 rounded-xl p-3 sm:p-3.5 shadow-sm space-y-2">
                             <label className={`${labelClasses} font-bold text-slate-600 dark:text-slate-400`}>Ventana de inicio preferida</label>
-                            <select className={focusInputClasses} value={editingUser.preferredLandingTab || 'Summary'} onChange={(e) => setEditingUser({ ...editingUser, preferredLandingTab: e.target.value })}>
-                              <option value="Summary">Dashboard principal</option>
-                              {(() => {
-                                let locs = ['Administrador', 'SuperUsuario'].includes(editingUser.role)
-                                  ? allKnownLocationNames
-                                  : ((editingUser.allowedLocations || []).length ? editingUser.allowedLocations : allKnownLocationNames);
-                                const p = String(editingUser.preferredLandingTab || '').trim();
-                                if (p && p !== 'Summary' && !locs.includes(p)) locs = [...locs, p];
-                                return locs.map((loc) => (
-                                  <option key={`pref-edit-self-${loc}`} value={loc}>
-                                    {loc}
-                                  </option>
-                                ));
-                              })()}
-                            </select>
+                            <PreferredLandingTabSelect
+                              className={focusInputClasses}
+                              value={editingUser.preferredLandingTab || 'Summary'}
+                              user={editingUser}
+                              events={sortedEvents}
+                              globalPanelNav={panelNavMerged}
+                              allKnownLocationNames={allKnownLocationNames}
+                              editorConfig={globalConfig}
+                              sessionIsSuperUser={isSuperUser}
+                              hasAdminRights={hasAdminRights}
+                              dashboardOptionLabel="Dashboard principal"
+                              onChange={(v) => setEditingUser({ ...editingUser, preferredLandingTab: v })}
+                            />
                           </div>
 
                           <div className="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 rounded-xl p-3 sm:p-3.5 shadow-sm">
@@ -1269,17 +1280,19 @@ export default function EventHubScreen() {
 
                         <div className="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 rounded-xl p-3 sm:p-3.5 shadow-sm space-y-2">
                           <label className={`${labelClasses} font-bold text-slate-600 dark:text-slate-400`}>Ventana de Inicio Preferida</label>
-                          <select className={focusInputClasses} value={editingUser.preferredLandingTab || 'Summary'} onChange={e => setEditingUser({ ...editingUser, preferredLandingTab: e.target.value })}>
-                            <option value="Summary">Dashboard principal</option>
-                            {(() => {
-                              let locs = ['Administrador', 'SuperUsuario'].includes(editingUser.role)
-                                ? allKnownLocationNames
-                                : ((editingUser.allowedLocations || []).length ? editingUser.allowedLocations : allKnownLocationNames);
-                              const p = String(editingUser.preferredLandingTab || '').trim();
-                              if (p && p !== 'Summary' && !locs.includes(p)) locs = [...locs, p];
-                              return locs.map((loc) => <option key={`pref-edit-${loc}`} value={loc}>{loc}</option>);
-                            })()}
-                          </select>
+                          <PreferredLandingTabSelect
+                            className={focusInputClasses}
+                            value={editingUser.preferredLandingTab || 'Summary'}
+                            user={editingUser}
+                            events={sortedEvents}
+                            globalPanelNav={panelNavMerged}
+                            allKnownLocationNames={allKnownLocationNames}
+                            editorConfig={globalConfig}
+                            sessionIsSuperUser={isSuperUser}
+                            hasAdminRights={hasAdminRights}
+                            dashboardOptionLabel="Dashboard principal"
+                            onChange={(v) => setEditingUser({ ...editingUser, preferredLandingTab: v })}
+                          />
                         </div>
 {editingUser.role !== 'SuperUsuario' && (
                           <div className="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 rounded-xl p-3 sm:p-3.5 shadow-sm space-y-3">

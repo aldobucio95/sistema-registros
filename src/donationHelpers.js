@@ -1,8 +1,9 @@
 /**
  * Donaciones en `app_donations`:
- * - `fromCancelledRefundDonation`: no suman otra vez al recaudado (el pago ya estaba en totales).
- * - `fromArchivedManualCredit` y donaciones manuales: sí suman (el archivo quitó el pago del recaudado o es aporte nuevo).
+ * - `fromCancelledRefundDonation`, `fromArchivedManualCredit`, `fromManualCredit`: no suman al recaudado
+ *   (el pago ya estaba en totales o el dinero nunca salió / entró de nuevo).
+ * - Donaciones manuales normales: sí suman (aporte nuevo).
  */
 export function donationAddsToRecaudacionBalance(d) {
-  return d && !d.fromCancelledRefundDonation;
+  return d && !d.fromCancelledRefundDonation && !d.fromArchivedManualCredit && !d.fromManualCredit;
 }

@@ -48,6 +48,10 @@ export function buildBautizosRosterIndex(allParticipants, eventLike) {
     return createEmptyBautizosRosterIndex();
   }
 
+  return buildBautizosRosterIndexCore(allParticipants, eventLike);
+}
+
+function buildBautizosRosterIndexCore(allParticipants, eventLike) {
   const eid = String(eventLike.id);
   const participants = Array.isArray(allParticipants) ? allParticipants : [];
 
@@ -57,10 +61,28 @@ export function buildBautizosRosterIndex(allParticipants, eventLike) {
 
   const visibleCompanionsByRegistrant = new Map();
   const companionChipCountByRegistrant = new Map();
+  const rosterById = new Map();
+  for (const p of activeEventRoster) {
+    const pid = String(p?.id || '').trim();
+    if (pid) rosterById.set(pid, p);
+  }
+  const hostsLinkingTo = new Map();
+  for (const host of activeEventRoster) {
+    const hid = String(host?.id || '').trim();
+    if (!hid) continue;
+    for (const c of getBautizosCompanionsArray(host)) {
+      const sk = String(c?.linkedCompanionSourceKey || '').trim();
+      if (!sk.startsWith('p:')) continue;
+      const tid = sk.slice(2);
+      if (!hostsLinkingTo.has(tid)) hostsLinkingTo.set(tid, []);
+      hostsLinkingTo.get(tid).push(host);
+    }
+  }
+  const companionIndexCtx = { rosterById, hostsLinkingTo };
   for (const p of activeEventRoster) {
     const pid = String(p?.id || '').trim();
     if (!pid) continue;
-    const visible = getBautizosCompanionsVisibleForRegistrant(pid, activeEventRoster);
+    const visible = getBautizosCompanionsVisibleForRegistrant(pid, activeEventRoster, companionIndexCtx);
     visibleCompanionsByRegistrant.set(pid, visible);
     if (visible.length > 0) companionChipCountByRegistrant.set(pid, visible.length);
   }

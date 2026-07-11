@@ -13,7 +13,7 @@ import {
   isBautizosCompanionBaptized,
   normalizeBautizosAttendanceType,
 } from './bautizosParty.js';
-import { isSiValue } from './publicRegistrationLogic.js';
+import { isSiValue, isRosterPersonLiquidadoForListFilter, isRosterSaldoAFavorForListFilter } from './publicRegistrationLogic.js';
 import {
   BLOOD_TYPE_STATS_OTHER,
   BLOOD_TYPE_UNSPECIFIED,
@@ -29,6 +29,13 @@ export const REGISTRATION_STATUS_FILTER_OPTIONS = Object.freeze([
   { id: 'active', label: 'Activo' },
   { id: 'waitlist', label: 'Lista de espera' },
   { id: 'cancelled', label: 'Cancelado' },
+]);
+
+/** Asistencia confirmada el día del evento (misma fuente que Transporte). */
+export const EVENT_ATTENDANCE_FILTER_OPTIONS = Object.freeze([
+  { id: 'all', label: 'Todos' },
+  { id: 'attended', label: 'Asistió al evento' },
+  { id: 'not-attended', label: 'No asistió' },
 ]);
 
 /** Claves añadidas a createEmptyLocationRosterFilters / registro global. */
@@ -105,6 +112,7 @@ export function participantMatchesRegistrationStatusFilter(personLike, filterId)
 
 export const BAUTIZOS_DROPDOWN_FILTER_COUNT_KEYS = Object.freeze([
   'filterRegistrationStatus',
+  'filterEventAttendance',
   'filterBautizosAttendance',
   'filterTransport',
   'filterAge',
@@ -252,6 +260,30 @@ export function participantMatchesPersonOfInterestFilter(personLike, filterId, i
 }
 
 /**
+ * Filtros de liquidación / saldo a favor sobre filas ya expandidas (FIFO por persona en Bautizos).
+ */
+export function applyLiquidationListFilters(rows, f, { getLiquidationTarget, bautizosLiquidationCtx } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (typeof getLiquidationTarget !== 'function') return list;
+  if (f.filterLiquidation === 'liquidado') {
+    return list.filter((p) =>
+      isRosterPersonLiquidadoForListFilter(p, getLiquidationTarget, bautizosLiquidationCtx)
+    );
+  }
+  if (f.filterLiquidation === 'pendiente') {
+    return list.filter(
+      (p) => !isRosterPersonLiquidadoForListFilter(p, getLiquidationTarget, bautizosLiquidationCtx)
+    );
+  }
+  if (f.filterLiquidation === 'saldo-favor') {
+    return list.filter((p) =>
+      isRosterSaldoAFavorForListFilter(p, getLiquidationTarget, bautizosLiquidationCtx)
+    );
+  }
+  return list;
+}
+
+/**
  * Filtros que solo aplican a titulares (antes de expandir acompañantes canónicos).
  */
 export function applyTitularOnlyBautizosRosterFilters(rows, f) {
@@ -387,4 +419,22 @@ export function applyEventScopedRosterFilters(processedData, f, ctx) {
   }
 
   return rows;
+}
+
+/**
+ * Cuenta personas Bautizos (titular + acompañante canónico expandido) que pasan todos los filtros.
+ * Una evaluación por persona — transporte, liquidación, etc. del titular o del acompañante.
+ *
+ * @param {object[]} titularRows
+ * @param {object} filters
+ * @param {(rows: object[], preserveOrder: boolean, f: object, opts?: object) => object[]} filterParticipantRowsFn
+ * @param {object} [filterOpts]
+ */
+export function countBautizosFilteredPeopleRows(titularRows, filters, filterParticipantRowsFn, filterOpts = {}) {
+  const rows = Array.isArray(titularRows) ? titularRows : [];
+  if (typeof filterParticipantRowsFn !== 'function') return rows.length;
+  return filterParticipantRowsFn(rows, true, filters, {
+    expandBautizosCompanions: true,
+    ...filterOpts,
+  }).length;
 }

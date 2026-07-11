@@ -7,9 +7,16 @@ import {
   bautizosCompanionParticipatesAsServer,
   buildActiveRegistrantMetaForCompanionDedupe,
   buildBautizosCanonicalCompanionPlan,
+  buildBautizosDashboardCanonicalCompanionPlan,
+  buildBautizosCompanionTransportLineLike,
+  countBautizosActivePeopleUnits,
+  countBautizosDashboardPeople,
+  filterBautizosActiveTitularRoster,
   getBautizosCompanionsArray,
   isBautizosCompanionBaptized,
   isBautizosPastorAttendance,
+  normalizePersonNameKey,
+  resolveBautizosCompanionLinkedRegistrantId,
 } from './bautizosParty.js';
 import { normalizeBirthDateToIso } from './birthDateIsoUtils.js';
 import {
@@ -18,18 +25,41 @@ import {
   resolveCompanionWaitlistVirtualLocation,
 } from './bautizosCompanionWaitlist.js';
 
-function buildCompanionPartyPerson(host, companion, index) {
+function rosterById(roster) {
+  const m = new Map();
+  for (const p of roster || []) {
+    const id = String(p?.id || '').trim();
+    if (id) m.set(id, p);
+  }
+  return m;
+}
+
+function resolveCompanionPartyPersonStatus(host, companion, roster) {
+  const byId = rosterById(roster);
+  const pid = resolveBautizosCompanionLinkedRegistrantId(companion);
+  if (pid && byId.has(pid)) {
+    return String(byId.get(pid)?.status || 'active');
+  }
+  return host?.status || 'active';
+}
+
+function buildCompanionPartyPerson(host, companion, index, rosterForPlan = [], options = {}) {
   const hostId = String(host?.id || '').trim();
-  const cid = String(companion?.id || index).trim();
+  const canonKey = String(options?.canonKey || '').trim();
+  const cid = String(companion?.id || '').trim() || String(index);
+  const rowIdSuffix = canonKey
+    ? canonKey.replace(/[^a-z0-9:_-]/gi, '_').slice(0, 96)
+    : cid;
   const nm = String(companion?.name || '').trim();
   const baptized = isBautizosCompanionBaptized(companion);
   const rel = String(companion?.relationship || companion?.linkedCompanionRelationship || '').trim();
+  const transportLine = buildBautizosCompanionTransportLineLike(host, companion);
   return {
-    id: `gr-companion:${hostId}:${cid}`,
+    id: `gr-companion:${hostId}:${rowIdSuffix}`,
     eventId: host?.eventId,
     name: nm,
     location: String(host?.location || '').trim(),
-    status: host?.status || 'active',
+    status: resolveCompanionPartyPersonStatus(host, companion, rosterForPlan),
     gender: String(companion?.gender || '').trim(),
     age: companion?.age != null ? String(companion.age).trim() : '',
     birthDate: normalizeBirthDateToIso(companion?.birthDate) || '',
@@ -41,7 +71,13 @@ function buildCompanionPartyPerson(host, companion, index) {
       ? BAUTIZOS_ATTENDANCE.bautizado
       : String(companion?.bautizosAttendanceType || '').trim(),
     willBeBaptized: companion?.willBeBaptized,
-    wantsBautizosTransport: companion?.wantsBautizosTransport,
+    wantsBautizosTransport: transportLine.wantsBautizosTransport,
+    llegaEnCarro: transportLine.llegaEnCarro,
+    regresaEnCarro: transportLine.regresaEnCarro,
+    carrosLlegada: transportLine.carrosLlegada,
+    travelFrom: transportLine.travelFrom,
+    travelTo: transportLine.travelTo,
+    transportType: transportLine.transportType,
     isServer: bautizosCompanionParticipatesAsServer(companion) ? 'Si' : 'No',
     serverAssignment: bautizosCompanionParticipatesAsServer(companion)
       ? String(companion?.serverAssignment || '').trim() || BAUTIZOS_SERVER_ASSIGNMENT_LABEL
@@ -55,6 +91,8 @@ function buildCompanionPartyPerson(host, companion, index) {
     __hostRegistrantId: hostId,
     __sourceRegistrantName: String(host?.name || '').trim(),
     __companionRelationship: rel,
+    __globalRegistryCanonKey: canonKey || undefined,
+    __sourceCompanionId: String(companion?.id || '').trim() || undefined,
     ...(isBautizosPastorAttendance(host) ? { __pastorCourtesyCompanion: true } : {}),
     ...(isCompanionWaitlistPending(companion) ? { __companionWaitlistPending: true } : {}),
   };
@@ -68,6 +106,41 @@ function companionSubLabel(person, hostPerson) {
   return 'Acompañante del titular';
 }
 
+/** Clave estable para deduplicar la misma persona en exportación (VNP > nombre+sede > canon). */
+export function globalRegistryCompanionExportIdentityKey(person, canonKey = '') {
+  const vnp = String(person?.vnpPersonId || '').trim();
+  if (vnp) return `vnp:${vnp}`;
+  const name = normalizePersonNameKey(person?.name);
+  const loc = String(person?.location || '').trim().toLowerCase();
+  if (name && loc) return `name:${loc}:${name}`;
+  const ck = String(canonKey || person?.__globalRegistryCanonKey || '').trim();
+  if (ck) return `canon:${ck}`;
+  return `id:${String(person?.id || '').trim()}`;
+}
+
+function shouldSkipDuplicateCompanionExport(person, canonKey, seenIdentityKeys) {
+  if (!person?.__globalRegistryCompanionRow) return false;
+  const key = globalRegistryCompanionExportIdentityKey(person, canonKey);
+  if (seenIdentityKeys.has(key)) return true;
+  seenIdentityKeys.add(key);
+  return false;
+}
+
+function resolveCompanionIndexInHost(host, companion) {
+  const comps = getBautizosCompanionsArray(host);
+  const targetId = String(companion?.id || '').trim();
+  if (targetId) {
+    const byId = comps.findIndex((c) => String(c?.id || '').trim() === targetId);
+    if (byId >= 0) return byId;
+  }
+  const targetName = normalizePersonNameKey(companion?.name);
+  if (targetName) {
+    const byName = comps.findIndex((c) => normalizePersonNameKey(c?.name) === targetName);
+    if (byName >= 0) return byName;
+  }
+  return 0;
+}
+
 function groupCanonicalCompanionsByHost(plan, titularIdSet) {
   const byHost = new Map();
   for (const [canonKey, entry] of plan) {
@@ -77,6 +150,73 @@ function groupCanonicalCompanionsByHost(plan, titularIdSet) {
     byHost.get(hostId).push({ canonKey, entry });
   }
   return byHost;
+}
+
+/** Titulares activos (misma base que tarjeta «Registros totales» del dashboard). */
+export function filterBautizosRosterForDashboardCanonicalPlan(roster) {
+  return filterBautizosActiveTitularRoster(roster);
+}
+
+function buildDashboardAlignedCanonicalCompanionPlan(roster) {
+  const activeOnly = filterBautizosRosterForDashboardCanonicalPlan(roster);
+  return buildBautizosDashboardCanonicalCompanionPlan(activeOnly, {
+    includeBaptizedCompanions: true,
+    linkLookupRoster: roster,
+  });
+}
+
+function buildSectionCanonicalCompanionPlan(roster, section) {
+  if (section === 'active') {
+    return buildDashboardAlignedCanonicalCompanionPlan(roster);
+  }
+  const nonCancelled = (roster || []).filter((p) => (p?.status || 'active') !== 'cancelled');
+  const meta = buildActiveRegistrantMetaForCompanionDedupe(nonCancelled);
+  return buildBautizosCanonicalCompanionPlan(roster, meta, { includeBaptizedCompanions: true });
+}
+
+/**
+ * Conteo de activos alineado al dashboard: filas de party sin acompañantes `companionWaitlistPending`
+ * (esos no entran en «Registros totales» ni en cupo activo).
+ */
+export function countBautizosGlobalRegistryActivePartyRows(partyRows) {
+  return (partyRows || []).filter((r) => {
+    if (r?.companionWaitlistPending) return false;
+    const st = String(r?.person?.status || 'active');
+    return st !== 'cancelled' && st !== 'archived';
+  }).length;
+}
+
+/** Total activos del registro global = misma noción que `countBautizosDashboardPeople` (alcance Todos). */
+export function countBautizosGlobalRegistryActivePeople(activeTitulars, rosterForPlan) {
+  const titulars = Array.isArray(activeTitulars) ? activeTitulars : [];
+  const roster = Array.isArray(rosterForPlan) ? rosterForPlan : titulars;
+  const activeRoster = filterBautizosRosterForDashboardCanonicalPlan(roster);
+  const plan = buildDashboardAlignedCanonicalCompanionPlan(roster);
+  return countBautizosDashboardPeople(activeRoster, [...plan.values()], 'all');
+}
+
+/** Misma noción que cupo activo / tarjeta «Registros totales» a partir del roster activo del alcance. */
+export function countBautizosActivePeopleUnitsFromRoster(activeRosterBase) {
+  return countBautizosActivePeopleUnits(activeRosterBase, { includeBaptizedCompanions: true });
+}
+
+/** Separa filas activas exportables de acompañantes en espera o cancelados bajo titular activo. */
+export function partitionGlobalRegistryActivePartyRowsForExport(partyRows) {
+  const rows = Array.isArray(partyRows) ? partyRows : [];
+  const activeCountable = [];
+  const companionWaitlistUnderActive = [];
+  const companionCancelledUnderActive = [];
+  for (const row of rows) {
+    const st = String(row?.person?.status || 'active');
+    if (row?.companionWaitlistPending) {
+      companionWaitlistUnderActive.push(row);
+    } else if (st === 'cancelled' || st === 'archived') {
+      companionCancelledUnderActive.push(row);
+    } else {
+      activeCountable.push(row);
+    }
+  }
+  return { activeCountable, companionWaitlistUnderActive, companionCancelledUnderActive };
 }
 
 /**
@@ -89,13 +229,12 @@ export function buildGlobalRegistryPartyRowsFromTitulars(titulars, rosterForPlan
   const list = Array.isArray(titulars) ? titulars : [];
   if (list.length === 0) return [];
   const roster = Array.isArray(rosterForPlan) ? rosterForPlan : list;
-  const meta = buildActiveRegistrantMetaForCompanionDedupe(roster);
+  const section = options.section || 'active';
   const titularIdSet = new Set(list.map((p) => String(p?.id || '').trim()).filter(Boolean));
-  const plan = buildBautizosCanonicalCompanionPlan(roster, meta, {
-    includeBaptizedCompanions: true,
-  });
+  const plan = buildSectionCanonicalCompanionPlan(roster, section);
   const companionsByHost = groupCanonicalCompanionsByHost(plan, titularIdSet);
   const out = [];
+  const seenCompanionExportKeys = new Set();
 
   for (const host of list) {
     const hostId = String(host?.id || '').trim();
@@ -113,7 +252,10 @@ export function buildGlobalRegistryPartyRowsFromTitulars(titulars, rosterForPlan
     for (const { canonKey, entry } of companionsByHost.get(hostId) || []) {
       const c = entry?.sourceCompanion || {};
       if (!String(c?.name || '').trim()) continue;
-      const person = buildCompanionPartyPerson(entry.sourceRegistrant || host, c, 0);
+      const canonicalHost = entry?.sourceRegistrant || host;
+      const compIndex = resolveCompanionIndexInHost(canonicalHost, c);
+      const person = buildCompanionPartyPerson(canonicalHost, c, compIndex, roster, { canonKey });
+      if (shouldSkipDuplicateCompanionExport(person, canonKey, seenCompanionExportKeys)) continue;
       if (isBautizosCompanionBaptized(c)) {
         baptizedStandalone.push({ person, canonKey });
       } else {
@@ -134,9 +276,13 @@ export function buildGlobalRegistryPartyRowsFromTitulars(titulars, rosterForPlan
 
     for (const c of getBautizosCompanionsArray(host)) {
       if (!isCompanionWaitlistPending(c) || !String(c?.name || '').trim()) continue;
-      const person = buildCompanionPartyPerson(host, c, 0);
+      const compIndex = resolveCompanionIndexInHost(host, c);
+      const person = buildCompanionPartyPerson(host, c, compIndex, roster);
+      if (shouldSkipDuplicateCompanionExport(person, `wl:${hostId}:${String(c?.id || compIndex)}`, seenCompanionExportKeys)) {
+        continue;
+      }
       out.push({
-        key: `wl-nested:${hostId}:${String(c?.id || '')}`,
+        key: `wl-nested:${hostId}:${String(c?.id || compIndex)}`,
         person,
         hostPerson: host,
         isSubRegistration: true,
@@ -237,6 +383,57 @@ export function buildGlobalRegistryPartySections({
 /** Extrae personas planas para conteos de toolbar / filtros. */
 export function globalRegistryPartyRowsToPersons(partyRows) {
   return (partyRows || []).map((r) => r.person);
+}
+
+/** Filas activas visibles (excluye acompañantes cancelados/archivados o en espera bajo titular activo). */
+export function visibleBautizosActiveGlobalRegistryPartyRows(partyRows) {
+  return partitionGlobalRegistryActivePartyRowsForExport(partyRows).activeCountable;
+}
+
+/** Filtra filas de party evaluando cada persona (titular o acompañante) con los filtros de lista. */
+export function filterGlobalRegistryPartyRowsByParticipantFilters(partyRows, matchesPerson) {
+  return (partyRows || []).filter((row) => {
+    const person = row?.person;
+    if (!person || typeof matchesPerson !== 'function') return false;
+    return matchesPerson(person);
+  });
+}
+
+/**
+ * Total de coincidencias del registro global respetando el filtro de estado de registro.
+ * En «activos», no cuenta acompañantes cuyo vínculo apunta a un titular cancelado.
+ */
+export function countGlobalRegistryCoincidenceTotal({
+  isBautizos,
+  activeRows = [],
+  waitlistRows = [],
+  cancelledRows = [],
+  invalidCount = 0,
+  filterRegistrationStatus = 'all',
+}) {
+  const reg = String(filterRegistrationStatus || 'all').trim();
+  let total = Number(invalidCount) || 0;
+  if (reg === 'active') {
+    total += isBautizos
+      ? countBautizosGlobalRegistryActivePartyRows(activeRows)
+      : activeRows.length;
+    return total;
+  }
+  if (reg === 'waitlist') return total + waitlistRows.length;
+  if (reg === 'cancelled') return total + cancelledRows.length;
+  const activeN = isBautizos
+    ? countBautizosGlobalRegistryActivePartyRows(activeRows)
+    : activeRows.length;
+  if (!isBautizos) return total + activeN + waitlistRows.length + cancelledRows.length;
+  const part = partitionGlobalRegistryActivePartyRowsForExport(activeRows);
+  return (
+    total +
+    part.activeCountable.length +
+    waitlistRows.length +
+    cancelledRows.length +
+    part.companionCancelledUnderActive.length +
+    part.companionWaitlistUnderActive.length
+  );
 }
 
 function isPartyGroupAnchorRow(row) {

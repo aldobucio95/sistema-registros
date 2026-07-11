@@ -55,7 +55,7 @@ export default function BautizosCarDataForm({
   inheritedCarSummary = null,
   onInheritLinkedCarDataChange,
   /** Si true, cada vehículo muestra el formulario completo sin colapsar. */
-  slotsDefaultExpanded = false,
+  slotsDefaultExpanded = true,
   /** Si true, inventario parte de meta vacía con pendientes (nuevo registro). */
   useBlankSlotMeta = false,
 }) {
@@ -321,6 +321,7 @@ export default function BautizosCarDataForm({
               showPendingToggles={canEdit}
               carCatalogView={catalog}
               colorSuggestions={colorSuggestions}
+              immediateTextCommit
               onFieldChange={onFieldChange}
               onPendingFieldChange={onPendingFieldChange}
               onMaybeAbsentChange={(checked) => patchSlot(vehicleKey, { maybeAbsent: checked })}

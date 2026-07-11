@@ -3,6 +3,7 @@
  */
 
 import { getEventEffectiveEndDate } from './eventDateHelpers.js';
+import { resolveBautizosGlobalRegistryRowFinances } from './publicRegistrationLogic.js';
 import {
   getRefundDisbursedGrossAmount,
   getParticipantNetPaidFromHistory,
@@ -174,6 +175,41 @@ function resolveExcelFinancialEstado(p, { isBecado, liq, debt }) {
   return debt <= 0 ? 'Liquidado' : 'Pendiente';
 }
 
+function resolveExcelRowFinanceAmounts(p, {
+  currentPricing,
+  resolveRegisteredCost,
+  getLiquidationTarget,
+  computeNetAmountByMethod,
+  bautizosFinanceCtx = null,
+}) {
+  const baseCost = resolveRegisteredCost(p, currentPricing);
+  let liq = getLiquidationTarget(p);
+  let effectivePaid = getParticipantNetPaidFromHistory(p, computeNetAmountByMethod);
+
+  if (
+    p?.__globalRegistryCompanionRow &&
+    bautizosFinanceCtx?.event?.eventType === 'Bautizos' &&
+    bautizosFinanceCtx.financeOpts &&
+    typeof bautizosFinanceCtx.resolveHost === 'function'
+  ) {
+    const host = bautizosFinanceCtx.resolveHost(p);
+    if (host) {
+      const finance = resolveBautizosGlobalRegistryRowFinances(
+        p,
+        host,
+        bautizosFinanceCtx.event,
+        bautizosFinanceCtx.financeOpts
+      );
+      liq = finance.liquidationTarget;
+      effectivePaid = finance.paidDisplay;
+      const rowCost = liq > 0.005 ? liq : baseCost;
+      return { baseCost: rowCost, liq, effectivePaid };
+    }
+  }
+
+  return { baseCost, liq, effectivePaid };
+}
+
 /**
  * Celdas financieras para una fila de roster Excel.
  * Cancelado con devolución: Pagado 0, estado «Devolución».
@@ -185,14 +221,19 @@ export function buildParticipantExcelFinanceCells(p, {
   getLiquidationTarget,
   isSiValue,
   computeNetAmountByMethod,
+  bautizosFinanceCtx = null,
 }) {
-  const baseCost = resolveRegisteredCost(p, currentPricing);
+  const { baseCost, liq, effectivePaid } = resolveExcelRowFinanceAmounts(p, {
+    currentPricing,
+    resolveRegisteredCost,
+    getLiquidationTarget,
+    computeNetAmountByMethod,
+    bautizosFinanceCtx,
+  });
   const isBecado = isSiValue(p.isScholarship);
   const isCancelled = participantIsCancelledForRefund(p);
   const hadRefund = participantHasRefundDisbursement(p);
   const devolucion = hadRefund ? getRefundDisbursedGrossAmount(p) : '';
-  const effectivePaid = getParticipantNetPaidFromHistory(p, computeNetAmountByMethod);
-  const liq = getLiquidationTarget(p);
 
   if (isCancelled && hadRefund) {
     return [baseCost, 0, devolucion, 0, 'Devolución', '', '', '', '', ''];

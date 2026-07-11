@@ -36,7 +36,10 @@ import {
   uiListMobile,
 } from '../../../ui/uiFormatClasses.js';
 import ListMobileCard from '../../../components/ListMobileCard.jsx';
+import VirtualizedList from '../../../components/VirtualizedList.jsx';
 import { buildLocationScopeSet, participantInLocationScope } from '../../../rbac/permissions.js';
+import { computeBautizosCompanionsPageModel } from '../../../bautizosCompanionsPageData.js';
+import useMediaQuery from '../../../hooks/useMediaQuery.js';
 
 /** Alias local para conservar legibilidad del archivo. */
 const normName = normalizePersonNameKey;
@@ -653,6 +656,17 @@ function buildFamilyTreeUINode(family, roster, participantById) {
   return rootNode;
 }
 
+const COMPANIONS_TABLE_COLGROUP = (
+  <colgroup>
+    <col style={{ width: '36%' }} />
+    <col style={{ width: '30%' }} />
+    <col style={{ width: '20%' }} />
+    <col style={{ width: '14%' }} />
+  </colgroup>
+);
+
+const companionsDesktopTableClass = `${uiTable.table} table-fixed border-collapse`;
+
 function TreeBranch({ node, depth = 0 }) {
   const pad = depth === 0 ? '' : 'pl-4 border-l-2 border-teal-300/80 dark:border-teal-600 ml-2';
   return (
@@ -694,6 +708,7 @@ export default function BautizosCompanionsPage({
   const [repairModalOpen, setRepairModalOpen] = useState(false);
   const [repairBusy, setRepairBusy] = useState(false);
   const [expandedFamilies, setExpandedFamilies] = useState(() => new Set());
+  const isMobile = useMediaQuery('(max-width: 767px)');
   const locationScopeSet = useMemo(() => buildLocationScopeSet(visibleLocations), [visibleLocations]);
 
   const basePool = useMemo(() => {
@@ -741,280 +756,19 @@ export default function BautizosCompanionsPage({
     [splitPartyRepairPlans]
   );
 
-  const bautizadoMeta = useMemo(() => {
-    const bautizadoIdSet = new Set();
-    const bautizadoNameSet = new Set();
-    const vnpToBautizadoId = new Map();
-    for (const p of evRosterFiltered) {
-      if (!isBautizadoActivoInEvent(p)) continue;
-      const id = String(p.id);
-      bautizadoIdSet.add(id);
-      bautizadoNameSet.add(normName(p.name));
-      const v = String(p.vnpPersonId || '').trim();
-      if (v) vnpToBautizadoId.set(v, id);
-    }
-    return { bautizadoIdSet, bautizadoNameSet, vnpToBautizadoId };
-  }, [evRosterFiltered]);
-
-  const sourceLinkMap = useMemo(() => buildBautizosSourceLinkMap(evRosterFiltered), [evRosterFiltered]);
-
-  const { listRows, registradosConAcompananteVisible } = useMemo(() => {
-    const { bautizadoIdSet, bautizadoNameSet, vnpToBautizadoId } = bautizadoMeta;
-    const raw = [];
-    for (const p of evRosterFiltered) {
-      const comps = getBautizosCompanionsArray(p);
-      for (let i = 0; i < comps.length; i++) {
-        const c = comps[i] || {};
-        const companionName = String(c.name || '').trim();
-        if (!companionName) continue;
-        if (isBautizosCompanionBaptized(c)) continue;
-        if (bautizosCompanionIsAlsoBautizadoRegistrant(c, bautizadoIdSet, bautizadoNameSet, vnpToBautizadoId)) continue;
-        const isLinked = !!c?.linkedNoExtraCharge || !!String(c?.linkedCompanionSourceKey || '').trim();
-        const personKey = getBautizosCompanionCanonicalKey(p.id, c, i, sourceLinkMap);
-        raw.push({
-          id: `${p.id}-${String(c.id || '').trim() || i}`,
-          registradoName: p.name || '',
-          registradoId: p.id,
-          location: p.location || '',
-          companionName,
-          relationship: String(c?.relationship || '').trim(),
-          isLinked,
-          personKey,
-        });
-      }
-    }
-    raw.sort((a, b) => {
-      const la = String(a.location || '');
-      const lb = String(b.location || '');
-      if (la !== lb) return la.localeCompare(lb);
-      const na = String(a.registradoName || '').localeCompare(String(b.registradoName || ''));
-      if (na !== 0) return na;
-      return String(a.companionName || '').localeCompare(String(b.companionName || ''));
-    });
-
-    const byPersonKey = new Map();
-    for (const r of raw) {
-      let agg = byPersonKey.get(r.personKey);
-      if (!agg) {
-        agg = {
-          personKey: r.personKey,
-          companionName: r.companionName,
-          isLinked: r.isLinked,
-          byRegistrant: new Map(),
-        };
-        byPersonKey.set(r.personKey, agg);
-      } else {
-        agg.isLinked = agg.isLinked || r.isLinked;
-      }
-      const rid = String(r.registradoId);
-      if (!agg.byRegistrant.has(rid)) {
-        agg.byRegistrant.set(rid, {
-          name: String(r.registradoName || '').trim() || '—',
-          relationship: String(r.relationship || '').trim(),
-          location: String(r.location || '').trim(),
-        });
-      }
-    }
-
-    const registradosConAcompananteVisible = new Set(raw.map((r) => String(r.registradoId))).size;
-
-    const listRows = [];
-    for (const agg of byPersonKey.values()) {
-      const sortedRegs = [...agg.byRegistrant.entries()].sort((a, b) =>
-        a[1].name.localeCompare(b[1].name, 'es')
-      );
-      const names = sortedRegs.map(([, v]) => v.name);
-      const rels = sortedRegs.map(([, v]) => v.relationship);
-      const locs = sortedRegs.map(([, v]) => v.location).filter(Boolean);
-      const distinctRel = [...new Set(rels.filter(Boolean))];
-      let relationshipOut;
-      if (distinctRel.length === 0) relationshipOut = '';
-      else if (distinctRel.length === 1) relationshipOut = distinctRel[0];
-      else relationshipOut = rels.map((x) => (x ? x : '—')).join(' · ');
-
-      const distinctLoc = [...new Set(locs)];
-      const locationOut =
-        distinctLoc.length === 0 ? '' : distinctLoc.length === 1 ? distinctLoc[0] : [...distinctLoc].sort((a, b) => a.localeCompare(b, 'es')).join(' · ');
-
-      listRows.push({
-        id: String(agg.personKey).replace(/:/g, '_'),
-        personKey: agg.personKey,
-        companionName: agg.companionName,
-        isLinked: agg.isLinked,
-        registradoName: names.join(', '),
-        relationship: relationshipOut,
-        location: locationOut,
-      });
-    }
-
-    listRows.sort((a, b) => {
-      const c = String(a.companionName || '').localeCompare(String(b.companionName || ''), 'es');
-      if (c !== 0) return c;
-      return String(a.registradoName || '').localeCompare(String(b.registradoName || ''), 'es');
-    });
-
-    return { listRows, registradosConAcompananteVisible };
-  }, [evRosterFiltered, bautizadoMeta, sourceLinkMap]);
-
-  const unifiedFamilySection = useMemo(() => {
-    /** Acompañantes únicos por persona; clave canónica `nlc:<host>:<companionId>` (raíz de la cadena de vínculos). */
-    const nlcM = new Map();
-    const nlcRel = new Map();
-    /** Relaciones observadas por registrante para cada acompañante canónico. */
-    const nlcRelByRegistrant = new Map();
-    /** Registradores que vinculan al mismo acompañante (para fallback de host si el host no está en el roster). */
-    const nlcLinkers = new Map();
-    const d = new DSU();
-    const allKeys = new Set();
-    const inRoster = new Set(evRosterFiltered.map((p) => String(p.id)));
-    for (const p of evRosterFiltered) {
-      d.id(`pt:${p.id}`);
-      allKeys.add(`pt:${p.id}`);
-    }
-    const upsertCompanion = (canonKey, name, rel, hostId, linkerId) => {
-      allKeys.add(canonKey);
-      if (!nlcM.has(canonKey)) {
-        nlcM.set(canonKey, name);
-        nlcRel.set(canonKey, rel || '');
-      } else {
-        if (name && nlcM.get(canonKey) === '—') nlcM.set(canonKey, name);
-        if (rel) {
-          const prev = String(nlcRel.get(canonKey) || '').trim();
-          const next = String(rel || '').trim();
-          if (!prev || (next && relDisplayPriority(next) < relDisplayPriority(prev))) {
-            nlcRel.set(canonKey, next);
-          }
-        }
-      }
-      if (!nlcRelByRegistrant.has(canonKey)) nlcRelByRegistrant.set(canonKey, new Map());
-      const relMap = nlcRelByRegistrant.get(canonKey);
-      const normalizedRel = String(rel || '').trim();
-      const upsertRegistrantRel = (rid) => {
-        const id = String(rid || '').trim();
-        if (!id) return;
-        const prev = String(relMap.get(id) || '').trim();
-        if (!prev || (normalizedRel && relDisplayPriority(normalizedRel) < relDisplayPriority(prev))) {
-          relMap.set(id, normalizedRel);
-        }
-      };
-      if (linkerId) upsertRegistrantRel(linkerId);
-      if (hostId) upsertRegistrantRel(hostId);
-      if (linkerId) {
-        if (!nlcLinkers.has(canonKey)) nlcLinkers.set(canonKey, []);
-        if (!nlcLinkers.get(canonKey).includes(String(linkerId))) {
-          nlcLinkers.get(canonKey).push(String(linkerId));
-        }
-        d.union(canonKey, `pt:${linkerId}`);
-      }
-      if (hostId && inRoster.has(hostId)) {
-        allKeys.add(`pt:${hostId}`);
-        d.union(canonKey, `pt:${hostId}`);
-      }
-    };
-    for (const p of evRosterFiltered) {
-      const comps = getBautizosCompanionsArray(p);
-      comps.forEach((c, i) => {
-        const nm = String(c.name || '').trim();
-        if (!nm) return;
-        const skRaw = String(c?.linkedCompanionSourceKey || '').trim();
-        const relStr = String(
-          c.relationship || c.linkedCompanionRelationship || c.linkedCompanionNameRelation || ''
-        ).trim();
-        const dispName = String(c.linkedCompanionName || c.name || '').trim() || '—';
-        if (skRaw.startsWith('p:')) {
-          const oid = String(skRaw.slice(2)).trim();
-          if (oid) {
-            allKeys.add(`pt:${p.id}`);
-            allKeys.add(`pt:${oid}`);
-            d.union(`pt:${p.id}`, `pt:${oid}`);
-          }
-          return;
-        }
-        if (skRaw.startsWith('c:')) {
-          const ultimate = resolveBautizosUltimateSourceKey(skRaw, sourceLinkMap);
-          const parsed = parseLinkSourceKey(ultimate) || parseLinkSourceKey(skRaw);
-          if (parsed?.kind === 'companion') {
-            const canonKey = `nlc:${parsed.hostId}:${parsed.companionId}`;
-            upsertCompanion(canonKey, dispName, relStr, parsed.hostId, String(p.id));
-          }
-          return;
-        }
-        const cid = String(c.id || '').trim() || `i${i}`;
-        const canonKey = `nlc:${p.id}:${cid}`;
-        upsertCompanion(canonKey, nm, relStr, String(p.id), null);
-        d.union(`pt:${p.id}`, canonKey);
-      });
-    }
-    for (const k of allKeys) d.find(k);
-    /**
-     * Segunda pasada: dentro de cada componente DSU, fusiona acompañantes con el mismo nombre normalizado.
-     * Esto cubre el caso en que la cadena de vínculos no está bien resuelta y la misma persona termina con
-     * dos claves canónicas distintas.
-     */
-    const byRoot = new Map();
-    for (const k of allKeys) {
-      const r = d.find(k);
-      if (!byRoot.has(r)) byRoot.set(r, []);
-      byRoot.get(r).push(k);
-    }
-    /** Mapa: key canónica original → key canónica fusionada por nombre dentro del componente. */
-    const mergedCanon = new Map();
-    for (const [, keys] of byRoot) {
-      const seenByName = new Map();
-      for (const k of keys) {
-        if (!k.startsWith('nlc:')) continue;
-        const nn = normName(nlcM.get(k) || '');
-        if (!nn) continue;
-        if (!seenByName.has(nn)) {
-          seenByName.set(nn, k);
-          mergedCanon.set(k, k);
-        } else {
-          mergedCanon.set(k, seenByName.get(nn));
-          const survivor = seenByName.get(nn);
-          if (!nlcRel.get(survivor) && nlcRel.get(k)) nlcRel.set(survivor, nlcRel.get(k));
-          if (nlcM.get(survivor) === '—' && nlcM.get(k) && nlcM.get(k) !== '—') {
-            nlcM.set(survivor, nlcM.get(k));
-          }
-          const arrA = nlcLinkers.get(survivor) || [];
-          const arrB = nlcLinkers.get(k) || [];
-          for (const lid of arrB) if (!arrA.includes(lid)) arrA.push(lid);
-          nlcLinkers.set(survivor, arrA);
-        }
-      }
-    }
-    const trees = [];
-    for (const [r, keys] of byRoot) {
-      const participants = new Set();
-      const canonExtras = new Set();
-      for (const k of keys) {
-        if (k.startsWith('pt:')) participants.add(k.slice(3));
-        if (k.startsWith('nlc:')) canonExtras.add(mergedCanon.get(k) || k);
-      }
-      const nPeople = participants.size + canonExtras.size;
-      if (nPeople < 3) continue;
-      trees.push({
-        root: r,
-        keys,
-        participantIds: [...participants].sort((a, b) => a.localeCompare(b, 'en')),
-        canonExtras: [...canonExtras],
-        nlcName: nlcM,
-        nlcRel,
-        nlcRelByRegistrant,
-        nlcLinkers,
-        nPeople,
-      });
-    }
-    trees.sort((a, b) => (a.participantIds[0] || '').localeCompare(b.participantIds[0] || ''));
-    return { trees, nlcM, nlcRel, nlcRelByRegistrant, nlcLinkers };
-  }, [evRosterFiltered, sourceLinkMap]);
-
-  const familyTrees = unifiedFamilySection.trees;
-
-  const companionMatchCount = useMemo(() => {
-    const meta = buildActiveRegistrantMetaForCompanionDedupe(evRosterFiltered);
-    const plan = buildBautizosCanonicalCompanionPlan(evRosterFiltered, meta, { includeBaptizedCompanions: false });
-    return plan.size;
-  }, [evRosterFiltered]);
+  const companionsPageModel = useMemo(
+    () => computeBautizosCompanionsPageModel({ roster: evRosterFiltered }),
+    [evRosterFiltered]
+  );
+  const {
+    listRows,
+    soloListRows,
+    familyTrees,
+    companionMatchCount,
+    registradosConAcompananteVisible,
+  } = companionsPageModel;
+  const sourceLinkMap = companionsPageModel.sourceLinkMap;
+  const treeParticipantById = companionsPageModel.participantById;
 
   const companionRegistrantCollisions = useMemo(() => {
     const roster = allParticipantsForRepairs || allParticipants || [];
@@ -1024,10 +778,14 @@ export default function BautizosCompanionsPage({
     });
   }, [allParticipantsForRepairs, allParticipants, currentEvent?.id, canonicalizeVnpPersonId]);
 
-  const soloListRows = useMemo(
-    () => listRows.filter((r) => !companionRowBelongsToFamilyTree(r, familyTrees, sourceLinkMap)),
-    [listRows, familyTrees, sourceLinkMap]
-  );
+  const expandedFamilyNodes = useMemo(() => {
+    const out = new Map();
+    for (const g of familyTrees) {
+      if (!expandedFamilies.has(g.root)) continue;
+      out.set(g.root, buildFamilyTreeUINode(g, evRosterFiltered, treeParticipantById));
+    }
+    return out;
+  }, [familyTrees, expandedFamilies, evRosterFiltered, treeParticipantById]);
 
   const toggleFamilyExpanded = (rootKey) => {
     setExpandedFamilies((prev) => {
@@ -1101,7 +859,8 @@ export default function BautizosCompanionsPage({
       {typeof renderGlobalRegistryListToolbar === 'function'
         ? renderGlobalRegistryListToolbar(
             basePool,
-            'Solo afectan a esta vista de Acompañantes (misma barra que Registro global y Servidores). La búsqueda también localiza por nombre o ID VNPM del acompañante en la ficha del registrado.'
+            'Solo afectan a esta vista de Acompañantes (misma barra que Registro global y Servidores). La búsqueda también localiza por nombre o ID VNPM del acompañante en la ficha del registrado.',
+            { matchCount: companionMatchCount }
           )
         : null}
 
@@ -1285,56 +1044,75 @@ export default function BautizosCompanionsPage({
 
       {soloListRows.length > 0 ? (
         <>
-        <div className={uiListMobile.shellViolet}>
-          {soloListRows.map((r, i) => (
-            <ListMobileCard
-              key={r.id}
-              variant="compact"
-              tone="violet"
-              titleLabel=""
-              title={`${i + 1}. ${r.companionName}${r.isLinked ? ' (Vinculado)' : ''}`}
-              metaRows={[
-                { key: 'reg', label: 'Acompaña a', value: r.registradoName || '—' },
-                { key: 'rel', label: 'Parentesco', value: r.relationship || '—' },
-                { key: 'loc', label: 'Sede', value: r.location || '—' },
-              ]}
+        {isMobile ? (
+          <div className={uiListMobile.shellViolet}>
+            <VirtualizedList
+              items={soloListRows}
+              itemHeight={118}
+              overscan={10}
+              useParentScroll
+              renderItem={(r, i) => (
+                <ListMobileCard
+                  key={r.id}
+                  variant="compact"
+                  tone="violet"
+                  titleLabel=""
+                  title={`${i + 1}. ${r.companionName}${r.isLinked ? ' (Vinculado)' : ''}`}
+                  metaRows={[
+                    { key: 'reg', label: 'Acompaña a', value: r.registradoName || '—' },
+                    { key: 'rel', label: 'Parentesco', value: r.relationship || '—' },
+                    { key: 'loc', label: 'Sede', value: r.location || '—' },
+                  ]}
+                />
+              )}
             />
-          ))}
-        </div>
-        <div className={`${uiTable.wrap} ${uiShell.card} hidden md:block`}>
-          <table className={uiTable.table}>
-            <thead className={uiTable.thead}>
-              <tr>
-                <th className={uiTable.th}>Nombre acompañante</th>
-                <th className={uiTable.th}>Acompaña a</th>
-                <th className={uiTable.th}>Parentesco</th>
-                <th className={uiTable.th}>Sede</th>
-              </tr>
-            </thead>
-            <tbody className={uiTable.tbody}>
-              {soloListRows.map((r, i) => (
-                <tr key={r.id} className={uiTable.tr}>
-                  <td className={`${uiTable.td} align-top`}>
-                    <span className={`${uiKbd.base} min-w-[1.6rem] h-6 justify-center shrink-0 mr-2 align-middle`}>
-                      {i + 1}
-                    </span>
-                    <span className="font-bold text-slate-800 dark:text-slate-100 align-middle">{r.companionName}</span>
-                    {r.isLinked ? (
-                      <span className="ml-1.5 align-middle inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-teal-100 text-teal-800 border border-teal-200 dark:bg-teal-900/40 dark:text-teal-100 dark:border-teal-600">
-                        Vinculado
-                      </span>
-                    ) : null}
-                  </td>
-                  <td className={`${uiTable.td} font-semibold text-left break-words max-w-[14rem] md:max-w-md`}>
-                    {r.registradoName || '—'}
-                  </td>
-                  <td className={`${uiTable.td} break-words max-w-[12rem]`}>{r.relationship || '—'}</td>
-                  <td className={`${uiTable.td} break-words max-w-[10rem]`}>{r.location || '—'}</td>
+          </div>
+        ) : (
+          <div className={`${uiTable.wrap} ${uiShell.card}`}>
+            <table className={companionsDesktopTableClass}>
+              {COMPANIONS_TABLE_COLGROUP}
+              <thead className={uiTable.thead}>
+                <tr>
+                  <th className={uiTable.th}>Nombre acompañante</th>
+                  <th className={uiTable.th}>Acompaña a</th>
+                  <th className={uiTable.th}>Parentesco</th>
+                  <th className={uiTable.th}>Sede</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+            </table>
+            <VirtualizedList
+              items={soloListRows}
+              itemHeight={56}
+              overscan={10}
+              useParentScroll
+              renderItem={(r, i) => (
+                <table className={companionsDesktopTableClass}>
+                  {COMPANIONS_TABLE_COLGROUP}
+                  <tbody className={uiTable.tbody}>
+                    <tr key={r.id} className={`${uiTable.tr} border-b border-slate-100 dark:border-slate-800`}>
+                      <td className={`${uiTable.td} align-top min-w-0`}>
+                        <span className={`${uiKbd.base} min-w-[1.6rem] h-6 justify-center shrink-0 mr-2 align-middle`}>
+                          {i + 1}
+                        </span>
+                        <span className="font-bold text-slate-800 dark:text-slate-100 align-middle break-words">{r.companionName}</span>
+                        {r.isLinked ? (
+                          <span className="ml-1.5 align-middle inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-teal-100 text-teal-800 border border-teal-200 dark:bg-teal-900/40 dark:text-teal-100 dark:border-teal-600">
+                            Vinculado
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className={`${uiTable.td} font-semibold text-left min-w-0 break-words`}>
+                        {r.registradoName || '—'}
+                      </td>
+                      <td className={`${uiTable.td} min-w-0 break-words`}>{r.relationship || '—'}</td>
+                      <td className={`${uiTable.td} min-w-0 break-words`}>{r.location || '—'}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              )}
+            />
+          </div>
+        )}
         </>
       ) : null}
 
@@ -1357,7 +1135,7 @@ export default function BautizosCompanionsPage({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {familyTrees.map((g) => {
               const isExpanded = expandedFamilies.has(g.root);
-              const node = isExpanded ? buildFamilyTreeUINode(g, evRosterFiltered, participantById) : null;
+              const node = isExpanded ? expandedFamilyNodes.get(g.root) : null;
               const rootParticipantId = g.participantIds[0] || '';
               const rootParticipant = rootParticipantId ? participantById.get(rootParticipantId) : null;
               const familyLabel = String(rootParticipant?.name || '').trim() || 'Familia';

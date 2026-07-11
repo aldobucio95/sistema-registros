@@ -7,6 +7,8 @@ import {
   uiEmptyState, uiRosterMobile,
 } from '../../../ui/uiFormatClasses.js';
 import ListMobileCard from '../../../components/ListMobileCard.jsx';
+import VirtualizedList from '../../../components/VirtualizedList.jsx';
+import useMediaQuery from '../../../hooks/useMediaQuery.js';
 import { isResponsivaEventSectionVisible } from '../../../responsivaSignLogic.js';
 
 function slugFileName(s) {
@@ -107,6 +109,7 @@ export default function ResponsivasPage({
   const [detail, setDetail] = useState(null);
   const [downloadBusyId, setDownloadBusyId] = useState(null);
   const [deleteBusyId, setDeleteBusyId] = useState(null);
+  const isMobile = useMediaQuery('(max-width: 767px)');
 
   const { deliveredRaw, rows, coincidenceTotal } = useMemo(() => {
     if (!currentEvent?.id) {
@@ -178,6 +181,168 @@ export default function ResponsivasPage({
     [isSuperUser, onDeleteResponsiva]
   );
 
+  const renderResponsivaMobileRow = useCallback(
+    (p, i) => {
+      const card = getResponsivaCardUiState(p, currentEvent);
+      const whenMs = getResponsivaSignedTimestampMs(p);
+      const regMs = getParticipantRegisteredTimestampMs(p);
+      const whenLabel =
+        card?.deliveredKind === 'manual'
+          ? (regMs != null ? new Date(regMs).toLocaleString('es-MX') : '—')
+          : (whenMs != null ? new Date(whenMs).toLocaleString('es-MX') : '—');
+      const img = getResponsivaImageUrl(p);
+      const emLines = emergencyContactSummaryLines(p);
+      return (
+        <ListMobileCard
+          key={p.id}
+          title={`${i + 1}. ${p.name || '?'}`}
+          metaRows={[
+            { key: 'sede', label: 'Sede', value: p.location || '—' },
+            {
+              key: 'em',
+              label: 'Contacto emergencia',
+              value: emLines.length ? emLines.join(' · ') : '—',
+            },
+            { key: 'tipo', label: 'Tipo', value: kindLabel(card) },
+            { key: 'reg', label: 'Registro', value: whenLabel },
+          ]}
+          actions={
+            <>
+              <button type="button" onClick={() => openDetail(p)} className={`inline-flex items-center gap-1 ${uiButtons.secondary} text-[11px] min-h-[44px]`}>
+                <Eye size={14} /> Ver
+              </button>
+              {img ? (
+                <button
+                  type="button"
+                  disabled={downloadBusyId === String(p.id)}
+                  onClick={() => void handleDownload(p)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-emerald-200 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 disabled:opacity-50 min-h-[44px]"
+                >
+                  <Download size={14} />
+                  {downloadBusyId === String(p.id) ? '…' : 'Descargar'}
+                </button>
+              ) : null}
+              {isSuperUser && onDeleteResponsiva ? (
+                <button
+                  type="button"
+                  disabled={deleteBusyId === String(p.id)}
+                  onClick={() => void handleDeleteResponsiva(p)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-rose-200 bg-rose-50 text-rose-900 min-h-[44px]"
+                >
+                  <Trash2 size={14} />
+                  {deleteBusyId === String(p.id) ? '…' : 'Borrar'}
+                </button>
+              ) : null}
+            </>
+          }
+        />
+      );
+    },
+    [
+      currentEvent,
+      getResponsivaCardUiState,
+      openDetail,
+      downloadBusyId,
+      handleDownload,
+      deleteBusyId,
+      handleDeleteResponsiva,
+      isSuperUser,
+      onDeleteResponsiva,
+    ]
+  );
+
+  const renderResponsivaDesktopRow = useCallback(
+    (p, i) => {
+      const card = getResponsivaCardUiState(p, currentEvent);
+      const whenMs = getResponsivaSignedTimestampMs(p);
+      const regMs = getParticipantRegisteredTimestampMs(p);
+      const whenLabel =
+        card?.deliveredKind === 'manual'
+          ? (regMs != null ? new Date(regMs).toLocaleString('es-MX') : '—')
+          : (whenMs != null ? new Date(whenMs).toLocaleString('es-MX') : '—');
+      const img = getResponsivaImageUrl(p);
+      const emLines = emergencyContactSummaryLines(p);
+      return (
+        <tr key={p.id} className={uiTable.tr}>
+          <td className={`${uiTable.td} tabular-nums text-slate-500 dark:text-slate-300 font-bold`}>{i + 1}</td>
+          <td className={`${uiTable.td} align-top font-bold text-slate-800 dark:text-slate-100`}>
+            <span className="block">{p.name || '?'}</span>
+            {typeof renderParticipantAssistanceBadges === 'function' ? (
+              <div className="flex flex-wrap gap-1 mt-1.5 font-normal">{renderParticipantAssistanceBadges(p)}</div>
+            ) : null}
+          </td>
+          <td className={`${uiTable.td} text-slate-600 dark:text-slate-300`}>{p.location || '—'}</td>
+          <td className={`${uiTable.td} text-[10px] text-slate-600 dark:text-slate-300 max-w-[13rem] leading-snug`}>
+            {emLines.length ? (
+              <div className="space-y-0.5">
+                {emLines.map((line, li) => (
+                  <div key={li}>{line}</div>
+                ))}
+              </div>
+            ) : (
+              '—'
+            )}
+          </td>
+          <td className={`${uiTable.td} min-w-[10rem] whitespace-nowrap`}>
+            <span className="chip-responsiva-page-tipo inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wide px-2 py-0.5 rounded-lg border bg-emerald-50 text-emerald-800 border-emerald-200 dark:border-emerald-500/45 dark:bg-emerald-600 dark:text-white">
+              {kindLabel(card)}
+            </span>
+          </td>
+          <td className={`${uiTable.td} text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap`}>{whenLabel}</td>
+          <td className={`${uiTable.td} text-right`}>
+            <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
+              <button
+                type="button"
+                onClick={() => openDetail(p)}
+                className={`inline-flex items-center gap-1 ${uiButtons.secondary} text-[11px]`}
+              >
+                <Eye size={14} />
+                Ver
+              </button>
+              {img ? (
+                <button
+                  type="button"
+                  disabled={downloadBusyId === String(p.id)}
+                  onClick={() => void handleDownload(p)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-emerald-200 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-700 dark:bg-emerald-600 dark:text-white dark:hover:bg-emerald-700 shadow-sm dark:shadow-sm dark:transition-all dark:active:scale-[0.98]"
+                >
+                  <Download size={14} />
+                  {downloadBusyId === String(p.id) ? '…' : 'Descargar'}
+                </button>
+              ) : (
+                <span className="text-[10px] text-slate-400 font-semibold">Sin archivo</span>
+              )}
+              {isSuperUser && onDeleteResponsiva ? (
+                <button
+                  type="button"
+                  disabled={deleteBusyId === String(p.id)}
+                  onClick={() => void handleDeleteResponsiva(p)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-rose-200 bg-rose-50 text-rose-900 hover:bg-rose-100 disabled:opacity-50 dark:border-rose-700 dark:bg-rose-600 dark:text-white dark:hover:bg-rose-700 shadow-sm dark:shadow-sm dark:transition-all dark:active:scale-[0.98]"
+                  title="Eliminar responsiva (solo SuperUsuario)"
+                >
+                  <Trash2 size={14} />
+                  {deleteBusyId === String(p.id) ? '…' : 'Borrar'}
+                </button>
+              ) : null}
+            </div>
+          </td>
+        </tr>
+      );
+    },
+    [
+      currentEvent,
+      getResponsivaCardUiState,
+      renderParticipantAssistanceBadges,
+      openDetail,
+      downloadBusyId,
+      handleDownload,
+      deleteBusyId,
+      handleDeleteResponsiva,
+      isSuperUser,
+      onDeleteResponsiva,
+    ]
+  );
+
   if (!currentEvent) return null;
 
   if (!isResponsivaEventSectionVisible(currentEvent)) {
@@ -212,7 +377,7 @@ export default function ResponsivasPage({
         </div>
       </div>
 
-      {renderGlobalRegistryListToolbar(deliveredRaw, 'Solo afectan a esta vista de Responsivas (misma barra que Registro global).')}
+      {renderGlobalRegistryListToolbar(deliveredRaw, 'Solo afectan a esta vista de Responsivas (misma barra que Registro global).', coincidenceTotal)}
 
       <div className={`${uiShell.card} p-6 space-y-4`}>
         <h3 className="text-sm font-black text-slate-700 dark:text-slate-200 uppercase tracking-wider flex items-center gap-2">
@@ -225,67 +390,18 @@ export default function ResponsivasPage({
             <p className={uiEmptyState.title}>No hay responsivas entregadas</p>
             <p className={uiEmptyState.help}>Ajusta los filtros actuales para ver otros registros.</p>
           </div>
-        ) : (
-          <>
+        ) : isMobile ? (
           <div className={uiRosterMobile.list}>
-            {rows.map((p, i) => {
-              const card = getResponsivaCardUiState(p, currentEvent);
-              const whenMs = getResponsivaSignedTimestampMs(p);
-              const regMs = getParticipantRegisteredTimestampMs(p);
-              const whenLabel =
-                card?.deliveredKind === 'manual'
-                  ? (regMs != null ? new Date(regMs).toLocaleString('es-MX') : '—')
-                  : (whenMs != null ? new Date(whenMs).toLocaleString('es-MX') : '—');
-              const img = getResponsivaImageUrl(p);
-              const emLines = emergencyContactSummaryLines(p);
-              return (
-                <ListMobileCard
-                  key={p.id}
-                  title={`${i + 1}. ${p.name || '?'}`}
-                  metaRows={[
-                    { key: 'sede', label: 'Sede', value: p.location || '—' },
-                    {
-                      key: 'em',
-                      label: 'Contacto emergencia',
-                      value: emLines.length ? emLines.join(' · ') : '—',
-                    },
-                    { key: 'tipo', label: 'Tipo', value: kindLabel(card) },
-                    { key: 'reg', label: 'Registro', value: whenLabel },
-                  ]}
-                  actions={
-                    <>
-                      <button type="button" onClick={() => openDetail(p)} className={`inline-flex items-center gap-1 ${uiButtons.secondary} text-[11px] min-h-[44px]`}>
-                        <Eye size={14} /> Ver
-                      </button>
-                      {img ? (
-                        <button
-                          type="button"
-                          disabled={downloadBusyId === String(p.id)}
-                          onClick={() => void handleDownload(p)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-emerald-200 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 disabled:opacity-50 min-h-[44px]"
-                        >
-                          <Download size={14} />
-                          {downloadBusyId === String(p.id) ? '…' : 'Descargar'}
-                        </button>
-                      ) : null}
-                      {isSuperUser && onDeleteResponsiva ? (
-                        <button
-                          type="button"
-                          disabled={deleteBusyId === String(p.id)}
-                          onClick={() => void handleDeleteResponsiva(p)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-rose-200 bg-rose-50 text-rose-900 min-h-[44px]"
-                        >
-                          <Trash2 size={14} />
-                          {deleteBusyId === String(p.id) ? '…' : 'Borrar'}
-                        </button>
-                      ) : null}
-                    </>
-                  }
-                />
-              );
-            })}
+            <VirtualizedList
+              items={rows}
+              itemHeight={148}
+              overscan={10}
+              useParentScroll
+              renderItem={renderResponsivaMobileRow}
+            />
           </div>
-          <div className={`${uiTable.wrap} hidden md:block`}>
+        ) : (
+          <div className={uiTable.wrap}>
             <table className={uiTable.table}>
               <thead className={uiTable.thead}>
                 <tr>
@@ -299,87 +415,24 @@ export default function ResponsivasPage({
                 </tr>
               </thead>
               <tbody className={uiTable.tbody}>
-                {rows.map((p, i) => {
-                  const card = getResponsivaCardUiState(p, currentEvent);
-                  const whenMs = getResponsivaSignedTimestampMs(p);
-                  const regMs = getParticipantRegisteredTimestampMs(p);
-                  const whenLabel =
-                    card?.deliveredKind === 'manual'
-                      ? (regMs != null ? new Date(regMs).toLocaleString('es-MX') : '—')
-                      : (whenMs != null ? new Date(whenMs).toLocaleString('es-MX') : '—');
-                  const img = getResponsivaImageUrl(p);
-                  const emLines = emergencyContactSummaryLines(p);
-                  return (
-                    <tr key={p.id} className={uiTable.tr}>
-                      <td className={`${uiTable.td} tabular-nums text-slate-500 dark:text-slate-300 font-bold`}>{i + 1}</td>
-                      <td className={`${uiTable.td} align-top font-bold text-slate-800 dark:text-slate-100`}>
-                        <span className="block">{p.name || '?'}</span>
-                        {typeof renderParticipantAssistanceBadges === 'function' ? (
-                          <div className="flex flex-wrap gap-1 mt-1.5 font-normal">{renderParticipantAssistanceBadges(p)}</div>
-                        ) : null}
-                      </td>
-                      <td className={`${uiTable.td} text-slate-600 dark:text-slate-300`}>{p.location || '—'}</td>
-                      <td className={`${uiTable.td} text-[10px] text-slate-600 dark:text-slate-300 max-w-[13rem] leading-snug`}>
-                        {emLines.length ? (
-                          <div className="space-y-0.5">
-                            {emLines.map((line, li) => (
-                              <div key={li}>{line}</div>
-                            ))}
-                          </div>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                      <td className={`${uiTable.td} min-w-[10rem] whitespace-nowrap`}>
-                        <span className="chip-responsiva-page-tipo inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wide px-2 py-0.5 rounded-lg border bg-emerald-50 text-emerald-800 border-emerald-200 dark:border-emerald-500/45 dark:bg-emerald-600 dark:text-white">
-                          {kindLabel(card)}
-                        </span>
-                      </td>
-                      <td className={`${uiTable.td} text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap`}>{whenLabel}</td>
-                      <td className={`${uiTable.td} text-right`}>
-                        <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => openDetail(p)}
-                            className={`inline-flex items-center gap-1 ${uiButtons.secondary} text-[11px]`}
-                          >
-                            <Eye size={14} />
-                            Ver
-                          </button>
-                          {img ? (
-                            <button
-                              type="button"
-                              disabled={downloadBusyId === String(p.id)}
-                              onClick={() => void handleDownload(p)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-emerald-200 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-700 dark:bg-emerald-600 dark:text-white dark:hover:bg-emerald-700 shadow-sm dark:shadow-sm dark:transition-all dark:active:scale-[0.98]"
-                            >
-                              <Download size={14} />
-                              {downloadBusyId === String(p.id) ? '…' : 'Descargar'}
-                            </button>
-                          ) : (
-                            <span className="text-[10px] text-slate-400 font-semibold">Sin archivo</span>
-                          )}
-                          {isSuperUser && onDeleteResponsiva ? (
-                            <button
-                              type="button"
-                              disabled={deleteBusyId === String(p.id)}
-                              onClick={() => void handleDeleteResponsiva(p)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-rose-200 bg-rose-50 text-rose-900 hover:bg-rose-100 disabled:opacity-50 dark:border-rose-700 dark:bg-rose-600 dark:text-white dark:hover:bg-rose-700 shadow-sm dark:shadow-sm dark:transition-all dark:active:scale-[0.98]"
-                              title="Eliminar responsiva (solo SuperUsuario)"
-                            >
-                              <Trash2 size={14} />
-                              {deleteBusyId === String(p.id) ? '…' : 'Borrar'}
-                            </button>
-                          ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                <tr>
+                  <td colSpan={7} className="p-0 align-top">
+                    <VirtualizedList
+                      items={rows}
+                      itemHeight={76}
+                      overscan={10}
+                      useParentScroll
+                      renderItem={(p, i) => (
+                        <table className={uiTable.table}>
+                          <tbody>{renderResponsivaDesktopRow(p, i)}</tbody>
+                        </table>
+                      )}
+                    />
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>
-          </>
         )}
       </div>
 

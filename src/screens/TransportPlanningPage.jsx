@@ -1,11 +1,10 @@
-import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, startTransition } from 'react';
 import { ChevronDown, MessageCircle, Plus, X } from 'lucide-react';
 import {
   assignBautizosMembersToCarSlots,
   bautizosFamilyEffectiveCarCount,
   buildBautizosCarDisplayGroups,
   buildBautizosCarFamilyInfo,
-  buildBusGroupSections,
   buildCarGroupKeyToGroup,
   buildManualCarGroupViews,
   buildTransportPlanningLines,
@@ -14,7 +13,6 @@ import {
   countConfirmedCarsInSet,
   defaultVehicleLabel,
   effectiveCarsForCarLine,
-  filterBautizosDisplayGroupExcludingManual,
   getCarVehicleMetaFromPlan,
   getUnitsForSede,
   isManualCarPlanGroup,
@@ -29,10 +27,10 @@ import {
   resolveManualCarGroupTitularSk,
   sortTransportLinesByRosterOrder,
   suggestBautizosFamilyCarGroups,
-  totalCarsCount,
   getTransportAttendanceEntry,
+  patchTransportAttendanceOnPlan,
   applyTransportPlanningAutoNormalization,
-  transportPlanningStructureSignature,
+  transportPlanningStructureSignatureFast,
   sanitizeBautizosGroupTitularByGroupId,
 } from '../transportPlanningCore.js';
 import CarVehicleMetaPanel from '../components/transport/CarVehicleMetaPanel.jsx';
@@ -72,6 +70,7 @@ import {
   upsertCustomCarCatalog,
 } from '../data/carBrandModelsCatalog.js';
 import { buildLocationScopeSet, participantInLocationScope } from '../rbac/permissions.js';
+import { eventAttendanceMarkingWindowHint } from '../eventDateHelpers.js';
 import { uiModal, uiButtons } from '../ui/uiFormatClasses.js';
 import ScreenLoadingFallback from './ScreenLoadingFallback.jsx';
 import { runComputeWorkerJob } from '../workers/computeWorkerClient.js';
@@ -98,6 +97,9 @@ import { parseVehicleDocId, vehicleDocIdFromLegacyKey } from '../transport/v2/tr
 import {
   fetchCarMetaForTitular,
   mergeCarMetaCacheIntoPlan,
+  mergeCarMetaCacheIntoPlanForRead,
+  mergeFetchedCarMetaMaps,
+  titularCarMetaHasUsableVehicleData,
   migrateInlineCarMetaToSubcollection,
   saveCarMetaVehicleToFirestore,
   saveTransportPlanStructure,
@@ -114,6 +116,30 @@ import {
   describeManualGroupTitularChange,
   titularNameFromSk,
 } from '../transportActivityLog.js';
+import {
+  computeTransportPlanningPageModel,
+  buildCampaTransportRowByRowItems,
+  transportRosterSignature,
+} from '../transportPlanningPageData.js';
+import {
+  buildTransportExportPlan,
+  collectTransportCarExportTitularKeys,
+  computeCarVehicleRegistrationStats,
+  loadCarMetaCacheForTransportExport,
+  resolveCarVehicleMetaForExport,
+} from '../transportCarMetaExport.js';
+
+function manualGroupFallbackTitularSks(memberLines, titularSk) {
+  const exclude = String(titularSk || '').trim();
+  return [
+    ...new Set(
+      (memberLines || [])
+        .filter((line) => line?.kind === 'participant')
+        .map((line) => String(line.sourceKey || '').trim())
+        .filter((sk) => sk && sk !== exclude)
+    ),
+  ];
+}
 
 function transportPlanningSignature(raw) {
   try {
@@ -149,6 +175,8 @@ export default function TransportPlanningPage({
   canEdit,
   /** Asignar camión y confirmar asistencia (incluye Lector con acceso a Transporte). */
   canEditTransportOps = false,
+  /** Marcar asistencia al evento (solo durante los días del evento). */
+  canMarkEventAttendance = false,
   transportOpsUserLabel = '',
   showToast,
   getDocRef,
@@ -180,6 +208,18 @@ export default function TransportPlanningPage({
   const eventType = String(currentEvent?.eventType || '').trim();
   const isBautizos = eventType === 'Bautizos';
   const splitCampaBySubevent = isCampa && countAmbosDoubleInAllCounts !== false;
+  const visibleLocationsKey = useMemo(
+    () => (Array.isArray(visibleLocations) ? visibleLocations.map((x) => String(x).trim()).filter(Boolean).join('|') : ''),
+    [visibleLocations]
+  );
+  const eventLocationsKey = useMemo(
+    () =>
+      Array.isArray(currentEvent?.locations)
+        ? currentEvent.locations.map((x) => String(x).trim()).filter(Boolean).join('|')
+        : '',
+    [currentEvent?.locations]
+  );
+
   const locations = useMemo(() => {
     if (Array.isArray(visibleLocations) && visibleLocations.length > 0) {
       return visibleLocations.map((x) => String(x).trim()).filter(Boolean);
@@ -187,7 +227,7 @@ export default function TransportPlanningPage({
     return Array.isArray(currentEvent?.locations)
       ? currentEvent.locations.map((x) => String(x).trim()).filter(Boolean)
       : [];
-  }, [currentEvent?.locations, visibleLocations]);
+  }, [eventLocationsKey, visibleLocationsKey, currentEvent?.locations, visibleLocations]);
 
   const locationScopeSet = useMemo(() => buildLocationScopeSet(locations), [locations]);
 
@@ -219,8 +259,11 @@ export default function TransportPlanningPage({
 
   /** Cálculos pesados (líneas, grupos) en Web Worker cuando el roster es grande. */
   const deferredRoster = useDeferredValue(evRosterFiltered);
-  const rosterComputePending = deferredRoster !== evRosterFiltered;
+  const deferredRosterSig = useMemo(() => transportRosterSignature(deferredRoster), [deferredRoster]);
+  const deferredRosterRef = useRef(evRosterFiltered);
+  deferredRosterRef.current = deferredRoster;
   const transportComputeReqRef = useRef(0);
+  const hasTransportListRef = useRef(false);
   const [transportWorkerPending, setTransportWorkerPending] = useState(false);
   const [transportComputed, setTransportComputed] = useState({
     busLines: [],
@@ -228,42 +271,61 @@ export default function TransportPlanningPage({
     bautizosCarDisplayGroups: [],
   });
 
+  const transportWorkerEventLike = useMemo(
+    () => slimEventForTransportWorker(currentEvent),
+    [
+      currentEvent?.id,
+      currentEvent?.eventType,
+      eventLocationsKey,
+      currentEvent?.bautizosLapInfantMaxAge,
+      currentEvent?.bautizosLapInfantPolicy,
+    ]
+  );
+
   useEffect(() => {
+    hasTransportListRef.current = false;
+    setTransportWorkerPending(false);
+  }, [eventId]);
+
+  useEffect(() => {
+    const roster = deferredRosterRef.current;
     const reqId = ++transportComputeReqRef.current;
-    setTransportWorkerPending(true);
+    if (!hasTransportListRef.current) setTransportWorkerPending(true);
     const payload = {
-      roster: deferredRoster,
+      roster,
       eventType,
       locations,
-      eventLike: slimEventForTransportWorker(currentEvent),
+      eventLike: transportWorkerEventLike,
     };
-    runComputeWorkerJob('transportPlanning', payload, { participantCount: deferredRoster.length })
+    runComputeWorkerJob('transportPlanning', payload, { participantCount: roster.length })
       .then((result) => {
         if (transportComputeReqRef.current === reqId) {
           setTransportComputed(result);
           setTransportWorkerPending(false);
+          hasTransportListRef.current = true;
         }
       })
       .catch(() => {
         if (transportComputeReqRef.current === reqId) {
-          const built = buildTransportPlanningLines(deferredRoster, eventType, locations, currentEvent);
+          const built = buildTransportPlanningLines(roster, eventType, locations, transportWorkerEventLike);
           setTransportComputed({
-            busLines: sortTransportLinesByRosterOrder(built.busLines, deferredRoster),
-            carLines: sortTransportLinesByRosterOrder(built.carLines, deferredRoster),
+            busLines: sortTransportLinesByRosterOrder(built.busLines, roster),
+            carLines: sortTransportLinesByRosterOrder(built.carLines, roster),
             bautizosCarDisplayGroups: isBautizos
-              ? buildBautizosCarDisplayGroups(deferredRoster, built.carLines)
+              ? buildBautizosCarDisplayGroups(roster, built.carLines)
               : [],
           });
           setTransportWorkerPending(false);
+          hasTransportListRef.current = true;
         }
       });
     return () => {
       transportComputeReqRef.current += 1;
     };
-  }, [deferredRoster, eventType, locations, currentEvent, isBautizos]);
+  }, [deferredRosterSig, eventType, visibleLocationsKey, eventLocationsKey, transportWorkerEventLike, isBautizos]);
 
   const { busLines, carLines, bautizosCarDisplayGroups } = transportComputed;
-  const showTransportBodyPending = rosterComputePending || transportWorkerPending;
+  const showTransportBodyPending = transportWorkerPending && !hasTransportListRef.current;
 
   const sedeScopeHint =
     visibleLocations.length === 1
@@ -311,7 +373,10 @@ export default function TransportPlanningPage({
   const planRef = useRef(plan);
   const loadedCarMetaRef = useRef(loadedCarMetaByKey);
   const carMetaSaveTimersRef = useRef(new Map());
+  const carMetaSaveInFlightRef = useRef(new Map());
   const structureSaveTimerRef = useRef(null);
+  const structureSaveInFlightRef = useRef(false);
+  const structureSavePendingRef = useRef(false);
   const structureBootRef = useRef(true);
   planRef.current = plan;
   loadedCarMetaRef.current = loadedCarMetaByKey;
@@ -322,8 +387,21 @@ export default function TransportPlanningPage({
   );
 
   const planForCarMetaRead = useMemo(
-    () => mergeCarMetaCacheIntoPlan(plan, loadedCarMetaByKey),
+    () => mergeCarMetaCacheIntoPlanForRead(plan, loadedCarMetaByKey),
     [plan, loadedCarMetaByKey]
+  );
+
+  const carVehicleRegistrationStats = useMemo(
+    () =>
+      carLines.length
+        ? computeCarVehicleRegistrationStats({
+            plan: planForCarMetaRead,
+            carLines,
+            roster: evRosterFiltered,
+            isBautizos,
+          })
+        : { registered: 0, incomplete: 0, total: 0 },
+    [planForCarMetaRead, carLines, evRosterFiltered, isBautizos]
   );
 
   const resolveHostCarContext = useCallback(
@@ -382,59 +460,53 @@ export default function TransportPlanningPage({
     (titularSk, effectiveCars) => {
       const owner = String(titularSk || '').trim();
       if (!owner) return false;
-      const inlineKeys = vehicleKeysForTitular(owner, effectiveCars);
-      if (inlineKeys.some((k) => Boolean(plan.carMetaBySource?.[k]))) return true;
-      if (inlineKeys.some((k) => Boolean(loadedCarMetaByKey?.[k]))) return true;
+      if (titularCarMetaHasUsableVehicleData(plan, loadedCarMetaByKey, owner, effectiveCars)) {
+        return true;
+      }
       return fetchedTitularSks.has(owner);
     },
-    [plan.carMetaBySource, loadedCarMetaByKey, fetchedTitularSks]
+    [plan, loadedCarMetaByKey, fetchedTitularSks]
   );
 
   const loadCarMetaForTitular = useCallback(
-    async (titularSk, effectiveCars = 1) => {
+    async (titularSk, effectiveCars = 1, opts = {}) => {
       const owner = String(titularSk || '').trim();
       if (!eventId || !owner) return;
-      if (titularCarMetaIsLoaded(owner, effectiveCars)) return;
-      setLoadingTitularSks((prev) => new Set(prev).add(owner));
-      try {
-        const fetched = await fetchCarMetaForTitular(eventId, owner);
-        if (Object.keys(fetched).length) {
-          setLoadedCarMetaByKey((prev) => ({ ...fetched, ...prev }));
+      const memberLines = opts.memberLines || null;
+      const forceRefetch = opts.forceRefetch === true;
+      const keysToFetch = memberLines?.length
+        ? [owner, ...manualGroupFallbackTitularSks(memberLines, owner)]
+        : [owner];
+      for (const sk of [...new Set(keysToFetch.filter(Boolean))]) {
+        if (
+          !forceRefetch &&
+          (titularCarMetaHasUsableVehicleData(plan, loadedCarMetaByKey, sk, effectiveCars) ||
+            fetchedTitularSks.has(sk))
+        ) {
+          continue;
         }
-      } finally {
-        setFetchedTitularSks((prev) => new Set(prev).add(owner));
-        setLoadingTitularSks((prev) => {
-          const next = new Set(prev);
-          next.delete(owner);
-          return next;
-        });
+        setLoadingTitularSks((prev) => new Set(prev).add(sk));
+        try {
+          const fetched = await fetchCarMetaForTitular(eventId, sk);
+          if (Object.keys(fetched).length) {
+            setLoadedCarMetaByKey((prev) => {
+              const merged = mergeFetchedCarMetaMaps(prev, fetched);
+              loadedCarMetaRef.current = merged;
+              return merged;
+            });
+          }
+        } finally {
+          setFetchedTitularSks((prev) => new Set(prev).add(sk));
+          setLoadingTitularSks((prev) => {
+            const next = new Set(prev);
+            next.delete(sk);
+            return next;
+          });
+        }
       }
     },
-    [eventId, titularCarMetaIsLoaded]
+    [eventId, plan, loadedCarMetaByKey, fetchedTitularSks]
   );
-
-  const busSectionsBase = useMemo(
-    () => buildBusGroupSections(busLines, locations, isCampa, splitCampaBySubevent),
-    [busLines, locations, isCampa, splitCampaBySubevent]
-  );
-
-  const busSectionsEffective = useMemo(() => {
-    const base = [...busSectionsBase];
-    const keys = new Set(base.map((s) => s.groupKey));
-    for (const k of Object.keys(plan.unitsByLocation || {})) {
-      if (keys.has(k)) continue;
-      keys.add(k);
-      const { sedeBase, subevent } = parseBusGroupKey(k);
-      base.push({
-        groupKey: k,
-        sedeBase,
-        subevent,
-        title: subevent ? `${sedeBase} · ${subevent}` : k,
-        orphan: true,
-      });
-    }
-    return base;
-  }, [busSectionsBase, plan.unitsByLocation]);
 
   const keyToGroup = useMemo(() => buildCarGroupKeyToGroup(plan), [plan]);
   const bautizosFamilyInfo = useMemo(
@@ -448,68 +520,81 @@ export default function TransportPlanningPage({
   );
 
   const remoteStructureSig = useMemo(
-    () =>
-      transportPlanningStructureSignature(
-        normalizeTransportPlanning(currentEvent?.transportPlanning),
-        planDirtyContext
-      ),
-    [currentEvent?.id, currentEvent?.transportPlanning, planDirtyContext]
+    () => transportPlanningStructureSignatureFast(normalizeTransportPlanning(currentEvent?.transportPlanning)),
+    [currentEvent?.id, currentEvent?.transportPlanning]
   );
 
   const localStructureSig = useMemo(
-    () => transportPlanningStructureSignature(plan, planDirtyContext),
-    [plan, planDirtyContext]
+    () => transportPlanningStructureSignatureFast(plan),
+    [plan]
   );
 
   const flushCarMetaSave = useCallback(
     async (vehicleKey) => {
       const vk = String(vehicleKey || '').trim();
       if (!canSaveTransport || !eventId || !vk) return;
-      const merged = mergeCarMetaCacheIntoPlan(planRef.current, loadedCarMetaRef.current);
-      const fullMeta = merged?.carMetaBySource?.[vk];
-      if (!fullMeta) return;
-      setSaving(true);
-      try {
-        if (isTransportV2Plan(merged)) {
-          const { ownerParticipantId, carIndex } = parseVehicleDocId(vehicleDocIdFromLegacyKey(vk));
-          if (ownerParticipantId) {
-            await saveVehiclePatch(String(eventId), ownerParticipantId, carIndex, fullMeta);
-            setLoadedCarMetaByKey((prev) => ({ ...prev, [vk]: fullMeta }));
-            return;
-          }
-        }
 
-        const savedPlan = await saveCarMetaVehicleToFirestore({
-          eventId: String(eventId),
-          vehicleKey: vk,
-          meta: fullMeta,
-          currentPlan: merged,
-          roster: evRosterFiltered,
-          getDocRef,
-          updateDoc,
+      const prevFlight = carMetaSaveInFlightRef.current.get(vk) || Promise.resolve();
+      const run = prevFlight
+        .catch(() => {})
+        .then(async () => {
+          const merged = mergeCarMetaCacheIntoPlan(planRef.current, loadedCarMetaRef.current);
+          const fullMeta = merged?.carMetaBySource?.[vk];
+          if (!fullMeta) return;
+          setSaving(true);
+          try {
+            if (isTransportV2Plan(merged)) {
+              const { ownerParticipantId, carIndex } = parseVehicleDocId(vehicleDocIdFromLegacyKey(vk));
+              if (ownerParticipantId) {
+                await saveVehiclePatch(String(eventId), ownerParticipantId, carIndex, fullMeta);
+                setLoadedCarMetaByKey((prev) => ({ ...prev, [vk]: fullMeta }));
+                loadedCarMetaRef.current = { ...loadedCarMetaRef.current, [vk]: fullMeta };
+                return;
+              }
+            }
+
+            const savedPlan = await saveCarMetaVehicleToFirestore({
+              eventId: String(eventId),
+              vehicleKey: vk,
+              meta: fullMeta,
+              currentPlan: merged,
+              roster: evRosterFiltered,
+              getDocRef,
+              updateDoc,
+            });
+            setLoadedCarMetaByKey((prev) => ({ ...prev, [vk]: fullMeta }));
+            loadedCarMetaRef.current = { ...loadedCarMetaRef.current, [vk]: fullMeta };
+            setPlan((prev) => {
+              const carMetaBySource = { ...(prev.carMetaBySource || {}) };
+              delete carMetaBySource[vk];
+              return { ...prev, carMetaBySource };
+            });
+            if (typeof onTransportPlanSaved === 'function') {
+              onTransportPlanSaved(savedPlan);
+            }
+            const catalogEntries = collectCarMetaCatalogEntries({ [vk]: fullMeta });
+            const nextCustomCatalog = upsertCustomCarCatalog(customCarCatalog, catalogEntries);
+            if (!customCarCatalogsEqual(customCarCatalog, nextCustomCatalog)) {
+              await updateDoc(getDocRef('app_data', 'config'), {
+                customCarCatalog: nextCustomCatalog,
+              });
+            }
+          } catch (e) {
+            console.error('[transport] auto-save car meta', e);
+            showToast('No se pudo guardar datos de carro.');
+          } finally {
+            setSaving(false);
+          }
         });
-        setLoadedCarMetaByKey((prev) => ({ ...prev, [vk]: fullMeta }));
-        setPlan((prev) => {
-          const carMetaBySource = { ...(prev.carMetaBySource || {}) };
-          delete carMetaBySource[vk];
-          return { ...prev, carMetaBySource };
-        });
-        if (typeof onTransportPlanSaved === 'function') {
-          onTransportPlanSaved(savedPlan);
-        }
-        const catalogEntries = collectCarMetaCatalogEntries({ [vk]: fullMeta });
-        const nextCustomCatalog = upsertCustomCarCatalog(customCarCatalog, catalogEntries);
-        if (!customCarCatalogsEqual(customCarCatalog, nextCustomCatalog)) {
-          await updateDoc(getDocRef('app_data', 'config'), {
-            customCarCatalog: nextCustomCatalog,
-          });
-        }
-      } catch (e) {
-        console.error('[transport] auto-save car meta', e);
-        showToast('No se pudo guardar datos de carro.');
-      } finally {
-        setSaving(false);
-      }
+      carMetaSaveInFlightRef.current.set(
+        vk,
+        run.finally(() => {
+          if (carMetaSaveInFlightRef.current.get(vk) === run) {
+            carMetaSaveInFlightRef.current.delete(vk);
+          }
+        })
+      );
+      await run;
     },
     [
       canSaveTransport,
@@ -551,16 +636,22 @@ export default function TransportPlanningPage({
 
   const flushStructureSave = useCallback(async () => {
     if (!canSaveTransport || !eventId) return;
+    if (structureSaveInFlightRef.current) {
+      structureSavePendingRef.current = true;
+      return;
+    }
+    structureSaveInFlightRef.current = true;
+    const remotePlanSnapshot = currentEvent?.transportPlanning;
     const snapshot = applyTransportPlanningAutoNormalization(planRef.current, planDirtyContext);
-    setSaving(true);
     try {
-      const mergedForSummary = mergeCarMetaCacheIntoPlan(snapshot, loadedCarMetaRef.current);
       const savedPlan = await saveTransportPlanStructure({
         eventId: String(eventId),
-        plan: applyCarMetaPassengerInheritance(mergedForSummary),
+        plan: snapshot,
         roster: evRosterFiltered,
         getDocRef,
         updateDoc,
+        preserveCarMetaSummary: true,
+        remotePlan: remotePlanSnapshot,
       });
       if (typeof onTransportPlanSaved === 'function') {
         onTransportPlanSaved(savedPlan);
@@ -569,11 +660,16 @@ export default function TransportPlanningPage({
       console.error('[transport] auto-save plan structure', e);
       showToast('No se pudo guardar el plan de transporte.');
     } finally {
-      setSaving(false);
+      structureSaveInFlightRef.current = false;
+      if (structureSavePendingRef.current) {
+        structureSavePendingRef.current = false;
+        void flushStructureSave();
+      }
     }
   }, [
     canSaveTransport,
     eventId,
+    currentEvent?.transportPlanning,
     planDirtyContext,
     evRosterFiltered,
     getDocRef,
@@ -598,12 +694,7 @@ export default function TransportPlanningPage({
     }
     if (localStructureSig === remoteStructureSig) return undefined;
     queueStructureSave();
-    return () => {
-      if (structureSaveTimerRef.current) {
-        clearTimeout(structureSaveTimerRef.current);
-        structureSaveTimerRef.current = null;
-      }
-    };
+    return undefined;
   }, [localStructureSig, remoteStructureSig, canSaveTransport, eventId, queueStructureSave]);
 
   React.useEffect(() => {
@@ -616,7 +707,7 @@ export default function TransportPlanningPage({
     prevSyncEventIdRef.current = currentEvent?.id;
     setPlan((prev) => {
       if (eventChanged) return next;
-      if (transportPlanningStructureSignature(prev, planDirtyContext) !== remoteStructureSig) {
+      if (transportPlanningStructureSignatureFast(prev) !== remoteStructureSig) {
         return prev;
       }
       if (transportPlanningSignature(prev) === transportPlanningSignature(next)) return prev;
@@ -629,47 +720,56 @@ export default function TransportPlanningPage({
     [planForCarMetaRead]
   );
 
-  const manualCarGroupViews = useMemo(
-    () => buildManualCarGroupViews(plan, carLines),
-    [plan, carLines]
+  const resolveCampaAmbosTransit = useCallback((sourceKey) => {
+    const sk = String(sourceKey || '').trim();
+    const raw = plan?.campaAmbosTransitBySource?.[sk];
+    return {
+      teenArrive: raw?.teenArrive !== false,
+      teenReturn: raw?.teenReturn === true,
+      jovenArrive: raw?.jovenArrive === true,
+      jovenReturn: raw?.jovenReturn !== false,
+    };
+  }, [plan?.campaAmbosTransitBySource]);
+
+  const transportPlanningPageModel = useMemo(
+    () => {
+      const model = computeTransportPlanningPageModel({
+        locations,
+        busLines,
+        carLines,
+        bautizosCarDisplayGroups,
+        roster: evRosterFiltered,
+        plan,
+        isBautizos,
+        isCampa,
+        splitCampaBySubevent,
+        resolveCampaAmbosTransit,
+      });
+      return model;
+    },
+    [
+      locations,
+      busLines,
+      carLines,
+      bautizosCarDisplayGroups,
+      evRosterFiltered,
+      plan,
+      isBautizos,
+      isCampa,
+      splitCampaBySubevent,
+      resolveCampaAmbosTransit,
+    ]
   );
-  const manualGroupedKeys = useMemo(() => {
-    const keys = new Set();
-    for (const view of manualCarGroupViews) {
-      for (const k of view.memberKeys || []) keys.add(String(k).trim());
-    }
-    return keys;
-  }, [manualCarGroupViews]);
-  const carLinesEligibleForManualGroupAdd = useMemo(
-    () =>
-      carLines.filter((l) => {
-        const sk = String(l?.sourceKey || '').trim();
-        return sk && !manualGroupedKeys.has(sk);
-      }),
-    [carLines, manualGroupedKeys]
-  );
-  const manualGroupAddMemberOptions = useMemo(
-    () =>
-      carLinesEligibleForManualGroupAdd.map((line) => {
-        const roleLabel = line.kind === 'companion' ? 'Acompañante' : 'Titular';
-        const cars = Number(line.carrosLlegada) || 1;
-        return {
-          value: String(line.sourceKey || '').trim(),
-          label: `${line.name || '—'} · ${line.location || '—'} · ${cars} carro${cars !== 1 ? 's' : ''} · ${roleLabel}`,
-        };
-      }),
-    [carLinesEligibleForManualGroupAdd]
-  );
-  const bautizosCarCardGroups = useMemo(() => {
-    if (!isBautizos || manualGroupedKeys.size === 0) return bautizosCarDisplayGroups;
-    return bautizosCarDisplayGroups
-      .map((grp) => filterBautizosDisplayGroupExcludingManual(grp, manualGroupedKeys))
-      .filter(Boolean);
-  }, [isBautizos, bautizosCarDisplayGroups, manualGroupedKeys]);
-  const carsTotal = useMemo(
-    () => totalCarsCount(carLines, plan, isBautizos, evRosterFiltered),
-    [carLines, plan, isBautizos, evRosterFiltered]
-  );
+  const {
+    busSectionsEffective,
+    busPassengersByGroupKey,
+    manualCarGroupViews,
+    manualGroupedKeys,
+    carLinesEligibleForManualGroupAdd,
+    manualGroupAddMemberOptions,
+    bautizosCarCardGroups,
+    carsTotal,
+  } = transportPlanningPageModel;
 
   const pendingCarDataTitularCount = useMemo(() => {
     if (!isBautizos || typeof titularHasPendingCarData !== 'function') return 0;
@@ -719,24 +819,19 @@ export default function TransportPlanningPage({
   const setTransportAttendance = useCallback(
     (sourceKey, confirmed) => {
       const sk = String(sourceKey || '').trim();
-      if (!sk || !canEditTransportOps) return;
-      setPlan((prev) => {
-        const next = normalizeTransportPlanning(prev);
-        const transportAttendanceBySource = { ...(next.transportAttendanceBySource || {}) };
-        if (confirmed) {
-          transportAttendanceBySource[sk] = {
-            confirmed: true,
-            confirmedAt: new Date().toISOString(),
-            confirmedBy: String(transportOpsUserLabel || '').trim(),
-          };
-        } else {
-          delete transportAttendanceBySource[sk];
-        }
-        return { ...next, transportAttendanceBySource };
-      });
+      if (!sk || !canEditTransportOps || !canMarkEventAttendance) return;
+      setPlan((prev) =>
+        patchTransportAttendanceOnPlan(prev, sk, confirmed, transportOpsUserLabel)
+      );
     },
-    [canEditTransportOps, transportOpsUserLabel]
+    [canEditTransportOps, canMarkEventAttendance, transportOpsUserLabel]
   );
+
+  const attendanceCheckboxDisabled = !canEditTransportOps || !canMarkEventAttendance;
+  const attendanceCheckboxTitle =
+    canEditTransportOps && !canMarkEventAttendance
+      ? eventAttendanceMarkingWindowHint(currentEvent)
+      : undefined;
 
   const renderTransportAttendanceCheckbox = (sourceKey) => {
     const sk = String(sourceKey || '').trim();
@@ -744,12 +839,15 @@ export default function TransportPlanningPage({
     const entry = getTransportAttendanceEntry(plan, sk);
     const checked = entry.confirmed === true;
     return (
-      <label className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-600 dark:text-slate-300">
+      <label
+        className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-600 dark:text-slate-300"
+        title={attendanceCheckboxTitle}
+      >
         <input
           type="checkbox"
           className="rounded border-slate-300"
           checked={checked}
-          disabled={!canEditTransportOps}
+          disabled={attendanceCheckboxDisabled}
           onChange={(e) => setTransportAttendance(sk, e.target.checked)}
         />
         <span className={checked ? 'text-emerald-700 dark:text-emerald-400' : ''}>
@@ -837,24 +935,24 @@ export default function TransportPlanningPage({
   );
 
   const handleToggleFamilyCard = useCallback(
-    async (cardKey, titularSk, effectiveCars) => {
+    async (cardKey, titularSk, effectiveCars, memberLines = null) => {
       const key = String(cardKey || '').trim();
       const willExpand = !expandedFamilyCardKeys.has(key);
       toggleFamilyCardKey(key);
       if (willExpand && titularSk) {
-        await loadCarMetaForTitular(titularSk, effectiveCars);
+        await loadCarMetaForTitular(titularSk, effectiveCars, { memberLines, forceRefetch: true });
       }
     },
     [expandedFamilyCardKeys, toggleFamilyCardKey, loadCarMetaForTitular]
   );
 
   const handleToggleCarForm = useCallback(
-    async (formKey, titularSk, effectiveCars) => {
+    async (formKey, titularSk, effectiveCars, memberLines = null) => {
       const key = String(formKey || '').trim();
       const willExpand = !expandedCarFormKeys.has(key);
       toggleCarFormKey(key);
       if (willExpand && titularSk) {
-        await loadCarMetaForTitular(titularSk, effectiveCars);
+        await loadCarMetaForTitular(titularSk, effectiveCars, { memberLines, forceRefetch: true });
       }
     },
     [expandedCarFormKeys, toggleCarFormKey, loadCarMetaForTitular]
@@ -914,6 +1012,18 @@ export default function TransportPlanningPage({
     );
   };
 
+  const campaRowByRowVirtualItems = useMemo(
+    () =>
+      buildCampaTransportRowByRowItems({
+        carLines,
+        plan,
+        keyToGroup,
+        bautizosFamilyInfo,
+        isBautizos,
+      }),
+    [carLines, plan, keyToGroup, bautizosFamilyInfo, isBautizos]
+  );
+
   const getPassengersForSection = (section) => {
     const passengersBase = passengersForBusGroup(busLines, section);
     return passengersBase
@@ -964,8 +1074,6 @@ export default function TransportPlanningPage({
         regCounter.n += 1;
         return String(regCounter.n);
       };
-
-      const getCarMetaForExport = (titularSk, carIndex = 1) => getCarMeta(titularSk, carIndex);
 
       const remainingY = () => pageH - M.b - y;
       const ensure = (need) => {
@@ -1281,6 +1389,44 @@ export default function TransportPlanningPage({
         doc.text('No hay registros que lleguen en carro.', M.l + 4, y);
         y += 22;
       } else {
+        const exportMetaCache = await loadCarMetaCacheForTransportExport(
+          eventId,
+          plan,
+          loadedCarMetaByKey,
+          {
+            carLines,
+            roster: evRosterFiltered,
+            isBautizos,
+            titularKeys: collectTransportCarExportTitularKeys({
+              plan,
+              carLines,
+              roster: evRosterFiltered,
+              isBautizos,
+            }),
+          }
+        );
+        const exportPlan = buildTransportExportPlan(plan, exportMetaCache);
+        const getCarMetaForExport = (titularSk, carIndex = 1, fallbackSks = []) =>
+          resolveCarVehicleMetaForExport(exportPlan, titularSk, carIndex, fallbackSks);
+        const carRegistrationStats = computeCarVehicleRegistrationStats({
+          plan: exportPlan,
+          carLines,
+          roster: evRosterFiltered,
+          isBautizos,
+          getCarMeta: getCarMetaForExport,
+        });
+
+        ensure(22);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(...C.slate600);
+        doc.text(
+          `Carros con datos (marca, modelo, color o placas): ${carRegistrationStats.registered} · Incompletos: ${carRegistrationStats.incomplete}`,
+          M.l + 4,
+          y
+        );
+        y += 18;
+
         let displayGroups = bautizosCarDisplayGroups;
         if (isBautizos && (!displayGroups || displayGroups.length === 0) && bautizosFamilyInfo?.size) {
           displayGroups = [];
@@ -1386,6 +1532,9 @@ export default function TransportPlanningPage({
                   effCars: eff,
                   slots,
                   grp,
+                  fallbackTitularSks: (grp.hosts || [])
+                    .map((host) => getHostParticipantSourceKeyPdf(host))
+                    .filter((sk) => sk && sk !== titularSk),
                 };
               })
                 .filter(Boolean)
@@ -1413,6 +1562,10 @@ export default function TransportPlanningPage({
                   view.carsBeforeMerge > view.effectiveCars
                     ? `Registro: ${view.carsBeforeMerge} carro(s) → Plan: ${view.effectiveCars} compartido(s)`
                     : '',
+                fallbackTitularSks: (view.memberLines || [])
+                  .filter((line) => line?.kind === 'participant')
+                  .map((line) => String(line.sourceKey || '').trim())
+                  .filter((sk) => sk && sk !== view.titularSk),
               };
             })
           : [];
@@ -1422,7 +1575,7 @@ export default function TransportPlanningPage({
         const estimateCarBlockHeight = (blk) => {
           let h = 34 + 14 + 12 + 8;
           blk.slots.forEach((slot) => {
-            const vm = getCarMetaForExport(blk.titularSk, slot.carIndex);
+            const vm = getCarMetaForExport(blk.titularSk, slot.carIndex, blk.fallbackTitularSks);
             const vLine = [vm.brand, vm.model].filter(Boolean).join(' ') || '—';
             doc.setFontSize(8.5);
             const tentative = vm.maybeAbsent ? ' · Quizá no vaya' : '';
@@ -1487,7 +1640,7 @@ export default function TransportPlanningPage({
 
           blk.slots.forEach((slot) => {
             const nMembers = slot.members.length;
-            const vm = getCarMetaForExport(blk.titularSk, slot.carIndex);
+            const vm = getCarMetaForExport(blk.titularSk, slot.carIndex, blk.fallbackTitularSks);
             const slotRowsPreview = slot.members.map((m) => {
               const line = carLines.find((l) => String(l.sourceKey) === String(m.sourceKey));
               const isTit =
@@ -1578,14 +1731,27 @@ export default function TransportPlanningPage({
 
   const removeUnit = (groupKey, unitId) => {
     const gk = String(groupKey || '').trim();
-    setPlan((prev) => {
-      const next = normalizeTransportPlanning(prev);
-      const list = getUnitsForSede(next, gk).filter((u) => String(u.id) !== String(unitId));
-      const busAssign = { ...next.busAssign };
-      for (const [k, v] of Object.entries(busAssign)) {
-        if (String(v) === String(unitId)) delete busAssign[k];
-      }
-      return { ...next, unitsByLocation: { ...next.unitsByLocation, [gk]: list }, busAssign };
+    const uid = String(unitId || '').trim();
+    startTransition(() => {
+      setPlan((prev) => {
+        const next = normalizeTransportPlanning(prev);
+        const list = getUnitsForSede(next, gk).filter((u) => String(u.id) !== uid);
+        const busAssignSrc = next.busAssign || {};
+        let busAssign = busAssignSrc;
+        let removedAssignKeys = 0;
+        for (const v of Object.values(busAssignSrc)) {
+          if (String(v) === uid) {
+            removedAssignKeys += 1;
+          }
+        }
+        if (removedAssignKeys > 0) {
+          busAssign = { ...busAssignSrc };
+          for (const [k, v] of Object.entries(busAssign)) {
+            if (String(v) === uid) delete busAssign[k];
+          }
+        }
+        return { ...next, unitsByLocation: { ...next.unitsByLocation, [gk]: list }, busAssign };
+      });
     });
   };
 
@@ -1597,20 +1763,22 @@ export default function TransportPlanningPage({
       showToast('No hay pasajeros en camión en este bloque.');
       return;
     }
-    setPlan((prev) => {
-      const next = normalizeTransportPlanning(prev);
-      const cap = next.defaultBusCap;
-      const count = Math.max(1, Math.ceil(nPass / cap));
-      const list = [];
-      for (let i = 0; i < count; i++) {
-        list.push({
-          id: makeBusUnitId(),
-          kind: 'bus',
-          capacity: cap,
-          label: defaultVehicleLabel(sedeBase, i, 'bus', section?.subevent || ''),
-        });
-      }
-      return { ...next, unitsByLocation: { ...next.unitsByLocation, [groupKey]: list } };
+    startTransition(() => {
+      setPlan((prev) => {
+        const next = normalizeTransportPlanning(prev);
+        const cap = next.defaultBusCap;
+        const count = Math.max(1, Math.ceil(nPass / cap));
+        const list = [];
+        for (let i = 0; i < count; i++) {
+          list.push({
+            id: makeBusUnitId(),
+            kind: 'bus',
+            capacity: cap,
+            label: defaultVehicleLabel(sedeBase, i, 'bus', section?.subevent || ''),
+          });
+        }
+        return { ...next, unitsByLocation: { ...next.unitsByLocation, [groupKey]: list } };
+      });
     });
   };
 
@@ -1709,6 +1877,7 @@ export default function TransportPlanningPage({
     const inheritedCars = manualGroupMaxRegisteredCars(memberLines);
     const titularSks = manualGroupParticipantSourceKeys({ memberKeys: keys });
     const otherTitulars = titularSks.filter((sk) => sk !== anchorSk);
+    const anchorMetaKeysForCache = {};
 
     setPlan((prev) => {
       const fullCache = { ...(loadedCarMetaRef.current || {}), ...cache };
@@ -1744,10 +1913,20 @@ export default function TransportPlanningPage({
       next = removeCarMetaKeysFromPlan(next, keysToRemove);
       patches = buildDefaultManualGroupCrewPatches(next, anchorSk, keys, inheritedCars);
       next = mergeCarMetaPatchesIntoPlan(next, patches);
-      return applyCarMetaPassengerInheritance(next);
+      next = applyCarMetaPassengerInheritance(next);
+      for (let i = 1; i <= inheritedCars; i += 1) {
+        const vk = carVehicleMetaStorageKey(anchorSk, i);
+        const meta = next?.carMetaBySource?.[vk];
+        if (meta) anchorMetaKeysForCache[vk] = meta;
+      }
+      return next;
     });
 
-    setLoadedCarMetaByKey((prev) => ({ ...prev, ...cache }));
+    setLoadedCarMetaByKey((prev) => {
+      const merged = { ...prev, ...cache, ...anchorMetaKeysForCache };
+      loadedCarMetaRef.current = merged;
+      return merged;
+    });
     setFetchedTitularSks((prev) => {
       const next = new Set(prev);
       for (const sk of titularSks) next.add(sk);
@@ -2096,17 +2275,6 @@ export default function TransportPlanningPage({
     logTransport(describeFamilyCarOverrideChange({ hostName, prevCars, nextCars: c }));
   };
 
-  const resolveCampaAmbosTransit = (sourceKey) => {
-    const sk = String(sourceKey || '').trim();
-    const raw = plan?.campaAmbosTransitBySource?.[sk];
-    return {
-      teenArrive: raw?.teenArrive !== false,
-      teenReturn: raw?.teenReturn === true,
-      jovenArrive: raw?.jovenArrive === true,
-      jovenReturn: raw?.jovenReturn !== false,
-    };
-  };
-
   const setCampaAmbosTransit = (sourceKey, patch) => {
     const sk = String(sourceKey || '').trim();
     if (!sk) return;
@@ -2123,8 +2291,8 @@ export default function TransportPlanningPage({
     });
   };
 
-  const getCarMeta = (sourceKey, carIndex = 1) =>
-    getCarVehicleMetaFromPlan(planForCarMetaRead, sourceKey, carIndex);
+  const getCarMeta = (sourceKey, carIndex = 1, fallbackSks = []) =>
+    resolveCarVehicleMetaForExport(planForCarMetaRead, sourceKey, carIndex, fallbackSks);
 
   const renderCollapsedCarMetaCells = (ownerSk, carIndex = 1) => {
     const meta = getCarMeta(ownerSk, carIndex);
@@ -2271,7 +2439,7 @@ export default function TransportPlanningPage({
   };
 
   const renderCarVehicleMetaBlock = (titularSk, carIndex, effectiveCars, opts = {}) => {
-    const meta = getCarMeta(titularSk, carIndex);
+    const meta = getCarMeta(titularSk, carIndex, opts.fallbackTitularSks || []);
     const K = Math.max(1, parseInt(effectiveCars, 10) || 1);
     const memberOptions = opts.memberOptions || [];
     const requirePassengers =
@@ -2403,6 +2571,109 @@ export default function TransportPlanningPage({
       </div>
     );
   };
+
+  const renderCampaRowByRowBlock = useCallback(
+    (item) => {
+      const line = item?.line;
+      const sk = item?.sourceKey;
+      const g = item?.group;
+      const eff = item?.effectiveCars ?? 1;
+      const isGroup = item?.isGroup;
+      const isTitularForVehicles = item?.isTitularForVehicles;
+      const carDetailKey = item?.detailKey;
+      const carDetailsOpen = expandedCarDetailKeys.has(carDetailKey);
+      const titularSk = sk;
+      const rows = [
+        <tr key={sk}>
+          {canEdit ? (
+            <td className="px-3 py-2">
+              <input
+                type="checkbox"
+                className="rounded border-slate-300"
+                checked={carPick.has(sk)}
+                onChange={() => toggleCarPick(sk)}
+              />
+            </td>
+          ) : null}
+          <td className="px-3 py-2 font-semibold text-slate-800 dark:text-slate-100">{line.name}</td>
+          <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{line.location || '—'}</td>
+          <td className="px-3 py-2 tabular-nums">{line.carrosLlegada}</td>
+          <td className="px-3 py-2">
+            {isGroup ? (
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400">
+                  {getCarGroupDisplayLabel(g)}
+                </span>
+                {canEdit ? (
+                  <input
+                    type="number"
+                    min={1}
+                    className={`${inputSm} w-20`}
+                    value={parseInt(g.cars, 10) >= 1 ? g.cars : eff}
+                    onChange={(e) =>
+                      setGroupCars(g.id, e.target.value, {
+                        groupLabel: getCarGroupDisplayLabel(g),
+                      })
+                    }
+                  />
+                ) : (
+                  <span className="tabular-nums font-bold">{eff}</span>
+                )}
+              </div>
+            ) : (
+              <span className="tabular-nums">{eff}</span>
+            )}
+          </td>
+          <td className="px-3 py-2">
+            {isTitularForVehicles
+              ? renderCarDetailToggle(
+                  carDetailKey,
+                  carDetailsOpen ? 'Ocultar datos' : 'Ver datos de carro',
+                  `${eff} carro${eff !== 1 ? 's' : ''}`
+                )
+              : (
+                <span className="text-slate-400">—</span>
+              )}
+          </td>
+          <td className="px-3 py-2 text-slate-400">—</td>
+          <td className="px-3 py-2 text-slate-400">—</td>
+          <td className="px-3 py-2 text-slate-400">—</td>
+          <td className="px-3 py-2">{renderTransportAttendanceCheckbox(sk)}</td>
+        </tr>,
+      ];
+      if (isTitularForVehicles && carDetailsOpen) {
+        const crewMemberOptions = isGroup
+          ? buildMemberOptionsFromGroup(g, carLines)
+          : buildMemberOptionsFromLines([line]);
+        rows.push(
+          <tr key={`${sk}-vehicles`}>
+            <td colSpan={carTableColSpan} className="px-3 py-3 bg-slate-50/50 dark:bg-slate-800/30">
+              {renderCarVehicleBulkActions(titularSk, eff)}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {Array.from({ length: eff }, (_, i) =>
+                  renderCarVehicleMetaBlock(titularSk, i + 1, eff, {
+                    compact: true,
+                    memberOptions: crewMemberOptions,
+                  })
+                )}
+              </div>
+            </td>
+          </tr>
+        );
+      }
+      return rows;
+    },
+    [
+      canEdit,
+      carPick,
+      toggleCarPick,
+      expandedCarDetailKeys,
+      carTableColSpan,
+      carLines,
+      setGroupCars,
+      renderTransportAttendanceCheckbox,
+    ]
+  );
 
   const resolveDefaultGroupLeader = (grp) => {
     const adults = (grp?.hosts || []).filter((h) => Number.isFinite(h?.hostAge) && h.hostAge >= 18);
@@ -2552,6 +2823,11 @@ export default function TransportPlanningPage({
     });
   }, [isBautizos, bautizosCarDisplayGroups, plan?.bautizosGroupTitularByGroupId, plan?.carGroups]);
 
+  const transportRenderStartRef = useRef(0);
+  const transportRenderSeqRef = useRef(0);
+  transportRenderStartRef.current = performance.now();
+  transportRenderSeqRef.current += 1;
+
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-6xl mx-auto">
       <TransportPlanHeaderCard
@@ -2589,6 +2865,7 @@ export default function TransportPlanningPage({
       <TransportBusGroupsSection
         busSectionsEffective={busSectionsEffective}
         busLines={busLines}
+        busPassengersByGroupKey={busPassengersByGroupKey}
         plan={plan}
         isCampa={isCampa}
         splitCampaBySubevent={splitCampaBySubevent}
@@ -2612,9 +2889,11 @@ export default function TransportPlanningPage({
         canEdit={canEdit}
         bautizosCarCapacity={plan.bautizosCarCapacity}
         onApplyBautizosFamilies={applyBautizosFamilies}
+        carVehicleRegistrationStats={carVehicleRegistrationStats}
       >
         <TransportManualCarGroupsSection
           views={manualCarGroupViews}
+          expandedCardKeys={expandedFamilyCardKeys}
           isOpen={transportUiPrefs?.manualCarGroupsOpen === true}
           onOpenChange={(next) => patchTransportUiPrefs({ manualCarGroupsOpen: next })}
           renderGroupCard={(view) => {
@@ -2639,11 +2918,11 @@ export default function TransportPlanningPage({
                     cardKey={view.id}
                     cardExpanded={expandedFamilyCardKeys.has(view.id)}
                     onToggleCard={() =>
-                      void handleToggleFamilyCard(view.id, view.titularSk, view.effectiveCars)
+                      void handleToggleFamilyCard(view.id, view.titularSk, view.effectiveCars, view.memberLines)
                     }
                     expandedCarFormKeys={expandedCarFormKeys}
                     onToggleCarForm={(formKey) =>
-                      void handleToggleCarForm(formKey, view.titularSk, view.effectiveCars)
+                      void handleToggleCarForm(formKey, view.titularSk, view.effectiveCars, view.memberLines)
                     }
                     titularSk={view.titularSk}
                     effectiveCars={view.effectiveCars}
@@ -2651,7 +2930,13 @@ export default function TransportPlanningPage({
                     slots={manualSlots}
                     titularSummary={titularSummary}
                     isLoadingMeta={loadingTitularSks.has(view.titularSk)}
-                    getSlotMeta={(carIndex) => getCarMeta(view.titularSk, carIndex)}
+                    getSlotMeta={(carIndex) =>
+                      getCarMeta(
+                        view.titularSk,
+                        carIndex,
+                        manualGroupFallbackTitularSks(view.memberLines, view.titularSk)
+                      )
+                    }
                     crewOpts={manualCrewOpts}
                     showCollapsedCrew
                     collapsedTitularLabel={view.titularName}
@@ -2776,6 +3061,7 @@ export default function TransportPlanningPage({
                         compact: true,
                         memberOptions: buildMemberOptionsFromLines(view.memberLines),
                         requirePassengers: manualGroupCrewRequiresPassengers(view.memberLines.length),
+                        fallbackTitularSks: manualGroupFallbackTitularSks(view.memberLines, view.titularSk),
                       })
                     }
                   />
@@ -2971,6 +3257,9 @@ export default function TransportPlanningPage({
           carPickSize={carPick.size}
           onMergeSelected={mergeSelectedCars}
           carTableColSpan={carTableColSpan}
+          virtualItems={!isBautizos ? campaRowByRowVirtualItems : null}
+          expandedCarDetailKeys={expandedCarDetailKeys}
+          renderVirtualBlock={!isBautizos ? renderCampaRowByRowBlock : null}
           footerNote={
             isBautizos
               ? 'Por defecto, titular y acompañantes comparten los carros indicados en el registro del titular. Con varios carros, ingrese marca, modelo, color y placas de cada uno, y asigne conductor y pasajeros (o márquelos como pendientes). Los grupos manuales comparten los mismos datos por carro. «Quizá no vaya» excluye ese carro del conteo estimado (debe quedar al menos un carro confirmado). Los cambios se sincronizan con el registro por sede y global.'
@@ -3093,6 +3382,10 @@ export default function TransportPlanningPage({
                                         compact: true,
                                         memberOptions: buildMemberOptionsFromLines(view.memberLines),
                                         requirePassengers: manualGroupCrewRequiresPassengers(view.memberLines.length),
+                                        fallbackTitularSks: manualGroupFallbackTitularSks(
+                                          view.memberLines,
+                                          view.titularSk
+                                        ),
                                       })
                                     )}
                                   </div>
@@ -3306,97 +3599,7 @@ export default function TransportPlanningPage({
                     }
                     return familyRows;
                   })
-                      : !isBautizos
-                        ? carLines.flatMap((line) => {
-                    const sk = line.sourceKey;
-                    const g = keyToGroup.get(sk);
-                    const eff = effectiveCarsForCarLine(line, plan, keyToGroup, isBautizos, bautizosFamilyInfo);
-                    const isGroup = g && g.memberKeys && g.memberKeys.length > 1;
-                    const isTitularForVehicles = !isGroup || line.kind === 'participant';
-                    const titularSk = line.kind === 'participant' ? sk : sk;
-                    const carDetailKey = `car:${sk}`;
-                    const carDetailsOpen = expandedCarDetailKeys.has(carDetailKey);
-                    const rows = [
-                      <tr key={sk}>
-                        {canEdit ? (
-                          <td className="px-3 py-2">
-                            <input
-                              type="checkbox"
-                              className="rounded border-slate-300"
-                              checked={carPick.has(sk)}
-                              onChange={() => toggleCarPick(sk)}
-                            />
-                          </td>
-                        ) : null}
-                        <td className="px-3 py-2 font-semibold text-slate-800 dark:text-slate-100">{line.name}</td>
-                        <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{line.location || '—'}</td>
-                        <td className="px-3 py-2 tabular-nums">{line.carrosLlegada}</td>
-                        <td className="px-3 py-2">
-                          {isGroup ? (
-                            <div className="flex flex-col gap-1">
-                              <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400">
-                                {getCarGroupDisplayLabel(g)}
-                              </span>
-                              {canEdit ? (
-                                <input
-                                  type="number"
-                                  min={1}
-                                  className={`${inputSm} w-20`}
-                                  value={parseInt(g.cars, 10) >= 1 ? g.cars : eff}
-                                  onChange={(e) =>
-                                    setGroupCars(g.id, e.target.value, {
-                                      groupLabel: getCarGroupDisplayLabel(g),
-                                    })
-                                  }
-                                />
-                              ) : (
-                                <span className="tabular-nums font-bold">{eff}</span>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="tabular-nums">{eff}</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2">
-                          {isTitularForVehicles
-                            ? renderCarDetailToggle(
-                                carDetailKey,
-                                carDetailsOpen ? 'Ocultar datos' : 'Ver datos de carro',
-                                `${eff} carro${eff !== 1 ? 's' : ''}`
-                              )
-                            : (
-                              <span className="text-slate-400">—</span>
-                            )}
-                        </td>
-                        <td className="px-3 py-2 text-slate-400">—</td>
-                        <td className="px-3 py-2 text-slate-400">—</td>
-                        <td className="px-3 py-2 text-slate-400">—</td>
-                        <td className="px-3 py-2">{renderTransportAttendanceCheckbox(sk)}</td>
-                      </tr>,
-                    ];
-                    if (isTitularForVehicles && carDetailsOpen) {
-                      const crewMemberOptions = isGroup
-                        ? buildMemberOptionsFromGroup(g, carLines)
-                        : buildMemberOptionsFromLines([line]);
-                      rows.push(
-                        <tr key={`${sk}-vehicles`}>
-                          <td colSpan={carTableColSpan} className="px-3 py-3 bg-slate-50/50 dark:bg-slate-800/30">
-                            {renderCarVehicleBulkActions(titularSk, eff)}
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                              {Array.from({ length: eff }, (_, i) =>
-                                renderCarVehicleMetaBlock(titularSk, i + 1, eff, {
-                                  compact: true,
-                                  memberOptions: crewMemberOptions,
-                                })
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    }
-                    return rows;
-                  })
-                        : null}
+                      : null}
                   </>
                 )}
         </TransportRowByRowSection>

@@ -8,11 +8,14 @@ import {
   buildActiveRegistrantMetaForCompanionDedupe,
   bautizosDashboardCompanionCountsForScope,
   bautizosDashboardTitularCountsForScope,
+  bautizosCompanionCountsInCortesiaTotal,
+  bautizosExpandedRowCountsInCortesiaTotal,
+  bautizosTitularCountsInCortesiaTotal,
   participantHasBaptismChip,
 } from './bautizosParty.js';
 import { getAutoPaymentServiceForPublic } from './publicRegistrationLogic.js';
 import {
-  computeBautizosDashboardActiveStatsForLocation,
+  computeBautizosDashboardLocationPersonStats,
   dashboardActiveStatsToLocationTypeTotals,
 } from './bautizosDashboardLocationStats.js';
 import {
@@ -161,6 +164,9 @@ function buildTodayBucketsFromExpandedRows(expandedRows, roster, loc, event, glo
       if (row.__virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companionBaptized) typeId = 'bautizado';
       else if (row.__virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companion) typeId = 'acompanante';
       if (typeId) addTodayBucketUnit(bucketMap, typeId, host, loc, event, globalConfig, today);
+      if (bautizosExpandedRowCountsInCortesiaTotal(row, rosterById)) {
+        addTodayBucketUnit(bucketMap, 'cortesia', host, loc, event, globalConfig, today);
+      }
       continue;
     }
     if (participantHasBaptismChip(row, 'Bautizos')) {
@@ -171,24 +177,40 @@ function buildTodayBucketsFromExpandedRows(expandedRows, roster, loc, event, glo
     if (typeId && typeId !== 'bautizado') {
       addTodayBucketUnit(bucketMap, typeId, row, loc, event, globalConfig, today);
     }
+    if (bautizosExpandedRowCountsInCortesiaTotal(row, rosterById) && typeId !== 'cortesia') {
+      addTodayBucketUnit(bucketMap, 'cortesia', row, loc, event, globalConfig, today);
+    }
   }
   return bucketMap;
 }
 
-function buildActiveTypeSection(activeTitularParticipants, { loc, event, globalConfig, dashboardScope, today }) {
+function buildActiveTypeSection(
+  activeTitularParticipants,
+  { loc, event, globalConfig, dashboardScope, today, canonicalCompanionPlan = null, companionDedupeMeta = null }
+) {
   const locKey = String(loc || '').trim();
   const titulars = (activeTitularParticipants || []).filter(
     (p) => isActiveTitularParticipant(p) && bautizosDashboardTitularCountsForScope(p, dashboardScope)
   );
 
-  const dashboardStats = computeBautizosDashboardActiveStatsForLocation(titulars, locKey, dashboardScope);
+  const dashboardStats = computeBautizosDashboardLocationPersonStats({
+    activeTitularRows: titulars,
+    loc: locKey,
+    dashboardScope,
+    canonicalCompanionPlan,
+    event,
+  });
   const totals = dashboardActiveStatsToLocationTypeTotals(dashboardStats);
 
   const bucketMap = new Map();
-  const meta = buildActiveRegistrantMetaForCompanionDedupe(titulars);
-  const plan = buildBautizosCanonicalCompanionPlan(titulars, meta, {
-    includeBaptizedCompanions: true,
-  });
+  const meta =
+    companionDedupeMeta || buildActiveRegistrantMetaForCompanionDedupe(titulars);
+  const plan =
+    canonicalCompanionPlan instanceof Map
+      ? canonicalCompanionPlan
+      : buildBautizosCanonicalCompanionPlan(titulars, meta, {
+          includeBaptizedCompanions: true,
+        });
 
   for (const person of titulars) {
     if (participantHasBaptismChip(person, 'Bautizos')) {
@@ -198,6 +220,9 @@ function buildActiveTypeSection(activeTitularParticipants, { loc, event, globalC
     const typeId = attendanceTypeToSummaryId(att);
     if (typeId && typeId !== 'bautizado') {
       addTodayBucketUnit(bucketMap, typeId, person, loc, event, globalConfig, today);
+    }
+    if (bautizosTitularCountsInCortesiaTotal(person) && typeId !== 'cortesia') {
+      addTodayBucketUnit(bucketMap, 'cortesia', person, loc, event, globalConfig, today);
     }
   }
 
@@ -209,6 +234,9 @@ function buildActiveTypeSection(activeTitularParticipants, { loc, event, globalC
     if (!bautizosDashboardCompanionCountsForScope(c, dashboardScope, host)) continue;
     const typeId = isBautizosCompanionBaptized(c) ? 'bautizado' : 'acompanante';
     addTodayBucketUnit(bucketMap, typeId, host, loc, event, globalConfig, today);
+    if (bautizosCompanionCountsInCortesiaTotal(c, host)) {
+      addTodayBucketUnit(bucketMap, 'cortesia', host, loc, event, globalConfig, today);
+    }
   }
 
   return finalizeSection(bucketMap, totals, dashboardStats.count, today);
@@ -216,10 +244,10 @@ function buildActiveTypeSection(activeTitularParticipants, { loc, event, globalC
 
 function buildExpandedTypeSection(getExpandedRows, allParticipants, event, loc, globalConfig, dashboardScope, today) {
   const rows = getExpandedRows(allParticipants, event, loc, { dashboardScope });
-  const totals = bautizosExpandedRowsToTypeTotals(rows);
   const roster = (allParticipants || []).filter(
     (p) => String(p?.eventId || '') === String(event?.id || '')
   );
+  const totals = bautizosExpandedRowsToTypeTotals(rows, roster);
   const bucketMap = buildTodayBucketsFromExpandedRows(rows, roster, loc, event, globalConfig, today);
   return finalizeSection(bucketMap, totals, rows.length, today);
 }
@@ -228,7 +256,11 @@ function buildExpandedTypeSection(getExpandedRows, allParticipants, event, loc, 
  * Resumen por sede en tres bloques: activos, lista de espera y cancelados.
  * Cada bloque usa la misma lógica de conteo canónico que el dashboard.
  */
-export function buildLocationRosterTypeSummaryByStatus({
+export function buildLocationRosterTypeSummaryByStatus(opts = {}) {
+  return buildLocationRosterTypeSummaryByStatusCore(opts);
+}
+
+function buildLocationRosterTypeSummaryByStatusCore({
   activeTitularParticipants,
   allParticipants,
   event,
@@ -236,9 +268,19 @@ export function buildLocationRosterTypeSummaryByStatus({
   globalConfig,
   dashboardScope = 'all',
   today = new Date(),
+  canonicalCompanionPlan = null,
+  companionDedupeMeta = null,
 } = {}) {
   const locKey = String(loc || '').trim();
-  const common = { loc: locKey, event, globalConfig, dashboardScope, today };
+  const common = {
+    loc: locKey,
+    event,
+    globalConfig,
+    dashboardScope,
+    today,
+    canonicalCompanionPlan,
+    companionDedupeMeta,
+  };
 
   const sections = [
     {

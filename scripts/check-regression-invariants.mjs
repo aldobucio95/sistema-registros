@@ -85,7 +85,11 @@ function checkTransportPlanningProps(app) {
 }
 
 function checkSedeRosterMobileParity(app) {
-  const locSheet = extractBetween(app, 'const renderLocationSheet = (loc) => {', 'const renderGlobalRegistryPage');
+  const locSheet = extractBetween(
+    app,
+    'const renderLocationSheet = (loc, rosterViewOptions = {}) => {',
+    'const renderGlobalRegistryPage'
+  );
   const activosHasMobile =
     locSheet.includes('renderRosterPersonMobileCard') && locSheet.includes('uiRosterMobile.list');
   const waitlistHasMobile =

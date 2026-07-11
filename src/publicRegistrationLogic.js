@@ -19,6 +19,7 @@ import {
   bautizosWillBeBaptizedFromAttendance,
   getBautizosCompanionsArray,
   getBautizosLineListPrice,
+  companionRowIsEffectivelyEmpty,
   isBautizosUnder3YearsAtEvent,
   isFreeBautizosAttendance,
   isBautizosPastorAttendance,
@@ -26,6 +27,7 @@ import {
   syncBautizosAttendanceServerFields,
   normalizeArrivalCarCount,
   normalizeBautizosCompanionsForPersist,
+  normalizeBautizosCompanionsForForm,
   getBautizosBaptizedCompanionSubmitBlockingError,
   hasBautizosBaptizedCompanionInParty,
   getBautizosSplitPartySlotDescriptors,
@@ -43,6 +45,8 @@ import {
   normalizeBautizosDashboardScope,
   buildBautizosCanonicalCompanionPlan,
   buildActiveRegistrantMetaForCompanionDedupe,
+  bautizosPersonUsesHostFifoFinances,
+  normalizePersonNameKey,
 } from './bautizosParty.js';
 import { applyCompanionWaitlistCapOnEdit } from './bautizosCompanionWaitlist.js';
 import {
@@ -973,6 +977,7 @@ export function getBautizosCompanionsListPriceSum(personLike, eventLike = null) 
   let sum = 0;
   for (const c of getBautizosCompanionsArray(personLike)) {
     if (c?.companionWaitlistPending === true) continue;
+    if (companionRowIsEffectivelyEmpty(c)) continue;
     sum += getBautizosLineListPrice(c, food, transport, eventLike);
   }
   return sum;
@@ -1007,6 +1012,7 @@ export function getBautizosCompanionsInformativeListPriceSum(personLike, eventLi
   if (isBautizosPastorAttendance(personLike)) return 0;
   let sum = 0;
   for (const c of getBautizosCompanionsArray(personLike)) {
+    if (companionRowIsEffectivelyEmpty(c)) continue;
     sum += getBautizosCompanionInformativeListPrice(c, eventLike, rosterParticipants);
   }
   return sum;
@@ -1188,6 +1194,8 @@ export function getBautizosFifoUnitBalances(units, paidGross) {
 }
 
 function parseGlobalRegistryCompanionKeyFromPerson(companionPerson) {
+  const sourceId = String(companionPerson?.__sourceCompanionId || '').trim();
+  if (sourceId) return sourceId;
   const id = String(companionPerson?.id || '');
   const m = id.match(/^gr-companion:[^:]+:(.+)$/);
   return m ? String(m[1] || '').trim() : '';
@@ -1195,24 +1203,52 @@ function parseGlobalRegistryCompanionKeyFromPerson(companionPerson) {
 
 function findBautizosCompanionLiquidationUnitIndex(units, companionPerson) {
   const cid = parseGlobalRegistryCompanionKeyFromPerson(companionPerson);
-  const name = String(companionPerson?.name || '').trim().toLowerCase();
+  const name = normalizePersonNameKey(companionPerson?.name);
   if (cid) {
     const byKey = (units || []).findIndex(
       (u) => u.kind === 'companion' && String(u.companionKey || '') === cid
     );
     if (byKey >= 0) return byKey;
+    const bySuffix = (units || []).findIndex(
+      (u) =>
+        u.kind === 'companion' &&
+        cid.length > 0 &&
+        String(u.companionKey || '').endsWith(cid)
+    );
+    if (bySuffix >= 0) return bySuffix;
   }
   if (name) {
     const byName = (units || []).findIndex(
-      (u) =>
-        u.kind === 'companion' &&
-        String(u.companionName || '')
-          .trim()
-          .toLowerCase() === name
+      (u) => u.kind === 'companion' && normalizePersonNameKey(u.companionName) === name
     );
     if (byName >= 0) return byName;
   }
   return -1;
+}
+
+function resolveHostCompanionSourceForFinance(hostPerson, companionPerson, canonicalCompanionInfos) {
+  const sourceId = String(companionPerson?.__sourceCompanionId || '').trim();
+  if (sourceId) {
+    const fromCanon = (canonicalCompanionInfos || []).find(
+      (info) => String(info?.sourceCompanion?.id || '').trim() === sourceId
+    )?.sourceCompanion;
+    if (fromCanon) return fromCanon;
+    const fromHost = getBautizosCompanionsArray(hostPerson).find(
+      (c) => String(c?.id || '').trim() === sourceId
+    );
+    if (fromHost) return fromHost;
+  }
+  const targetName = normalizePersonNameKey(companionPerson?.name);
+  if (!targetName) return null;
+  const fromCanonName = (canonicalCompanionInfos || []).find(
+    (info) => normalizePersonNameKey(info?.sourceCompanion?.name) === targetName
+  )?.sourceCompanion;
+  if (fromCanonName) return fromCanonName;
+  return (
+    getBautizosCompanionsArray(hostPerson).find(
+      (c) => normalizePersonNameKey(c?.name) === targetName
+    ) || null
+  );
 }
 
 function buildCanonicalCompanionInfosForHost(hostPerson, roster, companionDedupeMeta) {
@@ -1258,7 +1294,7 @@ export function resolveBautizosGlobalRegistryRowFinances(
 
   if (
     personLike?.__pastorCourtesyCompanion === true ||
-    (personLike?.__globalRegistryCompanionRow === true && isBautizosPastorAttendance(hostPerson))
+    (bautizosPersonUsesHostFifoFinances(personLike) && isBautizosPastorAttendance(hostPerson))
   ) {
     return {
       liquidationTarget: 0,
@@ -1269,7 +1305,7 @@ export function resolveBautizosGlobalRegistryRowFinances(
     };
   }
 
-  if (personLike?.__globalRegistryCompanionRow === true && hostPerson) {
+  if (bautizosPersonUsesHostFifoFinances(personLike) && hostPerson) {
     const hostLiq = getLiq(hostPerson);
     const paidGross = getPaidGross(hostPerson);
     const canonicalCompanionInfos = buildCanonicalCompanionInfosForHost(
@@ -1285,14 +1321,42 @@ export function resolveBautizosGlobalRegistryRowFinances(
       { bzScope: 'all', canonicalCompanionInfos }
     );
     const balances = getBautizosFifoUnitBalances(units, paidGross);
-    const idx = findBautizosCompanionLiquidationUnitIndex(balances, personLike);
+    let idx = findBautizosCompanionLiquidationUnitIndex(balances, personLike);
     if (idx < 0) {
+      const hostOutstanding = Math.max(0, hostLiq - paidGross);
+      if (hostOutstanding <= 0.005) {
+        return {
+          liquidationTarget: 0,
+          paidDisplay: 0,
+          balance: 0,
+          isLiquidated: true,
+          usesHostPayments: true,
+        };
+      }
       const { food, transport } = getBautizosListPriceBreakdown(eventLike);
-      const cid = parseGlobalRegistryCompanionKeyFromPerson(personLike);
-      const companionSource =
-        canonicalCompanionInfos.find(
-          (info) => String(info?.sourceCompanion?.id || '') === cid
-        )?.sourceCompanion || null;
+      const companionSource = resolveHostCompanionSourceForFinance(
+        hostPerson,
+        personLike,
+        canonicalCompanionInfos
+      );
+      if (companionSource) {
+        const retryPerson = {
+          ...personLike,
+          __sourceCompanionId: String(companionSource?.id || '').trim() || personLike.__sourceCompanionId,
+          name: companionSource?.name || personLike?.name,
+        };
+        idx = findBautizosCompanionLiquidationUnitIndex(balances, retryPerson);
+        if (idx >= 0) {
+          const unit = balances[idx];
+          return {
+            liquidationTarget: unit.owed,
+            paidDisplay: unit.paidAllocated,
+            balance: unit.balance,
+            isLiquidated: unit.isLiquidated,
+            usesHostPayments: true,
+          };
+        }
+      }
       const fallbackOwed = companionSource
         ? getBautizosLineListPrice(companionSource, food, transport, eventLike)
         : 0;
@@ -1336,6 +1400,58 @@ export function getBautizosGlobalRegistryRowOutstandingGross(
   if (personLike?.__pastorCourtesyCompanion === true) return 0;
   const finance = resolveBautizosGlobalRegistryRowFinances(personLike, hostPerson, eventLike, opts);
   return Math.max(0, finance.balance);
+}
+
+function rosterLiquidationRemainderForListFilter(person, getLiquidationTargetFn, bautizosCtx = null) {
+  if (
+    bautizosCtx?.eventType === 'Bautizos' &&
+    bautizosPersonUsesHostFifoFinances(person) &&
+    bautizosCtx.financeOpts &&
+    typeof bautizosCtx.resolveHost === 'function'
+  ) {
+    const host = bautizosCtx.resolveHost(person);
+    if (host) {
+      const finance = resolveBautizosGlobalRegistryRowFinances(
+        person,
+        host,
+        bautizosCtx.event,
+        bautizosCtx.financeOpts
+      );
+      return Math.max(0, finance.balance);
+    }
+  }
+  const target = Number(getLiquidationTargetFn(person)) || 0;
+  const paid = parseFloat(person?.paid || 0) || 0;
+  return Math.max(0, target - paid);
+}
+
+/** Liquidado para filtros de lista (acompañantes Bautizos usan FIFO del titular). */
+export function isRosterPersonLiquidadoForListFilter(person, getLiquidationTargetFn, bautizosCtx = null) {
+  return rosterLiquidationRemainderForListFilter(person, getLiquidationTargetFn, bautizosCtx) < 0.005;
+}
+
+/** Saldo a favor para filtros de lista (acompañantes Bautizos usan FIFO del titular). */
+export function isRosterSaldoAFavorForListFilter(person, getLiquidationTargetFn, bautizosCtx = null) {
+  if (
+    bautizosCtx?.eventType === 'Bautizos' &&
+    bautizosPersonUsesHostFifoFinances(person) &&
+    bautizosCtx.financeOpts &&
+    typeof bautizosCtx.resolveHost === 'function'
+  ) {
+    const host = bautizosCtx.resolveHost(person);
+    if (host) {
+      const finance = resolveBautizosGlobalRegistryRowFinances(
+        person,
+        host,
+        bautizosCtx.event,
+        bautizosCtx.financeOpts
+      );
+      return finance.paidDisplay > finance.liquidationTarget + 0.005;
+    }
+  }
+  const target = Number(getLiquidationTargetFn(person)) || 0;
+  const paid = parseFloat(person?.paid || 0) || 0;
+  return paid > target + 0.005;
 }
 
 /** Aplica abonos en orden FIFO: cada unidad se liquida por completo antes de pasar a la siguiente. */
@@ -1718,13 +1834,13 @@ export const getPublicRegistrationFormIssues = (
     }
     appendEmergencyContactIssues(merged, issues);
 
-    if (fvSens('allergies') && merged.hasAllergy !== 'No' && String(merged.allergyDetails || '').trim() === '' && String(merged.allergyCategory || '').trim() === '') {
+    if (fvSens('allergies') && isSiValue(merged.hasAllergy) && String(merged.allergyDetails || '').trim() === '' && String(merged.allergyCategory || '').trim() === '') {
       issues.push('Alergias: categoría o detalle');
     }
-    if (fvSens('diseases') && merged.hasDisease !== 'No' && String(merged.diseaseDetails || '').trim() === '') {
+    if (fvSens('diseases') && isSiValue(merged.hasDisease) && String(merged.diseaseDetails || '').trim() === '') {
       issues.push('Detalle de enfermedad');
     }
-    if (fvSens('disability') && merged.hasDisability !== 'No' && String(merged.disabilityDetails || '').trim() === '') {
+    if (fvSens('disability') && isSiValue(merged.hasDisability) && String(merged.disabilityDetails || '').trim() === '') {
       issues.push('Detalle de discapacidad');
     }
     if (v('serverRole') && isSiValue(merged.isServer) && !String(merged.serverAssignment || '').trim()) {
@@ -1754,13 +1870,13 @@ export const getPublicRegistrationFormIssues = (
 
   if (evType === 'Bautizos') {
     appendEmergencyContactIssues(merged, issues);
-    if (fvSens('allergies') && merged.hasAllergy !== 'No' && String(merged.allergyDetails || '').trim() === '' && String(merged.allergyCategory || '').trim() === '') {
+    if (fvSens('allergies') && isSiValue(merged.hasAllergy) && String(merged.allergyDetails || '').trim() === '' && String(merged.allergyCategory || '').trim() === '') {
       issues.push('Alergias: categoría o detalle');
     }
-    if (fvSens('diseases') && merged.hasDisease !== 'No' && String(merged.diseaseDetails || '').trim() === '') {
+    if (fvSens('diseases') && isSiValue(merged.hasDisease) && String(merged.diseaseDetails || '').trim() === '') {
       issues.push('Detalle de enfermedad');
     }
-    if (fvSens('disability') && merged.hasDisability !== 'No' && String(merged.disabilityDetails || '').trim() === '') {
+    if (fvSens('disability') && isSiValue(merged.hasDisability) && String(merged.disabilityDetails || '').trim() === '') {
       issues.push('Detalle de discapacidad');
     }
     if (v('bautizosTransport')) {
@@ -1770,7 +1886,12 @@ export const getPublicRegistrationFormIssues = (
         if (v('travelTo') && !(merged.travelTo || '').trim()) issues.push('Sede de regreso (transporte)');
       }
     }
-    appendBautizosCompanionsValidationIssues(merged, issues, fvSens, eventLike);
+    appendBautizosCompanionsValidationIssues(
+      { ...merged, bautizosCompanions: normalizeBautizosCompanionsForForm(merged.bautizosCompanions) },
+      issues,
+      fvSens,
+      eventLike
+    );
   }
 
   if (evType === 'General') {

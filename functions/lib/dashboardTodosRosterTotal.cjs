@@ -249,13 +249,23 @@ function filterDashboardTodosRosterRows(participantRows, eventRow) {
   );
 }
 
-function computeBautizosTodosTotal(rosterBase) {
-  const activeBautizadoRoster = rosterBase.filter(
+function buildBautizosLinkLookupRoster(scopedParticipants) {
+  return (scopedParticipants || []).filter((p) => (p?.status || 'active') !== PARTICIPANT_STATUS_ARCHIVED);
+}
+
+function computeBautizosTodosTotal(rosterBase, linkLookupRoster) {
+  const active = (rosterBase || []).filter((p) => (p?.status || 'active') === 'active');
+  const bautizadoRoster = active.filter(
     (p) => normalizeBautizosAttendanceType(p?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado
   );
-  const meta = buildBautizadoMetaForCanonical(activeBautizadoRoster);
-  const plan = buildBautizosCanonicalCompanionPlan(rosterBase, meta, { includeBaptizedCompanions: true });
-  return rosterBase.length + plan.size;
+  const meta = buildBautizadoMetaForCanonical(bautizadoRoster);
+  const plan = buildBautizosCanonicalCompanionPlan(active, meta, {
+    includeBaptizedCompanions: true,
+    linkLookupRoster: buildBautizosLinkLookupRoster(
+      Array.isArray(linkLookupRoster) ? linkLookupRoster : rosterBase
+    ),
+  });
+  return active.length + plan.size;
 }
 
 function computeCampaTodosTotal(rosterBase, eventRow) {
@@ -270,7 +280,7 @@ function computeCampaTodosTotal(rosterBase, eventRow) {
   return total;
 }
 
-function computeDashboardTodosRosterTotal(participantRows, eventRow) {
+function computeDashboardTodosRosterTotal(participantRows, eventRow, options) {
   if (!eventRow || typeof eventRow !== 'object') return 0;
   const eid = String(eventRow.id || '').trim();
   const scoped =
@@ -279,9 +289,12 @@ function computeDashboardTodosRosterTotal(participantRows, eventRow) {
       : (participantRows || []).filter((p) => String(p?.eventId || '').trim() === eid);
   const rosterBase = filterDashboardTodosRosterRows(scoped, eventRow);
   const evType = String(eventRow.eventType || '');
+  const linkLookupSource = options && Array.isArray(options.linkLookupParticipants)
+    ? options.linkLookupParticipants
+    : scoped;
 
   if (evType === 'Bautizos') {
-    return computeBautizosTodosTotal(rosterBase);
+    return computeBautizosTodosTotal(rosterBase, linkLookupSource);
   }
   if (evType === 'Campa') {
     return computeCampaTodosTotal(rosterBase, eventRow);

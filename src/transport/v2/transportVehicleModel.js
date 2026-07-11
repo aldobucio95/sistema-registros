@@ -87,3 +87,30 @@ export function vehicleDocNeedsPersist(vehicleOrPatch) {
   if (v.passengerSourceKeys?.length) return true;
   return false;
 }
+
+/**
+ * Evita que un auto-guardado parcial (p. ej. solo tripulación) borre rubros del vehículo
+ * ya persistidos en Firestore al usar setDoc({ merge: true }).
+ */
+export function coalesceVehiclePatchForPersist(patch, existingRaw) {
+  const incoming = normalizeCarVehicleMeta(patch);
+  if (!existingRaw) return incoming;
+  const existing = normalizeTransportVehicleDoc(existingRaw);
+  const out = { ...incoming };
+
+  for (const field of ['brand', 'model', 'color', 'plates']) {
+    const inc = String(incoming[field] || '').trim();
+    const ex = String(existing[field] || '').trim();
+    if (!inc && ex) out[field] = ex;
+  }
+
+  const incDriver = String(incoming.driverSourceKey || '').trim();
+  const exDriver = String(existing.driverSourceKey || '').trim();
+  if (!incDriver && exDriver) out.driverSourceKey = exDriver;
+
+  const incPass = Array.isArray(incoming.passengerSourceKeys) ? incoming.passengerSourceKeys : [];
+  const exPass = Array.isArray(existing.passengerSourceKeys) ? existing.passengerSourceKeys : [];
+  if (!incPass.length && exPass.length) out.passengerSourceKeys = exPass;
+
+  return out;
+}

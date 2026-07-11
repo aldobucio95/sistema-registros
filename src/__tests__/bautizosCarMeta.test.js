@@ -8,6 +8,8 @@ import {
   dedupeCrewSourceKeys,
   familyHasAnyCarTransport,
   buildCarMetaPatchesAfterSave,
+  buildCarMetaSyncPatchesToLinkedCompanions,
+  resolveInboundLinkedCompanionCarInheritance,
   resolveLinkedCompanionCarInheritance,
   resolveBautizosCarDataAnchor,
   titularSourceKeyHasCarMetaCaptured,
@@ -473,6 +475,124 @@ describe('resolveLinkedCompanionCarInheritance', () => {
     expect(patch?.brand).toBe('Toyota');
     expect(patch?.driverSourceKey).toBe(`p:${pamelaId}`);
   });
+
+  it('buildCarMetaPatchesAfterSave prioriza borrador del formulario sobre herencia vinculada', () => {
+    const patches = buildCarMetaPatchesAfterSave({
+      hostPerson: roster[0],
+      companions: roster[0].bautizosCompanions,
+      plan,
+      draftMetaByVehicleKey: {
+        [`p:${andresId}|c1`]: {
+          brand: 'Honda',
+          model: 'Civic',
+          color: 'Rojo',
+          plates: 'ABC123',
+          driverSourceKey: `p:${andresId}`,
+        },
+      },
+      hostId: andresId,
+      roster,
+    });
+    const patch = patches.find((p) => p.vehicleKey === `p:${andresId}|c1`)?.patch;
+    expect(patch?.brand).toBe('Honda');
+    expect(patch?.model).toBe('Civic');
+    expect(patch?.plates).toBe('ABC123');
+  });
+});
+
+describe('inbound linked companion car sync', () => {
+  const jimenaId = 'id-jimena';
+  const abrilId = 'id-abril';
+
+  const plan = {
+    carMetaBySource: {
+      [`p:${jimenaId}|c1`]: {
+        brand: 'Toyota',
+        model: 'RAV4',
+        color: 'Gris',
+        plates: 'H90BEK',
+        ownerSourceKey: `p:${jimenaId}`,
+        driverSourceKey: `p:${jimenaId}`,
+        passengerSourceKeys: [`p:${jimenaId}`, `c:${jimenaId}::bc1`],
+      },
+    },
+    bautizosCarMetaSummaryByTitular: {
+      [`p:${jimenaId}`]: {
+        cars: [{ carIndex: 1, vehicleFieldsComplete: true, hasPassengers: true, maybeAbsent: false }],
+      },
+    },
+  };
+
+  const roster = [
+    {
+      id: jimenaId,
+      name: 'Jimena Herrera',
+      status: 'active',
+      llegaEnCarro: true,
+      carrosLlegada: 1,
+      bautizosCompanions: [
+        {
+          id: 'bc-abril',
+          name: 'Abril Avalos',
+          linkedCompanionSourceKey: `p:${abrilId}`,
+          linkedNoExtraCharge: true,
+        },
+      ],
+    },
+    {
+      id: abrilId,
+      name: 'Abril Avalos',
+      status: 'active',
+      llegaEnCarro: true,
+      carrosLlegada: 1,
+      bautizosCompanions: [],
+    },
+  ];
+
+  it('resolveInboundLinkedCompanionCarInheritance encuentra al titular que vinculó', () => {
+    const inbound = resolveInboundLinkedCompanionCarInheritance(roster[1], roster, plan);
+    expect(inbound.active).toBe(true);
+    expect(inbound.hostName).toBe('Jimena Herrera');
+    expect(inbound.sourceSk).toBe(`p:${jimenaId}`);
+  });
+
+  it('buildCarMetaSyncPatchesToLinkedCompanions copia carro de Jimena hacia Abril', () => {
+    const hostPatches = buildCarMetaPatchesAfterSave({
+      hostPerson: roster[0],
+      companions: roster[0].bautizosCompanions,
+      plan,
+      draftMetaByVehicleKey: {},
+      hostId: jimenaId,
+      roster,
+    });
+    const syncPatches = buildCarMetaSyncPatchesToLinkedCompanions({
+      hostPerson: roster[0],
+      hostId: jimenaId,
+      companions: roster[0].bautizosCompanions,
+      plan,
+      roster,
+      appliedPatches: hostPatches,
+    });
+    expect(syncPatches.some((p) => p.vehicleKey === `p:${abrilId}|c1`)).toBe(true);
+    const abrilPatch = syncPatches.find((p) => p.vehicleKey === `p:${abrilId}|c1`)?.patch;
+    expect(abrilPatch?.brand).toBe('Toyota');
+    expect(abrilPatch?.plates).toBe('H90BEK');
+    expect(abrilPatch?.ownerSourceKey).toBe(`p:${abrilId}`);
+  });
+
+  it('buildCarDataSummaryForRosterPerson muestra carro heredado en Abril', () => {
+    const summary = buildCarDataSummaryForRosterPerson({
+      person: roster[1],
+      companions: [],
+      plan,
+      roster,
+      forRosterDisplay: true,
+    });
+    expect(summary.inheritedFromTitular).toBe(true);
+    expect(summary.titularName).toBe('Jimena Herrera');
+    expect(summary.carMetaFetchSourceKey).toBe(`p:${jimenaId}`);
+    expect(summary.inventory?.[0]?.meta?.brand).toBe('Toyota');
+  });
 });
 
 import {
@@ -655,5 +775,39 @@ describe('draft host car meta helpers', () => {
     expect(
       getFamilyCarInventoryValidationIssues(withBlank, { hostPerson: host, companions: host.bautizosCompanions })
     ).toEqual([]);
+  });
+
+  it('buildMergedFamilyCarInventory incluye meta lazy-loaded de subcolección al validar', () => {
+    const host = {
+      id: 'host-1',
+      name: 'Titular',
+      llegaEnCarro: true,
+      wantsBautizosTransport: 'Si',
+      carrosLlegada: 1,
+      bautizosCompanions: [],
+    };
+    const vehicleKey = 'p:host-1|c1';
+    const merged = buildMergedFamilyCarInventory({
+      hostPerson: host,
+      companions: [],
+      plan: {},
+      hostSourceKey: 'p:host-1',
+      draftMetaByVehicleKey: { [vehicleKey]: { color: 'gris', pendingColor: false } },
+      carMetaCacheByKey: {
+        [vehicleKey]: {
+          brand: 'Nissan',
+          model: 'X-Trail',
+          plates: 'ABC-123',
+          driverSourceKey: 'p:host-1',
+          pendingBrand: false,
+          pendingModel: false,
+          pendingPlates: false,
+          pendingDriver: false,
+          passengerSourceKeys: ['c:host-1::c1'],
+          pendingPassengers: false,
+        },
+      },
+    });
+    expect(getFamilyCarInventoryValidationIssues(merged, { hostPerson: host, companions: [] })).toEqual([]);
   });
 });

@@ -2,10 +2,12 @@ import { getDoc, getDocs, query, setDoc, where, writeBatch } from 'firebase/fire
 import { db, getDocRef, getTransportVehicleDocRef, getTransportVehiclesColRef } from '../../firebaseRefs.js';
 import { normalizeTransportPlanning } from '../../transportPlanningCore.js';
 import { buildRegistrationV2Vehicles, v2VehicleDocsToLegacyMetaMap } from './transportLegacyAdapter.js';
+import { v1PatchesToV2VehicleDocs } from './transportLegacyAdapter.js';
 import { migrateEventTransportToV2, isTransportV2Plan } from './transportMigration.js';
 import { TRANSPORT_MODEL_VERSION } from './transportSchema.js';
 import { buildVehicleDocId, legacyVehicleKeyFromVehicleDoc } from './transportSchema.js';
 import {
+  coalesceVehiclePatchForPersist,
   legacyPatchToVehicleDoc,
   normalizeTransportVehicleDoc,
 } from './transportVehicleModel.js';
@@ -60,7 +62,20 @@ export async function upsertTransportVehicles(eventId, vehicleDocs) {
   for (const raw of docs) {
     const v = normalizeTransportVehicleDoc(raw);
     if (!v.id) continue;
-    batch.set(getTransportVehicleDocRef(eid, v.id), { ...v, eventId: eid, updatedAt: Date.now() }, { merge: true });
+    const ref = getTransportVehicleDocRef(eid, v.id);
+    const snap = await getDoc(ref);
+    const merged = coalesceVehiclePatchForPersist(
+      v,
+      snap.exists() ? snap.data() : null
+    );
+    const doc = legacyPatchToVehicleDoc({
+      eventId: eid,
+      ownerParticipantId: v.ownerParticipantId,
+      carIndex: v.carIndex,
+      patch: merged,
+      vehicleDocId: v.id,
+    });
+    batch.set(ref, { ...doc, eventId: eid, updatedAt: Date.now() }, { merge: true });
   }
   await batch.commit();
   return { written: docs.length };
@@ -72,14 +87,17 @@ export async function saveVehiclePatch(eventId, ownerParticipantId, carIndex, pa
   const vehicleDocId = buildVehicleDocId(ownerParticipantId, carIndex);
   if (!eid || !vehicleDocId) return null;
 
+  const ref = getTransportVehicleDocRef(eid, vehicleDocId);
+  const snap = await getDoc(ref);
+  const mergedPatch = coalesceVehiclePatchForPersist(patch, snap.exists() ? snap.data() : null);
   const doc = legacyPatchToVehicleDoc({
     eventId: eid,
     ownerParticipantId,
     carIndex,
-    patch,
+    patch: mergedPatch,
     vehicleDocId,
   });
-  await setDoc(getTransportVehicleDocRef(eid, vehicleDocId), doc, { merge: true });
+  await setDoc(ref, doc, { merge: true });
   return doc;
 }
 
@@ -129,6 +147,29 @@ export async function saveRegistrationTransport({
 
   const result = await upsertTransportVehicles(eid, vehicles);
   return { saved: result.written, skipped: false, vehicleIds: vehicles.map((v) => v.id) };
+}
+
+/** Escribe parches legacy (v1) en subcolección transport_vehicles (v2). */
+export async function upsertCarMetaPatchesToTransportV2(eventId, patches) {
+  const eid = String(eventId || '').trim();
+  if (!eid || !patches?.length) return { written: 0 };
+
+  const byOwner = new Map();
+  for (const item of patches) {
+    const ownerSk = String(item?.patch?.ownerSourceKey || '').trim();
+    const ownerId = ownerSk.startsWith('p:') ? ownerSk.slice(2) : '';
+    if (!ownerId) continue;
+    if (!byOwner.has(ownerId)) byOwner.set(ownerId, []);
+    byOwner.get(ownerId).push(item);
+  }
+
+  const allDocs = [];
+  for (const [ownerId, list] of byOwner) {
+    allDocs.push(...v1PatchesToV2VehicleDocs(eid, list, ownerId));
+  }
+  if (!allDocs.length) return { written: 0 };
+  const result = await upsertTransportVehicles(eid, allDocs);
+  return { written: result.written };
 }
 
 /** Asegura flag v2 en evento sin migrar datos. */

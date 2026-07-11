@@ -39,6 +39,13 @@ export function patchParticipantsInList(prev, personId, patch) {
   return list.map((p) => (String(p.id) === id ? { ...p, ...patch } : p));
 }
 
+/** Parche que no afecta índices de roster Bautizos ni agrupación por sede. */
+export function isAssignedServeAreaOnlyPatch(patch) {
+  if (!patch || typeof patch !== 'object') return false;
+  const keys = Object.keys(patch);
+  return keys.length === 1 && keys[0] === 'assignedServeArea';
+}
+
 /**
  * @deprecated La Cloud Function invalida caché al escribir participantes; no bump en cliente.
  */
@@ -97,9 +104,46 @@ export function isParticipantSliceHit(local, remoteV) {
   return participantCacheVersionsCompatible(local.version, remoteV);
 }
 
+export function mergeParticipantRowsById(rows) {
+  const byId = new Map();
+  for (const row of rows || []) {
+    const id = String(row?.id || '').trim();
+    if (!id) continue;
+    byId.set(id, row);
+  }
+  return [...byId.values()];
+}
+
+function participantsFromCachedLocationSlices(versionByLoc, locs) {
+  return mergeParticipantRowsById(
+    stripCompanionWaitlistPhantomRows(
+      locs.flatMap((loc) => {
+        const local = versionByLoc.get(loc)?.local;
+        return Array.isArray(local?.data) ? local.data : [];
+      })
+    )
+  );
+}
+
+async function storeParticipantSlicesFromEventRows(eid, locs, versionByLoc, all) {
+  for (const loc of locs) {
+    const { scope, remoteV, local } = versionByLoc.get(loc);
+    const slice = all.filter((p) => normalizeLocKey(p.location) === loc);
+    const vToStore = await resolveVersionForStore(scope, remoteV);
+    await writeLocalVersionCache(scope, vToStore, slice, { eventId: eid, location: loc });
+    logCacheDecision(scope, {
+      event: isParticipantSliceHit(local, remoteV) ? 'refresh-cache' : 'miss-refetch',
+      version: vToStore,
+      rows: slice.length,
+      source: 'firestore',
+      sede: loc,
+    });
+  }
+}
+
 /**
- * Carga participantes del evento. Al abrir la app siempre lee Firestore (servidor primero)
- * y actualiza la caché local; los listeners por sede mantienen datos frescos en sesión.
+ * Carga participantes del evento usando caché por sede cuando la versión coincide.
+ * Solo relee `app_participants` en miss (total o por sede); los listeners mantienen datos frescos en sesión.
  */
 export async function loadEventParticipantsWithVersionCache(eventId, locations) {
   const eid = String(eventId || '').trim();
@@ -115,35 +159,56 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
   await Promise.all(
     locs.map(async (loc) => {
       const scope = scopeParticipantsLocation(eid, loc);
-      const remoteV = await fetchRemoteCacheVersion(scope, { preferServer: true });
-      const local = await readVersionCacheRecord(scope);
+      const [remoteV, local] = await Promise.all([
+        fetchRemoteCacheVersion(scope, { preferServer: true }),
+        readVersionCacheRecord(scope),
+      ]);
       versionByLoc.set(loc, { scope, remoteV, local });
     })
   );
 
-  const isHit = (loc) => {
-    const { remoteV, local } = versionByLoc.get(loc);
-    return isParticipantSliceHit(local, remoteV);
-  };
-
-  const snap = await loadEventParticipantsQueryFromStore(eid);
-  const all = stripCompanionWaitlistPhantomRows(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-
+  const hitLocs = [];
+  const missLocs = [];
   for (const loc of locs) {
-    const { scope, remoteV } = versionByLoc.get(loc);
-    const slice = all.filter((p) => normalizeLocKey(p.location) === loc);
-    const vToStore = await resolveVersionForStore(scope, remoteV);
-    await writeLocalVersionCache(scope, vToStore, slice, { eventId: eid, location: loc });
-    logCacheDecision(scope, {
-      event: isHit(loc) ? 'refresh-cache' : 'miss-refetch',
-      version: vToStore,
-      rows: slice.length,
-      source: 'firestore',
-      sede: loc,
-    });
+    const { remoteV, local } = versionByLoc.get(loc);
+    if (isParticipantSliceHit(local, remoteV)) hitLocs.push(loc);
+    else missLocs.push(loc);
   }
 
-  return all;
+  if (missLocs.length === 0) {
+    const merged = participantsFromCachedLocationSlices(versionByLoc, hitLocs);
+    logCacheDecision(`pe_event_${eid}`, {
+      event: 'participants-cache-hit',
+      rows: merged.length,
+      sedes: hitLocs.length,
+    });
+    return merged;
+  }
+
+  if (hitLocs.length === 0) {
+    const snap = await loadEventParticipantsQueryFromStore(eid);
+    const all = stripCompanionWaitlistPhantomRows(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    await storeParticipantSlicesFromEventRows(eid, locs, versionByLoc, all);
+    return all;
+  }
+
+  let merged = participantsFromCachedLocationSlices(versionByLoc, hitLocs);
+  const refetchResults = await Promise.all(
+    missLocs.map((loc) => {
+      const { remoteV } = versionByLoc.get(loc);
+      return refetchParticipantsForLocation(eid, loc, { remoteV });
+    })
+  );
+  missLocs.forEach((_loc, i) => {
+    merged = mergeParticipantRowsById([...merged, ...(refetchResults[i]?.slice || [])]);
+  });
+  logCacheDecision(`pe_event_${eid}`, {
+    event: 'participants-partial-cache',
+    rows: merged.length,
+    hitSedes: hitLocs.length,
+    missSedes: missLocs.length,
+  });
+  return merged;
 }
 
 export async function refetchParticipantsForLocation(eventId, location, opts = {}) {
@@ -186,6 +251,79 @@ export async function refetchParticipantsForLocation(eventId, location, opts = {
   return { slice: cleaned, versionWritten: vToStore };
 }
 
+/** Tras escritura local: alinea IndexedDB con memoria sin releer todos los documentos de la sede. */
+export async function syncLocalParticipantLocationCacheFromMemory(eventId, location, allRows) {
+  const eid = String(eventId || '').trim();
+  const loc = normalizeLocKey(location);
+  if (!eid || !loc) return 0;
+
+  const slice = stripCompanionWaitlistPhantomRows(
+    (allRows || []).filter(
+      (p) => String(p.eventId) === eid && normalizeLocKey(p.location) === loc
+    )
+  );
+  const scope = scopeParticipantsLocation(eid, loc);
+  const latestV = await fetchRemoteCacheVersion(scope, { preferServer: true });
+  const vToStore = latestV > 0 ? latestV : await resolveVersionForStore(scope, 0);
+  await writeLocalVersionCache(scope, vToStore, slice, { eventId: eid, location: loc });
+  logCacheDecision(scope, {
+    event: 'local-sync-after-write',
+    version: vToStore,
+    rows: slice.length,
+    sede: loc,
+  });
+  return vToStore;
+}
+
+/** Lee versión remota de caché de sede tras escritura propia (documento pequeño, sin refetch de roster). */
+export async function fetchParticipantLocationCacheVersionAfterWrite(eventId, location, opts = {}) {
+  const eid = String(eventId || '').trim();
+  const loc = normalizeLocKey(location);
+  if (!eid || !loc) return 0;
+  const scope = scopeParticipantsLocation(eid, loc);
+  return fetchRemoteCacheVersion(scope, { preferServer: opts.preferServer === true });
+}
+
+/**
+ * Versión para ack del listener sin bloquear la UI (caché Firestore, espera corta al bump de CF).
+ * @param {number} [opts.maxWaitMs]
+ */
+export async function resolveParticipantLocationVersionForAck(eventId, location, opts = {}) {
+  const eid = String(eventId || '').trim();
+  const loc = normalizeLocKey(location);
+  if (!eid || !loc) return 0;
+  const scope = scopeParticipantsLocation(eid, loc);
+  const baseline = normalizeCacheVersion(readLocalVersionCache(scope)?.version);
+  const maxWaitMs = Math.max(200, Number(opts.maxWaitMs) || 1200);
+  const deadline = Date.now() + maxWaitMs;
+
+  while (Date.now() < deadline) {
+    const cachedV = await fetchRemoteCacheVersion(scope, { preferServer: false, networkFallback: false });
+    if (cachedV > baseline) return cachedV;
+    if (cachedV > 0 && baseline <= 0) return cachedV;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+
+  const finalV = await fetchRemoteCacheVersion(scope, { preferServer: false, networkFallback: false });
+  if (finalV > 0) return finalV;
+  return baseline;
+}
+
+/** IndexedDB de sede en segundo plano (no bloquear UI tras parches optimistas). */
+export function deferSyncLocalParticipantLocationCacheFromMemory(eventId, location, allRows) {
+  const eid = String(eventId || '').trim();
+  const loc = normalizeLocKey(location);
+  if (!eid || !loc) return;
+  const run = () => {
+    void syncLocalParticipantLocationCacheFromMemory(eid, loc, allRows);
+  };
+  if (typeof requestIdleCallback !== 'undefined') {
+    requestIdleCallback(run, { timeout: 8000 });
+  } else {
+    setTimeout(run, 300);
+  }
+}
+
 export function replaceParticipantsForLocation(prev, eventId, location, slice) {
   const eid = String(eventId || '').trim();
   const loc = normalizeLocKey(location);
@@ -207,6 +345,35 @@ export function suppressParticipantVersionListeners() {
 
 export function isParticipantVersionListenerSuppressed() {
   return participantVersionListenerSuppressDepth > 0;
+}
+
+const OWN_WRITE_SKIP_REFETCH_MS = 20000;
+/** @type {Map<string, number>} */
+const ownWriteSkipRefetchUntil = new Map();
+
+/** Tras escritura propia con parche en memoria: omitir refetch del listener de versión. */
+export function markParticipantLocationOwnWrite(eventId, location, ttlMs = OWN_WRITE_SKIP_REFETCH_MS) {
+  const eid = String(eventId || '').trim();
+  const loc = normalizeLocKey(location);
+  if (!eid || !loc) return;
+  ownWriteSkipRefetchUntil.set(
+    scopeParticipantsLocation(eid, loc),
+    Date.now() + Math.max(1000, Number(ttlMs) || OWN_WRITE_SKIP_REFETCH_MS)
+  );
+}
+
+export function shouldSkipParticipantLocationOwnWriteRefetch(eventId, location) {
+  const eid = String(eventId || '').trim();
+  const loc = normalizeLocKey(location);
+  if (!eid || !loc) return false;
+  const scope = scopeParticipantsLocation(eid, loc);
+  const until = ownWriteSkipRefetchUntil.get(scope);
+  if (!until) return false;
+  if (Date.now() > until) {
+    ownWriteSkipRefetchUntil.delete(scope);
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -362,17 +529,30 @@ export async function refetchAndMergeParticipantLocations(eventId, locations, ap
   const locs = [...new Set((locations || []).map(normalizeLocKey).filter(Boolean))];
   if (!eid || locs.length === 0) return [];
 
+  const refetchT0 = typeof performance !== 'undefined' ? performance.now() : 0;
   const results = await Promise.all(
     locs.map((loc) => refetchParticipantsForLocation(eid, loc, { remoteV: opts.remoteV }))
   );
+  const refetchMs = refetchT0 && typeof performance !== 'undefined' ? performance.now() - refetchT0 : 0;
+  if (opts.onRefetchComplete) {
+    opts.onRefetchComplete({ ms: refetchMs, locs, rowCounts: results.map((r) => r?.slice?.length ?? 0) });
+  }
 
-  applyToState((prev) => {
-    let next = prev || [];
-    locs.forEach((loc, i) => {
-      next = replaceParticipantsForLocation(next, eid, loc, results[i]?.slice || []);
+  const applyMerge = () => {
+    applyToState((prev) => {
+      let next = prev || [];
+      locs.forEach((loc, i) => {
+        next = replaceParticipantsForLocation(next, eid, loc, results[i]?.slice || []);
+      });
+      return next;
     });
-    return next;
-  });
+  };
+
+  if (typeof opts.startTransition === 'function') {
+    opts.startTransition(applyMerge);
+  } else {
+    applyMerge();
+  }
 
   const acks = locs.map((loc, i) => ({
     loc,

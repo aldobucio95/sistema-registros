@@ -7,10 +7,12 @@ import {
   familyCarInventoryNeedsAttention,
   familyHasAnyCarTransport,
   manualGroupCrewRequiresPassengers,
+  resolveInboundLinkedCompanionCarInheritance,
   resolveLinkedCompanionCarInheritance,
   resolveManualCarGroupContext,
   stripDraftHostCarMetaFromPlan,
 } from './bautizosCarMeta.js';
+import { getBautizosCompanionsArray } from './bautizosParty.js';
 import {
   fetchCarMetaForTitular,
   mergeCarMetaCacheIntoPlan,
@@ -41,10 +43,10 @@ export function BautizosCarDataSection({
   roster = null,
   inheritLinkedCarData,
   onInheritLinkedCarDataChange,
-  /** Si true, la sección se muestra expandida (p. ej. modal nuevo registro). */
-  alwaysExpanded = false,
+  /** Si true, la sección se muestra expandida (registro / edición). */
+  alwaysExpanded = true,
   /** Si true, cada vehículo muestra el formulario completo sin colapsar. */
-  slotsDefaultExpanded = false,
+  slotsDefaultExpanded = true,
   /** Si true, no lee meta persistida del plan/Firestore (nuevo registro en borrador). */
   ignorePersistedCarMeta = false,
 }) {
@@ -58,10 +60,20 @@ export function BautizosCarDataSection({
     return mergeCarMetaCacheIntoPlan(basePlan, ignorePersistedCarMeta ? {} : loadedMetaByKey);
   }, [plan, loadedMetaByKey, ignorePersistedCarMeta]);
 
+  const inboundInherit = useMemo(
+    () => resolveInboundLinkedCompanionCarInheritance(hostPerson, roster, planForInventory),
+    [hostPerson, roster, planForInventory]
+  );
+
+  const metaFetchSourceKey = useMemo(() => {
+    if (inboundInherit.active && inboundInherit.sourceSk) return inboundInherit.sourceSk;
+    return String(hostSourceKey || '').trim();
+  }, [inboundInherit, hostSourceKey]);
+
   const loadCarMetaIfNeeded = useCallback(async () => {
     if (ignorePersistedCarMeta) return;
     const eid = String(eventId || '').trim();
-    const owner = String(hostSourceKey || '').trim();
+    const owner = metaFetchSourceKey;
     if (!eid || !owner || metaFetched) return;
     setLoadingMeta(true);
     try {
@@ -73,11 +85,25 @@ export function BautizosCarDataSection({
     } finally {
       setLoadingMeta(false);
     }
-  }, [eventId, hostSourceKey, metaFetched, ignorePersistedCarMeta]);
+  }, [eventId, metaFetchSourceKey, metaFetched, ignorePersistedCarMeta]);
+
+  useEffect(() => {
+    setMetaFetched(false);
+    setLoadedMetaByKey({});
+  }, [metaFetchSourceKey, eventId]);
 
   useEffect(() => {
     if (alwaysExpanded && !ignorePersistedCarMeta) void loadCarMetaIfNeeded();
   }, [alwaysExpanded, ignorePersistedCarMeta, loadCarMetaIfNeeded]);
+
+  const isPersistedTitularHost =
+    Boolean(String(hostSourceKey || '').trim()) && !/^p:draft-host(\||$)/.test(String(hostSourceKey || '').trim());
+
+  useEffect(() => {
+    if (isPersistedTitularHost && !ignorePersistedCarMeta && !alwaysExpanded) {
+      void loadCarMetaIfNeeded();
+    }
+  }, [isPersistedTitularHost, ignorePersistedCarMeta, alwaysExpanded, loadCarMetaIfNeeded]);
 
   const handleToggleOpen = () => {
     if (alwaysExpanded) return;
@@ -123,6 +149,14 @@ export function BautizosCarDataSection({
   );
 
   const inventoryForAttention = useMemo(() => {
+    if (inboundInherit.active && inboundInherit.hostPerson) {
+      return buildBautizosFamilyCarInventory({
+        hostPerson: inboundInherit.hostPerson,
+        companions: getBautizosCompanionsArray(inboundInherit.hostPerson),
+        plan: planForInventory,
+        hostSourceKey: inboundInherit.sourceSk,
+      });
+    }
     if (linkedInherit.active) return linkedInherit.inventory || [];
     return buildBautizosFamilyCarInventory({
       hostPerson,
@@ -137,11 +171,12 @@ export function BautizosCarDataSection({
         meta: draft ? { ...slot.meta, ...draft } : slot.meta,
       };
     });
-  }, [linkedInherit, hostPerson, companions, planForInventory, hostSourceKey, draftMetaByVehicleKey]);
+  }, [inboundInherit, linkedInherit, hostPerson, companions, planForInventory, hostSourceKey, draftMetaByVehicleKey]);
 
   const summaryEntry = plan?.bautizosCarMetaSummaryByTitular?.[String(hostSourceKey || '').trim()];
   const sectionNeedsAttention =
     !linkedInherit.active &&
+    !inboundInherit.active &&
     (summaryEntry
       ? titularSummaryNeedsAttention(summaryEntry, { requiresPassengers: requirePassengers })
       : familyCarInventoryNeedsAttention(inventoryForAttention, {
@@ -195,6 +230,13 @@ export function BautizosCarDataSection({
             </p>
           ) : null}
           <p className="text-[10px] text-slate-500 dark:text-slate-400 mb-3 leading-relaxed">
+            {inboundInherit.active ? (
+              <>
+                Los datos de vehículo se heredan del registro de{' '}
+                <span className="font-bold text-slate-700 dark:text-slate-200">{inboundInherit.hostName}</span>{' '}
+                (mismo carro del grupo vinculado).
+              </>
+            ) : null}
             {manualCtx?.isAnchor
               ? 'Grupo manual: todos los integrantes comparten los mismos datos de carro, conductor y pasajeros.'
               : null}{' '}
@@ -204,12 +246,16 @@ export function BautizosCarDataSection({
           </p>
           {!loadingMeta ? (
             <BautizosCarDataForm
-              hostPerson={hostPerson}
-              companions={companions}
+              hostPerson={inboundInherit.active ? inboundInherit.hostPerson : hostPerson}
+              companions={
+                inboundInherit.active
+                  ? getBautizosCompanionsArray(inboundInherit.hostPerson)
+                  : companions
+              }
               plan={planForInventory}
-              hostSourceKey={hostSourceKey}
-              draftMetaByVehicleKey={draftMetaByVehicleKey}
-              canEdit={canEdit}
+              hostSourceKey={inboundInherit.active ? inboundInherit.sourceSk : hostSourceKey}
+              draftMetaByVehicleKey={inboundInherit.active ? {} : draftMetaByVehicleKey}
+              canEdit={canEdit && !inboundInherit.active}
               showMaybeAbsent={false}
               colorSuggestions={colorSuggestions}
               labelClasses={labelClasses}

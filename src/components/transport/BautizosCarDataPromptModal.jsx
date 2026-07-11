@@ -1,11 +1,13 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X } from 'lucide-react';
+import { Loader2, X } from 'lucide-react';
 import BautizosCarDataForm from './BautizosCarDataForm.jsx';
 import { uiButtons, uiModal } from '../../ui/uiFormatClasses.js';
 import {
   buildBautizosFamilyCarInventory,
+  carCrewRequiresPassengerSelection,
   familyCarInventoryNeedsAttention,
+  manualGroupCrewRequiresPassengers,
   getFamilyCarInventoryValidationIssues,
   inventoryToCarMetaPatches,
   markAllEmptyAsPending,
@@ -17,10 +19,13 @@ import {
  */
 export default function BautizosCarDataPromptModal({
   isOpen,
+  isSubmitting = false,
   hostPerson,
   companions,
+  companionsForCrew,
   plan,
   hostSourceKey,
+  manualGroupMemberCount = 0,
   draftCompanionKeys,
   initialDraftMetaByVehicleKey = {},
   colorSuggestions = [],
@@ -55,14 +60,25 @@ export default function BautizosCarDataPromptModal({
     }));
   }, [hostPerson, companions, plan, hostSourceKey, draftCompanionKeys, draftMetaByVehicleKey]);
 
-  const crewContext = useMemo(
-    () => ({ hostPerson, companions }),
-    [hostPerson, companions]
-  );
+  const crewContext = useMemo(() => {
+    const crewCompanions = companionsForCrew ?? companions;
+    const requiresPassengers =
+      manualGroupMemberCount > 1
+        ? manualGroupCrewRequiresPassengers(manualGroupMemberCount)
+        : carCrewRequiresPassengerSelection(hostPerson, crewCompanions);
+    return { hostPerson, companions: crewCompanions, requiresPassengers };
+  }, [hostPerson, companions, companionsForCrew, manualGroupMemberCount]);
+
+  const needsAttention = familyCarInventoryNeedsAttention(mergedInventory, crewContext);
 
   if (!isOpen) return null;
 
   const handleSave = () => {
+    if (isSubmitting) return;
+    if (!needsAttention) {
+      onConfirm?.([]);
+      return;
+    }
     const issues = getFamilyCarInventoryValidationIssues(mergedInventory, crewContext);
     if (issues.length) {
       setValidationIssues(issues);
@@ -73,10 +89,11 @@ export default function BautizosCarDataPromptModal({
   };
 
   const handleMarkPending = () => {
+    if (isSubmitting) return;
     setValidationIssues([]);
     const nextDraft = { ...draftMetaByVehicleKey };
     const crewOpts = {
-      requiresPassengers: (companions || []).some((c) => String(c?.name || '').trim()),
+      requiresPassengers: crewContext.requiresPassengers,
     };
     for (const slot of mergedInventory) {
       if (slot.meta?.maybeAbsent) continue;
@@ -96,8 +113,6 @@ export default function BautizosCarDataPromptModal({
     }));
     onConfirm?.(inventoryToCarMetaPatches(pendingInventory));
   };
-
-  const needsAttention = familyCarInventoryNeedsAttention(mergedInventory, crewContext);
 
   const modal = (
     <div className={uiModal.overlayNested} role="dialog" aria-modal="true" aria-labelledby="bautizos-car-data-title">
@@ -153,13 +168,19 @@ export default function BautizosCarDataPromptModal({
         </div>
 
         <div className="sticky bottom-0 flex flex-wrap gap-2 justify-end px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm">
-          <button type="button" className={uiButtons.secondary} onClick={onCancel}>
+          {isSubmitting ? (
+            <p className="mr-auto inline-flex items-center gap-2 text-[11px] font-bold text-slate-600 dark:text-slate-300">
+              <Loader2 size={14} className="animate-spin shrink-0" aria-hidden />
+              Guardando abono…
+            </p>
+          ) : null}
+          <button type="button" className={uiButtons.secondary} onClick={onCancel} disabled={isSubmitting}>
             Cancelar
           </button>
-          <button type="button" className={uiButtons.secondary} onClick={handleMarkPending}>
+          <button type="button" className={uiButtons.secondary} onClick={handleMarkPending} disabled={isSubmitting}>
             Marcar pendiente y continuar
           </button>
-          <button type="button" className={uiButtons.primary} onClick={handleSave}>
+          <button type="button" className={uiButtons.primary} onClick={handleSave} disabled={isSubmitting}>
             Guardar y continuar
           </button>
         </div>

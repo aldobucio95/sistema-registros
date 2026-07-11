@@ -5,6 +5,7 @@
 import {
   applyStandardDataTableStyles,
   applyWorksheetColumnWidths,
+  mergeCellStyle,
 } from './excelWorkbookStyle.js';
 
 export { applyWorksheetColumnWidths };
@@ -23,6 +24,31 @@ export function applyRosterSheetStyles(XLSX, ws, { estatusCol = 0, waPendingCol 
     waPendingCol,
     estadoFinancieroCol,
   });
+}
+
+/**
+ * Altura fija de filas y columna de mensaje WA compacta (sin expandir filas).
+ */
+export function applyRosterWorksheetLayout(
+  XLSX,
+  ws,
+  { messageCol = -1, headerRow = 0, rowHeightPt = 15 } = {}
+) {
+  if (!ws?.['!ref']) return;
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  const rows = Array.isArray(ws['!rows']) ? [...ws['!rows']] : [];
+  for (let R = 0; R <= range.e.r; R++) {
+    rows[R] = { ...(rows[R] || {}), hpt: rowHeightPt };
+    if (messageCol >= 0 && R > headerRow) {
+      const addr = XLSX.utils.encode_cell({ r: R, c: messageCol });
+      if (ws[addr]) {
+        ws[addr].s = mergeCellStyle(ws[addr].s, {
+          alignment: { wrapText: false, vertical: 'center', shrinkToFit: true },
+        });
+      }
+    }
+  }
+  ws['!rows'] = rows;
 }
 
 function padBrowserLocal2(n) {

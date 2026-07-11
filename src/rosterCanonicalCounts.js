@@ -5,7 +5,10 @@
 import {
   bautizosDashboardCompanionCountsForScope,
   bautizosDashboardTitularCountsForScope,
+  bautizosExpandedRowCountsInCortesiaTotal,
   bautizosParticipatesAsServer,
+  bautizosTitularCountsInCortesiaTotal,
+  bautizosCompanionCountsInCortesiaTotal,
   expandBautizosGlobalRegistryRows,
   expandBautizosWaitlistRegistryRows,
   getBautizosCompanionsArray,
@@ -84,7 +87,12 @@ function countBautizosExpandedAtLocation(titularRows, roster, locNorm, expandFn,
   return filterExpandedRowsForLocation(expanded, roster, locNorm, dashboardScope).length;
 }
 
-function analyzeBautizosExpandedRowsToTypes(expandedRows) {
+function analyzeBautizosExpandedRowsToTypes(expandedRows, roster = null) {
+  const rosterById = new Map();
+  for (const p of roster || []) {
+    const id = String(p?.id || '').trim();
+    if (id) rosterById.set(id, p);
+  }
   let bautizados = 0;
   let acompanantes = 0;
   let asistentes = 0;
@@ -98,6 +106,9 @@ function analyzeBautizosExpandedRowsToTypes(expandedRows) {
       } else {
         acompanantes += 1;
       }
+      if (bautizosExpandedRowCountsInCortesiaTotal(p, rosterById)) {
+        cortesias += 1;
+      }
       continue;
     }
     if (p.__globalRegistryVirtual) {
@@ -107,6 +118,9 @@ function analyzeBautizosExpandedRowsToTypes(expandedRows) {
         acompanantes += 1;
         if (bautizosParticipatesAsServer(p)) servidores += 1;
       }
+      if (bautizosExpandedRowCountsInCortesiaTotal(p, rosterById)) {
+        cortesias += 1;
+      }
       continue;
     }
     if (participantHasBaptismChip(p, 'Bautizos')) bautizados += 1;
@@ -114,14 +128,14 @@ function analyzeBautizosExpandedRowsToTypes(expandedRows) {
     if (att === BAUTIZOS_ATTENDANCE.asistente) asistentes += 1;
     if (bautizosParticipatesAsServer(p)) servidores += 1;
     if (att === BAUTIZOS_ATTENDANCE.empleado) empleados += 1;
-    if (att === BAUTIZOS_ATTENDANCE.cortesia) cortesias += 1;
+    if (bautizosExpandedRowCountsInCortesiaTotal(p, rosterById)) cortesias += 1;
   }
   return { bautizados, acompanantes, asistentes, servidores, empleados, cortesias };
 }
 
 /** Desglose por tipo a partir de filas expandidas (activos, espera o cancelados). */
-export function bautizosExpandedRowsToTypeTotals(expandedRows) {
-  const a = analyzeBautizosExpandedRowsToTypes(expandedRows);
+export function bautizosExpandedRowsToTypeTotals(expandedRows, roster = null) {
+  const a = analyzeBautizosExpandedRowsToTypes(expandedRows, roster);
   return {
     bautizado: a.bautizados,
     acompanante: a.acompanantes,
@@ -193,7 +207,10 @@ export function countBautizosWaitlistExpandedPeople(allParticipants, event, loc,
  */
 export function analyzeBautizosWaitlistExpandedAtLocation(allParticipants, event, loc, options = {}) {
   const rows = getBautizosWaitlistExpandedRowsAtLocation(allParticipants, event, loc, options);
-  const types = analyzeBautizosExpandedRowsToTypes(rows);
+  const roster = (allParticipants || []).filter(
+    (p) => String(p?.eventId || '') === String(event?.id || '')
+  );
+  const types = analyzeBautizosExpandedRowsToTypes(rows, roster);
   return { total: rows.length, ...types };
 }
 

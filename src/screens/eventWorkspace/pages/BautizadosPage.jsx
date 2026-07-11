@@ -18,6 +18,8 @@ import {
 import MobileMenuSection from '../../../components/mobile/MobileMenuSection.jsx';
 import MobileFilterPanelBody from '../../../components/mobile/MobileFilterPanelBody.jsx';
 import ListMobileCard from '../../../components/ListMobileCard.jsx';
+import VirtualizedList from '../../../components/VirtualizedList.jsx';
+import useMediaQuery from '../../../hooks/useMediaQuery.js';
 
 function ageDisplayForPerson(p, calculateAgeFromBirthDate) {
   const fromBirth = p?.birthDate && String(p.birthDate).trim() ? calculateAgeFromBirthDate(p.birthDate) : '';
@@ -49,6 +51,7 @@ export default function BautizadosPage({
   const [filterGender, setFilterGender] = useState('all');
   const [filterShirt, setFilterShirt] = useState('all');
   const [segmentScope, setSegmentScope] = useState('all');
+  const isMobile = useMediaQuery('(max-width: 767px)');
 
   const eventId = currentEvent?.id;
   const eventType = currentEvent?.eventType;
@@ -421,8 +424,14 @@ export default function BautizadosPage({
           </div>
         ) : (
           <>
+          {isMobile ? (
           <div className={uiListMobile.shellSky}>
-            {filtered.map((p, i) => {
+            <VirtualizedList
+              items={filtered}
+              itemHeight={132}
+              overscan={10}
+              useParentScroll
+              renderItem={(p, i) => {
               const cur = normalizeBaptismShirtSize(p.baptismShirtSize);
               const isVirtualCompanion = !!p.__isVirtualCompanionBaptized;
               const seg =
@@ -473,9 +482,11 @@ export default function BautizadosPage({
                   metaRows={metaRows}
                 />
               );
-            })}
+            }}
+            />
           </div>
-          <div className={`${uiTable.wrap} hidden md:block`}>
+          ) : (
+          <div className={uiTable.wrap}>
             <table className={uiTable.table}>
               <thead className={uiTable.thead}>
                 <tr>
@@ -489,10 +500,19 @@ export default function BautizadosPage({
                 </tr>
               </thead>
               <tbody className={uiTable.tbody}>
-                {filtered.map((p, i) => {
-                  const cur = normalizeBaptismShirtSize(p.baptismShirtSize);
-                  const isVirtualCompanion = !!p.__isVirtualCompanionBaptized;
-                  return (
+                <tr>
+                  <td colSpan={isCampa ? 7 : 6} className="p-0 align-top">
+                    <VirtualizedList
+                      items={filtered}
+                      itemHeight={72}
+                      overscan={10}
+                      useParentScroll
+                      renderItem={(p, i) => {
+                        const cur = normalizeBaptismShirtSize(p.baptismShirtSize);
+                        const isVirtualCompanion = !!p.__isVirtualCompanionBaptized;
+                        return (
+                    <table className={uiTable.table}>
+                      <tbody>
                     <tr key={p.id} className={uiTable.tr}>
                       <td className={uiTable.td}>
                         <span className={`${uiKbd.base} min-w-[1.6rem] justify-center`} title="Número en esta lista">
@@ -543,11 +563,17 @@ export default function BautizadosPage({
                         </select>
                       </td>
                     </tr>
-                  );
-                })}
+                      </tbody>
+                    </table>
+                        );
+                      }}
+                    />
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>
+          )}
           </>
         )}
       </div>
