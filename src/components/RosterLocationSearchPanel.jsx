@@ -1,13 +1,17 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Clock, Search, X } from 'lucide-react';
 import { uiRosterSearch } from '../ui/uiFormatClasses.js';
 import { rosterSearchFieldId } from '../ui/rosterFilterField.js';
 
+/** Retraso antes de aplicar búsqueda al roster (evita re-render masivo por tecla). */
+export const ROSTER_SEARCH_DEBOUNCE_MS = 200;
+
 /** Barra de búsqueda destacada en registro por sede o registro global. */
-export default function RosterLocationSearchPanel({
+function RosterLocationSearchPanel({
   loc,
-  searchTerm,
-  debouncedSearchTerm,
+  /** Término ya aplicado a filtros (desde el padre). El input usa estado local hasta el debounce. */
+  searchTerm: appliedSearchTerm = '',
+  debouncedSearchTerm: appliedSearchTermLegacy,
   rosterSearchActive,
   onSearchChange,
   onClear,
@@ -19,11 +23,51 @@ export default function RosterLocationSearchPanel({
   hintWhenActive,
   statsLine = null,
 }) {
+  const applied = appliedSearchTermLegacy ?? appliedSearchTerm;
   const inputId = inputIdOverride ?? rosterSearchFieldId(loc);
   const labelId = `${inputId}-label`;
-  const active = rosterSearchActive ?? !!String(searchTerm || '').trim();
-  const debounced = debouncedSearchTerm ?? searchTerm;
+  const [draft, setDraft] = useState(applied);
+  const debounceRef = useRef(null);
+  const appliedRef = useRef(applied);
+
+  useEffect(() => {
+    appliedRef.current = applied;
+    setDraft(applied);
+  }, [applied]);
+
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    };
+  }, []);
+
+  const scheduleAppliedSearch = (nextDraft) => {
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => {
+      debounceRef.current = null;
+      if (nextDraft !== appliedRef.current) onSearchChange(nextDraft);
+    }, ROSTER_SEARCH_DEBOUNCE_MS);
+  };
+
+  const active = rosterSearchActive ?? !!String(draft || '').trim();
+  const filteringPending = draft !== applied;
   const hintText = statsLine ? '' : active ? hintWhenActive || '' : hintWhenIdle;
+
+  const handleChange = (e) => {
+    const next = e.target.value;
+    setDraft(next);
+    scheduleAppliedSearch(next);
+  };
+
+  const handleClear = () => {
+    if (debounceRef.current) {
+      window.clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    setDraft('');
+    onSearchChange('');
+    onClear?.();
+  };
 
   return (
     <div
@@ -46,18 +90,18 @@ export default function RosterLocationSearchPanel({
           aria-labelledby={labelId}
           placeholder={placeholder}
           className={uiRosterSearch.input}
-          value={searchTerm}
-          onChange={(e) => onSearchChange(e.target.value)}
+          value={draft}
+          onChange={handleChange}
         />
-        {searchTerm.trim() ? (
-          <button type="button" className={uiRosterSearch.clearBtn} aria-label="Borrar búsqueda" onClick={onClear}>
+        {draft.trim() ? (
+          <button type="button" className={uiRosterSearch.clearBtn} aria-label="Borrar búsqueda" onClick={handleClear}>
             <X size={16} aria-hidden />
           </button>
         ) : null}
       </div>
       {statsLine ? <div className={uiRosterSearch.statsBlock}>{statsLine}</div> : null}
       {hintText ? <p className={uiRosterSearch.hint}>{hintText}</p> : null}
-      {searchTerm !== debounced ? (
+      {filteringPending ? (
         <p className={uiRosterSearch.filteringPill} aria-live="polite">
           <Clock size={12} className="shrink-0" aria-hidden />
           Filtrando…
@@ -66,3 +110,5 @@ export default function RosterLocationSearchPanel({
     </div>
   );
 }
+
+export default React.memo(RosterLocationSearchPanel);

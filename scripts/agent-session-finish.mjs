@@ -1,5 +1,6 @@
 /**
- * Cierra una sesión del agente: valida, compila y hace commit+push a agent/auto.
+ * Cierra una sesión del agente: valida, compila y hace commit local en agent/auto.
+ * Si existe remote `origin`, intenta push; en proyectos solo locales se omite.
  * Uso: pnpm run agent:finish
  *      pnpm run agent:finish -- "mensaje opcional del commit"
  */
@@ -48,6 +49,15 @@ function currentBranch() {
   return execSync('git rev-parse --abbrev-ref HEAD', { cwd: ROOT, encoding: 'utf8' }).trim();
 }
 
+function hasOriginRemote() {
+  try {
+    const out = execSync('git remote', { cwd: ROOT, encoding: 'utf8' });
+    return out.split(/\r?\n/).some((name) => name.trim() === 'origin');
+  } catch {
+    return false;
+  }
+}
+
 function main() {
   const customMsg = process.argv.slice(2).join(' ').trim();
   const buildSeq = readBuildSeq();
@@ -84,11 +94,15 @@ function main() {
   const commit = spawnSync('git', ['commit', '-m', message], { cwd: ROOT, stdio: 'inherit' });
   if (commit.status !== 0) process.exit(commit.status ?? 1);
 
-  try {
-    run(`git push -u origin ${AGENT_BRANCH}`);
-  } catch {
-    console.warn('[agent:finish] push falló; el commit local quedó guardado.');
-    process.exit(1);
+  if (hasOriginRemote()) {
+    try {
+      run(`git push -u origin ${AGENT_BRANCH}`);
+    } catch {
+      console.warn('[agent:finish] push falló; el commit local quedó guardado.');
+      process.exit(1);
+    }
+  } else {
+    console.log('[agent:finish] Sin remote origin; commit guardado solo en local.');
   }
 
   console.log(`\n[agent:finish] Listo en rama ${AGENT_BRANCH} (buildSeq ${buildSeq}).`);

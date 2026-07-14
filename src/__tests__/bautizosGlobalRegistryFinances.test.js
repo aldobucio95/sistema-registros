@@ -77,6 +77,51 @@ describe('bautizosGlobalRegistryFinances', () => {
     expect(getBautizosGlobalRegistryRowOutstandingGross(comp2, host, event, opts)).toBeCloseTo(150, 1);
   });
 
+  it('legacy host row shows only titular FIFO share, not full party debt', () => {
+    const host = {
+      id: 'h1',
+      eventId: 'ev1',
+      name: 'Titular',
+      bautizosAttendanceType: 'Se bautizará',
+      willBeBaptized: 'Si',
+      wantsBautizosTransport: 'Si',
+      bautizosCompanions: [
+        { id: 'c1', name: 'Acomp 1', wantsBautizosTransport: 'Si' },
+        { id: 'c2', name: 'Acomp 2', wantsBautizosTransport: 'Si' },
+      ],
+      registeredCost: 450,
+      paid: 300,
+    };
+    const opts = financeOpts(host, [host]);
+    const hostFinance = resolveBautizosGlobalRegistryRowFinances(host, null, event, opts);
+    expect(hostFinance.liquidationTarget).toBeCloseTo(150, 1);
+    expect(hostFinance.paidDisplay).toBeCloseTo(150, 1);
+    expect(hostFinance.balance).toBeCloseTo(0, 1);
+  });
+
+  it('virt-acompanante flat row inherits host payment via FIFO', () => {
+    const host = {
+      id: 'h1',
+      name: 'Titular',
+      bautizosAttendanceType: 'Se bautizará',
+      willBeBaptized: 'Si',
+      wantsBautizosTransport: 'Si',
+      bautizosCompanions: [{ id: 'c1', name: 'Acomp 1', wantsBautizosTransport: 'Si' }],
+      paid: 200,
+    };
+    const opts = financeOpts(host, [host]);
+    const virt = {
+      id: 'virt-acompanante:h1:c1',
+      name: 'Acomp 1',
+      __legacyCompanionRow: true,
+      __hostRegistrantId: 'h1',
+    };
+    const finance = resolveBautizosGlobalRegistryRowFinances(virt, host, event, opts);
+    expect(finance.liquidationTarget).toBeCloseTo(225, 1);
+    expect(finance.paidDisplay).toBeCloseTo(75, 1);
+    expect(finance.balance).toBeCloseTo(150, 1);
+  });
+
   it('pastor courtesy companion shows zero balance', () => {
     const host = {
       id: 'h1',

@@ -250,9 +250,7 @@ export default function TransportPlanningPage({
           setTransportComputed({
             busLines: sortTransportLinesByRosterOrder(built.busLines, deferredRoster),
             carLines: sortTransportLinesByRosterOrder(built.carLines, deferredRoster),
-            bautizosCarDisplayGroups: isBautizos
-              ? buildBautizosCarDisplayGroups(deferredRoster, built.carLines)
-              : [],
+            bautizosCarDisplayGroups: [],
           });
           setTransportWorkerPending(false);
         }
@@ -2497,60 +2495,10 @@ export default function TransportPlanningPage({
     return carGroupLabelById.get(id) || 'Grupo';
   };
 
-  React.useEffect(() => {
-    if (!isBautizos) return;
-    const autoGroups = (bautizosCarDisplayGroups || [])
-      .filter((grp) => Array.isArray(grp?.lines) && grp.lines.length > 1)
-      .map((grp) => ({
-        id: `fam-auto-${String(grp.groupId || '').replace(/[^a-zA-Z0-9_-]/g, '_')}`,
-        memberKeys: [...new Set(grp.lines.map((l) => String(l?.sourceKey || '').trim()).filter(Boolean))],
-        cars: grp.isFamily ? 1 : null,
-      }))
-      .filter((g) => g.memberKeys.length > 1);
+  // Bautizos: solo grupos manuales cg-*; ya no se sincronizan fam-auto-*.
+  React.useEffect(() => {}, [isBautizos, bautizosCarDisplayGroups, plan.carGroups]);
 
-    const nextAutoSig = JSON.stringify(
-      autoGroups.map((g) => ({ id: g.id, keys: [...g.memberKeys].sort(), cars: g.cars ?? null })).sort((a, b) => a.id.localeCompare(b.id))
-    );
-    const curAuto = (plan.carGroups || []).filter((g) => String(g?.id || '').startsWith('fam-auto-'));
-    const curAutoSig = JSON.stringify(
-      curAuto
-        .map((g) => ({
-          id: String(g?.id || ''),
-          keys: [...new Set((g?.memberKeys || []).map((k) => String(k).trim()).filter(Boolean))].sort(),
-          cars: parseInt(g?.cars, 10) >= 1 ? parseInt(g.cars, 10) : null,
-        }))
-        .sort((a, b) => a.id.localeCompare(b.id))
-    );
-    if (nextAutoSig === curAutoSig) return;
-
-    setPlan((prev) => {
-      const next = normalizeTransportPlanning(prev);
-      const keep = (next.carGroups || []).filter((g) => !String(g?.id || '').startsWith('fam-auto-'));
-      const merged = { ...next, carGroups: [...keep, ...autoGroups] };
-      const mergedSig = JSON.stringify(
-        (merged.carGroups || [])
-          .filter((g) => String(g?.id || '').startsWith('fam-auto-'))
-          .map((g) => ({
-            id: String(g?.id || ''),
-            keys: [...new Set((g?.memberKeys || []).map((k) => String(k).trim()).filter(Boolean))].sort(),
-            cars: parseInt(g?.cars, 10) >= 1 ? parseInt(g.cars, 10) : null,
-          }))
-          .sort((a, b) => a.id.localeCompare(b.id))
-      );
-      if (mergedSig === curAutoSig) return prev;
-      return merged;
-    });
-  }, [isBautizos, bautizosCarDisplayGroups, plan.carGroups]);
-
-  React.useEffect(() => {
-    if (!isBautizos) return;
-    const cleaned = sanitizeBautizosGroupTitularByGroupId(plan, bautizosCarDisplayGroups);
-    if (JSON.stringify(cleaned) === JSON.stringify(plan?.bautizosGroupTitularByGroupId || {})) return;
-    setPlan((prev) => {
-      const next = normalizeTransportPlanning(prev);
-      return { ...next, bautizosGroupTitularByGroupId: cleaned };
-    });
-  }, [isBautizos, bautizosCarDisplayGroups, plan?.bautizosGroupTitularByGroupId, plan?.carGroups]);
+  React.useEffect(() => {}, [isBautizos, bautizosCarDisplayGroups, plan?.bautizosGroupTitularByGroupId, plan?.carGroups]);
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-6xl mx-auto">
@@ -2784,7 +2732,7 @@ export default function TransportPlanningPage({
         />
 
         <TransportBautizosCarCardsSection
-          groups={isBautizos ? bautizosCarCardGroups : []}
+          groups={[]}
           isOpen={transportUiPrefs?.bautizosCarCardsOpen === true}
           onOpenChange={(next) => patchTransportUiPrefs({ bautizosCarCardsOpen: next })}
           renderGroupCard={(grp) => {

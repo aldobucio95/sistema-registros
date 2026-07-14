@@ -7,6 +7,7 @@ import {
   uiEmptyState, uiRosterMobile,
 } from '../../../ui/uiFormatClasses.js';
 import ListMobileCard from '../../../components/ListMobileCard.jsx';
+import ParticipantAssistanceBadges from '../../../components/roster/ParticipantAssistanceBadges.jsx';
 import { isResponsivaEventSectionVisible } from '../../../responsivaSignLogic.js';
 
 function slugFileName(s) {
@@ -102,7 +103,7 @@ export default function ResponsivasPage({
   renderGlobalRegistryListToolbar,
   isSuperUser = false,
   onDeleteResponsiva,
-  renderParticipantAssistanceBadges,
+  isBautizos = false,
 }) {
   const [detail, setDetail] = useState(null);
   const [downloadBusyId, setDownloadBusyId] = useState(null);
@@ -314,9 +315,9 @@ export default function ResponsivasPage({
                       <td className={`${uiTable.td} tabular-nums text-slate-500 dark:text-slate-300 font-bold`}>{i + 1}</td>
                       <td className={`${uiTable.td} align-top font-bold text-slate-800 dark:text-slate-100`}>
                         <span className="block">{p.name || '?'}</span>
-                        {typeof renderParticipantAssistanceBadges === 'function' ? (
-                          <div className="flex flex-wrap gap-1 mt-1.5 font-normal">{renderParticipantAssistanceBadges(p)}</div>
-                        ) : null}
+                        <div className="flex flex-wrap gap-1 mt-1.5 font-normal">
+                          <ParticipantAssistanceBadges person={p} isBautizos={isBautizos} currentEvent={currentEvent} />
+                        </div>
                       </td>
                       <td className={`${uiTable.td} text-slate-600 dark:text-slate-300`}>{p.location || '—'}</td>
                       <td className={`${uiTable.td} text-[10px] text-slate-600 dark:text-slate-300 max-w-[13rem] leading-snug`}>

@@ -3,9 +3,7 @@ import { Church, Filter } from 'lucide-react';
 import {
   BAPTISM_SHIRT_SIZES,
   normalizeBaptismShirtSize,
-  participantHasBaptismChip,
-  getBautizosCompanionsArray,
-  isBautizosCompanionBaptized,
+  buildBautizadosListBaseRows,
 } from '../../../bautizosParty.js';
 import { buildLocationScopeSet, participantInLocationScope } from '../../../rbac/permissions.js';
 import {
@@ -18,6 +16,7 @@ import {
 import MobileMenuSection from '../../../components/mobile/MobileMenuSection.jsx';
 import MobileFilterPanelBody from '../../../components/mobile/MobileFilterPanelBody.jsx';
 import ListMobileCard from '../../../components/ListMobileCard.jsx';
+import ParticipantAssistanceBadges from '../../../components/roster/ParticipantAssistanceBadges.jsx';
 
 function ageDisplayForPerson(p, calculateAgeFromBirthDate) {
   const fromBirth = p?.birthDate && String(p.birthDate).trim() ? calculateAgeFromBirthDate(p.birthDate) : '';
@@ -42,7 +41,7 @@ export default function BautizadosPage({
   calculateAgeFromBirthDate,
   canEditShirtSizes,
   onSaveBaptismShirtSize,
-  renderParticipantAssistanceBadges,
+  isBautizos,
 }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filterSede, setFilterSede] = useState('all');
@@ -55,42 +54,21 @@ export default function BautizadosPage({
   const isCampa = eventType === 'Campa';
   const locationScopeSet = useMemo(() => buildLocationScopeSet(visibleLocations), [visibleLocations]);
 
-  const baseRows = useMemo(() => {
+  const rosterInScope = useMemo(() => {
     if (!eventId) return [];
-    const out = [];
-    for (const p of allParticipants || []) {
-      if (String(p.eventId) !== String(eventId) || !participantIsActiveInEvent(p)) continue;
-      if (!participantIsActiveInRoster(p)) continue;
-      if (!participantInLocationScope(p, locationScopeSet)) continue;
-      if (!participantHasBaptismChip(p, eventType)) continue;
-      out.push(p);
-    }
-    if (eventType === 'Bautizos') {
-      for (const p of allParticipants || []) {
-        if (String(p.eventId) !== String(eventId) || !participantIsActiveInEvent(p)) continue;
-        if (!participantIsActiveInRoster(p)) continue;
-        if (!participantInLocationScope(p, locationScopeSet)) continue;
-        const comps = getBautizosCompanionsArray(p);
-        for (let i = 0; i < comps.length; i++) {
-          const c = comps[i] || {};
-          const nm = String(c?.name || '').trim();
-          if (!nm || !isBautizosCompanionBaptized(c)) continue;
-          out.push({
-            id: `virt-bautizado:${String(p.id)}:${String(c?.id || i)}`,
-            eventId,
-            name: nm,
-            location: p.location || '',
-            gender: '',
-            age: '',
-            baptismShirtSize: c?.baptismShirtSize || '',
-            __isVirtualCompanionBaptized: true,
-            __sourceRegistrantName: String(p?.name || '').trim(),
-          });
-        }
-      }
-    }
-    return out;
-  }, [allParticipants, eventId, eventType, participantIsActiveInEvent, participantIsActiveInRoster, locationScopeSet]);
+    return (allParticipants || []).filter(
+      (p) =>
+        String(p.eventId) === String(eventId) &&
+        participantIsActiveInEvent(p) &&
+        participantIsActiveInRoster(p) &&
+        participantInLocationScope(p, locationScopeSet)
+    );
+  }, [allParticipants, eventId, participantIsActiveInEvent, participantIsActiveInRoster, locationScopeSet]);
+
+  const baseRows = useMemo(
+    () => buildBautizadosListBaseRows(rosterInScope, { eventType, eventId }),
+    [rosterInScope, eventType, eventId]
+  );
 
   const afterGlobalFilters = useMemo(() => {
     let rows = applyGlobalRegistryLikeFilters(baseRows);
@@ -508,11 +486,9 @@ export default function BautizadosPage({
                             </span>
                           ) : null}
                         </div>
-                        {typeof renderParticipantAssistanceBadges === 'function' ? (
-                          <div className="flex flex-wrap gap-1 mt-1.5 font-normal">
-                            {renderParticipantAssistanceBadges(p)}
-                          </div>
-                        ) : null}
+                        <div className="flex flex-wrap gap-1 mt-1.5 font-normal">
+                          <ParticipantAssistanceBadges person={p} isBautizos={isBautizos} currentEvent={currentEvent} />
+                        </div>
                       </td>
                       <td className={uiTable.td}>{String(p.location || '').trim() || '—'}</td>
                       {isCampa ? (

@@ -483,10 +483,17 @@ export default function PastoresPage({
               : 'hover:bg-violet-50/80 dark:hover:bg-violet-950/20'
           }`}
         >
-          <button
-            type="button"
+          <div
             onClick={() => togglePastorExpanded(id)}
-            className="min-w-0 flex-1 flex flex-wrap items-center gap-1.5 text-left"
+            className="min-w-0 flex-1 flex flex-wrap items-center gap-1.5 text-left cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 rounded"
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                togglePastorExpanded(id);
+              }
+            }}
             aria-expanded={expanded}
           >
             <ChevronDown
@@ -519,7 +526,7 @@ export default function PastoresPage({
                 ) : null}
               </>
             ) : null}
-          </button>
+          </div>
           <button
             type="button"
             disabled={saving}

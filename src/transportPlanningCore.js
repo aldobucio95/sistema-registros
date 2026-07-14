@@ -1,4 +1,5 @@
 import { isSiValue } from './publicRegistrationLogic.js';
+import { flattenBautizosParticipantsForRead } from './bautizos/bautizosLegacyReadAdapter.js';
 import {
   BAUTIZOS_ATTENDANCE,
   buildBautizadoMetaForCanonical,
@@ -270,11 +271,10 @@ export function applyTransportPlanningAutoNormalization(plan, { isBautizos = fal
   const next = normalizeTransportPlanning(plan);
   if (!isBautizos) return next;
 
-  const autoGroups = computeBautizosFamAutoCarGroups(bautizosCarDisplayGroups);
   const keep = (next.carGroups || []).filter((g) => !String(g?.id || '').startsWith('fam-auto-'));
-  let merged = { ...next, carGroups: [...keep, ...autoGroups] };
+  let merged = { ...next, carGroups: keep };
 
-  const cleaned = sanitizeBautizosGroupTitularByGroupId(merged, bautizosCarDisplayGroups);
+  const cleaned = sanitizeBautizosGroupTitularByGroupId(merged, []);
   if (JSON.stringify(cleaned) !== JSON.stringify(merged.bautizosGroupTitularByGroupId || {})) {
     merged = { ...merged, bautizosGroupTitularByGroupId: cleaned };
   }
@@ -460,20 +460,14 @@ export function buildTransportPlanningLines(roster, eventType, locations, eventL
   };
 
   if (isBautizos) {
-    const active = (roster || []).filter((p) => participantIncludedInTransportPlanning(p, et));
-    const bautizadoRoster = active.filter(
-      (p) => normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado
-    );
-    const meta = buildBautizadoMetaForCanonical(bautizadoRoster);
-    /** Incluye acompañantes que se bautizan en el evento: deben figurar en camión/carro como el resto de la familia. */
-    const canonPlan = buildBautizosCanonicalCompanionPlan(active, meta, { includeBaptizedCompanions: true });
-
-    for (const p of active) {
+    const flat = flattenBautizosParticipantsForRead(roster || []);
+    for (const p of flat) {
+      if (!participantIncludedInTransportPlanning(p, et)) continue;
       const pid = String(p.id || '').trim();
       if (!pid) continue;
       const loc = String(p.location || '').trim();
       const from = String(p.travelFrom || p.location || '').trim() || '—';
-      if (personGoesByEventBus(p, et)) {
+      if (personGoesByEventBus(p, et) && !isBautizosLapInfantCompanion(p, eventLike)) {
         pushBus({
           sourceKey: `p:${pid}`,
           kind: 'participant',
@@ -490,37 +484,6 @@ export function buildTransportPlanningLines(roster, eventType, locations, eventL
           location: loc,
           carrosLlegada: normalizeArrivalCarCount(p.carrosLlegada),
           hostId: pid,
-        });
-      }
-    }
-
-    for (const info of canonPlan.values()) {
-      const c = info.sourceCompanion;
-      const hostId = String(info.registrantId || '').trim();
-      const canonKey = String(info.canonKey || '').trim();
-      if (!canonKey || !c) continue;
-      const nm = String(c.name || '').trim();
-      if (!nm) continue;
-      const from = String(c.travelFrom || info.sourceRegistrant?.location || '').trim() || '—';
-      const loc = String(info.sourceRegistrant?.location || '').trim();
-      if (personGoesByEventBus(c, et) && !isBautizosLapInfantCompanion(c, eventLike)) {
-        pushBus({
-          sourceKey: canonKey,
-          kind: 'companion',
-          name: nm,
-          location: loc,
-          busSede: from,
-          hostId,
-        });
-      }
-      if (personArrivesByCarForPlanning(c, et)) {
-        pushCar({
-          sourceKey: canonKey,
-          kind: 'companion',
-          name: nm,
-          location: loc,
-          carrosLlegada: normalizeArrivalCarCount(c.carrosLlegada),
-          hostId,
         });
       }
     }

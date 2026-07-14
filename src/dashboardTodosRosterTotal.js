@@ -5,12 +5,8 @@
  * canónicos de `bautizosParty.js`); si cambias reglas aquí, actualiza ese archivo en el mismo commit.
  */
 
-import {
-  BAUTIZOS_ATTENDANCE,
-  normalizeBautizosAttendanceType,
-  buildBautizadoMetaForCanonical,
-  buildBautizosCanonicalCompanionPlan,
-} from './bautizosParty.js';
+import { computeBautizosTodosTotal as computeBautizosFlatTodosTotal } from './bautizos/bautizosCounts.js';
+import { flattenBautizosParticipantsForRead } from './bautizos/bautizosLegacyReadAdapter.js';
 
 function isCompanionWaitlistPhantomStoredParticipant(personLike) {
   if (personLike?._isCompanionWaitlistVirtual === true) return true;
@@ -88,12 +84,7 @@ export function filterEventCapRosterBase(participantRows, eventRow) {
 }
 
 function computeBautizosTodosTotal(rosterBase) {
-  const activeBautizadoRoster = rosterBase.filter(
-    (p) => normalizeBautizosAttendanceType(p?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado
-  );
-  const meta = buildBautizadoMetaForCanonical(activeBautizadoRoster);
-  const plan = buildBautizosCanonicalCompanionPlan(rosterBase, meta, { includeBaptizedCompanions: true });
-  return rosterBase.length + plan.size;
+  return computeBautizosFlatTodosTotal(rosterBase);
 }
 
 function computeCampaTodosTotal(rosterBase, eventRow) {
@@ -139,7 +130,11 @@ export function computeDashboardTodosRosterTotal(participantRows, eventRow) {
 export function computeRowTodosUnitContribution(personRow, eventRow) {
   if (!personRow || !eventRow || typeof eventRow !== 'object') return 0;
   const evType = String(eventRow.eventType || '');
-  if (evType === 'Bautizos') return null;
+  if (evType === 'Bautizos') {
+    if (!participantIsActiveInRoster(personRow)) return 0;
+    if (!participantLocationInEventLocations(personRow, eventRow)) return 0;
+    return 1;
+  }
   if (!participantIsActiveInRoster(personRow)) return 0;
   if (!participantLocationInEventLocations(personRow, eventRow)) return 0;
   if (evType === 'Campa') {
@@ -166,17 +161,9 @@ export function computeEventCapUsedUnitsBySede(participantRows, eventRow) {
   const evType = String(eventRow.eventType || '');
 
   if (evType === 'Bautizos') {
-    for (const p of rosterBase) {
+    const flat = flattenBautizosParticipantsForRead(rosterBase);
+    for (const p of flat) {
       const loc = String(p?.location || '').trim();
-      if (Object.prototype.hasOwnProperty.call(byLoc, loc)) byLoc[loc] += 1;
-    }
-    const activeBautizadoRoster = rosterBase.filter(
-      (p) => normalizeBautizosAttendanceType(p?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado
-    );
-    const meta = buildBautizadoMetaForCanonical(activeBautizadoRoster);
-    const plan = buildBautizosCanonicalCompanionPlan(rosterBase, meta, { includeBaptizedCompanions: true });
-    for (const info of plan.values()) {
-      const loc = String(info?.sourceRegistrant?.location || '').trim();
       if (Object.prototype.hasOwnProperty.call(byLoc, loc)) byLoc[loc] += 1;
     }
     return byLoc;

@@ -25,9 +25,12 @@ const isFreeAttendanceType = (t) => t === ATTENDANCE_SPECIAL.empleado || t === A
 
 const BAUTIZOS_ATTENDANCE = {
   bautizado: 'bautizado',
+  acompanante: 'acompanante',
+  asistente: 'asistente',
   servidor: 'servidor',
   empleado: 'empleado',
   cortesia: 'cortesia',
+  pastor: 'pastor',
 };
 
 function normalizeBautizosAttendanceType(raw) {
@@ -39,6 +42,9 @@ function normalizeBautizosAttendanceType(raw) {
   if (s === 'servidor') return BAUTIZOS_ATTENDANCE.servidor;
   if (s === 'empleado') return BAUTIZOS_ATTENDANCE.empleado;
   if (s === 'cortesia') return BAUTIZOS_ATTENDANCE.cortesia;
+  if (s === 'acompanante') return BAUTIZOS_ATTENDANCE.acompanante;
+  if (s === 'asistente') return BAUTIZOS_ATTENDANCE.asistente;
+  if (s === 'pastor') return BAUTIZOS_ATTENDANCE.pastor;
   return BAUTIZOS_ATTENDANCE.bautizado;
 }
 
@@ -241,9 +247,48 @@ function getPricingFromSnapshotForDate(event, dateMs) {
   return { global, ...srv };
 }
 
+function isLegacyBautizosParticipant(personLike) {
+  const raw = personLike?.bautizosCompanions;
+  if (!Array.isArray(raw)) return false;
+  return raw.some((c) => c && typeof c === 'object' && String(c?.name || '').trim().length >= 2);
+}
+
+function bautizosAttendancePaysEventListPrice(personLike) {
+  if (isFreeBautizosAttendance(personLike)) return false;
+  const t = normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType);
+  return t === BAUTIZOS_ATTENDANCE.bautizado || t === BAUTIZOS_ATTENDANCE.acompanante || t === BAUTIZOS_ATTENDANCE.asistente || t === BAUTIZOS_ATTENDANCE.servidor;
+}
+
+function getBautizosIndividualListPrice(personLike, eventLike = null) {
+  if (!eventLike || eventLike.eventType !== 'Bautizos') return 0;
+  if (!bautizosAttendancePaysEventListPrice(personLike)) return 0;
+  if (isBautizosUnder3YearsAtEvent(personLike, eventLike)) return 0;
+  const { food, transport } = getBautizosListPriceBreakdown(eventLike);
+  let total = 0;
+  if (isSiValue(personLike?.wantsBautizosFood)) total += food;
+  const arrivesByCar = resolveLlegaEnCarroPricing(personLike);
+  const transportWanted = isSiValue(personLike?.wantsBautizosTransport);
+  if (transportWanted && !arrivesByCar) total += transport;
+  return total;
+}
+
+function getBautizosEffectiveListPrice(personLike, eventLike = null) {
+  if (!personLike) return 0;
+  if (isFreeBautizosAttendance(personLike)) return 0;
+  if (personLike?.registeredCostManual === true) {
+    const m = parseFloat(personLike?.registeredCost);
+    if (Number.isFinite(m) && m >= 0) return m;
+  }
+  const persisted = parseFloat(personLike?.registeredCost);
+  if (isLegacyBautizosParticipant(personLike) && Number.isFinite(persisted) && persisted >= 0) {
+    return persisted;
+  }
+  return getBautizosIndividualListPrice(personLike, eventLike);
+}
+
 function getPersonCost(person, pricing, eventLike = null) {
   if (eventLike?.eventType === 'Bautizos') {
-    return getBautizosPartyListPrice(person, eventLike);
+    return getBautizosEffectiveListPrice(person, eventLike);
   }
   if (!pricing) return 0;
   const g = Number(pricing.global) || 0;

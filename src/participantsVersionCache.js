@@ -7,7 +7,6 @@ import {
   readLocalVersionCache,
   readVersionCacheRecord,
   writeLocalVersionCache,
-  cacheVersionsMatch,
   logCacheDecision,
   normalizeCacheVersion,
   participantCacheVersionsCompatible,
@@ -42,19 +41,19 @@ export function patchParticipantsInList(prev, personId, patch) {
 /**
  * @deprecated La Cloud Function invalida caché al escribir participantes; no bump en cliente.
  */
-export async function bumpParticipantsForPerson(_person, _action = '', _options = {}) {
+export async function bumpParticipantsForPerson() {
   return null;
 }
 
 /** @deprecated La Cloud Function invalida caché por sede en batch. */
-export async function bumpParticipantsLocationsForEvent(_eventId, _locations, _action = '') {
+export async function bumpParticipantsLocationsForEvent() {
   return;
 }
 
 /**
  * @deprecated Usar invalidación vía Cloud Function únicamente.
  */
-export async function bumpParticipantsLocationCache(_eventId, _location, _action = '') {
+export async function bumpParticipantsLocationCache() {
   return null;
 }
 
@@ -106,26 +105,59 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
   if (!eid) return [];
 
   const locs = [...new Set((locations || []).map(normalizeLocKey).filter(Boolean))];
+  const unspecifiedScope = scopeParticipantsLocation(eid, '__unspecified__');
+
   if (locs.length === 0) {
     const snap = await loadEventParticipantsQueryFromStore(eid);
     return stripCompanionWaitlistPhantomRows(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
   }
 
   const versionByLoc = new Map();
-  await Promise.all(
-    locs.map(async (loc) => {
+  await Promise.all([
+    ...locs.map(async (loc) => {
       const scope = scopeParticipantsLocation(eid, loc);
       const remoteV = await fetchRemoteCacheVersion(scope, { preferServer: true });
       const local = await readVersionCacheRecord(scope);
       versionByLoc.set(loc, { scope, remoteV, local });
-    })
-  );
+    }),
+    (async () => {
+      const localUnsp = await readVersionCacheRecord(unspecifiedScope);
+      versionByLoc.set('__unspecified__', { scope: unspecifiedScope, local: localUnsp });
+    })()
+  ]);
 
   const isHit = (loc) => {
     const { remoteV, local } = versionByLoc.get(loc);
     return isParticipantSliceHit(local, remoteV);
   };
 
+  const allHits = locs.every(isHit);
+
+  if (allHits) {
+    let all = [];
+    for (const loc of locs) {
+      const { local, scope } = versionByLoc.get(loc);
+      all = [...all, ...local.data];
+      logCacheDecision(scope, {
+        event: 'hit-initial-load',
+        version: local.version,
+        rows: local.data.length,
+        source: 'indexedDB',
+        sede: loc,
+      });
+    }
+    const { local: localUnsp } = versionByLoc.get('__unspecified__');
+    const unspData = localUnsp?.data || [];
+    all = [...all, ...unspData];
+    logCacheDecision(unspecifiedScope, {
+      event: 'hit-initial-load-unspecified',
+      rows: unspData.length,
+      source: 'indexedDB',
+    });
+    return all;
+  }
+
+  // If there is any miss, we load all event participants from the server once to rebuild the cache.
   const snap = await loadEventParticipantsQueryFromStore(eid);
   const all = stripCompanionWaitlistPhantomRows(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
 
@@ -135,13 +167,21 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
     const vToStore = await resolveVersionForStore(scope, remoteV);
     await writeLocalVersionCache(scope, vToStore, slice, { eventId: eid, location: loc });
     logCacheDecision(scope, {
-      event: isHit(loc) ? 'refresh-cache' : 'miss-refetch',
+      event: 'miss-refetch-initial-load',
       version: vToStore,
       rows: slice.length,
       source: 'firestore',
       sede: loc,
     });
   }
+
+  const unspecifiedSlice = all.filter((p) => !locs.includes(normalizeLocKey(p.location)));
+  await writeLocalVersionCache(unspecifiedScope, 1, unspecifiedSlice, { eventId: eid, location: '__unspecified__' });
+  logCacheDecision(unspecifiedScope, {
+    event: 'miss-refetch-initial-load-unspecified',
+    rows: unspecifiedSlice.length,
+    source: 'firestore',
+  });
 
   return all;
 }
@@ -392,7 +432,16 @@ export async function loadArchivedParticipantsWithVersionCache() {
   const scope = scopeParticipantsArchive();
   const remoteV = await fetchRemoteCacheVersion(scope, { preferServer: true });
   const local = await readVersionCacheRecord(scope);
-  const cachedRows = local?.data?.length ?? 0;
+
+  if (isParticipantSliceHit(local, remoteV)) {
+    logCacheDecision(scope, {
+      event: 'hit-initial-load',
+      version: remoteV,
+      rows: local.data.length,
+      source: 'indexedDB',
+    });
+    return local.data;
+  }
 
   const PARTICIPANT_STATUS_ARCHIVED = 'archived';
   const q = query(getColRef('app_participants'), where('status', '==', PARTICIPANT_STATUS_ARCHIVED));
@@ -400,15 +449,12 @@ export async function loadArchivedParticipantsWithVersionCache() {
   try {
     snap = await getDocsFromServer(q);
   } catch {
-    if (isParticipantSliceHit(local, remoteV)) {
-      logCacheDecision(scope, { event: 'hit-offline', version: remoteV, rows: local.data.length, source: 'indexedDB' });
-      return local.data;
-    }
     snap = await getDocs(q);
   }
   const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   const vToStore = await resolveVersionForStore(scope, remoteV);
   await writeLocalVersionCache(scope, vToStore, all, { kind: 'archive' });
+  const cachedRows = local?.data?.length ?? 0;
   logCacheDecision(scope, {
     event: cachedRows !== all.length ? 'refresh-cache' : 'open-refresh',
     version: vToStore,

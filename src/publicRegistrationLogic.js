@@ -1,3 +1,10 @@
+import { getBautizosEffectiveListPrice } from './bautizos/bautizosPricing.js';
+import { shouldPersistBautizosCompanionsOnSave } from './bautizos/bautizosLegacyReadAdapter.js';
+import {
+  isBautizosLegacyCompanionVirtualRow,
+  isBautizosLegacyHostStoredRow,
+  parseBautizosCompanionKeyFromVirtualRowId,
+} from './bautizos/bautizosLegacyPaymentAdapter.js';
 import { setDoc, getDoc, getDocs, query, where, limit, updateDoc } from 'firebase/firestore';
 import { getDocRef, getColRef } from './firebaseRefs.js';
 import { buildLogId, writeSnapshotDoc } from './activityLogCore.js';
@@ -1188,9 +1195,7 @@ export function getBautizosFifoUnitBalances(units, paidGross) {
 }
 
 function parseGlobalRegistryCompanionKeyFromPerson(companionPerson) {
-  const id = String(companionPerson?.id || '');
-  const m = id.match(/^gr-companion:[^:]+:(.+)$/);
-  return m ? String(m[1] || '').trim() : '';
+  return parseBautizosCompanionKeyFromVirtualRowId(companionPerson?.id);
 }
 
 function findBautizosCompanionLiquidationUnitIndex(units, companionPerson) {
@@ -1258,7 +1263,7 @@ export function resolveBautizosGlobalRegistryRowFinances(
 
   if (
     personLike?.__pastorCourtesyCompanion === true ||
-    (personLike?.__globalRegistryCompanionRow === true && isBautizosPastorAttendance(hostPerson))
+    (isBautizosLegacyCompanionVirtualRow(personLike) && isBautizosPastorAttendance(hostPerson))
   ) {
     return {
       liquidationTarget: 0,
@@ -1269,7 +1274,37 @@ export function resolveBautizosGlobalRegistryRowFinances(
     };
   }
 
-  if (personLike?.__globalRegistryCompanionRow === true && hostPerson) {
+  if (isBautizosLegacyHostStoredRow(personLike)) {
+    const hostLiq = getLiq(personLike);
+    const paidGross = getPaidGross(personLike);
+    const units = buildBautizosDashboardLiquidationUnits(
+      personLike,
+      eventLike,
+      companionDedupeMeta,
+      hostLiq
+    );
+    const balances = getBautizosFifoUnitBalances(units, paidGross);
+    const titular = balances.find((u) => u.kind === 'titular') || balances[0];
+    if (!titular) {
+      const balance = Math.max(0, hostLiq - paidGross);
+      return {
+        liquidationTarget: hostLiq,
+        paidDisplay: paidGross,
+        balance,
+        isLiquidated: hostLiq <= 0.005 || balance <= 0.005,
+        usesHostPayments: false,
+      };
+    }
+    return {
+      liquidationTarget: titular.owed,
+      paidDisplay: titular.paidAllocated,
+      balance: titular.balance,
+      isLiquidated: titular.isLiquidated,
+      usesHostPayments: false,
+    };
+  }
+
+  if (isBautizosLegacyCompanionVirtualRow(personLike) && hostPerson) {
     const hostLiq = getLiq(hostPerson);
     const paidGross = getPaidGross(hostPerson);
     const canonicalCompanionInfos = buildCanonicalCompanionInfosForHost(
@@ -1455,7 +1490,7 @@ export { isFreeBautizosAttendance, minorHasRequiredGuardianCompanion, getBautizo
  */
 export const getPersonCost = (person, pricing, eventLike = null) => {
   if (eventLike?.eventType === 'Bautizos') {
-    return getBautizosPartyListPrice(person, eventLike);
+    return getBautizosEffectiveListPrice(person, eventLike);
   }
   if (isFreeAttendanceType(normalizeAttendanceSpecial(person))) return 0;
   if (!pricing) return 0;
@@ -1525,16 +1560,27 @@ const resolveRegisteredCost = (person, pricing, eventLike = null) => {
   return getPersonCost(person, pricing, eventLike);
 };
 
+const applyBautizosLegacyHostTitularLiquidationSplit = (person, eventLike, partyLiquidation) => {
+  if (!isBautizosLegacyHostStoredRow(person)) return partyLiquidation;
+  const { titularOwed } = getBautizosPartyLiquidationSplit(person, eventLike, null, partyLiquidation);
+  return titularOwed;
+};
+
 const getLiquidationTarget = (person, currentPricing, eventLike = null) => {
   if (isFreeAttendanceType(normalizeAttendanceSpecial(person))) return 0;
   if (eventLike?.eventType === 'Bautizos' && isFreeBautizosAttendance(person)) return 0;
   const listPrice = resolveRegisteredCost(person, currentPricing, eventLike);
-  if (!isSiValue(person?.isScholarship)) return listPrice;
+  let toLiquidate = listPrice;
+  if (!isSiValue(person?.isScholarship)) {
+    return applyBautizosLegacyHostTitularLiquidationSplit(person, eventLike, toLiquidate);
+  }
   if (person?.scholarshipType === 'partial') {
     const montoBecado = parseFloat(person.scholarshipPartialAmount || 0);
-    if (!Number.isFinite(montoBecado) || montoBecado <= 0) return listPrice;
-    const toLiquidate = listPrice - montoBecado;
-    return Math.max(0, Math.min(toLiquidate, listPrice));
+    if (!Number.isFinite(montoBecado) || montoBecado <= 0) {
+      return applyBautizosLegacyHostTitularLiquidationSplit(person, eventLike, toLiquidate);
+    }
+    toLiquidate = Math.max(0, Math.min(listPrice - montoBecado, listPrice));
+    return applyBautizosLegacyHostTitularLiquidationSplit(person, eventLike, toLiquidate);
   }
   return 0;
 };
@@ -2632,20 +2678,24 @@ export async function submitPublicRegistration({
     personData.carrosLlegada = normalizeArrivalCarCount(personData.carrosLlegada);
     if (resolveLlegaEnCarroPricing(personData)) personData.wantsBautizosTransport = 'No';
     personData.bautizosAttendanceType = normalizeBautizosAttendanceType(personData.bautizosAttendanceType);
-    personData.bautizosCompanions =
-      normalizedBautizosCompanionsPub || normalizeBautizosCompanionsForPersist(personData, loc, vnpCompanionHelpersPub);
-    personData.bautizosCompanions = applyCompanionWaitlistCapOnEdit({
-      originalCompanions: [],
-      nextCompanions: personData.bautizosCompanions,
-      hostPerson: personData,
-      participants,
-      event: eventSnapshot,
-      loc,
-      getGlobalCap: () => Math.max(0, Number(eventSnapshot.eventTotalCap ?? 0)),
-      getGlobalCapUsed: () => computeEventCapUsedUnits(participants, eventSnapshot),
-      getLocCap: (l) => Number(eventSnapshot.locationCaps?.[l] || 0),
-      getLocCapUsed: (l) => computeEventCapUsedUnitsBySede(participants, eventSnapshot)[l] ?? 0,
-    });
+    if (shouldPersistBautizosCompanionsOnSave(entry)) {
+      personData.bautizosCompanions =
+        normalizedBautizosCompanionsPub || normalizeBautizosCompanionsForPersist(personData, loc, vnpCompanionHelpersPub);
+      personData.bautizosCompanions = applyCompanionWaitlistCapOnEdit({
+        originalCompanions: entry?.bautizosCompanions || [],
+        nextCompanions: personData.bautizosCompanions,
+        hostPerson: personData,
+        participants,
+        event: eventSnapshot,
+        loc,
+        getGlobalCap: () => Math.max(0, Number(eventSnapshot.eventTotalCap ?? 0)),
+        getGlobalCapUsed: () => computeEventCapUsedUnits(participants, eventSnapshot),
+        getLocCap: (l) => Number(eventSnapshot.locationCaps?.[l] || 0),
+        getLocCapUsed: (l) => computeEventCapUsedUnitsBySede(participants, eventSnapshot)[l] ?? 0,
+      });
+    } else {
+      delete personData.bautizosCompanions;
+    }
     const bType = normalizeBautizosAttendanceType(personData.bautizosAttendanceType);
     personData.willBeBaptized = bautizosWillBeBaptizedFromAttendance(bType);
     personData.baptismSegment = '';
@@ -3253,11 +3303,13 @@ export function buildPublicProfileImportPayload(src, { eventType, defaultLocatio
   if (eventType === 'Bautizos') {
     base.wantsBautizosFood = SI;
     base.bautizosAttendanceType = normalizeBautizosAttendanceType(src.bautizosAttendanceType);
-    base.bautizosCompanions = normalizeBautizosCompanionsForPersist(
-      { ...src, location: loc },
-      loc,
-      { canonicalizeVnpPersonId, generateVnpPersonId }
-    );
+    if (shouldPersistBautizosCompanionsOnSave(src)) {
+      base.bautizosCompanions = normalizeBautizosCompanionsForPersist(
+        { ...src, location: loc },
+        loc,
+        { canonicalizeVnpPersonId, generateVnpPersonId }
+      );
+    }
   }
   return base;
 }

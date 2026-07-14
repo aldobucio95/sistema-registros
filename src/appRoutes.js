@@ -11,6 +11,8 @@ export const TAB_TO_ROUTE_SEGMENT = {
   ServersPage: 'servidores',
   Becados: 'becados',
   BautizosCompanions: 'acompanantes',
+  BautizosAsistentes: 'asistentes',
+  BautizosCortesias: 'cortesias',
   Responsivas: 'responsivas',
   RegistroGlobal: 'registro-global',
   PastoresPage: 'pastores',

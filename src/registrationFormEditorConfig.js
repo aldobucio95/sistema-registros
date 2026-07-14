@@ -48,7 +48,7 @@ export const EDITOR_REGISTRATION_FIELD_META = [
   { key: 'disability', label: 'Discapacidades', group: 'salud', eventTypes: [T.campa, T.bautizos] },
   { key: 'bautizosAttendanceType', label: 'Tipo de asistencia (bautizado / asistente / servidor / empleado / cortesía)', group: 'bautizos', eventTypes: [T.bautizos] },
   { key: 'bautizosPastorAttendance', label: 'Tipo de asistencia: Pastor', group: 'bautizos', eventTypes: [T.bautizos] },
-  { key: 'bautizosCompanions', label: 'Acompañantes / familia', group: 'bautizos', eventTypes: [T.bautizos] },
+  { key: 'bautizosCompanions', label: 'Acompañantes / familia (legado)', group: 'bautizos', eventTypes: [T.bautizos], deprecated: true },
   { key: 'bautizosFood', label: 'Comida (evento Bautizos)', group: 'bautizos', eventTypes: [T.bautizos] },
   { key: 'bautizosTransport', label: 'Transporte (evento Bautizos)', group: 'bautizos', eventTypes: [T.bautizos] },
   { key: 'scholarship', label: 'Beca (solicitud)', group: 'asistencia', eventTypes: [T.campa] },

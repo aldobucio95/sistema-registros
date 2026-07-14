@@ -3,16 +3,16 @@
  */
 import {
   BAUTIZOS_ATTENDANCE,
-  bautizosCompanionParticipatesAsServer,
-  bautizosDashboardCompanionCountsForScope,
-  bautizosDashboardTitularCountsForScope,
+  bautizosParticipatesAsServer,
+  dedupeParticipantRowsById,
   expandBautizosGlobalRegistryRows,
-  expandBautizosWaitlistRegistryRows,
-  getBautizosCompanionsArray,
-  GLOBAL_REGISTRY_VIRTUAL_KIND,
-  isBautizosCompanionBaptized,
-  normalizeBautizosAttendanceType,
 } from './bautizosParty.js';
+import { flattenBautizosParticipantsForRead } from './bautizos/bautizosLegacyReadAdapter.js';
+import {
+  participantIsBautizado,
+  participantIsAcompanante,
+  resolveBautizosFlatAttendanceType,
+} from './bautizos/bautizosAttendance.js';
 import { isSiValue } from './publicRegistrationLogic.js';
 import {
   BLOOD_TYPE_STATS_OTHER,
@@ -64,7 +64,8 @@ export const ROSTER_EXTRA_FILTER_DEFAULTS = Object.freeze({
 export const BAUTIZOS_ATTENDANCE_FILTER_OPTIONS = Object.freeze([
   { id: 'all', label: 'Todos' },
   { id: BAUTIZOS_ATTENDANCE.bautizado, label: 'Bautizados' },
-  { id: 'companions', label: 'Acompañante' },
+  { id: BAUTIZOS_ATTENDANCE.acompanante, label: 'Acompañante' },
+  { id: 'companions', label: 'Acompañante (legado)' },
   { id: BAUTIZOS_ATTENDANCE.asistente, label: 'Asistente' },
   { id: BAUTIZOS_ATTENDANCE.servidor, label: 'Servidor' },
   { id: BAUTIZOS_ATTENDANCE.empleado, label: 'Empleado' },
@@ -163,37 +164,20 @@ export function getParticipantAgeYearsForFilter(p) {
   return Number.isFinite(age) && age >= 0 && age <= 120 ? age : NaN;
 }
 
-/** Coincide con filtro de tipo de asistencia Bautizos (incl. filas virtuales de Registro global). */
+/** Coincide con filtro de tipo de asistencia Bautizos (filas planas). */
 export function participantMatchesBautizosAttendanceFilter(personLike, filterId) {
   const id = String(filterId || 'all').trim();
   if (!id || id === 'all') return true;
-
-  const virtualKind = String(personLike?.__virtualKind || '').trim();
-
-  if (personLike?._isCompanionWaitlistVirtual === true) {
-    if (id === 'companions') return true;
-    if (id === BAUTIZOS_ATTENDANCE.servidor) return bautizosCompanionParticipatesAsServer(personLike);
-    if (id === BAUTIZOS_ATTENDANCE.bautizado) return isBautizosCompanionBaptized(personLike);
-    return false;
+  if (id === 'companions' || id === BAUTIZOS_ATTENDANCE.acompanante) {
+    return participantIsAcompanante(personLike);
   }
-
-  if (id === 'companions') {
-    return virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companion;
+  if (id === BAUTIZOS_ATTENDANCE.bautizado) {
+    return participantIsBautizado(personLike);
   }
-
-  if (personLike?.__globalRegistryVirtual && virtualKind) {
-    const hostLike = { location: personLike?.location };
-    if (virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companion) {
-      if (id === BAUTIZOS_ATTENDANCE.servidor) return bautizosCompanionParticipatesAsServer(personLike);
-      return false;
-    }
-    if (virtualKind === GLOBAL_REGISTRY_VIRTUAL_KIND.companionBaptized) {
-      return bautizosDashboardCompanionCountsForScope(personLike, id, hostLike);
-    }
-    return false;
+  if (id === BAUTIZOS_ATTENDANCE.servidor) {
+    return bautizosParticipatesAsServer(personLike);
   }
-
-  return bautizosDashboardTitularCountsForScope(personLike, id);
+  return resolveBautizosFlatAttendanceType(personLike) === id;
 }
 
 /**
@@ -284,28 +268,16 @@ function partitionRowsByRegistrationStatus(rows) {
 export function prepareBautizosRowsForRosterFilter(rows, f, { roster } = {}) {
   const rosterList = Array.isArray(roster) ? roster : rows;
   const regStatus = String(f?.filterRegistrationStatus || 'all').trim();
+  let base = rows || [];
   if (regStatus === 'waitlist') {
-    return expandBautizosWaitlistRegistryRows(rows, rosterList);
+    base = (rows || []).filter((p) => (p?.status || 'active') === 'waitlist');
+  } else if (regStatus === 'active') {
+    base = (rows || []).filter((p) => (p?.status || 'active') === 'active');
+  } else if (regStatus === 'cancelled') {
+    base = (rows || []).filter((p) => (p?.status || 'active') === 'cancelled');
   }
-  if (regStatus === 'active') {
-    return expandBautizosGlobalRegistryRows(rows, rosterList);
-  }
-  if (regStatus === 'cancelled') {
-    return expandBautizosGlobalRegistryRows(rows, rosterList);
-  }
-  const { active, waitlist, rest } = partitionRowsByRegistrationStatus(rows);
-  const cancelled = [];
-  const other = [];
-  for (const p of rest) {
-    if ((p?.status || 'active') === 'cancelled') cancelled.push(p);
-    else other.push(p);
-  }
-  return [
-    ...expandBautizosGlobalRegistryRows(active, rosterList),
-    ...expandBautizosWaitlistRegistryRows(waitlist, rosterList),
-    ...expandBautizosGlobalRegistryRows(cancelled, rosterList),
-    ...other,
-  ];
+  const expanded = expandBautizosGlobalRegistryRows(base, rosterList);
+  return dedupeParticipantRowsById(flattenBautizosParticipantsForRead(expanded));
 }
 
 /** @deprecated Usar prepareBautizosRowsForRosterFilter */

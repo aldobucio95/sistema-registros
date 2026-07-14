@@ -11,7 +11,7 @@ import GlobalSystemAlertsHost from './GlobalSystemAlertsHost.jsx';
 import { installGlobalErrorHandlers, logError } from './errorLogger.js';
 import { migrateLegacyLocalStorageCache } from './firestoreVersionCache.js';
 
-const App = React.lazy(() => import('./App.jsx'));
+const App = React.lazy(() => import('./app/AppRoot.jsx'));
 
 function AppChunkFallback() {
   return (
@@ -25,10 +25,17 @@ function AppChunkFallback() {
 /** Vite `base` (p. ej. subcarpeta en hosting); `undefined` en raíz `/`. */
 const ROUTER_BASENAME = (import.meta.env.BASE_URL || '/').replace(/\/$/, '') || undefined;
 
-registerSW({ immediate: true });
+const REACT_ROOT_CACHE_KEY = '__vnpmReactRoot__';
 
-installGlobalErrorHandlers();
-void migrateLegacyLocalStorageCache();
+function bootstrapOnce() {
+  if (globalThis.__vnpmAppBootstrapped__) return;
+  globalThis.__vnpmAppBootstrapped__ = true;
+  registerSW({ immediate: true });
+  installGlobalErrorHandlers();
+  void migrateLegacyLocalStorageCache();
+}
+
+bootstrapOnce();
 
 function PublicRegistrationRoute() {
   const { linkId } = useParams();
@@ -96,19 +103,34 @@ class RootErrorBoundary extends React.Component {
   }
 }
 
-createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <RootErrorBoundary>
-      <BrowserRouter basename={ROUTER_BASENAME}>
-        <GlobalSystemAlertsHost />
-        <Routes>
-          <Route path="/registro-publico/:linkId" element={<PublicRegistrationRoute />} />
-          <Route path="/aviso-privacidad" element={<PrivacyNoticePage />} />
-          <Route path="/responsiva-firma/:urlLabel/:secret" element={<ResponsivaSignRouteLabeled />} />
-          <Route path="/responsiva-firma/:token" element={<ResponsivaSignRouteLegacy />} />
-          <Route path="*" element={<LegacyRegOrApp />} />
-        </Routes>
-      </BrowserRouter>
-    </RootErrorBoundary>
-  </StrictMode>
-);
+function mountApp() {
+  const container = document.getElementById('root');
+  if (!container) {
+    throw new Error('No se encontró el contenedor #root');
+  }
+
+  let root = globalThis[REACT_ROOT_CACHE_KEY];
+  if (!root) {
+    root = createRoot(container);
+    globalThis[REACT_ROOT_CACHE_KEY] = root;
+  }
+
+  root.render(
+    <StrictMode>
+      <RootErrorBoundary>
+        <BrowserRouter basename={ROUTER_BASENAME}>
+          <GlobalSystemAlertsHost />
+          <Routes>
+            <Route path="/registro-publico/:linkId" element={<PublicRegistrationRoute />} />
+            <Route path="/aviso-privacidad" element={<PrivacyNoticePage />} />
+            <Route path="/responsiva-firma/:urlLabel/:secret" element={<ResponsivaSignRouteLabeled />} />
+            <Route path="/responsiva-firma/:token" element={<ResponsivaSignRouteLegacy />} />
+            <Route path="*" element={<LegacyRegOrApp />} />
+          </Routes>
+        </BrowserRouter>
+      </RootErrorBoundary>
+    </StrictMode>
+  );
+}
+
+mountApp();

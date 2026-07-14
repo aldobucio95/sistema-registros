@@ -1,4 +1,13 @@
 import { normalizeBirthDateToIso } from './birthDateIsoUtils.js';
+import {
+  buildBautizadosListBaseRows as buildBautizadosListBaseRowsFlat,
+  flattenBautizosParticipantsForRead,
+  expandBautizosGlobalRegistryRows as expandBautizosGlobalRegistryRowsFlat,
+  expandBautizosGlobalRegistryActivosDisplayRows as expandBautizosGlobalRegistryActivosDisplayRowsFlat,
+} from './bautizos/bautizosLegacyReadAdapter.js';
+import { countBautizosDashboardPeople as countFlatBautizosDashboardPeople } from './bautizos/bautizosCounts.js';
+
+export { flattenBautizosParticipantsForRead };
 
 const SI = 'Si';
 const SI_LABEL = 'Sí';
@@ -18,6 +27,7 @@ function normalizeOptionalIsoDate(raw) {
 
 export const BAUTIZOS_ATTENDANCE = {
   bautizado: 'bautizado',
+  acompanante: 'acompanante',
   /** Asiste al evento y paga lista como bautizado, pero no se bautiza en la ceremonia. */
   asistente: 'asistente',
   servidor: 'servidor',
@@ -175,29 +185,9 @@ export function bautizosDashboardFilterCanonicalCompanions(companionInfos, scope
   );
 }
 
-/** Total de personas (titulares + acompañantes canónicos) para tarjetas del dashboard. */
-export function countBautizosDashboardPeople(rosterBase, canonicalCompanions, scope, opts = {}) {
-  const sc = normalizeBautizosDashboardScope(scope);
-  const roster = rosterBase || [];
-  const canons = canonicalCompanions || [];
-  if (sc === 'all') return roster.length + canons.length;
-  if (sc === 'baptized') {
-    const titulars = roster.filter(
-      (p) => normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado
-    ).length;
-    const baptizedCompanions =
-      typeof opts.companionBaptizedCount === 'number'
-        ? opts.companionBaptizedCount
-        : bautizosDashboardFilterCanonicalCompanions(canons, sc).length;
-    return titulars + baptizedCompanions;
-  }
-  if (sc === 'companions') {
-    return bautizosDashboardFilterCanonicalCompanions(canons, sc).length;
-  }
-  return (
-    bautizosDashboardFilterTitularRows(roster, sc).length +
-    bautizosDashboardFilterCanonicalCompanions(canons, sc).length
-  );
+/** Total de personas (filas planas) para tarjetas del dashboard. */
+export function countBautizosDashboardPeople(rosterBase, _canonicalCompanions, scope) {
+  return countFlatBautizosDashboardPeople(flattenBautizosParticipantsForRead(rosterBase || []), scope);
 }
 
 /**
@@ -330,6 +320,7 @@ export function normalizeBautizosAttendanceType(raw) {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
+  if (s === 'acompanante' || s === 'acompanantes') return BAUTIZOS_ATTENDANCE.acompanante;
   if (s === 'asistente') return BAUTIZOS_ATTENDANCE.asistente;
   if (s === 'servidor') return BAUTIZOS_ATTENDANCE.servidor;
   if (s === 'empleado') return BAUTIZOS_ATTENDANCE.empleado;
@@ -344,6 +335,7 @@ export function bautizosAttendancePaysEventListPrice(personLike) {
   const t = normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType);
   return (
     t === BAUTIZOS_ATTENDANCE.bautizado ||
+    t === BAUTIZOS_ATTENDANCE.acompanante ||
     t === BAUTIZOS_ATTENDANCE.asistente ||
     t === BAUTIZOS_ATTENDANCE.servidor
   );
@@ -577,41 +569,38 @@ function buildVirtualCompanionGlobalRow(planEntry, canonKey) {
   };
 }
 
+function seedSeenVirtualRowIds(rows, seenVirtual) {
+  for (const p of rows || []) {
+    const id = String(p?.id || '').trim();
+    if (!id) continue;
+    if (
+      p?.__globalRegistryVirtual ||
+      id.startsWith('virt-bautizado:') ||
+      id.startsWith('virt-acompanante:')
+    ) {
+      seenVirtual.add(id);
+    }
+  }
+}
+
+/** Una fila por `id` (evita duplicar `virt-bautizado:*` ya presentes en la entrada). */
+export function dedupeParticipantRowsById(rows) {
+  const out = [];
+  const seen = new Set();
+  for (const p of rows || []) {
+    const id = String(p?.id || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(p);
+  }
+  return out;
+}
+
 /**
  * Registro Global Bautizos: titulares + cada acompañante canónico y cada acompañante bautizado como fila propia.
  */
 export function expandBautizosGlobalRegistryRows(titularRows, rosterForPlan) {
-  const titulars = Array.isArray(titularRows) ? titularRows : [];
-  const roster = Array.isArray(rosterForPlan) ? rosterForPlan : titulars;
-  const titularIdSet = new Set(titulars.map((p) => String(p?.id || '').trim()).filter(Boolean));
-  const meta = buildActiveRegistrantMetaForCompanionDedupe(roster);
-  const out = [...titulars];
-  const seenVirtual = new Set();
-
-  for (const host of titulars) {
-    const comps = getBautizosCompanionsArray(host);
-    for (let i = 0; i < comps.length; i++) {
-      const c = comps[i] || {};
-      if (!String(c?.name || '').trim() || !isBautizosCompanionBaptized(c)) continue;
-      if (c?.companionWaitlistPending === true) continue;
-      const row = buildVirtualBaptizedCompanionGlobalRow(host, c, i, meta);
-      if (!row || seenVirtual.has(row.id)) continue;
-      seenVirtual.add(row.id);
-      out.push(row);
-    }
-  }
-
-  const plan = buildBautizosCanonicalCompanionPlan(roster, meta, { includeBaptizedCompanions: false });
-  for (const [canonKey, entry] of plan) {
-    const hostId = String(entry?.registrantId || entry?.sourceRegistrant?.id || '').trim();
-    if (!titularIdSet.has(hostId)) continue;
-    const row = buildVirtualCompanionGlobalRow(entry, canonKey);
-    if (!row || seenVirtual.has(row.id)) continue;
-    seenVirtual.add(row.id);
-    out.push(row);
-  }
-
-  return out;
+  return expandBautizosGlobalRegistryRowsFlat(titularRows, rosterForPlan);
 }
 
 /**
@@ -619,26 +608,17 @@ export function expandBautizosGlobalRegistryRows(titularRows, rosterForPlan) {
  * Sin filas del plan canónico (evita inflar conteos respecto al dashboard y registro por sede).
  */
 export function expandBautizosGlobalRegistryActivosDisplayRows(titularRows, rosterForPlan) {
-  const titulars = Array.isArray(titularRows) ? titularRows : [];
-  const roster = Array.isArray(rosterForPlan) ? rosterForPlan : titulars;
-  const meta = buildActiveRegistrantMetaForCompanionDedupe(roster);
-  const out = [...titulars];
-  const seenVirtual = new Set();
+  return expandBautizosGlobalRegistryActivosDisplayRowsFlat(titularRows, rosterForPlan);
+}
 
-  for (const host of titulars) {
-    const comps = getBautizosCompanionsArray(host);
-    for (let i = 0; i < comps.length; i++) {
-      const c = comps[i] || {};
-      if (!String(c?.name || '').trim() || !isBautizosCompanionBaptized(c)) continue;
-      if (c?.companionWaitlistPending === true) continue;
-      const row = buildVirtualBaptizedCompanionGlobalRow(host, c, i, meta);
-      if (!row || seenVirtual.has(row.id)) continue;
-      seenVirtual.add(row.id);
-      out.push(row);
-    }
-  }
-
-  return out;
+/**
+ * Filas base de la pestaña «Bautizados»: titulares con chip de bautizo + acompañantes bautizados virtuales.
+ * Deduplica por `id` y omite acompañantes que ya tienen registro propio como bautizado.
+ *
+ * @param {object[]} rosterInScope — participantes ya filtrados (evento activo, sede, etc.)
+ */
+export function buildBautizadosListBaseRows(rosterInScope, opts = {}) {
+  return buildBautizadosListBaseRowsFlat(rosterInScope, opts);
 }
 
 export {
@@ -778,21 +758,18 @@ export function collectBautizosParticipatingServerRows(roster) {
  * (incluye empleado sin rol servidor activo) + acompañantes marcados como servidor.
  */
 export function collectBautizosServidoresYEmpleadosRows(roster) {
-  const list = Array.isArray(roster) ? roster : [];
+  const flat = flattenBautizosParticipantsForRead(Array.isArray(roster) ? roster : []);
   const out = [];
-  const seenDedupe = new Set();
-  for (const p of list) {
-    const includeTitular =
+  const seen = new Set();
+  for (const p of flat) {
+    const include =
       participantIsBautizosServidorOrEmpleadoAttendance(p) || bautizosParticipatesAsServer(p);
-    if (!includeTitular) continue;
-    const k = bautizosServerPersonDedupeKey(p);
-    if (k && seenDedupe.has(k)) continue;
-    if (k) seenDedupe.add(k);
+    if (!include) continue;
+    const id = String(p?.id || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
     out.push(p);
   }
-  const meta = buildActiveRegistrantMetaForCompanionDedupe(list);
-  const plan = buildBautizosCanonicalCompanionPlan(list, meta, { includeBaptizedCompanions: true });
-  appendBautizosCompanionServerVirtualRows(list, plan, out, seenDedupe);
   return out;
 }
 

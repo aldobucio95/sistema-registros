@@ -1,10 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import {
   Bug, ArrowLeft, ArrowRight, LayoutDashboard, UserCog, Archive, History, LogOut, UserCircle,
   Search, Trash2, CalendarRange, Edit3, Plus, GripVertical, ShieldAlert, Eye, EyeOff,
   Undo, Database, Moon, Sun, WifiOff, ChevronDown, Lock, SlidersHorizontal,
 } from 'lucide-react';
-import { useAppShellBindings } from '../shellRuntime.js';
+import { useEventHub } from '../app/providers/EventHubProvider.jsx';
 import { EVENT_TYPES, SI_LABEL } from '../appConstants.js';
 import { formatEventDateRangeLabel } from '../eventDateHelpers.js';
 import { canViewSystemLogs, mergePanelSectionLayers } from '../rbac/permissions.js';
@@ -21,6 +21,10 @@ import PanelNoticeToast from '../components/PanelNoticeToast.jsx';
 import MobileCompactToolbar, { MobileCompactToolbarPanel } from '../components/mobile/MobileCompactToolbar.jsx';
 import MobileMenuSection from '../components/mobile/MobileMenuSection.jsx';
 import MobileSearchField from '../components/mobile/MobileSearchField.jsx';
+
+const LogsPageContentLazy = lazy(() => import('./logs/LogsPageContent.jsx'));
+
+const UsersPageContentLazy = lazy(() => import('./users/UsersPageContent.jsx'));
 
 /** Valores del documento Firestore del participante archivado (incl. objetos anidados). */
 function formatArchiveDetailValue(value) {
@@ -217,7 +221,7 @@ function ArchivedParticipantDetailPanel({
 export default function EventHubScreen() {
   const {
     debugToast, navHistory, forwardNavStack, goBack, goForward, systemView, currentUser, superSessionCount, isSuperUser,
-    globalConfig, toggleDebugMode, goTo, hasAdminRights, handleLogout, renderUsers, renderLogs,
+    globalConfig, toggleDebugMode, goTo, hasAdminRights, handleLogout, logoutBusy,
     archivedParticipantsForView, archivedParticipantsArchiveViewList, archiveViewSearch,
     setArchiveViewSearch, archiveViewSort, setArchiveViewSort, events,
     openPermanentDeleteArchivedParticipantConfirm, visibleEvents, activeRosterUnitsByEventId, getPricingFromSnapshot,
@@ -226,7 +230,7 @@ export default function EventHubScreen() {
     deleteEventModal, confirmDeleteEvent, renameModal, handleRenameEvent, newEventData,
     setNewEventData, isAddEventModalOpen, setIsAddEventModalOpen, handleCreateEvent,
     btnPrimary, btnSecondary, inputClasses, labelClasses, restoreModal, setRestoreModal, confirmRestore,
-    renderRegistryConfirmModal, editorRegFieldsModalEl, panelNavModalEl, privacyNoticeModalEl, editingUser,
+    registryConfirmModalEl, editorRegFieldsModalEl, panelNavModalEl, privacyNoticeModalEl, editingUser,
     setEditingUser, handleUpdateUser, users, sortedEvents, allKnownLocationNames,
     editingUserPlainPwdVisible, setEditingUserPlainPwdVisible,     showToast, toast,
     PANEL_NAV_SIDEBAR_ITEMS, DEFAULT_PANEL_NAV, EDITOR_LECTOR_PANEL_DEFAULT,
@@ -237,7 +241,7 @@ export default function EventHubScreen() {
     onReloadAfterBulkRestore,
     handleBackfillEventActiveRosterTotals,
     backfillActiveRosterBusy,
-  } = useAppShellBindings();
+  } = useEventHub();
 
   const [networkOnline, setNetworkOnline] = useState(
     typeof navigator !== 'undefined' ? navigator.onLine : true
@@ -351,7 +355,13 @@ export default function EventHubScreen() {
                   >
                     {darkMode ? <Sun size={16} className="text-amber-400" /> : <Moon size={16} className="text-indigo-400" />}
                   </button>
-                  <button type="button" onClick={handleLogout} className={hubPillRose} title="Cerrar sesión">
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    disabled={logoutBusy}
+                    className={hubPillRose}
+                    title="Cerrar sesión"
+                  >
                     <LogOut size={14} />
                     Salir
                   </button>
@@ -549,6 +559,7 @@ export default function EventHubScreen() {
                 )}
                 <button
                   type="button"
+                  disabled={logoutBusy}
                   onClick={() => {
                     setHubMobileOptionsOpen(false);
                     handleLogout();
@@ -609,9 +620,9 @@ export default function EventHubScreen() {
           )}
 
           {systemView === 'users' ? (
-            <div className="-mx-4 md:-mx-6 -mt-4 md:-mt-6">{renderUsers()}</div>
+            <div className="-mx-4 md:-mx-6 -mt-4 md:-mt-6"><Suspense fallback={null}><UsersPageContentLazy /></Suspense></div>
           ) : systemView === 'logs' ? (
-            <div className="-mx-4 md:-mx-6 -mt-4 md:-mt-6">{renderLogs()}</div>
+            <div className="-mx-4 md:-mx-6 -mt-4 md:-mt-6"><Suspense fallback={null}><LogsPageContentLazy /></Suspense></div>
           ) : systemView === 'archive' ? (
             <div className="space-y-3 max-w-4xl">
               <p className="text-xs text-slate-500">
@@ -1623,7 +1634,7 @@ export default function EventHubScreen() {
             </form>
           </div>
         )}
-        {renderRegistryConfirmModal()}
+        {registryConfirmModalEl}
         {editorRegFieldsModalEl}
         {panelNavModalEl}
         {privacyNoticeModalEl}

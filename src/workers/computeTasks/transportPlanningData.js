@@ -1,5 +1,4 @@
 import {
-  buildBautizosCarDisplayGroups,
   buildTransportPlanningLines,
   sortTransportLinesByRosterOrder,
 } from '../../transportPlanningCore.js';
@@ -9,8 +8,7 @@ export function computeTransportPlanningData({ roster, eventType, locations, eve
   const built = buildTransportPlanningLines(roster, eventType, locations, eventLike);
   const busLines = sortTransportLinesByRosterOrder(built.busLines, roster);
   const carLines = sortTransportLinesByRosterOrder(built.carLines, roster);
-  const isBautizos = String(eventType || '').trim() === 'Bautizos';
-  const bautizosCarDisplayGroups = isBautizos ? buildBautizosCarDisplayGroups(roster, carLines) : [];
+  const bautizosCarDisplayGroups = [];
   return { busLines, carLines, bautizosCarDisplayGroups };
 }
 

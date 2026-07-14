@@ -26,6 +26,13 @@ credenciales.json
 # Respaldos de texto sueltos en src (no versionar)
 src/app_respaldo.txt
 src/_extracted_form.txt
+src/App.jsx.working
+src/App.jsx.commit-backup
+src/App.jsx.pre-transport-commit
+
+# Caches locales de build/hosting (no versionar diffs de caché)
+.firebase/hosting.*.cache
+.vite-build-state.json
 
 # Editor directories and files
 .vscode/*

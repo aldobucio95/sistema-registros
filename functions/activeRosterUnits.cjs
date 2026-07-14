@@ -76,13 +76,20 @@ async function updateEventActiveRosterTotalFromWrite(db, eventId, before, after)
   const eventData = { id: eid, ...evSnap.data() };
   const evType = String(eventData.eventType || '');
 
-  if (evType === 'Bautizos') {
-    scheduleFullRecomputeEventActiveRosterTotal(db, eid);
-    return;
-  }
-
   const beforeRow = before && typeof before === 'object' ? { ...before } : null;
   const afterRow = after && typeof after === 'object' ? { ...after } : null;
+
+  if (evType === 'Bautizos') {
+    const beforeContrib = beforeRow ? computeRowTodosUnitContribution(beforeRow, eventData) : 0;
+    const afterContrib = afterRow ? computeRowTodosUnitContribution(afterRow, eventData) : 0;
+    const delta = afterContrib - beforeContrib;
+    if (delta === 0) return;
+    await evRef.set(
+      { activeRosterUnitsTotal: admin.firestore.FieldValue.increment(delta) },
+      { merge: true }
+    );
+    return;
+  }
 
   const beforeContrib = beforeRow ? computeRowTodosUnitContribution(beforeRow, eventData) : 0;
   const afterContrib = afterRow ? computeRowTodosUnitContribution(afterRow, eventData) : 0;

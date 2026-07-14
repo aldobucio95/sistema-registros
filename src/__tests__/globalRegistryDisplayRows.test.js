@@ -81,4 +81,30 @@ describe('global registry display rows', () => {
     });
     expect(filteredAll.some((r) => String(r.id).startsWith('cw:'))).toBe(true);
   });
+
+  it('does not duplicate virt-bautizado rows already present in titular input', () => {
+    const host = {
+      id: 'id_VNPM-GASA951008M',
+      eventId: 'ev1',
+      location: 'Sede A',
+      status: 'active',
+      name: 'Titular',
+      bautizosAttendanceType: 'Asistente',
+      bautizosCompanions: [
+        { id: 'bc-1777228939428-1kphknf', name: 'Acomp Bautizado', willBeBaptized: 'Si' },
+      ],
+    };
+    const virtId = 'virt-bautizado:id_VNPM-GASA951008M:bc-1777228939428-1kphknf';
+    const preExpanded = {
+      id: virtId,
+      eventId: 'ev1',
+      name: 'Acomp Bautizado',
+      location: 'Sede A',
+      status: 'active',
+      __globalRegistryVirtual: true,
+      __virtualKind: 'companionBaptized',
+    };
+    const expanded = expandBautizosGlobalRegistryRows([host, preExpanded], [host]);
+    expect(expanded.filter((r) => r.id === virtId)).toHaveLength(1);
+  });
 });

@@ -7,6 +7,7 @@ import {
   uiKbd, uiControls, uiRosterMobile,
 } from '../../../ui/uiFormatClasses.js';
 import ListMobileCard from '../../../components/ListMobileCard.jsx';
+import ParticipantAssistanceBadges from '../../../components/roster/ParticipantAssistanceBadges.jsx';
 
 /**
  * Vista Becados (solo UI + tabla). La lógica de filtros y helpers viene por props explícitas desde App.
@@ -23,7 +24,7 @@ export default function BecadosPage({
   resolveRegisteredCost,
   currentPricing,
   formatMoney,
-  renderParticipantAssistanceBadges,
+  isBautizos,
   renderGlobalRegistryListToolbar,
   scholarshipRealCostDraft,
   setScholarshipRealCostDraft,
@@ -114,7 +115,9 @@ export default function BecadosPage({
                       </span>
                       <p className="font-bold text-slate-800 dark:text-slate-100">{p.name || '?'}</p>
                     </div>
-                    <div className="flex flex-wrap gap-1 mt-1.5">{renderParticipantAssistanceBadges(p)}</div>
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      <ParticipantAssistanceBadges person={p} isBautizos={isBautizos} currentEvent={currentEvent} />
+                    </div>
                   </td>
                   <td className={uiTable.td}>{rowSede(p)}</td>
                   <td className={uiTable.td}>

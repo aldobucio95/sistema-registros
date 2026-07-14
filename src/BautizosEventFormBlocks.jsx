@@ -40,6 +40,7 @@ const SI = 'Si';
 
 const attendanceLabels = {
   [BAUTIZOS_ATTENDANCE.bautizado]: 'Bautizado',
+  [BAUTIZOS_ATTENDANCE.acompanante]: 'Acompañante',
   [BAUTIZOS_ATTENDANCE.asistente]: 'Asistente',
   [BAUTIZOS_ATTENDANCE.servidor]: 'Servidor',
   [BAUTIZOS_ATTENDANCE.empleado]: 'Empleado',

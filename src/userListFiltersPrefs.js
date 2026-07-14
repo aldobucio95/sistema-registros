@@ -319,9 +319,10 @@ export function writeGlobalRegistryFiltersToPrefs(root, eventId, globalRegistryS
 /** Aplica snapshot de sede a los setters del panel de registro. */
 export function applyLocationRosterFilters(snapshot, setters) {
   const f = mergeLocationRosterFilters(snapshot);
-  if (typeof setters.setSearchTerm === 'function') {
-    setters.setSearchTerm(f.searchTerm);
+  if (typeof setters.setDebouncedSearchTerm === 'function') {
     setters.setDebouncedSearchTerm(f.searchTerm);
+  } else if (typeof setters.setSearchTerm === 'function') {
+    setters.setSearchTerm(f.searchTerm);
   }
   if (typeof setters.setSortBy === 'function') setters.setSortBy(f.sortBy);
   if (typeof setters.setFilterSwim === 'function') setters.setFilterSwim(f.filterSwim);

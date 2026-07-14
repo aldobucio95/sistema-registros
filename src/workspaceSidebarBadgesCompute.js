@@ -1,13 +1,6 @@
+import { summarizeBautizosFlatRoster } from './bautizos/bautizosCounts.js';
 import {
-  BAUTIZOS_ATTENDANCE,
-  buildActiveRegistrantMetaForCompanionDedupe,
-  buildBautizosCanonicalCompanionPlan,
-  countBautizosDashboardPeople,
-  countBautizosServersDeduped,
   countBautizosServidoresYEmpleadosPeople,
-  getBautizosCompanionsArray,
-  isBautizosCompanionBaptized,
-  normalizeBautizosAttendanceType,
   participantHasBaptismChip,
 } from './bautizosParty.js';
 import { computeEventCapUsedUnitsBySede } from './eventCapUnits.js';
@@ -104,18 +97,6 @@ export function computeWorkspaceSidebarBadges({ ev, visibleLocations, allPartici
   }
 
   if (et === 'Bautizos') {
-    for (const p of allParticipants || []) {
-      if (String(p?.eventId || '') !== String(evId)) continue;
-      if (!participantIsActiveInEvent(p) || !participantIsActiveInRoster(p)) continue;
-      const loc = String(p.location || '').trim();
-      if (!scopeSet.has(loc)) continue;
-      const comps = getBautizosCompanionsArray(p);
-      for (let i = 0; i < comps.length; i++) {
-        const c = comps[i] || {};
-        if (!String(c?.name || '').trim() || !isBautizosCompanionBaptized(c)) continue;
-        bautizados += 1;
-      }
-    }
     const rosterForPlan = (allParticipants || []).filter(
       (p) =>
         String(p?.eventId || '') === String(evId) &&
@@ -124,32 +105,15 @@ export function computeWorkspaceSidebarBadges({ ev, visibleLocations, allPartici
         !participantIsCancelled(p) &&
         scopeSet.has(String(p.location || '').trim())
     );
-    const meta = buildActiveRegistrantMetaForCompanionDedupe(rosterForPlan);
-    const plan = buildBautizosCanonicalCompanionPlan(rosterForPlan, meta, { includeBaptizedCompanions: false });
-    const planAll = buildBautizosCanonicalCompanionPlan(rosterForPlan, meta, { includeBaptizedCompanions: true });
-    acompanantes = plan.size;
-    servidoresOnly = countBautizosServersDeduped(rosterForPlan, planAll);
-    servidores = countBautizosServidoresYEmpleadosPeople(rosterForPlan);
-
-    for (const p of rosterForPlan) {
-      const att = normalizeBautizosAttendanceType(p.bautizosAttendanceType);
-      if (att === BAUTIZOS_ATTENDANCE.asistente) asistentes += 1;
-      if (att === BAUTIZOS_ATTENDANCE.empleado) empleados += 1;
-      if (att === BAUTIZOS_ATTENDANCE.cortesia) cortesias += 1;
-    }
-    const canonicalCompanions = [...planAll.values()];
-    let companionBaptizedCount = 0;
-    for (const p of rosterForPlan) {
-      const comps = getBautizosCompanionsArray(p);
-      for (let i = 0; i < comps.length; i++) {
-        const c = comps[i] || {};
-        if (!String(c?.name || '').trim() || !isBautizosCompanionBaptized(c)) continue;
-        companionBaptizedCount += 1;
-      }
-    }
-    totalDeduped = countBautizosDashboardPeople(rosterForPlan, canonicalCompanions, 'all', {
-      companionBaptizedCount,
-    });
+    const summary = summarizeBautizosFlatRoster(rosterForPlan);
+    bautizados = summary.bautizados;
+    acompanantes = summary.companions;
+    asistentes = summary.asistentes;
+    empleados = summary.empleados;
+    cortesias = summary.cortesias;
+    servidores = summary.servidoresYEmpleados;
+    servidoresOnly = summary.servidores;
+    totalDeduped = summary.total;
     activeTotalDeduped = totalDeduped;
     attendanceLines = [
       { label: 'Bautizados', count: bautizados },

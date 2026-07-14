@@ -44,11 +44,8 @@ import PaymentMethodSegmentToggle, { PAYMENT_TARJETA } from './components/Paymen
 import { registrationRequiresResponsivaStatus, responsivaStatusValidationLabel } from './responsivaSignLogic.js';
 import {
   BautizosAttendanceTypeField,
-  BautizosCompanionsField,
   BautizosServerParticipationFields,
 } from './BautizosEventFormBlocks.jsx';
-import { BautizosCarDataSection } from './BautizosCarDataSection.jsx';
-import { familyHasAnyCarTransport, collectCarColorSuggestions } from './bautizosCarMeta.js';
 import { BAUTIZOS_UNDER_3_POLICY_NOTE, isBautizosUnder3YearsAtEvent, normalizeArrivalCarCount } from './bautizosParty.js';
 import {
   BAUTIZOS_ATTENDANCE,
@@ -776,81 +773,6 @@ export default function PublicRegistrationFormSections({
             </div>
           </section>
           )}
-          {optionalVisibility.bautizosCompanions !== false && (
-            <BautizosCompanionsField
-              registrantAge={form.age}
-              eventLike={eventSnapshot}
-              companions={form.bautizosCompanions || []}
-              fieldSuggestions={locFieldSuggestions}
-              birthDateVariant="public"
-              onChange={(next) => setForm((prev) => ({ ...prev, bautizosCompanions: next }))}
-              locations={locations}
-              loc={loc}
-              optionalVisibility={{ ...optionalVisibility, hideCarCountInTransport: true }}
-              inputClasses={inputClasses}
-              labelClasses={labelClasses}
-              sectionClass={sectionShell}
-              sectionH={sectionH}
-              sectionTitle={`${pubSectionLabel('Acompañantes / familia')}`}
-              sectionRequiredMark
-              companionProfileVisibility={{
-                bloodType: optionalVisibility.bloodType !== false,
-                allergies: optionalVisibility.allergies !== false,
-                diseases: optionalVisibility.diseases !== false,
-                disability: optionalVisibility.disability !== false,
-              }}
-              getRequiredFieldClass={companionRequiredFieldClass || undefined}
-              formatCompanionPhone={formatCompanionPhone}
-              allergyCategoryOptions={allergyOptionsList}
-              companionGenders={GENDERS}
-              companionBloodTypes={BLOOD_TYPES}
-              formatSiNo={formatSiNo}
-              disabled={submitting}
-            />
-          )}
-          {familyHasAnyCarTransport(form, form.bautizosCompanions || []) ? (
-            <BautizosCarDataSection
-              hostPerson={form}
-              companions={form.bautizosCompanions || []}
-              plan={eventSnapshot?.transportPlanning}
-              eventId={eventSnapshot?.id}
-              hostSourceKey="p:draft-host"
-              draftMetaByVehicleKey={form.draftCarMetaByVehicleKey || {}}
-              onDraftMetaChange={(vehicleKey, patch) =>
-                setForm((prev) => ({
-                  ...prev,
-                  draftCarMetaByVehicleKey: {
-                    ...(prev.draftCarMetaByVehicleKey || {}),
-                    [vehicleKey]: { ...(prev.draftCarMetaByVehicleKey?.[vehicleKey] || {}), ...patch },
-                  },
-                }))
-              }
-              canEdit={!submitting}
-              sectionTitle={pubSectionLabel('Datos de carros')}
-              colorSuggestions={collectCarColorSuggestions(eventSnapshot?.transportPlanning)}
-              labelClasses={labelClasses}
-              onHostCarCountChange={(count) => setField('carrosLlegada', normalizeArrivalCarCount(count))}
-              onCompanionCarCountChange={(companionIndex, count) => {
-                setForm((prev) => {
-                  const comps = [...(prev.bautizosCompanions || [])];
-                  if (comps[companionIndex]) {
-                    comps[companionIndex] = {
-                      ...comps[companionIndex],
-                      carrosLlegada: normalizeArrivalCarCount(count),
-                    };
-                  }
-                  return { ...prev, bautizosCompanions: comps };
-                });
-              }}
-              onDraftMetaPrune={(keys) => {
-                setForm((prev) => {
-                  const draft = { ...(prev.draftCarMetaByVehicleKey || {}) };
-                  for (const k of keys) delete draft[k];
-                  return { ...prev, draftCarMetaByVehicleKey: draft };
-                });
-              }}
-            />
-          ) : null}
         </>
       )}
 

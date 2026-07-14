@@ -123,6 +123,20 @@ async function readLogStorageMaxEntriesLimit() {
 async function runLogStorageTrimJob() {
   const limitTarget = await readLogStorageMaxEntriesLimit();
   const result = await trimActivityLogsToLimit(db, limitTarget, LOGS_ORDER_FIELD);
+  if (result.deleted > 0) {
+    try {
+      const countSnap = await db.collection('app_logs').count().get();
+      await CONFIG_REF().set(
+        {
+          logsTotalCount: Number(countSnap.data().count || 0),
+          logsTotalCountUpdatedAt: Date.now(),
+        },
+        { merge: true }
+      );
+    } catch (e) {
+      logger.error('runLogStorageTrimJob logsTotalCount sync', e);
+    }
+  }
   return { limitTarget, ...result };
 }
 

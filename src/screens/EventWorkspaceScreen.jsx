@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense } from 'react';
 import QRCode from 'qrcode';
 import {
   Activity, ArrowLeft, ArrowRight, BarChart3, Bug, Bus, Calendar, CalendarRange, CheckCircle2, Church, CreditCard, DollarSign, Edit3,
@@ -23,8 +23,15 @@ import {
 } from '../eventDateHelpers.js';
 import { donationAddsToRecaudacionBalance } from '../donationHelpers.js';
 import { useWorkspaceShell } from './eventWorkspace/WorkspaceShellContext.jsx';
+import WorkspaceTabContent from '../features/workspace/WorkspaceTabContent.jsx';
+import {
+  preloadWorkspaceTab,
+  workspaceTabPreloadProps,
+  workspaceLocationTabPreloadProps,
+} from '../features/workspace/WorkspaceLazyPages.jsx';
 import BautizosCarDataPromptModal from '../components/transport/BautizosCarDataPromptModal.jsx';
 import AppVersionBadge from '../AppVersionBadge.jsx';
+import { EditRegistryModalFormFieldsLazy } from '../features/registryEdit/EditRegistryModalFormFieldsLazy.jsx';
 import { collectCarColorSuggestions } from '../bautizosCarMeta.js';
 import { isCardPaymentAllowedForLocation } from '../cardPaymentEligibility.js';
 import { isResponsivaEventSectionVisible } from '../responsivaSignLogic.js';
@@ -47,10 +54,6 @@ function sidebarNavIconClass(activeColor = '') {
 import BulkRestoreResyncBanner from '../components/BulkRestoreResyncBanner.jsx';
 import PanelNoticeToast from '../components/PanelNoticeToast.jsx';
 import ScreenLoadingFallback from './ScreenLoadingFallback.jsx';
-
-function preloadTransportPlanningChunk() {
-  void import('../screens/TransportPlanningPage.jsx');
-}
 
 function donationIsSuperEditable(don) {
   if (!don || don._syntheticArchivedCredit || don._syntheticCancelledRefund) return false;
@@ -251,11 +254,12 @@ export default function EventWorkspaceScreen() {
 
   useEffect(() => {
     if (!shell.isPanelNavSectionAllowed?.('transporte')) return undefined;
+    const preloadTransport = () => preloadWorkspaceTab('TransportPlanning');
     if (typeof requestIdleCallback === 'function') {
-      const id = requestIdleCallback(preloadTransportPlanningChunk, { timeout: 4000 });
+      const id = requestIdleCallback(preloadTransport, { timeout: 4000 });
       return () => cancelIdleCallback(id);
     }
-    const t = setTimeout(preloadTransportPlanningChunk, 1500);
+    const t = setTimeout(preloadTransport, 1500);
     return () => clearTimeout(t);
   }, [shell.isPanelNavSectionAllowed, shell.selectedEventId]);
 
@@ -314,7 +318,9 @@ export default function EventWorkspaceScreen() {
         </button>
       </div>
       <form onSubmit={shell.handleUpdateEntry} className={formClassName}>
-        {shell.renderEditRegistryModalFormFields({ onCancel: shell.resetEditRegistryModal })}
+        <Suspense fallback={<ScreenLoadingFallback title="Cargando formulario…" />}>
+          <EditRegistryModalFormFieldsLazy onCancel={shell.resetEditRegistryModal} />
+        </Suspense>
       </form>
     </>
   );
@@ -477,11 +483,12 @@ export default function EventWorkspaceScreen() {
           <nav className="px-2 pb-2 space-y-0.5 lg:space-y-0 shrink-0">
           <div className={`pt-1 pb-1.5 px-3 lg:pt-2 lg:pb-2 ${uiSidebar.sectionLabelNavDesktop}`}>Principal</div>
           {shell.isPanelNavSectionAllowed('dashboard') && (
-          <button onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, "Summary")} className={workspaceSidebarNavClassDesktop(shell.activeTab === 'Summary')}><div className={uiSidebar.navItemInnerNavDesktop}><BarChart3 size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'Summary' ? 'text-indigo-400' : '')} /><span className="font-bold">Dashboard</span></div>{shell.activeTab === 'Summary' && <div className={`${uiSidebar.activeDot} bg-indigo-400`} />}</button>
+          <button {...workspaceTabPreloadProps('Summary')} onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, "Summary")} className={workspaceSidebarNavClassDesktop(shell.activeTab === 'Summary')}><div className={uiSidebar.navItemInnerNavDesktop}><BarChart3 size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'Summary' ? 'text-indigo-400' : '')} /><span className="font-bold">Dashboard</span></div>{shell.activeTab === 'Summary' && <div className={`${uiSidebar.activeDot} bg-indigo-400`} />}</button>
           )}
           {(shell.isCampa || shell.isBautizos) && shell.isPanelNavSectionAllowed('bautizados') && (
             <button
               type="button"
+              {...workspaceTabPreloadProps('Bautizados')}
               onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'Bautizados')}
               className={workspaceSidebarNavClassDesktop(shell.activeTab === 'Bautizados')}
             >
@@ -503,6 +510,7 @@ export default function EventWorkspaceScreen() {
           {(shell.isCampa || shell.isBautizos) && shell.isPanelNavSectionAllowed('serversPage') && (
             <button
               type="button"
+              {...workspaceTabPreloadProps('ServersPage')}
               onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'ServersPage')}
               className={workspaceSidebarNavClassDesktop(shell.activeTab === 'ServersPage')}
             >
@@ -529,6 +537,7 @@ export default function EventWorkspaceScreen() {
           )}
           {shell.isPanelNavSectionAllowed('becados') && !shell.isBautizos && (
             <button
+              {...workspaceTabPreloadProps('Becados')}
               onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'Becados')}
               className={workspaceSidebarNavClassDesktop(shell.activeTab === 'Becados')}
             >
@@ -542,6 +551,7 @@ export default function EventWorkspaceScreen() {
           {shell.isPanelNavSectionAllowed('becados') && shell.isBautizos && (
             <button
               type="button"
+              {...workspaceTabPreloadProps('BautizosCompanions')}
               onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'BautizosCompanions')}
               className={workspaceSidebarNavClassDesktop(shell.activeTab === 'BautizosCompanions')}
             >
@@ -560,8 +570,37 @@ export default function EventWorkspaceScreen() {
               </div>
             </button>
           )}
+          {shell.isBautizos && (
+            <button
+              type="button"
+              {...workspaceTabPreloadProps('BautizosAsistentes')}
+              onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'BautizosAsistentes')}
+              className={workspaceSidebarNavClassDesktop(shell.activeTab === 'BautizosAsistentes')}
+            >
+              <div className={uiSidebar.navItemInnerNavDesktop}>
+                <Users size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'BautizosAsistentes' ? 'text-indigo-400' : '')} />
+                <span className="font-bold truncate">Asistentes</span>
+              </div>
+              {shell.activeTab === 'BautizosAsistentes' && <div className={`${uiSidebar.activeDot} bg-indigo-400`} />}
+            </button>
+          )}
+          {shell.isBautizos && (
+            <button
+              type="button"
+              {...workspaceTabPreloadProps('BautizosCortesias')}
+              onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'BautizosCortesias')}
+              className={workspaceSidebarNavClassDesktop(shell.activeTab === 'BautizosCortesias')}
+            >
+              <div className={uiSidebar.navItemInnerNavDesktop}>
+                <Users size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'BautizosCortesias' ? 'text-rose-400' : '')} />
+                <span className="font-bold truncate">Cortesías</span>
+              </div>
+              {shell.activeTab === 'BautizosCortesias' && <div className={`${uiSidebar.activeDot} bg-rose-400`} />}
+            </button>
+          )}
           {shell.hasAdminRights && shell.isPanelNavSectionAllowed('responsivas') && isResponsivaEventSectionVisible(shell.currentEvent) && (
             <button
+              {...workspaceTabPreloadProps('Responsivas')}
               onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'Responsivas')}
               className={workspaceSidebarNavClassDesktop(shell.activeTab === 'Responsivas')}
             >
@@ -575,6 +614,7 @@ export default function EventWorkspaceScreen() {
           {shell.hasAdminRights && (
             <button
               type="button"
+              {...workspaceTabPreloadProps('PastoresPage')}
               onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'PastoresPage')}
               className={workspaceSidebarNavClassDesktop(shell.activeTab === 'PastoresPage')}
             >
@@ -598,8 +638,7 @@ export default function EventWorkspaceScreen() {
           {shell.isPanelNavSectionAllowed('transporte') && (
             <button
               type="button"
-              onMouseEnter={preloadTransportPlanningChunk}
-              onFocus={preloadTransportPlanningChunk}
+              {...workspaceTabPreloadProps('TransportPlanning')}
               onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'TransportPlanning')}
               className={workspaceSidebarNavClassDesktop(shell.activeTab === 'TransportPlanning')}
             >
@@ -611,10 +650,10 @@ export default function EventWorkspaceScreen() {
             </button>
           )}
           {shell.isPanelNavSectionAllowed('cashCut') && (
-            <button onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, "CashCut")} className={workspaceSidebarNavClassDesktop(shell.activeTab === 'CashCut')}><div className={uiSidebar.navItemInnerNavDesktop}><Scissors size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'CashCut' ? 'text-green-400' : '')} /><span className="font-bold">Corte de Caja</span></div>{shell.activeTab === 'CashCut' && <div className={`${uiSidebar.activeDot} bg-green-400`} />}</button>
+            <button {...workspaceTabPreloadProps('CashCut')} onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, "CashCut")} className={workspaceSidebarNavClassDesktop(shell.activeTab === 'CashCut')}><div className={uiSidebar.navItemInnerNavDesktop}><Scissors size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'CashCut' ? 'text-green-400' : '')} /><span className="font-bold">Corte de Caja</span></div>{shell.activeTab === 'CashCut' && <div className={`${uiSidebar.activeDot} bg-green-400`} />}</button>
           )}
           {shell.canAccessExpenses && shell.isPanelNavSectionAllowed('expenseList') && (
-            <button onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, "ExpenseList")} className={workspaceSidebarNavClassDesktop(shell.activeTab === 'ExpenseList')}><div className={uiSidebar.navItemInnerNavDesktop}><Receipt size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'ExpenseList' ? 'text-emerald-400' : '')} /><span className="font-bold">Lista de Gastos</span></div>{shell.activeTab === 'ExpenseList' && <div className={`${uiSidebar.activeDot} bg-emerald-400`} />}</button>
+            <button {...workspaceTabPreloadProps('ExpenseList')} onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, "ExpenseList")} className={workspaceSidebarNavClassDesktop(shell.activeTab === 'ExpenseList')}><div className={uiSidebar.navItemInnerNavDesktop}><Receipt size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'ExpenseList' ? 'text-emerald-400' : '')} /><span className="font-bold">Lista de Gastos</span></div>{shell.activeTab === 'ExpenseList' && <div className={`${uiSidebar.activeDot} bg-emerald-400`} />}</button>
           )}
           
           {shell.isPanelNavSectionAllowed('locations') && (
@@ -625,7 +664,7 @@ export default function EventWorkspaceScreen() {
           </div>
           {shell.visibleLocations.map(loc => (
             <div key={loc} className="flex flex-col mb-1">
-              <button onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, loc)} className={workspaceSidebarSedeClassDesktop(shell.activeTab === loc)}>
+              <button {...workspaceLocationTabPreloadProps()} onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, loc)} className={workspaceSidebarSedeClassDesktop(shell.activeTab === loc)}>
                 <div className={uiSidebar.navItemInnerNavDesktop}>
                   <MapPin size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === loc ? 'text-white' : 'text-slate-700 group-hover:text-slate-500')} />
                   <span className="font-bold truncate">{loc}</span>
@@ -656,6 +695,7 @@ export default function EventWorkspaceScreen() {
             <span className={uiSidebar.sectionLabelNavDesktop}>Consolidado</span>
           </div>
           <button
+            {...workspaceTabPreloadProps('RegistroGlobal')}
             onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'RegistroGlobal')}
             className={workspaceSidebarNavClassDesktop(shell.activeTab === 'RegistroGlobal')}
           >
@@ -844,7 +884,8 @@ export default function EventWorkspaceScreen() {
               <button
                 type="button"
                 onClick={shell.handleLogout}
-                className="inline-flex items-center justify-center gap-1.5 min-h-[2.25rem] px-2.5 sm:px-3 rounded-full text-xs font-bold text-rose-800 bg-rose-100 hover:bg-rose-200 border border-rose-300 dark:border-rose-700 dark:bg-rose-600 dark:text-white dark:hover:bg-rose-700 transition-colors shadow-sm"
+                disabled={shell.logoutBusy}
+                className="inline-flex items-center justify-center gap-1.5 min-h-[2.25rem] px-2.5 sm:px-3 rounded-full text-xs font-bold text-rose-800 bg-rose-100 hover:bg-rose-200 border border-rose-300 dark:border-rose-700 dark:bg-rose-600 dark:text-white dark:hover:bg-rose-700 transition-colors shadow-sm disabled:opacity-50 disabled:pointer-events-none"
                 title="Cerrar Sesión"
               >
                 <LogOut size={14} className="shrink-0" />
@@ -899,34 +940,7 @@ export default function EventWorkspaceScreen() {
           {showNavContentPending ? (
             <ScreenLoadingFallback title="Cargando vista…" />
           ) : (
-            <>
-          {contentTab === "Summary" && shell.isPanelNavSectionAllowed('dashboard') && shell.renderSummary()}
-          {contentTab === 'Bautizados' &&
-            (shell.isCampa || shell.isBautizos) &&
-            shell.isPanelNavSectionAllowed('bautizados') &&
-            shell.renderBautizadosPage()}
-          {contentTab === 'ServersPage' &&
-            (shell.isCampa || shell.isBautizos) &&
-            shell.isPanelNavSectionAllowed('serversPage') &&
-            shell.renderServerProfilesPage()}
-          {contentTab === 'Becados' &&
-            !shell.isBautizos &&
-            shell.isPanelNavSectionAllowed('becados') &&
-            shell.renderBecadosPage()}
-          {contentTab === 'BautizosCompanions' &&
-            shell.isPanelNavSectionAllowed('becados') &&
-            shell.isBautizos &&
-            shell.renderBautizosCompanionsPage()}
-          {contentTab === 'Responsivas' && shell.hasAdminRights && shell.isCampa && shell.renderResponsivasPage()}
-          {contentTab === 'PastoresPage' && shell.hasAdminRights && shell.renderPastoresPage()}
-          {contentTab === 'TransportPlanning' &&
-            shell.isPanelNavSectionAllowed('transporte') &&
-            shell.renderTransportPlanningPage()}
-          {contentTab === 'RegistroGlobal' && shell.isPanelNavSectionAllowed('registroGlobal') && shell.renderGlobalRegistryPage()}
-          {contentTab === "CashCut" && shell.isPanelNavSectionAllowed('cashCut') && shell.renderCashCutPage()}
-          {contentTab === "ExpenseList" && shell.canAccessExpenses && shell.isPanelNavSectionAllowed('expenseList') && shell.renderExpenseListPage()}
-          {shell.visibleLocations.includes(contentTab) && shell.isPanelNavSectionAllowed('locations') && shell.renderLocationSheet(contentTab)}
-            </>
+            <WorkspaceTabContent contentTab={contentTab} />
           )}
         </div>
       </main>
@@ -1307,8 +1321,8 @@ export default function EventWorkspaceScreen() {
         </div>
       )}
 
-      {shell.renderRegistryConfirmModal()}
-      {shell.renderPromoteOverCapConfirmModal()}
+      {shell.registryConfirmModalEl}
+      {shell.promoteOverCapConfirmModalEl}
 
       {/* PAYMENT MODAL */}
       {shell.paymentModal.isOpen && !shell.bautizosCarDataPrompt?.isOpen && (
