@@ -3,12 +3,12 @@
  *
  * Objetivos:
  *  - Filtrar el log de cambios para que solo se reporten campos pertinentes al tipo de evento.
- *  - Evitar persistir información que no aplica (ej. becas/serverAssignment en Bautizos).
+ *  - Evitar persistir información que no aplica al tipo de evento.
  *
  * Convenciones:
  *  - Campos en `COMMON_FIELDS`: siempre se conservan/loguean (datos básicos, contacto, pago, etc.).
  *  - Campos por tipo de evento: solo aplican cuando `eventType` coincide.
- *  - Campos de transporte: aplican a Campa, Bautizos y General (no Desayuno).
+ *  - Campos de transporte: aplican a Campa y General (no Desayuno).
  *  - Cualquier campo no listado se considera "neutral" y se conserva si ya existía
  *    en el registro original (no se introduce ruido en logs ni se borra info legítima).
  */
@@ -24,7 +24,7 @@ const COMMON_FIELDS = new Set([
   'alias', 'vnpPersonId', 'profileLinkId',
   // Contacto de emergencia
   'emergencyContact', 'emergencyPhone', 'emergencyRelationship',
-  // Salud (común a Campa/Bautizos; ver scope abajo, pero tampoco "rompe" si está en otros)
+  // Salud (común a Campa; ver scope abajo, pero tampoco "rompe" si está en otros)
   'bloodType',
   // Sede / metadatos
   'location', 'eventId', 'status', 'createdAt', 'updatedAt',
@@ -51,7 +51,7 @@ const COMMON_FIELDS = new Set([
   'pastorRealCost', 'pastorStayStart', 'pastorStayEnd',
 ]);
 
-/** Servidor / perfil de servicio: Campa y Bautizos (áreas, pareja, asignación). */
+/** Servidor / perfil de servicio: Campa (áreas, pareja, asignación). */
 const SERVER_PARTICIPATION_FIELDS = new Set([
   'isServer',
   'serverAssignment',
@@ -85,30 +85,18 @@ const CAMPA_ONLY_FIELDS = new Set([
   'pastorChild', 'pastorChildWithoutPay', 'pastorChildSpecialDonationFinanceId',
 ]);
 
-/** Campos exclusivos de Bautizos. */
-const BAUTIZOS_ONLY_FIELDS = new Set([
-  'bautizosAttendanceType',
-  'bautizosCompanions',
-  'wantsBautizosFood',
-  'wantsBautizosTransport',
-  'carrosLlegada',
-]);
-
-/** Campos compartidos por Campa y Bautizos (salud + bautizo). */
-const CAMPA_AND_BAUTIZOS_FIELDS = new Set([
-  // Salud (no aplican a Desayuno ni General)
+/** Campos de salud y bautismo en Campa. */
+const CAMPA_HEALTH_AND_BAPTISM_FIELDS = new Set([
   'canSwim',
   'hasAllergy', 'allergyCategory', 'allergyDetails',
   'hasDisease', 'diseaseDetails', 'diseaseMedication',
   'hasDisability', 'disabilityDetails',
-  // Talla playera para bautizados (Campa: si se bautiza; Bautizos: bautizado)
+  // Talla playera para bautizados (Campa: si se bautiza)
   'baptismShirtSize',
-  // willBeBaptized en Bautizos se deriva de bautizosAttendanceType,
-  // pero el campo igual se persiste para mantener compatibilidad/búsqueda.
   'willBeBaptized',
 ]);
 
-/** Campos de transporte: aplican a Campa/Bautizos/General (NO a Desayuno). */
+/** Campos de transporte: aplican a Campa/General (NO a Desayuno). */
 const TRANSPORT_FIELDS = new Set([
   'llegaEnCarro', 'regresaEnCarro', 'transportType',
   'travelFrom', 'travelTo',
@@ -126,19 +114,16 @@ export function isParticipantFieldApplicableToEventType(key, eventType) {
   const et = String(eventType || '').trim();
   const isDesayuno = eventTypeIsDesayuno(et);
   const isCampa = et === 'Campa';
-  const isBautizos = et === 'Bautizos';
   const isGeneral = et === 'General';
 
-  // Transporte: Campa, Bautizos y General (no Desayuno).
-  if (TRANSPORT_FIELDS.has(key)) return !isDesayuno && (isCampa || isBautizos || isGeneral);
+  // Transporte: Campa y General (no Desayuno).
+  if (TRANSPORT_FIELDS.has(key)) return !isDesayuno && (isCampa || isGeneral);
 
-  // Salud y bautizo compartidos.
-  if (CAMPA_AND_BAUTIZOS_FIELDS.has(key)) return isCampa || isBautizos;
+  if (CAMPA_HEALTH_AND_BAPTISM_FIELDS.has(key)) return isCampa;
 
-  if (SERVER_PARTICIPATION_FIELDS.has(key)) return isCampa || isBautizos;
+  if (SERVER_PARTICIPATION_FIELDS.has(key)) return isCampa;
 
   if (isCampa && CAMPA_ONLY_FIELDS.has(key)) return true;
-  if (isBautizos && BAUTIZOS_ONLY_FIELDS.has(key)) return true;
 
   return false;
 }

@@ -8,24 +8,6 @@ import {
   registrationRequiresResponsivaStatus,
   responsivaStatusValidationLabel,
 } from '../../responsivaSignLogic.js';
-import {
-  canShowPastorAttendance,
-  canShowBautizosPastorAttendance,
-} from '../../registrationFormEditorConfig.js';
-import {
-  normalizeBautizosAttendanceType,
-  syncBautizosAttendanceServerFields,
-  bautizosWillBeBaptizedFromAttendance,
-  bautizosShowsServerProfileFields,
-  bautizosShowsServerParticipation,
-  buildBautizosExistingCompanionOptions,
-} from '../../bautizosParty.js';
-import { isLegacyBautizosParticipant } from '../../bautizos/bautizosLegacyReadAdapter.js';
-import { getBautizosCompanionsArray } from '../../bautizosParty.js';
-import {
-  BautizosAttendanceTypeField,
-  BautizosServerParticipationFields,
-} from '../../BautizosEventFormBlocks.jsx';
 import ServeAreaMultiSelect from '../../components/ServeAreaMultiSelect.jsx';
 import PrivacyConsentBlock from '../../components/PrivacyConsentBlock.jsx';
 import GenderSelectButtons from '../../components/GenderSelectButtons.jsx';
@@ -90,7 +72,6 @@ export default function EditRegistryModalFormFields({ onCancel, compact: compact
     globalConfig,
     allParticipants,
     isCampa,
-    isBautizos,
     isGeneral,
     isDesayunoEvent,
     inputClasses,
@@ -102,7 +83,6 @@ export default function EditRegistryModalFormFields({ onCancel, compact: compact
     mergedPrivacyNotice,
     editRegDraftCarMeta,
     setEditRegDraftCarMeta,
-    bautizosCarColorSuggestions,
     spouseLinkSearchEdit,
     setSpouseLinkSearchEdit,
     spouseLinkPickResultsEdit,
@@ -407,7 +387,7 @@ export default function EditRegistryModalFormFields({ onCancel, compact: compact
                         <input className={inputClasses} value={editRegistryModal.data.location || editRegistryModal.loc} disabled />
                       )}
                     </div>
-                    {!isDesayunoEvent && !isBautizos && (
+                    {!isDesayunoEvent && (
                       <>
                         <div className={fieldStack}>
                           <label className={labelClasses}>Sale de sede</label>
@@ -454,9 +434,9 @@ export default function EditRegistryModalFormFields({ onCancel, compact: compact
                     )}
                     {sectionTitle('Contacto de emergencia', 'teal')}
                     <>
-                        <div className={fieldStack}><label className={labelClasses}>Contacto Emergencia</label><SedeAutocompleteInput type="text" required={isCampa || isBautizos || isGeneral} listId={editSugList('emergencyContact')} suggestions={editFieldSuggestions.emergencyContacts} className={`${inputClasses} ${getRequiredFieldClass((isCampa || isBautizos || isGeneral) && !(editRegistryModal.data.emergencyContact || '').trim())}`} value={editRegistryModal.data.emergencyContact} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyContact: e.target.value } })} /></div>
-                        <div className={fieldStack}><label className={labelClasses}>Tel. Emergencia</label><SedeAutocompleteInput type="text" required={isCampa || isBautizos || isGeneral} listId={editSugList('emergencyPhone')} suggestions={editFieldSuggestions.emergencyPhones} className={`${inputClasses} ${getRequiredFieldClass((isCampa || isBautizos || isGeneral) && !isValidPhone(editRegistryModal.data.emergencyPhone || ''))}`} value={editRegistryModal.data.emergencyPhone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyPhone: formatPhoneNumber(e.target.value) } })} /></div>
-                        <div className={fieldStack}><label className={labelClasses}>Parentesco</label><SedeAutocompleteInput type="text" required={isCampa || isBautizos || isGeneral} placeholder="Ej. Madre, tutor" listId={editSugList('emergencyRelationship')} suggestions={editFieldSuggestions.relationships} className={`${inputClasses} ${getRequiredFieldClass((isCampa || isBautizos || isGeneral) && !(editRegistryModal.data.emergencyRelationship || '').trim())}`} value={editRegistryModal.data.emergencyRelationship || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyRelationship: e.target.value } })} /></div>
+                        <div className={fieldStack}><label className={labelClasses}>Contacto Emergencia</label><SedeAutocompleteInput type="text" required={isCampa || isGeneral} listId={editSugList('emergencyContact')} suggestions={editFieldSuggestions.emergencyContacts} className={`${inputClasses} ${getRequiredFieldClass((isCampa || isGeneral) && !(editRegistryModal.data.emergencyContact || '').trim())}`} value={editRegistryModal.data.emergencyContact} onChange={e => handleNameInput(e.target.value) && setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyContact: e.target.value } })} /></div>
+                        <div className={fieldStack}><label className={labelClasses}>Tel. Emergencia</label><SedeAutocompleteInput type="text" required={isCampa || isGeneral} listId={editSugList('emergencyPhone')} suggestions={editFieldSuggestions.emergencyPhones} className={`${inputClasses} ${getRequiredFieldClass((isCampa || isGeneral) && !isValidPhone(editRegistryModal.data.emergencyPhone || ''))}`} value={editRegistryModal.data.emergencyPhone} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyPhone: formatPhoneNumber(e.target.value) } })} /></div>
+                        <div className={fieldStack}><label className={labelClasses}>Parentesco</label><SedeAutocompleteInput type="text" required={isCampa || isGeneral} placeholder="Ej. Madre, tutor" listId={editSugList('emergencyRelationship')} suggestions={editFieldSuggestions.relationships} className={`${inputClasses} ${getRequiredFieldClass((isCampa || isGeneral) && !(editRegistryModal.data.emergencyRelationship || '').trim())}`} value={editRegistryModal.data.emergencyRelationship || ''} onChange={e => setEditRegistryModal({ ...editRegistryModal, data: { ...editRegistryModal.data, emergencyRelationship: e.target.value } })} /></div>
                         {isResponsivaEnabled && (editRegistryModal.data.emergencyContactResponsiva || editRegistryModal.data.emergencyPhoneResponsiva) ? (
                           <div className="rounded-lg border border-amber-200 bg-amber-50/90 px-3 py-2 text-[11px] text-amber-950 space-y-1.5">
                             <p className="font-black uppercase tracking-wide">Indicado al firmar responsiva (si difiere del registro inicial)</p>
@@ -546,380 +526,7 @@ export default function EditRegistryModalFormFields({ onCancel, compact: compact
                       </div>
                     </div>
 
-                  {!isDesayunoEvent && isBautizos && (
-                    <>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6 bg-indigo-50/30 rounded-2xl border border-indigo-100 dark:bg-transparent dark:border-2 dark:border-indigo-500">
-                      <div className="space-y-2 md:col-span-2">
-                        <h4 className="text-[10px] font-black text-indigo-800/80 dark:text-indigo-100 uppercase tracking-[0.2em] border-b border-indigo-100 dark:border-indigo-500/50 pb-2">Tipo de asistencia (persona inscrita)</h4>
-                        <p className="text-[10px] text-indigo-700/80 dark:text-indigo-200/80 leading-snug -mt-1 mb-1">
-                          Aplica solo a quien se registra en este formulario, no a los acompañantes.
-                        </p>
-                        <BautizosAttendanceTypeField
-                          value={editRegistryModal.data.bautizosAttendanceType}
-                          entry={editRegistryModal.data}
-                          onChange={(v) => {
-                            const t = normalizeBautizosAttendanceType(v);
-                            setEditRegistryModal({
-                              ...editRegistryModal,
-                              data: syncBautizosAttendanceServerFields({
-                                ...editRegistryModal.data,
-                                bautizosAttendanceType: v,
-                                willBeBaptized: bautizosWillBeBaptizedFromAttendance(t),
-                              }),
-                            });
-                          }}
-                          disabled={fieldBlocked('bautizosAttendanceType')}
-                          labelClasses={labelClasses}
-                          showPastor={canShowBautizosPastorAttendance({
-                            role: currentUser?.role,
-                            visibility: editorRegistrationFieldVis,
-                            hasAdminRights,
-                          })}
-                        />
-                        <BautizosServerParticipationFields
-                          entry={editRegistryModal.data}
-                          onEntryChange={(next) =>
-                            setEditRegistryModal({ ...editRegistryModal, data: next })
-                          }
-                          disabled={fieldBlocked('bautizosAttendanceType')}
-                          labelClasses={labelClasses}
-                          formatSiNo={formatSiNo}
-                          choiceBtnClass={(on) =>
-                            `${uiFormChoiceBtn.panel} ${on ? 'bg-amber-500 text-white border-amber-400' : uiFormChoiceBtn.idlePanelAlt}`
-                          }
-                        />
-                      </div>
-                      {fv('serverProfileExtra') &&
-                        bautizosShowsServerProfileFields(editRegistryModal.data) && (
-                        <div className="mt-4 pt-4 border-t border-indigo-200 dark:border-indigo-500/50 md:col-span-2 space-y-3">
-                          <p className="text-[10px] font-black uppercase tracking-widest text-amber-900 dark:text-amber-200">
-                            Información adicional de servidor (opcional)
-                          </p>
-                          <p className="text-[10px] text-slate-500 leading-snug -mt-1">
-                            Marque «Participa como servidor» arriba si aplica; aquí solo datos de pareja, hijos y áreas de servicio.
-                          </p>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div className={fieldStack}>
-                              <label className={labelClasses}>¿Es casado y va con su esposo(a)?</label>
-                              <select
-                                className={inputClasses}
-                                value={editRegistryModal.data.isMarried || 'No'}
-                                onChange={(e) =>
-                                  setEditRegistryModal({
-                                    ...editRegistryModal,
-                                    data: {
-                                      ...editRegistryModal.data,
-                                      isMarried: e.target.value,
-                                      spouseName: isSiValue(e.target.value) ? editRegistryModal.data.spouseName || '' : '',
-                                      spouseParticipantId: isSiValue(e.target.value) ? editRegistryModal.data.spouseParticipantId || '' : '',
-                                      spousePhone: isSiValue(e.target.value) ? editRegistryModal.data.spousePhone || '' : '',
-                                    },
-                                  })
-                                }
-                              >
-                                <option value="No">No</option>
-                                <option value={SI}>{SI_LABEL}</option>
-                              </select>
-                            </div>
-                            {isSiValue(editRegistryModal.data.isMarried) && (
-                              <div className={fieldStack}>
-                                <label className={labelClasses}>Nombre de pareja</label>
-                                <input
-                                  className={inputClasses}
-                                  value={editRegistryModal.data.spouseName || ''}
-                                  onChange={(e) =>
-                                    setEditRegistryModal({
-                                      ...editRegistryModal,
-                                      data: { ...editRegistryModal.data, spouseName: e.target.value },
-                                    })
-                                  }
-                                />
-                              </div>
-                            )}
-                            <div className={fieldStack}>
-                              <label className={labelClasses}>¿Va con hijos?</label>
-                              <select
-                                className={inputClasses}
-                                value={editRegistryModal.data.goesWithChildren || 'No'}
-                                onChange={(e) =>
-                                  setEditRegistryModal({
-                                    ...editRegistryModal,
-                                    data: {
-                                      ...editRegistryModal.data,
-                                      goesWithChildren: e.target.value,
-                                      childrenCount: isSiValue(e.target.value) ? editRegistryModal.data.childrenCount || '' : '',
-                                    },
-                                  })
-                                }
-                              >
-                                <option value="No">No</option>
-                                <option value={SI}>{SI_LABEL}</option>
-                              </select>
-                            </div>
-                            {isSiValue(editRegistryModal.data.goesWithChildren) && (
-                              <div className={fieldStack}>
-                                <label className={labelClasses}>¿Cuántos?</label>
-                                <input
-                                  type="number"
-                                  min="1"
-                                  className={inputClasses}
-                                  value={editRegistryModal.data.childrenCount || ''}
-                                  onChange={(e) =>
-                                    setEditRegistryModal({
-                                      ...editRegistryModal,
-                                      data: { ...editRegistryModal.data, childrenCount: e.target.value },
-                                    })
-                                  }
-                                />
-                              </div>
-                            )}
-                            <div className={fieldStack}>
-                              <label className={labelClasses}>¿Han servido en otro campa?</label>
-                              <select
-                                className={inputClasses}
-                                value={editRegistryModal.data.servedOtherCampa || 'No'}
-                                onChange={(e) =>
-                                  setEditRegistryModal({
-                                    ...editRegistryModal,
-                                    data: {
-                                      ...editRegistryModal.data,
-                                      servedOtherCampa: e.target.value,
-                                      servedAreas: isSiValue(e.target.value)
-                                        ? editRegistryModal.data.servedAreas || ''
-                                        : '',
-                                    },
-                                  })
-                                }
-                              >
-                                <option value="No">No</option>
-                                <option value={SI}>{SI_LABEL}</option>
-                              </select>
-                            </div>
-                            {isSiValue(editRegistryModal.data.servedOtherCampa) && (
-                              <div className={fieldStack}>
-                                <label className={labelClasses}>¿En qué áreas?</label>
-                                <ServeAreaMultiSelect
-                                  inputClasses={inputClasses}
-                                  disabled={fieldBlocked('serverProfileExtra')}
-                                  opts={
-                                    globalConfig?.serveAreaOptions?.length
-                                      ? globalConfig.serveAreaOptions
-                                      : DEFAULT_SERVE_AREA_OPTIONS
-                                  }
-                                  value={editRegistryModal.data.servedAreas || ''}
-                                  onChange={(next) =>
-                                    setEditRegistryModal({
-                                      ...editRegistryModal,
-                                      data: { ...editRegistryModal.data, servedAreas: next },
-                                    })
-                                  }
-                                />
-                              </div>
-                            )}
-                            <div className="space-y-1 sm:col-span-2">
-                              <label className={labelClasses}>¿En qué área les gustaría servir?</label>
-                              <ServeAreaMultiSelect
-                                inputClasses={inputClasses}
-                                disabled={fieldBlocked('serverProfileExtra')}
-                                opts={
-                                  globalConfig?.serveAreaOptions?.length
-                                    ? globalConfig.serveAreaOptions
-                                    : DEFAULT_SERVE_AREA_OPTIONS
-                                }
-                                value={editRegistryModal.data.preferredServeArea || ''}
-                                onChange={(next) =>
-                                  setEditRegistryModal({
-                                    ...editRegistryModal,
-                                    data: { ...editRegistryModal.data, preferredServeArea: next },
-                                  })
-                                }
-                              />
-                            </div>
-                            <div className={fieldStack}>
-                              <label className={labelClasses}>¿Sirve en su congre local?</label>
-                              <select
-                                className={inputClasses}
-                                value={editRegistryModal.data.servesInCongress || 'No'}
-                                onChange={(e) =>
-                                  setEditRegistryModal({
-                                    ...editRegistryModal,
-                                    data: {
-                                      ...editRegistryModal.data,
-                                      servesInCongress: e.target.value,
-                                      congressServeArea: isSiValue(e.target.value)
-                                        ? editRegistryModal.data.congressServeArea || ''
-                                        : '',
-                                    },
-                                  })
-                                }
-                              >
-                                <option value="No">No</option>
-                                <option value={SI}>{SI_LABEL}</option>
-                              </select>
-                            </div>
-                            {isSiValue(editRegistryModal.data.servesInCongress) && (
-                              <div className={fieldStack}>
-                                <label className={labelClasses}>¿En qué área?</label>
-                                <input
-                                  className={inputClasses}
-                                  value={editRegistryModal.data.congressServeArea || ''}
-                                  onChange={(e) =>
-                                    setEditRegistryModal({
-                                      ...editRegistryModal,
-                                      data: { ...editRegistryModal.data, congressServeArea: e.target.value },
-                                    })
-                                  }
-                                />
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                      <div className="space-y-1 md:col-span-2">
-                        <label className={labelClasses}>Transporte (persona inscrita)</label>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const next = isSiValue(editRegistryModal.data.wantsBautizosTransport) ? 'No' : SI;
-                            const eloc = editRegistryModal.data.location || editRegistryModal.loc;
-                            setEditRegistryModal({
-                              ...editRegistryModal,
-                              data: {
-                                ...editRegistryModal.data,
-                                wantsBautizosTransport: next,
-                                llegaEnCarro: isSiValue(next) ? false : true,
-                                ...(isSiValue(next)
-                                  ? {
-                                      travelFrom: editRegistryModal.data.travelFrom || eloc,
-                                      travelTo: editRegistryModal.data.travelTo || eloc,
-                                    }
-                                  : {}),
-                              },
-                            });
-                          }}
-                          className={`${uiFormChoiceBtn.panel} ${isSiValue(editRegistryModal.data.wantsBautizosTransport) ? 'bg-indigo-500 text-white border-indigo-400' : uiFormChoiceBtn.idlePanel}`}
-                        >
-                          ¿Desea transporte? {formatSiNo(editRegistryModal.data.wantsBautizosTransport)}
-                        </button>
-                      </div>
-                      {(
-                        <>
-                          <div className="space-y-1 md:col-span-2">
-                            <label className={labelClasses}>Llegada</label>
-                            <div className="flex flex-wrap gap-3">
-                              <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-xl px-3 py-2 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  className="h-4 w-4 accent-indigo-600 rounded"
-                                  checked={!!editRegistryModal.data.llegaEnCarro}
-                                  onChange={(e) =>
-                                    setEditRegistryModal({
-                                      ...editRegistryModal,
-                                      data: {
-                                        ...editRegistryModal.data,
-                                        llegaEnCarro: e.target.checked,
-                                        wantsBautizosTransport: e.target.checked
-                                          ? 'No'
-                                          : SI,
-                                        ...(e.target.checked
-                                          ? {}
-                                          : {
-                                              travelFrom:
-                                                editRegistryModal.data.travelFrom ||
-                                                editRegistryModal.data.location ||
-                                                editRegistryModal.loc,
-                                              travelTo:
-                                                editRegistryModal.data.travelTo ||
-                                                editRegistryModal.data.location ||
-                                                editRegistryModal.loc,
-                                            }),
-                                      },
-                                    })
-                                  }
-                                />
-                                Llega en carro
-                              </label>
-                            </div>
-                            <p className="text-[10px] text-slate-500">
-                              Si llega en carro, el costo de transporte es $0. Esta opción no se puede combinar con transporte organizado.
-                            </p>
-                          </div>
-                          {!editRegistryModal.data.llegaEnCarro && isSiValue(editRegistryModal.data.wantsBautizosTransport) ? (
-                            <>
-                              <div className={fieldStack}>
-                                <label className={labelClasses}>Sale de sede</label>
-                                <select
-                                  className={inputClasses}
-                                  value={editRegistryModal.data.travelFrom || (editRegistryModal.data.location || editRegistryModal.loc)}
-                                  onChange={(e) =>
-                                    setEditRegistryModal({
-                                      ...editRegistryModal,
-                                      data: { ...editRegistryModal.data, travelFrom: e.target.value },
-                                    })
-                                  }
-                                >
-                                  {(currentEvent?.locations || []).map((s) => (
-                                    <option key={`ebz-edit-${s}`} value={s}>
-                                      {s}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                              <div className={fieldStack}>
-                                <label className={labelClasses}>Regresa a sede</label>
-                                <select
-                                  className={inputClasses}
-                                  value={editRegistryModal.data.travelTo || (editRegistryModal.data.location || editRegistryModal.loc)}
-                                  onChange={(e) =>
-                                    setEditRegistryModal({
-                                      ...editRegistryModal,
-                                      data: { ...editRegistryModal.data, travelTo: e.target.value },
-                                    })
-                                  }
-                                >
-                                  {(currentEvent?.locations || []).map((s) => (
-                                    <option key={`ebz2-edit-${s}`} value={s}>
-                                      {s}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                            </>
-                          ) : null}
-                        </>
-                      )}
-                    </div>
-                    {isLegacyBautizosParticipant(editRegistryModal.data) ? (
-                    <div className="mt-6 p-6 rounded-2xl border border-amber-200/90 dark:border-amber-500/45 bg-amber-50/40 dark:bg-amber-950/15 shadow-sm dark:shadow-none">
-                      <h4 className="text-[10px] font-black text-amber-900/85 dark:text-amber-200 uppercase tracking-[0.2em] border-b border-amber-200/80 dark:border-amber-500/40 pb-2 flex items-center gap-2">
-                        <UserPlus size={14} className="text-amber-600 dark:text-amber-400 shrink-0" strokeWidth={2.5} aria-hidden />
-                        Acompañantes legados (solo lectura)
-                      </h4>
-                      <p className="text-[10px] text-slate-600 dark:text-slate-300 leading-snug pt-1.5 mb-3">
-                        Este registro usa el modelo anterior con acompañantes anidados. Para agregar personas, cree un registro nuevo por persona con tipo «Acompañante».
-                      </p>
-                      <ul className="space-y-2">
-                        {getBautizosCompanionsArray(editRegistryModal.data).map((c, i) => {
-                          const nm = String(c?.name || '').trim();
-                          if (!nm) return null;
-                          return (
-                            <li key={String(c?.id || i)} className="text-xs text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 rounded-lg px-3 py-2">
-                              <span className="font-semibold">{nm}</span>
-                              {c?.relationship ? (
-                                <span className="text-slate-500 dark:text-slate-400"> · {c.relationship}</span>
-                              ) : null}
-                              {isSiValue(c?.willBeBaptized) ? (
-                                <span className="text-violet-600 dark:text-violet-300"> · Se bautiza</span>
-                              ) : null}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                    ) : null}
-                    </>
-                  )}
-    
+                      
                   {compact && isCampa && sectionTitle('Asistencia y configuracion campa', 'amber')}
                   {isCampa && (
                     <div className="grid grid-cols-1 gap-6 p-6 rounded-2xl border border-amber-100 bg-amber-50/40 shadow-sm dark:border-amber-500/35 dark:bg-amber-950/25 dark:shadow-black/20">
@@ -1167,7 +774,7 @@ export default function EditRegistryModalFormFields({ onCancel, compact: compact
                         )}
     
                         {isSiValue(editRegistryModal.data.isServer) &&
-                        (isCampa || (isBautizos && bautizosShowsServerParticipation(editRegistryModal.data))) ? (
+                        isCampa ? (
                           <div className="space-y-3 mt-3">
                             <div className="p-4 rounded-xl border border-amber-100 bg-amber-50/60 dark:border-amber-500/35 dark:bg-amber-950/30">
                               <p className="text-[10px] font-black uppercase tracking-widest mb-3 text-amber-900 dark:text-amber-200">

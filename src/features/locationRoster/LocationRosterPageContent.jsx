@@ -1,7 +1,5 @@
 import React, { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
 import { SI_LABEL } from '../../appConstants.js';
-import { isCompanionWaitlistVirtualParticipant } from '../../bautizosCompanionWaitlist.js';
-import { BAUTIZOS_ATTENDANCE } from '../../bautizosParty.js';
 import { CAR_DATA_FILTER_OPTIONS } from '../../carDataWhatsApp.js';
 import { isCardPaymentAllowedForLocation } from '../../cardPaymentEligibility.js';
 import DuplicateGroupsPanel from '../../components/diagnostics/DuplicateGroupsPanel.jsx';
@@ -11,10 +9,8 @@ import RosterSectionScrollWrap from '../../components/RosterSectionScrollWrap.js
 import RosterSortDropdown from '../../components/RosterSortDropdown.jsx';
 import { buildSedeCapChipViewModel } from '../../cupoVsWaitlistDisplay.js';
 import { collectLocationSuggestionsFromRosterSources } from '../../locationFieldSuggestions.js';
-import { buildLocationRosterTypeSummaryByStatus, getLocationRosterSectionCountsFromSummary } from '../../locationRosterTypeSummary.js';
 import LocationRosterTypeSummary from '../../LocationRosterTypeSummary.jsx';
 import { canAddRegistrations } from '../../rbac/permissions.js';
-import { BAUTIZOS_AGE_FILTER_OPTIONS, BAUTIZOS_ATTENDANCE_FILTER_OPTIONS, BAUTIZOS_TRANSPORT_FILTER_OPTIONS } from '../../rosterParticipantFilters.js';
 import { ROSTER_SORT_OPTIONS } from '../../rosterSortOptions.js';
 import { LocationRosterActivosChip, LocationRosterCancelledChip, LocationRosterWaitlistChip } from '../../screens/locationRoster/LocationRosterSectionChips.jsx';
 import { uiButtons, uiDropdown, uiFilter, uiLocationNewRegCta, uiRosterMobile, uiRosterSearch } from '../../ui/uiFormatClasses.js';
@@ -70,7 +66,6 @@ export default function LocationRosterPageContent({ loc }) {
     filterAge,
     filterAssignment,
     filterBaptism,
-    filterBautizosAttendance,
     filterCarDataPending,
     filterFirstTimeId,
     filterGender,
@@ -92,7 +87,6 @@ export default function LocationRosterPageContent({ loc }) {
     generateVnpPersonId,
     getActiveCountByLocation,
     getAutoPaymentService,
-    getBautizosBaptizedCompanionRows,
     getCommissionToggleCompactBtnClasses,
     getDashboardCardCommissionToggleLabel,
     getEventCapUsedUnits,
@@ -106,7 +100,6 @@ export default function LocationRosterPageContent({ loc }) {
     handleTogglePersonOfInterest,
     hasAdminRights,
     hasFinancialAccess,
-    isBautizos,
     isCampa,
     isLocOpen,
     isResponsivaEnabled,
@@ -140,7 +133,6 @@ export default function LocationRosterPageContent({ loc }) {
     setFilterAge,
     setFilterAssignment,
     setFilterBaptism,
-    setFilterBautizosAttendance,
     setFilterCarDataPending,
     setFilterFirstTimeId,
     setFilterGender,
@@ -224,9 +216,7 @@ export default function LocationRosterPageContent({ loc }) {
         cancelled: cancelledData[loc] || [],
       });
       const visibleParticipants = applyRosterLikeFilters(data[loc] || [], false, deferredLocationSearch);
-      const visibleBautizedCompanionCount = isBautizos
-        ? visibleParticipants.reduce((sum, p) => sum + getBautizosBaptizedCompanionRows(p).length, 0)
-        : 0;
+      const visibleBautizedCompanionCount = 0;
       const sortPreservesWaitlistBaseDateOrder = sortBy === 'registered-asc' || sortBy === 'none';
       const sortedWaitlistForLoc = getSortedWaitlistForLocation(loc);
       const waitlistFilteredForLoc = applyRosterLikeFilters(
@@ -259,51 +249,14 @@ export default function LocationRosterPageContent({ loc }) {
       const showRosterActivos = rosterSearchActive ? visibleParticipants.length > 0 : rosterSectionExpanded.activos;
       const showRosterWaitlist = rosterSearchActive ? waitlistFilteredForLoc.length > 0 : rosterSectionExpanded.waitlist;
       const showRosterCancelled = rosterSearchActive ? cancelledFilteredForLoc.length > 0 : rosterSectionExpanded.cancelled;
-      const locationTypeSummary = isBautizos
-        ? buildLocationRosterTypeSummaryByStatus({
-            activeTitularParticipants: data[loc] || [],
-            allParticipants: allParticipants.filter((p) => p.eventId === currentEvent?.id),
-            event: currentEvent,
-            loc,
-            globalConfig,
-          })
-        : null;
-      const rosterSectionDisplayCounts = isBautizos && locationTypeSummary
-        ? getLocationRosterSectionCountsFromSummary(locationTypeSummary)
-        : {
+      const locationTypeSummary = null;
+      const rosterSectionDisplayCounts = {
             active: rawActiveCountForLoc,
             waitlist: (waitlistData[loc] || []).length,
             cancelled: (cancelledData[loc] || []).length,
           };
       const rosterLocSlug = String(loc).replace(/[^a-zA-Z0-9_-]/g, '_');
-      const buildFlattenedActiveRows = (participants) => {
-        const flattened = [];
-        for (const person of participants) {
-          flattened.push({ kind: 'main', person });
-          const branchRows = getBautizosBaptizedCompanionRows(person);
-          for (let i = 0; i < branchRows.length; i++) {
-            const c = branchRows[i] || {};
-            const nm = String(c?.name || '').trim();
-            if (!nm) continue;
-            flattened.push({
-              kind: 'branch',
-              parent: person,
-              companion: c,
-              branchPerson: {
-                id: `branch-${String(person.id)}-${String(c?.id || i)}`,
-                name: nm,
-                location: person.location,
-                relationship: String(c?.relationship || '').trim(),
-                willBeBaptized: SI,
-                bautizosAttendanceType: BAUTIZOS_ATTENDANCE.bautizado,
-                status: 'active',
-              },
-            });
-          }
-        }
-        return flattened;
-      };
-      const flattenedActiveRowsForLoc = buildFlattenedActiveRows(visibleParticipants);
+      const flattenedActiveRowsForLoc = visibleParticipants.map((person) => ({ kind: 'main', person }));
 
       return {
         cardAllowedNewReg,
@@ -333,7 +286,6 @@ export default function LocationRosterPageContent({ loc }) {
       data,
       waitlistData,
       cancelledData,
-      isBautizos,
       sortBy,
       getSortedWaitlistForLocation,
       getSortedCancelledForLocation,
@@ -555,7 +507,6 @@ export default function LocationRosterPageContent({ loc }) {
                     setFilterBaptism('all');
                     setFilterMaritalStatus('all');
                     setFilterRosterRole('all');
-                    setFilterBautizosAttendance('all');
                     setFilterAge('all');
                   }}
                   className={`w-full py-2 ${uiButtons.secondary}`}
@@ -655,62 +606,7 @@ export default function LocationRosterPageContent({ loc }) {
                     </div>
                   </>
                 )}
-                {isBautizos && (
-                  <>
-                    <div>
-                      <p className={uiDropdown.sectionTitle}>Tipo de asistencia</p>
-                      {BAUTIZOS_ATTENDANCE_FILTER_OPTIONS.map((op) =>
-                        rosterFilterOption(
-                          'filterBautizosAttendance',
-                          op.id,
-                          filterBautizosAttendance === op.id,
-                          () => setFilterBautizosAttendance(filterBautizosAttendance === op.id ? 'all' : op.id),
-                          op.label
-                        )
-                      )}
-                    </div>
-                    <div>
-                      <p className={uiDropdown.sectionTitle}>Transporte</p>
-                      {BAUTIZOS_TRANSPORT_FILTER_OPTIONS.map((op) =>
-                        rosterFilterOption(
-                          'filterTransport',
-                          op.id,
-                          filterTransport === op.id,
-                          () => setFilterTransport(filterTransport === op.id ? 'all' : op.id),
-                          op.label
-                        )
-                      )}
-                    </div>
-                    <div>
-                      <p className={uiDropdown.sectionTitle}>Edad</p>
-                      {BAUTIZOS_AGE_FILTER_OPTIONS.map((op) =>
-                        rosterFilterOption(
-                          'filterAge',
-                          op.id,
-                          filterAge === op.id,
-                          () => setFilterAge(filterAge === op.id ? 'all' : op.id),
-                          op.label
-                        )
-                      )}
-                    </div>
-                    <div>
-                      <p className={uiDropdown.sectionTitle}>Datos de carro</p>
-                      <p className="text-[9px] text-slate-400 dark:text-slate-500 mb-1.5 leading-snug">
-                        Solo quienes llegan en carro. Transporte del evento no cuenta como pendiente.
-                      </p>
-                      {CAR_DATA_FILTER_OPTIONS.map((op) =>
-                        rosterFilterOption(
-                          'filterCarDataPending',
-                          op.id,
-                          filterCarDataPending === op.id,
-                          () => setFilterCarDataPending(filterCarDataPending === op.id ? 'all' : op.id),
-                          op.label
-                        )
-                      )}
-                    </div>
-                  </>
-                )}
-                {!isCampa && !isBautizos && (
+                {!isCampa && (
                   <div>
                     <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Servidor y asistencia</p>
                     {[
@@ -841,7 +737,7 @@ export default function LocationRosterPageContent({ loc }) {
             <Users size={18} className="text-indigo-600 shrink-0" />
             <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Activos (inscritos)</span>
             <LocationRosterActivosChip
-              isBautizos={isBautizos}
+              isBautizos={false}
               activeCount={rosterSectionDisplayCounts.active}
             />
           </div>
@@ -1292,10 +1188,10 @@ export default function LocationRosterPageContent({ loc }) {
                                     onToggle={handleTogglePersonOfInterest}
                                   />
                                 ) : null}
-                                {canCancelRegistrationsFlag && !isCompanionWaitlistVirtualParticipant(person) ? (
+                                {canCancelRegistrationsFlag && true ? (
                                 <button type="button" onClick={() => cancelEntry(loc, person.id)} className={`${ROSTER_QUICK_ACTION_BTN_BASE} border border-amber-600 bg-amber-500 text-white hover:bg-amber-600`} title="Dar de baja (queda visible, no cuenta en inscritos/becados/servidores)"><Scissors {...ROSTER_QUICK_ACTION_ICON_PROPS} />Baja</button>
                                 ) : null}
-                                {canArchiveRegistrationsFlag && !isCompanionWaitlistVirtualParticipant(person) ? (
+                                {canArchiveRegistrationsFlag && true ? (
                                 <button type="button" onClick={() => removeEntry(loc, person.id)} className={`${ROSTER_QUICK_ACTION_BTN_BASE} border border-rose-700 bg-rose-600 text-white hover:bg-rose-700`} title="Archivar registro (deja de contar en el evento; datos e ID VNPM siguen para precargar)"><Trash2 {...ROSTER_QUICK_ACTION_ICON_PROPS} />Archivar</button>
                                 ) : null}
                               </div>

@@ -1,8 +1,6 @@
 import React from 'react';
 import { discountCampaignAppliesToLabel, discountCampaignHasDateRange, getValidDiscountCampaignsForPerson } from '../../app/helpers/discountCampaignHelpers.js';
 import { SI_LABEL } from '../../appConstants.js';
-import { BautizosAttendanceTypeField, BautizosServerParticipationFields } from '../../BautizosEventFormBlocks.jsx';
-import { BAUTIZOS_ATTENDANCE, bautizosShowsServerProfileFields, bautizosWillBeBaptizedFromAttendance, normalizeArrivalCarCount, normalizeBautizosAttendanceType, syncBautizosAttendanceServerFields } from '../../bautizosParty.js';
 import { CAR_DATA_FILTER_OPTIONS } from '../../carDataWhatsApp.js';
 import { isCardPaymentAllowedForLocation } from '../../cardPaymentEligibility.js';
 import { describeCollisionCluster } from '../../companionRegistrantCollision.js';
@@ -33,7 +31,6 @@ import { applyEditorRegistrationDefaults, canShowPastorAttendance } from '../../
 import { BLOOD_TYPES_SELECT_OPTIONS } from '../../registrationFormShared.js';
 import RegistryBirthDateField from '../../RegistryBirthDateField.jsx';
 import { registrationRequiresResponsivaStatus, responsivaStatusValidationLabel } from '../../responsivaSignLogic.js';
-import { BAUTIZOS_AGE_FILTER_OPTIONS, BAUTIZOS_ATTENDANCE_FILTER_OPTIONS, BAUTIZOS_TRANSPORT_FILTER_OPTIONS } from '../../rosterParticipantFilters.js';
 import { ROSTER_SORT_OPTIONS } from '../../rosterSortOptions.js';
 import { LocationRosterActivosChip, LocationRosterCancelledChip, LocationRosterWaitlistChip } from '../../screens/locationRoster/LocationRosterSectionChips.jsx';
 import { parseStrictNonNegativeMoneyInput } from '../../strictMoneyInput.js';
@@ -52,16 +49,13 @@ export default function NewRegistrationModal({ loc }) {
     GENDERS,
     NEW_REG_DONATION_BTN,
     NEW_REG_TOOLBAR_INDIGO_BTN,
-    REGISTRY_CONFIRM_BAUTIZOS_EMPTY,
     RESPONSIVA_STATUSES,
     SI,
     allParticipants,
     ambosServeOptionLabelsNew,
     applyImportedProfile,
-    bautizosCarColorSuggestions,
     buildAttendanceSpecialFormOptions,
     buildNewEntryDuplicateHint,
-    buildNewRegCompanionCollisionHintForDraft,
     buildProfileImportMatchesForModal,
     calculateAgeFromBirthDate,
     canMarkPersonsOfInterestFlag,
@@ -93,7 +87,6 @@ export default function NewRegistrationModal({ loc }) {
     hasAdminRights,
     hasValidFullName,
     inputClasses,
-    isBautizos,
     isCampa,
     isDesayunoEvent,
     isGeneral,
@@ -169,9 +162,7 @@ export default function NewRegistrationModal({ loc }) {
           draftLiveRef={newRegModalDraftLiveRef}
           profileSearchLiveRef={newRegModalProfileSearchLiveRef}
           buildProfileImportMatches={buildProfileImportMatchesForModal}
-          buildCompanionCollisionHint={
-            currentEvent?.eventType === 'Bautizos' ? buildNewRegCompanionCollisionHintForDraft : undefined
-          }
+          buildCompanionCollisionHint={undefined}
         >
           {({
             draft,
@@ -194,7 +185,7 @@ export default function NewRegistrationModal({ loc }) {
             );
             const newRegSelectableCampaigns = getValidDiscountCampaignsForPerson(currentEvent, entryForCampaignPreview);
             const newRegBaseList = getPersonCost(entryForCampaignPreview, currentPricing, currentEvent);
-            const newRegCampPreview = isBautizos ? null : resolveMatchedCampaignForNewEntry(entryForCampaignPreview);
+            const newRegCampPreview =  resolveMatchedCampaignForNewEntry(entryForCampaignPreview);
             const newRegLiqPreview = newRegCampPreview
               ? Math.max(0, Number(newRegCampPreview.finalAmount) || 0)
               : newRegBaseList;
@@ -218,9 +209,7 @@ export default function NewRegistrationModal({ loc }) {
               currentEvent,
               newRegPrivacyContext
             );
-            const isPastorNewReg =
-              isBautizos &&
-              normalizeBautizosAttendanceType(draft.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.pastor;
+            const isPastorNewReg = false;
             const pastorOverCapAllowed = canShowPastorAttendance({
               role: currentUser?.role,
               visibility: editorRegistrationFieldVis,
@@ -248,7 +237,7 @@ export default function NewRegistrationModal({ loc }) {
               !!draft.allowSharedMainPhone
             );
             const newRegLinkableCompanionCluster =
-              currentEvent?.eventType === 'Bautizos' && draft.name?.trim()
+              false && draft.name?.trim()
                 ? (() => {
                     const norm = normalizeFullNameCompareKey(draft.name);
                     if (!norm) return null;
@@ -462,7 +451,7 @@ export default function NewRegistrationModal({ loc }) {
                         duplicateReasonsLine: describeCollisionCluster(newRegLinkableCompanionCluster),
                         dupAcceptCluster: null,
                         companionCollisionCluster: newRegLinkableCompanionCluster,
-                        ...REGISTRY_CONFIRM_BAUTIZOS_EMPTY,
+                        
                       });
                     }}
                   >
@@ -664,7 +653,7 @@ export default function NewRegistrationModal({ loc }) {
               )}
             </section>
 
-            {(isCampa || isGeneral || isBautizos) && (
+            {(isCampa || isGeneral) && (
               <section className="rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800 p-3">
                 <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">{newRegSectionLabel('Contacto de emergencia')}</h4>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -675,7 +664,7 @@ export default function NewRegistrationModal({ loc }) {
                       placeholder="Nombre contacto"
                       listId={locSugList('emergencyContact')}
                       suggestions={locFieldSuggestions.emergencyContacts}
-                      className={`${inputClasses} ${getRequiredFieldClass((isCampa || isBautizos || isGeneral) && !(draft.emergencyContact || '').trim())}`}
+                      className={`${inputClasses} ${getRequiredFieldClass((isCampa || isGeneral) && !(draft.emergencyContact || '').trim())}`}
                       value={draft.emergencyContact}
                       onChange={(e) => handleNameInput(e.target.value) && setDraft({ ...draft, emergencyContact: e.target.value })}
                     />
@@ -687,7 +676,7 @@ export default function NewRegistrationModal({ loc }) {
                       placeholder="55-1234-5678"
                       listId={locSugList('emergencyPhone')}
                       suggestions={locFieldSuggestions.emergencyPhones}
-                      className={`${inputClasses} ${getRequiredFieldClass((isCampa || isBautizos || isGeneral) && !isValidPhone(draft.emergencyPhone || ''))}`}
+                      className={`${inputClasses} ${getRequiredFieldClass((isCampa || isGeneral) && !isValidPhone(draft.emergencyPhone || ''))}`}
                       value={draft.emergencyPhone}
                       onChange={(e) => setDraft({ ...draft, emergencyPhone: formatPhoneNumber(e.target.value) })}
                     />
@@ -699,7 +688,7 @@ export default function NewRegistrationModal({ loc }) {
                       placeholder="Ej. Madre, padre, tutor"
                       listId={locSugList('emergencyRelationship')}
                       suggestions={locFieldSuggestions.relationships}
-                      className={`${inputClasses} ${getRequiredFieldClass((isCampa || isBautizos || isGeneral) && !(draft.emergencyRelationship || '').trim())}`}
+                      className={`${inputClasses} ${getRequiredFieldClass((isCampa || isGeneral) && !(draft.emergencyRelationship || '').trim())}`}
                       value={draft.emergencyRelationship || ''}
                       onChange={(e) => setDraft({ ...draft, emergencyRelationship: e.target.value })}
                     />
@@ -708,7 +697,7 @@ export default function NewRegistrationModal({ loc }) {
               </section>
             )}
 
-            {(isCampa || isBautizos) && (!restrictEditorForm || fv('bloodType') || fv('canSwim') || fv('allergies') || fv('diseases') || fv('disability')) && (
+            {(isCampa) && (!restrictEditorForm || fv('bloodType') || fv('canSwim') || fv('allergies') || fv('diseases') || fv('disability')) && (
               <section className="rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800 p-3">
                 <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">{newRegSectionLabel('Datos médicos')}</h4>
                 <div className="flex flex-col gap-2">
@@ -794,342 +783,7 @@ export default function NewRegistrationModal({ loc }) {
               </section>
             )}
 
-            {isBautizos &&
-              (!restrictEditorForm ||
-                fv('bautizosAttendanceType') ||
-                fv('serverRole') ||
-                fv('serverProfileExtra') ||
-                fv('bautizosCompanions') ||
-                fv('bautizosFood') ||
-                fv('bautizosTransport')) && (
-              <>
-                {fv('bautizosAttendanceType') && (
-                  <section className="rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800 p-3">
-                    <div className="mb-3 flex items-center justify-between border-b border-slate-200 pb-1.5 dark:border-slate-600">
-                      <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] dark:text-slate-300">
-                        {newRegSectionLabel('Tipo de asistencia')}
-                      </h4>
-                      {hasAdminRights && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setServeAreaOptionsForm(
-                              globalConfig?.serveAreaOptions?.length
-                                ? [...globalConfig.serveAreaOptions]
-                                : [...DEFAULT_SERVE_AREA_OPTIONS]
-                            );
-                            setServeAreaOptionsModal({ isOpen: true });
-                          }}
-                          className="text-[10px] font-bold text-amber-600 hover:text-amber-700 flex items-center gap-1"
-                        >
-                          <Settings2 size={12} /> áreas para servir
-                        </button>
-                      )}
-                    </div>
-                    <fieldset
-                      disabled={fieldBlocked('bautizosAttendanceType')}
-                      className={`space-y-2 ${fieldBlocked('bautizosAttendanceType') ? 'opacity-70' : ''}`}
-                    >
-                      <BautizosAttendanceTypeField
-                        value={draft.bautizosAttendanceType}
-                        entry={draft}
-                        onChange={(v) => {
-                          const t = normalizeBautizosAttendanceType(v);
-                          setDraft(
-                            syncBautizosAttendanceServerFields({
-                              ...draft,
-                              bautizosAttendanceType: v,
-                              willBeBaptized: bautizosWillBeBaptizedFromAttendance(t),
-                            })
-                          );
-                        }}
-                        disabled={fieldBlocked('bautizosAttendanceType')}
-                        labelClasses={labelClasses}
-                        showPastor={canShowPastorAttendanceType}
-                      />
-                    </fieldset>
-                    <BautizosServerParticipationFields
-                      entry={draft}
-                      onEntryChange={setDraft}
-                      disabled={fieldBlocked('bautizosAttendanceType')}
-                      labelClasses={labelClasses}
-                      formatSiNo={formatSiNo}
-                      choiceBtnClass={(on) =>
-                        `${uiFormChoiceBtn.panel} ${on ? 'bg-amber-500 text-white border-amber-400' : uiFormChoiceBtn.idlePanelAlt}`
-                      }
-                    />
-                    {fv('serverProfileExtra') &&
-                      bautizosShowsServerProfileFields(draft) && (
-                      <fieldset
-                        disabled={fieldBlocked('serverProfileExtra')}
-                        className={`mt-4 pt-4 border-t border-slate-200 dark:border-slate-600 ${fieldBlocked('serverProfileExtra') ? 'opacity-70' : ''}`}
-                      >
-                        <p className="mb-2 text-[10px] font-black uppercase tracking-widest text-amber-900 dark:text-amber-200">
-                          Información adicional de servidor (opcional)
-                        </p>
-                        <p className="text-[10px] text-slate-500 mb-3 leading-snug">
-                          Marque «Participa como servidor» arriba si aplica; aquí solo datos de pareja, hijos y áreas de servicio.
-                        </p>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          <div className={fieldStack}>
-                            <label className={labelClasses}>¿Es casado y va con su esposo(a)?</label>
-                            <select className={inputClasses} value={draft.isMarried || 'No'} onChange={e => setDraft({ ...draft, isMarried: e.target.value, spouseName: isSiValue(e.target.value) ? draft.spouseName : '', spouseParticipantId: isSiValue(e.target.value) ? draft.spouseParticipantId : '', spousePhone: isSiValue(e.target.value) ? draft.spousePhone : '' })}>
-                              <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
-                            </select>
-                          </div>
-                          {isSiValue(draft.isMarried) && (
-                            <div className="space-y-1 sm:col-span-2 relative">
-                              <label className={labelClasses}>Buscar pareja en registros (todas las sedes)</label>
-                              <input
-                                className={inputClasses}
-                                placeholder="Nombre, teléfono o ID VNPM…"
-                                value={spouseLinkSearchNew}
-                                onChange={(e) => setSpouseLinkSearchNew(e.target.value)}
-                                autoComplete="off"
-                              />
-                              {spouseLinkPickResultsNew.length > 0 && (
-                                <ul className="absolute z-30 left-0 right-0 top-full mt-1 max-h-48 overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg text-xs dark:border-slate-600 dark:bg-slate-800">
-                                  {spouseLinkPickResultsNew.map((p) => (
-                                    <li key={p.id}>
-                                      <button
-                                        type="button"
-                                        className="w-full text-left px-3 py-2 hover:bg-amber-50 font-medium text-slate-800 dark:hover:bg-amber-900/40 dark:text-slate-100"
-                                        onClick={() => {
-                                          setDraft({
-                                            ...draft,
-                                            spouseParticipantId: String(p.id),
-                                            spouseName: p.name || '',
-                                          });
-                                          setSpouseLinkSearchNew('');
-                                        }}
-                                      >
-                                        <span className="font-bold">{p.name}</span>
-                                        <span className="text-slate-500 dark:text-slate-400">
-                                          {' '}
-                                          · {p.location || '?'} · {p.phone || '—'}
-                                        </span>
-                                      </button>
-                                    </li>
-                                  ))}
-                                </ul>
-                              )}
-                              <p className="text-[9px] text-slate-500 leading-snug">
-                                Al menos 2 letras o 4 dígitos de teléfono. Al elegir un registro se vincula la pareja en ambos sentidos. Puedes omitir y completar después.
-                              </p>
-                            </div>
-                          )}
-                          {isSiValue(draft.isMarried) && (
-                            <div className="space-y-1 sm:col-span-2">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <label className={labelClasses}>Nombre de pareja</label>
-                                {draft.spouseParticipantId ? (
-                                  <button
-                                    type="button"
-                                    className="text-[10px] font-bold text-amber-700 hover:underline dark:text-amber-300"
-                                    onClick={() => setDraft({ ...draft, spouseParticipantId: '' })}
-                                  >
-                                    Quitar vínculo
-                                  </button>
-                                ) : null}
-                              </div>
-                              <input
-                                className={inputClasses}
-                                placeholder="Nombre o el del registro elegido arriba"
-                                value={draft.spouseName || ''}
-                                onChange={(e) => setDraft({ ...draft, spouseName: e.target.value })}
-                              />
-                              {!draft.spouseParticipantId ? (
-                                <p className="text-[9px] text-amber-800/90 font-semibold dark:text-amber-200/90">Pendiente de asignar pareja (sin vínculo a registro)</p>
-                              ) : (
-                                <p className="text-[9px] text-emerald-700 font-semibold dark:text-emerald-400">Vinculado a registro en el sistema</p>
-                              )}
-                            </div>
-                          )}
-                          {isSiValue(draft.isMarried) && (
-                            <div className={fieldStack}>
-                              <label className={labelClasses}>Teléfono de la pareja (si aún no inscribe)</label>
-                              <input
-                                className={inputClasses}
-                                inputMode="tel"
-                                autoComplete="off"
-                                placeholder="Opcional"
-                                value={draft.spousePhone || ''}
-                                onChange={(e) => setDraft({ ...draft, spousePhone: e.target.value })}
-                              />
-                            </div>
-                          )}
-                          <div className={fieldStack}>
-                            <label className={labelClasses}>¿Va con hijos?</label>
-                            <select className={inputClasses} value={draft.goesWithChildren || 'No'} onChange={e => setDraft({ ...draft, goesWithChildren: e.target.value, childrenCount: isSiValue(e.target.value) ? draft.childrenCount : '' })}>
-                              <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
-                            </select>
-                          </div>
-                          {isSiValue(draft.goesWithChildren) && (
-                            <div className={fieldStack}>
-                              <label className={labelClasses}>¿Cuántos?</label>
-                              <input type="number" min="1" className={inputClasses} placeholder="Número" value={draft.childrenCount || ''} onChange={e => setDraft({ ...draft, childrenCount: e.target.value })} />
-                            </div>
-                          )}
-                          <div className={fieldStack}>
-                            <label className={labelClasses}>¿Han servido en otro campa?</label>
-                            <select className={inputClasses} value={draft.servedOtherCampa || 'No'} onChange={e => setDraft({ ...draft, servedOtherCampa: e.target.value, servedAreas: isSiValue(e.target.value) ? draft.servedAreas : '' })}>
-                              <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
-                            </select>
-                          </div>
-                          {isSiValue(draft.servedOtherCampa) && (
-                            <div className={fieldStack}>
-                              <label className={labelClasses}>¿En qué áreas?</label>
-                              <ServeAreaMultiSelect
-                                inputClasses={inputClasses}
-                                disabled={fieldBlocked('serverProfileExtra')}
-                                opts={
-                                  globalConfig?.serveAreaOptions?.length
-                                    ? globalConfig.serveAreaOptions
-                                    : DEFAULT_SERVE_AREA_OPTIONS
-                                }
-                                value={draft.servedAreas || ''}
-                                onChange={(next) => setDraft({ ...draft, servedAreas: next })}
-                              />
-                            </div>
-                          )}
-                          <div className="space-y-1 sm:col-span-2">
-                            <label className={labelClasses}>¿En qué área les gustaría servir?</label>
-                            <ServeAreaMultiSelect
-                              inputClasses={inputClasses}
-                              disabled={fieldBlocked('serverProfileExtra')}
-                              opts={
-                                globalConfig?.serveAreaOptions?.length
-                                  ? globalConfig.serveAreaOptions
-                                  : DEFAULT_SERVE_AREA_OPTIONS
-                              }
-                              value={draft.preferredServeArea || ''}
-                              onChange={(next) => setDraft({ ...draft, preferredServeArea: next })}
-                            />
-                          </div>
-                          <div className={fieldStack}>
-                            <label className={labelClasses}>¿Sirve en su congre local?</label>
-                            <select className={inputClasses} value={draft.servesInCongress || 'No'} onChange={e => setDraft({ ...draft, servesInCongress: e.target.value, congressServeArea: isSiValue(e.target.value) ? draft.congressServeArea : '' })}>
-                              <option value="No">No</option><option value={SI}>{SI_LABEL}</option>
-                            </select>
-                          </div>
-                          {isSiValue(draft.servesInCongress) && (
-                            <div className={fieldStack}>
-                              <label className={labelClasses}>¿En qué área?</label>
-                              <input className={inputClasses} value={draft.congressServeArea || ''} onChange={e => setDraft({ ...draft, congressServeArea: e.target.value })} />
-                            </div>
-                          )}
-                        </div>
-                      </fieldset>
-                    )}
-                  </section>
-                )}
-                {fv('bautizosFood') && (
-                  <section className="rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800 p-3">
-                    <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">{newRegSectionLabel('Comida')}</h4>
-                    <fieldset disabled={fieldBlocked('bautizosFood')} className={`space-y-1 ${fieldBlocked('bautizosFood') ? 'opacity-70' : ''}`}>
-                      <label className={labelClasses}>Comida incluida</label>
-                      <button
-                        type="button"
-                        disabled
-                        className={`${uiFormChoiceBtn.panel} bg-amber-500 text-white border-amber-400 opacity-95 cursor-default`}
-                      >
-                        {SI_LABEL}
-                      </button>
-                      <p className="text-[10px] text-slate-500 px-1">Forma parte del costo del evento; no se puede desactivar.</p>
-                    </fieldset>
-                  </section>
-                )}
-                {fv('bautizosTransport') && (
-                  <section className="rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800 p-3">
-                    <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">{newRegSectionLabel('Transporte')}</h4>
-                    <fieldset disabled={fieldBlocked('bautizosTransport')} className={`space-y-3 ${fieldBlocked('bautizosTransport') ? 'opacity-70' : ''}`}>
-                      <div className={fieldStack}>
-                        <label className={labelClasses}>¿Desea transporte?</label>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const next = isSiValue(draft.wantsBautizosTransport) ? 'No' : SI;
-                            setDraft({
-                              ...draft,
-                              wantsBautizosTransport: next,
-                              llegaEnCarro: isSiValue(next) ? false : true,
-                              ...(isSiValue(next)
-                                ? { travelFrom: draft.travelFrom || loc, travelTo: draft.travelTo || loc }
-                                : {}),
-                            });
-                          }}
-                          className={`${uiFormChoiceBtn.panel} ${isSiValue(draft.wantsBautizosTransport) ? 'bg-indigo-500 text-white border-indigo-400' : uiFormChoiceBtn.idlePanel}`}
-                        >
-                          {formatSiNo(draft.wantsBautizosTransport)}
-                        </button>
-                      </div>
-                      <div className="space-y-3">
-                          <div className={fieldStack}>
-                            <label className={labelClasses}>Llegada</label>
-                            <div className="flex flex-wrap gap-3">
-                              <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-lg px-2.5 py-2 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  className="h-4 w-4 accent-indigo-600 rounded"
-                                  checked={!!draft.llegaEnCarro}
-                                  onChange={(e) =>
-                                    setDraft({
-                                      ...draft,
-                                      llegaEnCarro: e.target.checked,
-                                      wantsBautizosTransport: e.target.checked ? 'No' : draft.wantsBautizosTransport,
-                                    })}
-                                />
-                                Llega en carro
-                              </label>
-                            </div>
-                            <p className="text-[10px] text-slate-500">
-                              Si llega en carro, el costo de transporte es $0. Esta opción no se puede combinar con transporte organizado.
-                            </p>
-                          </div>
-                          {isSiValue(draft.wantsBautizosTransport) &&
-                            !draft.llegaEnCarro && (
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                              {fv('travelFrom') && (
-                                <div className={fieldStack}>
-                                  <label className={labelClasses}>Sale de sede</label>
-                                  <select
-                                    className={inputClasses}
-                                    value={draft.travelFrom || loc}
-                                    onChange={(e) => setDraft({ ...draft, travelFrom: e.target.value })}
-                                  >
-                                    {(currentEvent?.locations || []).map((s) => (
-                                      <option key={`bz-from-${s}`} value={s}>
-                                        {s}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </div>
-                              )}
-                              {fv('travelTo') && (
-                                <div className={fieldStack}>
-                                  <label className={labelClasses}>Regresa a sede</label>
-                                  <select
-                                    className={inputClasses}
-                                    value={draft.travelTo || loc}
-                                    onChange={(e) => setDraft({ ...draft, travelTo: e.target.value })}
-                                  >
-                                    {(currentEvent?.locations || []).map((s) => (
-                                      <option key={`bz-to-${s}`} value={s}>
-                                        {s}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                      </div>
-                    </fieldset>
-                  </section>
-                )}
-              </>
-            )}
-
+            
             {isCampa && (!restrictEditorForm || fv('scholarship') || fv('serverRole') || fv('willBeBaptized') || fv('attendanceSpecial')) && (
               <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-3 dark:border-slate-600 dark:bg-slate-800">
                 <div className="mb-3 flex items-center justify-between border-b border-slate-200 pb-1.5 dark:border-slate-600">
@@ -1601,7 +1255,7 @@ export default function NewRegistrationModal({ loc }) {
               </section>
             )}
 
-            {!isDesayunoEvent && !isBautizos && (!restrictEditorForm || fv('travelFrom') || fv('travelTo') || fv('transportExtras')) && (
+            {!isDesayunoEvent && (!restrictEditorForm || fv('travelFrom') || fv('travelTo') || fv('transportExtras')) && (
               <section className="rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800 p-3">
                 <h4 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.15em] mb-3 pb-1.5 border-b border-slate-200">{newRegSectionLabel('Transporte')}</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">

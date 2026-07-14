@@ -1,9 +1,4 @@
-import { summarizeBautizosFlatRoster } from './bautizos/bautizosCounts.js';
-import {
-  countBautizosServidoresYEmpleadosPeople,
-  participantHasBaptismChip,
-} from './bautizosParty.js';
-import { computeEventCapUsedUnitsBySede } from './eventCapUnits.js';
+import { participantHasBaptismChip } from './campaBaptism.js';
 import { computeWaitlistCountsForEvent } from './waitlistDashboardCounts.js';
 import { isPastorParticipant } from './pastorAttendance.js';
 import { isSiValue } from './publicRegistrationLogic.js';
@@ -45,22 +40,17 @@ export function computeWorkspaceSidebarBadges({ ev, visibleLocations, allPartici
   const scopeSet = new Set(scopeLocs);
   if (!evId || !et) return { ...EMPTY_WORKSPACE_SIDEBAR_BADGES };
 
-  const capBySede = et === 'Bautizos' ? computeEventCapUsedUnitsBySede(allParticipants || [], ev) : null;
   const sedeCounts = {};
   for (const loc of ev.locations || []) {
     const lk = String(loc).trim();
     if (!scopeSet.has(lk)) continue;
     const rows = data[lk] || [];
-    sedeCounts[lk] = et === 'Bautizos' ? (capBySede[lk] ?? 0) : rows.length;
+    sedeCounts[lk] = rows.length;
   }
 
   let bautizados = 0;
   let servidores = 0;
   let acompanantes = 0;
-  let asistentes = 0;
-  let empleados = 0;
-  let cortesias = 0;
-  let servidoresOnly = 0;
   let becados = 0;
   let pastores = 0;
   let attendanceLines = [];
@@ -88,7 +78,7 @@ export function computeWorkspaceSidebarBadges({ ev, visibleLocations, allPartici
     if (!participantIsActiveInEvent(p) || !participantIsActiveInRoster(p)) continue;
     const loc = String(p.location || '').trim();
     if (!scopeSet.has(loc)) continue;
-    if ((et === 'Campa' || et === 'Bautizos') && participantHasBaptismChip(p, et)) {
+    if (et === 'Campa' && participantHasBaptismChip(p, et)) {
       bautizados += 1;
     }
     if (et === 'Campa' && isSiValue(p.isServer)) {
@@ -96,38 +86,7 @@ export function computeWorkspaceSidebarBadges({ ev, visibleLocations, allPartici
     }
   }
 
-  if (et === 'Bautizos') {
-    const rosterForPlan = (allParticipants || []).filter(
-      (p) =>
-        String(p?.eventId || '') === String(evId) &&
-        participantIsActiveInEvent(p) &&
-        participantIsActiveInRoster(p) &&
-        !participantIsCancelled(p) &&
-        scopeSet.has(String(p.location || '').trim())
-    );
-    const summary = summarizeBautizosFlatRoster(rosterForPlan);
-    bautizados = summary.bautizados;
-    acompanantes = summary.companions;
-    asistentes = summary.asistentes;
-    empleados = summary.empleados;
-    cortesias = summary.cortesias;
-    servidores = summary.servidoresYEmpleados;
-    servidoresOnly = summary.servidores;
-    totalDeduped = summary.total;
-    activeTotalDeduped = totalDeduped;
-    attendanceLines = [
-      { label: 'Bautizados', count: bautizados },
-      { label: 'Acompañantes', count: acompanantes },
-      { label: 'Asistentes', count: asistentes },
-      { label: 'Servidores', count: servidoresOnly },
-      { label: 'Empleados', count: empleados },
-      { label: 'Cortesías', count: cortesias },
-    ];
-
-    const waitlistCounts = computeWaitlistCountsForEvent(allParticipants, ev, scopeLocs);
-    waitlistTotalDeduped = waitlistCounts.global.total;
-    waitlistLines = waitlistCounts.global.lines;
-  } else if (et === 'Campa') {
+  if (et === 'Campa') {
     for (const p of rosterInScope) {
       if (isSiValue(p.isScholarship)) becados += 1;
     }

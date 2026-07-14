@@ -2,7 +2,7 @@
  * `activeRosterUnitsTotal` en `app_events` (Cloud Function al cambiar participantes).
  *
  * Campa / tipos simples: delta incremental (`FieldValue.increment`).
- * Bautizos (y lotes rápidos): recálculo completo con debounce por evento.
+ * Lotes rápidos u otros casos sin delta confiable: recálculo completo con debounce por evento.
  */
 
 const admin = require('firebase-admin');
@@ -74,22 +74,9 @@ async function updateEventActiveRosterTotalFromWrite(db, eventId, before, after)
   const evSnap = await evRef.get();
   if (!evSnap.exists) return;
   const eventData = { id: eid, ...evSnap.data() };
-  const evType = String(eventData.eventType || '');
 
   const beforeRow = before && typeof before === 'object' ? { ...before } : null;
   const afterRow = after && typeof after === 'object' ? { ...after } : null;
-
-  if (evType === 'Bautizos') {
-    const beforeContrib = beforeRow ? computeRowTodosUnitContribution(beforeRow, eventData) : 0;
-    const afterContrib = afterRow ? computeRowTodosUnitContribution(afterRow, eventData) : 0;
-    const delta = afterContrib - beforeContrib;
-    if (delta === 0) return;
-    await evRef.set(
-      { activeRosterUnitsTotal: admin.firestore.FieldValue.increment(delta) },
-      { merge: true }
-    );
-    return;
-  }
 
   const beforeContrib = beforeRow ? computeRowTodosUnitContribution(beforeRow, eventData) : 0;
   const afterContrib = afterRow ? computeRowTodosUnitContribution(afterRow, eventData) : 0;

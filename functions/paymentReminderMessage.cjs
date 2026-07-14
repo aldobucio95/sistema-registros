@@ -44,33 +44,6 @@ function formatPaymentDeadlineLabel(paymentDeadlineDate) {
   return 'la fecha acordada con la oficina';
 }
 
-function getBautizosCompanionsArray(personLike) {
-  const raw = personLike?.bautizosCompanions;
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((c) => c && typeof c === 'object');
-}
-
-function isCompanionWaitlistPending(c) {
-  return c?.companionWaitlistPending === true;
-}
-
-function buildBautizosPartyDetailedLines(person, eventSnapshot) {
-  if (String(eventSnapshot?.eventType || '') !== 'Bautizos') return [];
-  const lines = [];
-  const titularName = String(person?.name || '').trim();
-  if (titularName) {
-    lines.push(`    🆔 Titular: ${titularName} — Bautizado · Activo · — · $0.00 lista`);
-  }
-  getBautizosCompanionsArray(person)
-    .filter((c) => String(c?.name || '').trim())
-    .forEach((c, idx) => {
-      const name = String(c.name || '').trim();
-      const status = isCompanionWaitlistPending(c) ? 'En espera' : 'Activo';
-      lines.push(`    🆔 Acomp. ${idx + 1}: ${name} — Acompañante · ${status} · — · $0.00 lista`);
-    });
-  return lines;
-}
-
 function buildPaymentReminderWhatsAppMessage({
   person,
   loc,
@@ -93,9 +66,6 @@ function buildPaymentReminderWhatsAppMessage({
     '',
     `    📅 Fecha del aviso: ${repLoc}`,
     `    🆔 Tu ID único es: ${vnpId}`,
-  ];
-  lines.push(...buildBautizosPartyDetailedLines(person, ev));
-  lines.push(
     `    📊 Monto pendiente por liquidar: $${debtTxt}`,
     `    📆 Fecha límite de pago: ${deadlineLabel}`,
     '',
@@ -103,8 +73,8 @@ function buildPaymentReminderWhatsAppMessage({
     '',
     'Debes liquidar tu registro antes de esa fecha. Si no se liquida a tiempo, no se garantiza la devolución del dinero abonado.',
     '',
-    WA_NOTE
-  );
+    WA_NOTE,
+  ];
   return lines.join('\n');
 }
 

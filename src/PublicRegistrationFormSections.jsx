@@ -28,7 +28,6 @@ import {
   isSiValue,
   getPricingFromSnapshotForDate,
   buildAmbosServeInSegmentOptionLabels,
-  getBautizosListPriceBreakdown,
 } from './publicRegistrationLogic.js';
 import {
   DEFAULT_ALLERGY_OPTIONS,
@@ -42,19 +41,6 @@ import SiNoFieldToggle from './components/SiNoFieldToggle.jsx';
 import PrivacyConsentBlock from './components/PrivacyConsentBlock.jsx';
 import PaymentMethodSegmentToggle, { PAYMENT_TARJETA } from './components/PaymentMethodSegmentToggle.jsx';
 import { registrationRequiresResponsivaStatus, responsivaStatusValidationLabel } from './responsivaSignLogic.js';
-import {
-  BautizosAttendanceTypeField,
-  BautizosServerParticipationFields,
-} from './BautizosEventFormBlocks.jsx';
-import { BAUTIZOS_UNDER_3_POLICY_NOTE, isBautizosUnder3YearsAtEvent, normalizeArrivalCarCount } from './bautizosParty.js';
-import {
-  BAUTIZOS_ATTENDANCE,
-  bautizosWillBeBaptizedFromAttendance,
-  bautizosShowsServerParticipation,
-  bautizosShowsServerProfileFields,
-  normalizeBautizosAttendanceType,
-  syncBautizosAttendanceServerFields,
-} from './bautizosParty.js';
 import { uiBanner, uiFormChoiceBtn, uiSectionHeading, uiSectionPanel } from './ui/uiFormatClasses.js';
 import {
   formFieldStack,
@@ -80,7 +66,6 @@ export default function PublicRegistrationFormSections({
   optionalVisibility,
   isCampa,
   isGeneral,
-  isBautizos,
   isDesayunoEvent,
   customFields,
   selectableCampaigns,
@@ -135,17 +120,11 @@ export default function PublicRegistrationFormSections({
     () => buildAmbosServeInSegmentOptionLabels({}, ambosListPricing),
     [ambosListPricing]
   );
-  const bautizosPriceHelp = useMemo(
-    () => (isBautizos && eventSnapshot ? getBautizosListPriceBreakdown(eventSnapshot) : null),
-    [eventSnapshot, isBautizos]
-  );
-  const fmtBautizosMx = (n) =>
-    `$${Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 
   const sectionShell = uiSectionPanel('slate');
   const sectionH = uiSectionHeading('slate');
 
-  const emergencyRequired = isCampa || isBautizos || isGeneral;
+  const emergencyRequired = isCampa || isGeneral;
 
   const showResponsivaField =
     isCampa && registrationRequiresResponsivaStatus(form, eventSnapshot || {});
@@ -338,9 +317,6 @@ export default function PublicRegistrationFormSections({
             hintAfter={
               <>
                 <p className="text-[10px] text-slate-500 font-semibold px-1">Edad calculada: {form.age || '—'}</p>
-                {isBautizos && isBautizosUnder3YearsAtEvent(form, eventSnapshot) ? (
-                  <p className="text-[10px] font-semibold text-amber-800 px-1 mt-1 leading-snug">{BAUTIZOS_UNDER_3_POLICY_NOTE}</p>
-                ) : null}
               </>
             }
           />
@@ -392,7 +368,7 @@ export default function PublicRegistrationFormSections({
         </div>
       </section>
 
-      {(isCampa || isGeneral || isBautizos) && (
+      {(isCampa || isGeneral) && (
         <section className={sectionShell}>
           <h4 className={sectionH}>
             {pubSectionLabel('Contacto de emergencia')} <span className="text-rose-600">*</span>
@@ -442,7 +418,7 @@ export default function PublicRegistrationFormSections({
         </section>
       )}
 
-      {(isCampa || isBautizos) &&
+      {(isCampa) &&
         sensAllowed &&
         (optionalVisibility.bloodType !== false ||
           optionalVisibility.canSwim !== false ||
@@ -519,263 +495,7 @@ export default function PublicRegistrationFormSections({
         </section>
         )}
 
-      {isBautizos && (
-        <>
-          {optionalVisibility.bautizosAttendanceType !== false && (
-            <section className={sectionShell}>
-              <h4 className={sectionH}>
-                {pubSectionLabel('Tipo de asistencia')} <span className="text-rose-600">*</span>
-              </h4>
-              <BautizosAttendanceTypeField
-                value={form.bautizosAttendanceType}
-                entry={form}
-                onChange={(v) => {
-                  const t = normalizeBautizosAttendanceType(v);
-                  setForm((prev) =>
-                    syncBautizosAttendanceServerFields({
-                      ...prev,
-                      bautizosAttendanceType: v,
-                      willBeBaptized: bautizosWillBeBaptizedFromAttendance(t),
-                    })
-                  );
-                }}
-                disabled={submitting}
-                labelClasses={labelClasses}
-                variant="public"
-              />
-              <BautizosServerParticipationFields
-                entry={form}
-                onEntryChange={(next) => setForm(next)}
-                disabled={submitting}
-                labelClasses={labelClasses}
-                formatSiNo={formatSiNo}
-                choiceBtnClass={(on) =>
-                  `${uiFormChoiceBtn.public} ${on ? 'bg-amber-500 text-white border-amber-400' : uiFormChoiceBtn.idlePublic}`
-                }
-              />
-              {optionalVisibility.serverProfileExtra !== false &&
-                bautizosShowsServerProfileFields(form) && (
-                <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-600">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-amber-900 dark:text-amber-200 mb-1">
-                    {pubSectionLabel('Información adicional de servidor')} <span className="font-normal normal-case text-slate-500">(opcional)</span>
-                  </p>
-                  <p className="text-[10px] text-slate-500 mb-3 leading-snug">
-                    Marque «Participa como servidor» arriba si aplica; aquí solo datos de pareja, hijos y áreas de servicio.
-                  </p>
-                  <div className="p-3 bg-amber-50/50 border border-amber-100 rounded-lg dark:bg-amber-950 dark:border-amber-700">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div className={fieldStack}>
-                        <label className={labelClasses}>¿Es casado y va con su esposo(a)?</label>
-                        <select
-                          className={inputClasses}
-                          value={form.isMarried || 'No'}
-                          onChange={(e) =>
-                            setForm((prev) => ({
-                              ...prev,
-                              isMarried: e.target.value,
-                              spouseName: isSiValue(e.target.value) ? prev.spouseName : '',
-                            }))
-                          }
-                        >
-                          <option value="No">No</option>
-                          <option value={SI}>{SI_LABEL}</option>
-                        </select>
-                      </div>
-                      {isSiValue(form.isMarried) && (
-                        <div className={fieldStack}>
-                          <label className={labelClasses}>Nombre de pareja</label>
-                          <input className={inputClasses} value={form.spouseName || ''} onChange={(e) => setField('spouseName', e.target.value)} />
-                        </div>
-                      )}
-                      <div className={fieldStack}>
-                        <label className={labelClasses}>¿Va con hijos?</label>
-                        <select
-                          className={inputClasses}
-                          value={form.goesWithChildren || 'No'}
-                          onChange={(e) =>
-                            setForm((prev) => ({
-                              ...prev,
-                              goesWithChildren: e.target.value,
-                              childrenCount: isSiValue(e.target.value) ? prev.childrenCount : '',
-                            }))
-                          }
-                        >
-                          <option value="No">No</option>
-                          <option value={SI}>{SI_LABEL}</option>
-                        </select>
-                      </div>
-                      {isSiValue(form.goesWithChildren) && (
-                        <div className={fieldStack}>
-                          <label className={labelClasses}>¿Cuántos?</label>
-                          <input
-                            type="number"
-                            min="1"
-                            className={inputClasses}
-                            placeholder="Número"
-                            value={form.childrenCount || ''}
-                            onChange={(e) => setField('childrenCount', e.target.value)}
-                          />
-                        </div>
-                      )}
-                      <div className={fieldStack}>
-                        <label className={labelClasses}>¿Sirven en sus congresos?</label>
-                        <select
-                          className={inputClasses}
-                          value={form.servesInCongress || 'No'}
-                          onChange={(e) =>
-                            setForm((prev) => ({
-                              ...prev,
-                              servesInCongress: e.target.value,
-                              congressServeArea: isSiValue(e.target.value) ? prev.congressServeArea : '',
-                            }))
-                          }
-                        >
-                          <option value="No">No</option>
-                          <option value={SI}>{SI_LABEL}</option>
-                        </select>
-                      </div>
-                      {isSiValue(form.servesInCongress) && (
-                        <div className={fieldStack}>
-                          <label className={labelClasses}>¿En qué área?</label>
-                          <input className={inputClasses} value={form.congressServeArea || ''} onChange={(e) => setField('congressServeArea', e.target.value)} />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </section>
-          )}
-          {optionalVisibility.bautizosFood !== false && (
-          <section className={sectionShell}>
-            <h4 className={sectionH}>
-              {pubSectionLabel('Comida')} <span className="text-rose-600">*</span>
-            </h4>
-            {bautizosPriceHelp ? (
-              <p className="text-[10px] text-slate-500 mb-3">
-                Comida {fmtBautizosMx(bautizosPriceHelp.food)} (incluida) · transporte del evento {fmtBautizosMx(bautizosPriceHelp.transport)} · comida +
-                transporte {fmtBautizosMx(bautizosPriceHelp.both)}. Si marcas llegar y regresar en carro, el transporte no se cobra.{' '}
-                {BAUTIZOS_UNDER_3_POLICY_NOTE}
-              </p>
-            ) : null}
-            <div className={fieldStack}>
-              <label className={labelClasses}>Comida incluida</label>
-              <button
-                type="button"
-                disabled
-                className={`${uiFormChoiceBtn.public} bg-amber-500 text-white border-amber-400 opacity-95 cursor-default`}
-              >
-                {SI_LABEL}
-              </button>
-              <p className="text-[10px] text-slate-500 px-1">Forma parte del costo del evento; no se puede desactivar.</p>
-            </div>
-          </section>
-          )}
-          {optionalVisibility.bautizosTransport !== false && (
-          <section className={sectionShell}>
-            <h4 className={sectionH}>
-              {pubSectionLabel('Transporte')} <span className="text-rose-600">*</span>
-            </h4>
-            <p className="text-[10px] text-slate-500 mb-3">
-              Debes elegir transporte del evento o llegada en carro (opciones excluyentes). Si llegas en tu carro, el costo de transporte es $0.
-            </p>
-            <div className="space-y-3">
-              <div className={fieldStack}>
-                <label className={labelClasses}>¿Desea transporte?</label>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const next = isSiValue(form.wantsBautizosTransport) ? 'No' : SI;
-                    setForm((prev) => ({
-                      ...prev,
-                      wantsBautizosTransport: next,
-                      llegaEnCarro: isSiValue(next) ? false : true,
-                      ...(isSiValue(next)
-                        ? { travelFrom: prev.travelFrom || loc, travelTo: prev.travelTo || loc }
-                        : {}),
-                    }));
-                  }}
-                  className={`${uiFormChoiceBtn.public} ${
-                      isSiValue(form.wantsBautizosTransport) ? 'bg-indigo-500 text-white border-indigo-400' : uiFormChoiceBtn.idlePublic
-                    }`}
-                >
-                  {formatSiNo(form.wantsBautizosTransport)}
-                </button>
-              </div>
-              <div className="space-y-3">
-                  <div className={fieldStack}>
-                    <label className={labelClasses}>Llegada</label>
-                    <div className="flex flex-wrap gap-3">
-                      <label className={`${uiFormChoiceBtn.public} cursor-pointer bg-white text-slate-600 border-slate-200 justify-start`}>
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 accent-indigo-600 rounded"
-                          checked={!!form.llegaEnCarro}
-                          onChange={(e) => {
-                            const checked = e.target.checked;
-                            setForm((prev) => ({
-                              ...prev,
-                              llegaEnCarro: checked,
-                              wantsBautizosTransport: checked ? 'No' : SI,
-                              ...(checked
-                                ? {}
-                                : {
-                                    travelFrom: prev.travelFrom || loc,
-                                    travelTo: prev.travelTo || loc,
-                                  }),
-                            }));
-                          }}
-                        />
-                        Llega en carro
-                      </label>
-                    </div>
-                    <p className="text-[10px] text-slate-500">
-                      Si llega en carro, el costo de transporte es $0. Esta opción no se puede combinar con transporte organizado.
-                    </p>
-                  </div>
-                  {!form.llegaEnCarro && isSiValue(form.wantsBautizosTransport) && (showTravelFrom || showTravelTo) && (
-                    <div className="grid grid-cols-1 gap-3">
-                      {showTravelFrom && (
-                        <div className={fieldStack}>
-                          <label className={labelClasses}>Sale de sede</label>
-                          <select
-                            className={inputClasses}
-                            value={form.travelFrom || loc}
-                            onChange={(e) => setField('travelFrom', e.target.value)}
-                          >
-                            {locations.map((s) => (
-                              <option key={`pub-bz-${s}`} value={s}>
-                                {s}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                      {showTravelTo && (
-                        <div className={fieldStack}>
-                          <label className={labelClasses}>Regresa a sede</label>
-                          <select
-                            className={inputClasses}
-                            value={form.travelTo || loc}
-                            onChange={(e) => setField('travelTo', e.target.value)}
-                          >
-                            {locations.map((s) => (
-                              <option key={`pub-bz2-${s}`} value={s}>
-                                {s}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-            </div>
-          </section>
-          )}
-        </>
-      )}
-
+      
       {showCampaTipoAsistenciaSection && (
         <section className={sectionShell}>
           <h4 className={sectionH}>
@@ -1006,7 +726,7 @@ export default function PublicRegistrationFormSections({
             </div>
           )}
 
-          {optionalVisibility.serverProfileExtra !== false && isSiValue(form.isServer) && !isBautizos && (
+          {optionalVisibility.serverProfileExtra !== false && isSiValue(form.isServer) && (
             <div className="mt-3 p-3 bg-amber-50/50 border border-amber-100 rounded-lg dark:bg-amber-950 dark:border-amber-700">
               <p className="text-[10px] font-black text-amber-700 dark:text-amber-300 uppercase tracking-widest mb-2">
                 Información adicional de servidor
@@ -1148,7 +868,7 @@ export default function PublicRegistrationFormSections({
         </section>
       )}
 
-      {!isDesayunoEvent && !isBautizos && optionalVisibility.transportExtras !== false && (
+      {!isDesayunoEvent && optionalVisibility.transportExtras !== false && (
         <section className={sectionShell}>
           <h4 className={sectionH}>
             {pubSectionLabel('Transporte')} <span className="text-rose-600">*</span>
@@ -1212,7 +932,7 @@ export default function PublicRegistrationFormSections({
           {pubSectionLabel('Información de pago')} <span className="text-rose-600">*</span>
         </h4>
         <div className={formPaymentSectionBody}>
-          {optionalVisibility.discountCampaign !== false && !isBautizos && selectableCampaigns.length > 0 && (
+          {optionalVisibility.discountCampaign !== false && selectableCampaigns.length > 0 && (
             <div className={fieldStack}>
               <label className={labelClasses}>
                 Campaña de descuento <span className="text-slate-400 font-normal">(puedes dejar «Automática»)</span>

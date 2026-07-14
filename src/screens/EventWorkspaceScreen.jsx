@@ -3,7 +3,6 @@ import QRCode from 'qrcode';
 import {
   Activity, ArrowLeft, ArrowRight, BarChart3, Bug, Bus, Calendar, CalendarRange, CheckCircle2, Church, CreditCard, DollarSign, Edit3,
   Eye, EyeOff, FileSignature, FileSpreadsheet, GraduationCap, History, LayoutDashboard,   ListPlus, LogOut, MapPin, Menu,
-  UserPlus,
   MessageCircle, MessageSquare, Moon, Percent, Plus, QrCode, Receipt, RefreshCw, Scissors, Settings2, ShieldAlert, Sun, Download,
   TableProperties, Trash2, UserCircle, UserCog, Users, XCircle, AlertTriangle, ChevronDown,
 } from 'lucide-react';
@@ -29,10 +28,8 @@ import {
   workspaceTabPreloadProps,
   workspaceLocationTabPreloadProps,
 } from '../features/workspace/WorkspaceLazyPages.jsx';
-import BautizosCarDataPromptModal from '../components/transport/BautizosCarDataPromptModal.jsx';
 import AppVersionBadge from '../AppVersionBadge.jsx';
 import { EditRegistryModalFormFieldsLazy } from '../features/registryEdit/EditRegistryModalFormFieldsLazy.jsx';
-import { collectCarColorSuggestions } from '../bautizosCarMeta.js';
 import { isCardPaymentAllowedForLocation } from '../cardPaymentEligibility.js';
 import { isResponsivaEventSectionVisible } from '../responsivaSignLogic.js';
 import {
@@ -485,7 +482,7 @@ export default function EventWorkspaceScreen() {
           {shell.isPanelNavSectionAllowed('dashboard') && (
           <button {...workspaceTabPreloadProps('Summary')} onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, "Summary")} className={workspaceSidebarNavClassDesktop(shell.activeTab === 'Summary')}><div className={uiSidebar.navItemInnerNavDesktop}><BarChart3 size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'Summary' ? 'text-indigo-400' : '')} /><span className="font-bold">Dashboard</span></div>{shell.activeTab === 'Summary' && <div className={`${uiSidebar.activeDot} bg-indigo-400`} />}</button>
           )}
-          {(shell.isCampa || shell.isBautizos) && shell.isPanelNavSectionAllowed('bautizados') && (
+          {shell.isCampa && shell.isPanelNavSectionAllowed('bautizados') && (
             <button
               type="button"
               {...workspaceTabPreloadProps('Bautizados')}
@@ -507,7 +504,7 @@ export default function EventWorkspaceScreen() {
               </div>
             </button>
           )}
-          {(shell.isCampa || shell.isBautizos) && shell.isPanelNavSectionAllowed('serversPage') && (
+          {shell.isCampa && shell.isPanelNavSectionAllowed('serversPage') && (
             <button
               type="button"
               {...workspaceTabPreloadProps('ServersPage')}
@@ -516,18 +513,12 @@ export default function EventWorkspaceScreen() {
             >
               <div className={uiSidebar.navItemInnerNavDesktop}>
                 <Users size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'ServersPage' ? 'text-amber-400' : '')} />
-                <span className="font-bold truncate">
-                  {shell.isBautizos ? 'Servidores y empleados' : 'Página Servidores'}
-                </span>
+                <span className="font-bold truncate">Página Servidores</span>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
                 <div
                   className={sidebarSedeStyleCountBadge(shell.activeTab === 'ServersPage', true)}
-                  title={
-                    shell.isBautizos
-                      ? 'Servidores y empleados activos en sedes visibles (misma regla que la página)'
-                      : 'Servidores activos en sedes visibles para tu usuario'
-                  }
+                  title="Servidores activos en sedes visibles para tu usuario"
                 >
                   {shell.workspaceSidebarBadges?.servidores ?? 0}
                 </div>
@@ -535,7 +526,7 @@ export default function EventWorkspaceScreen() {
               </div>
             </button>
           )}
-          {shell.isPanelNavSectionAllowed('becados') && !shell.isBautizos && (
+          {shell.isPanelNavSectionAllowed('becados') && (
             <button
               {...workspaceTabPreloadProps('Becados')}
               onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'Becados')}
@@ -546,56 +537,6 @@ export default function EventWorkspaceScreen() {
                 <span className="font-bold">Becados</span>
               </div>
               {shell.activeTab === 'Becados' && <div className={`${uiSidebar.activeDot} bg-purple-400`} />}
-            </button>
-          )}
-          {shell.isPanelNavSectionAllowed('becados') && shell.isBautizos && (
-            <button
-              type="button"
-              {...workspaceTabPreloadProps('BautizosCompanions')}
-              onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'BautizosCompanions')}
-              className={workspaceSidebarNavClassDesktop(shell.activeTab === 'BautizosCompanions')}
-            >
-              <div className={uiSidebar.navItemInnerNavDesktop}>
-                <UserPlus size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'BautizosCompanions' ? 'text-teal-400' : '')} />
-                <span className="font-bold truncate">Acompañantes</span>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <div
-                  className={sidebarSedeStyleCountBadge(shell.activeTab === 'BautizosCompanions', true)}
-                  title="Acompañantes únicos (plan canónico) en sedes visibles"
-                >
-                  {shell.workspaceSidebarBadges?.acompanantes ?? 0}
-                </div>
-                {shell.activeTab === 'BautizosCompanions' && <div className={`${uiSidebar.activeDot} bg-teal-400`} />}
-              </div>
-            </button>
-          )}
-          {shell.isBautizos && (
-            <button
-              type="button"
-              {...workspaceTabPreloadProps('BautizosAsistentes')}
-              onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'BautizosAsistentes')}
-              className={workspaceSidebarNavClassDesktop(shell.activeTab === 'BautizosAsistentes')}
-            >
-              <div className={uiSidebar.navItemInnerNavDesktop}>
-                <Users size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'BautizosAsistentes' ? 'text-indigo-400' : '')} />
-                <span className="font-bold truncate">Asistentes</span>
-              </div>
-              {shell.activeTab === 'BautizosAsistentes' && <div className={`${uiSidebar.activeDot} bg-indigo-400`} />}
-            </button>
-          )}
-          {shell.isBautizos && (
-            <button
-              type="button"
-              {...workspaceTabPreloadProps('BautizosCortesias')}
-              onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'BautizosCortesias')}
-              className={workspaceSidebarNavClassDesktop(shell.activeTab === 'BautizosCortesias')}
-            >
-              <div className={uiSidebar.navItemInnerNavDesktop}>
-                <Users size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'BautizosCortesias' ? 'text-rose-400' : '')} />
-                <span className="font-bold truncate">Cortesías</span>
-              </div>
-              {shell.activeTab === 'BautizosCortesias' && <div className={`${uiSidebar.activeDot} bg-rose-400`} />}
             </button>
           )}
           {shell.hasAdminRights && shell.isPanelNavSectionAllowed('responsivas') && isResponsivaEventSectionVisible(shell.currentEvent) && (
@@ -673,11 +614,7 @@ export default function EventWorkspaceScreen() {
                   {!shell.isLocOpen(loc) && <span className="text-[7px] lg:text-[7px] bg-red-500/20 text-red-400 px-1 py-px rounded uppercase font-bold border border-red-500/30">Cerrada</span>}
                   <div
                     className={sidebarSedeStyleCountBadge(shell.activeTab === loc, true)}
-                    title={
-                      shell.isBautizos
-                        ? 'Personas activas en esta sede (misma base deduplicada que el dashboard y el cupo)'
-                        : 'Inscritos activos en esta sede (total en base de datos, sin filtros de lista)'
-                    }
+                    title="Inscritos activos en esta sede (total en base de datos, sin filtros de lista)"
                   >
                     {shell.workspaceSidebarBadges?.sedeCounts?.[loc] ?? (shell.data[loc] || []).length}
                   </div>
@@ -1325,7 +1262,7 @@ export default function EventWorkspaceScreen() {
       {shell.promoteOverCapConfirmModalEl}
 
       {/* PAYMENT MODAL */}
-      {shell.paymentModal.isOpen && !shell.bautizosCarDataPrompt?.isOpen && (
+      {shell.paymentModal.isOpen && (
         <div className={uiOverlay.modalLight}>
           <form
             className="bg-white rounded-2xl p-6 shadow-xl w-full max-w-sm animate-in zoom-in-95 duration-200"
@@ -1416,39 +1353,6 @@ export default function EventWorkspaceScreen() {
           </form>
         </div>
       )}
-
-      {shell.bautizosCarDataPrompt?.isOpen ? (
-        <BautizosCarDataPromptModal
-          isOpen
-          hostPerson={shell.bautizosCarDataPrompt.hostPerson}
-          companions={shell.bautizosCarDataPrompt.companions}
-          plan={shell.currentEvent?.transportPlanning}
-          hostSourceKey={shell.bautizosCarDataPrompt.hostSourceKey}
-          colorSuggestions={collectCarColorSuggestions(shell.currentEvent?.transportPlanning)}
-          onCancel={() => {
-            const resolve = shell.bautizosCarDataPrompt.onResolve;
-            shell.setBautizosCarDataPrompt({
-              isOpen: false,
-              hostPerson: null,
-              companions: [],
-              hostSourceKey: '',
-              onResolve: null,
-            });
-            resolve?.(false);
-          }}
-          onConfirm={(patches) => {
-            const resolve = shell.bautizosCarDataPrompt.onResolve;
-            shell.setBautizosCarDataPrompt({
-              isOpen: false,
-              hostPerson: null,
-              companions: [],
-              hostSourceKey: '',
-              onResolve: null,
-            });
-            resolve?.(patches);
-          }}
-        />
-      ) : null}
 
       {shell.registrationCommentModal?.isOpen && (
         <div className={uiOverlay.modalLight}>

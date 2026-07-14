@@ -1,17 +1,44 @@
 import { isSiValue } from './publicRegistrationLogic.js';
-import { flattenBautizosParticipantsForRead } from './bautizos/bautizosLegacyReadAdapter.js';
 import {
   BAUTIZOS_ATTENDANCE,
-  buildBautizadoMetaForCanonical,
-  buildBautizosCanonicalCompanionPlan,
   buildBautizosSourceLinkMap,
   getBautizosCompanionsArray,
-  isBautizosLapInfantCompanion,
   normalizeArrivalCarCount,
-  normalizeBautizosAttendanceType,
-  parseLinkSourceKey,
   resolveBautizosUltimateSourceKey,
 } from './bautizosParty.js';
+
+/** v2: identity flatten (Bautizos companions/party model removed). */
+function flattenBautizosParticipantsForRead(roster) {
+  return Array.isArray(roster) ? roster : [];
+}
+
+function isBautizosLapInfantCompanion() {
+  return false;
+}
+
+function normalizeBautizosAttendanceType(raw) {
+  return String(raw || '').trim().toLowerCase() || 'bautizado';
+}
+
+function buildBautizadoMetaForCanonical() {
+  return { bautizadoIdSet: new Set(), bautizadoNameSet: new Set(), vnpToBautizadoId: new Map() };
+}
+
+function buildBautizosCanonicalCompanionPlan() {
+  return new Map();
+}
+
+function parseLinkSourceKey(sourceKey) {
+  const sk = String(sourceKey || '').trim();
+  if (sk.startsWith('p:')) return { kind: 'participant', id: sk.slice(2) };
+  if (sk.startsWith('c:')) {
+    const rest = sk.slice(2);
+    const sep = rest.indexOf('::');
+    if (sep < 0) return { kind: 'companion', hostId: rest, companionId: '' };
+    return { kind: 'companion', hostId: rest.slice(0, sep), companionId: rest.slice(sep + 2) };
+  }
+  return null;
+}
 
 const PARTICIPANT_STATUS_ARCHIVED = 'archived';
 const PARTICIPANT_STATUS_CANCELLED = 'cancelled';
@@ -47,16 +74,12 @@ function resolveLlegaEnCarro(personLike) {
 
 /** Quién toma camión de ida (misma idea que filtro «go-bus» en listas). */
 export function personGoesByEventBus(personLike, eventType) {
-  if (String(eventType || '').trim() === 'Bautizos') {
-    return isSiValue(personLike?.wantsBautizosTransport) && !resolveLlegaEnCarro(personLike);
-  }
+  void eventType;
   return !resolveLlegaEnCarro(personLike);
 }
 
 export function personArrivesByCarForPlanning(personLike, eventType) {
-  if (String(eventType || '').trim() === 'Bautizos') {
-    return resolveLlegaEnCarro(personLike);
-  }
+  void eventType;
   return resolveLlegaEnCarro(personLike);
 }
 

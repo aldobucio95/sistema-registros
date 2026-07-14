@@ -84,6 +84,8 @@ export default defineConfig(({ command }) => {
           ],
         },
         workbox: {
+          // AppRoot chunk grew past the 2 MiB default after AppMain extract/split.
+          maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
           navigateFallback: 'index.html',
           runtimeCaching: [

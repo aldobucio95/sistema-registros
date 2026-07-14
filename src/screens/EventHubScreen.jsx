@@ -764,18 +764,29 @@ export default function EventHubScreen() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {visibleEvents.map(ev => {
                 const evtPricing = getPricingFromSnapshot(ev);
+                const isLegacyBautizosEvent = String(ev.eventType || '').trim() === 'Bautizos';
                 return (
                   <div
                     key={ev.id}
-                    draggable={hasAdminRights}
-                    onDragStart={(e) => { if (hasAdminRights) { setDraggedEventId(ev.id); e.dataTransfer.effectAllowed = "move"; } }}
+                    draggable={hasAdminRights && !isLegacyBautizosEvent}
+                    onDragStart={(e) => { if (hasAdminRights && !isLegacyBautizosEvent) { setDraggedEventId(ev.id); e.dataTransfer.effectAllowed = "move"; } }}
                     onDragOver={handleDragOver}
                     onDrop={(e) => handleDrop(e, ev.id)}
                     onDragEnd={() => setDraggedEventId(null)}
-                    className={`bg-white rounded-2xl p-4 shadow-sm border border-slate-200 hover:shadow-lg hover:border-indigo-300 transition-all relative group flex flex-col justify-between ${hasAdminRights ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} ${draggedEventId === ev.id ? 'opacity-40 scale-95' : 'opacity-100 scale-100'}`}
-                    onClick={() => goTo('events', ev.id, resolvePreferredLandingTab(currentUser, ev))}
+                    className={`bg-white rounded-2xl p-4 shadow-sm border border-slate-200 transition-all relative group flex flex-col justify-between ${
+                      isLegacyBautizosEvent
+                        ? 'opacity-80 cursor-not-allowed border-amber-200'
+                        : `hover:shadow-lg hover:border-indigo-300 ${hasAdminRights ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`
+                    } ${draggedEventId === ev.id ? 'opacity-40 scale-95' : 'opacity-100 scale-100'}`}
+                    onClick={() => {
+                      if (isLegacyBautizosEvent) {
+                        showToast('Los eventos tipo Bautizos ya no están soportados. Usa Campa (bautizados) o archiva/elimina este evento.');
+                        return;
+                      }
+                      goTo('events', ev.id, resolvePreferredLandingTab(currentUser, ev));
+                    }}
                   >
-                    {hasAdminRights && <div className="absolute top-3 right-3 text-slate-200 opacity-0 group-hover:opacity-100 transition-opacity"><GripVertical size={18} /></div>}
+                    {hasAdminRights && !isLegacyBautizosEvent && <div className="absolute top-3 right-3 text-slate-200 opacity-0 group-hover:opacity-100 transition-opacity"><GripVertical size={18} /></div>}
                     <div>
                       <div className="bg-indigo-50 text-indigo-600 w-10 h-10 rounded-xl flex items-center justify-center mb-2.5"><CalendarRange size={20} /></div>
                       
@@ -791,8 +802,11 @@ export default function EventHubScreen() {
                         )}
                       </div>
 
-                      <div className="flex items-center gap-2 mt-2">
-                        <span className={uiBadgeSoft('indigo')}>{ev.eventType}</span>
+                      <div className="flex items-center gap-2 mt-2 flex-wrap">
+                        <span className={uiBadgeSoft(isLegacyBautizosEvent ? 'amber' : 'indigo')}>{ev.eventType}</span>
+                        {isLegacyBautizosEvent ? (
+                          <span className={uiBadgeSoft('amber')} title="Tipo de evento retirada en v2">No soportado</span>
+                        ) : null}
                         
                         {hasAdminRights ? (
                           <label className="relative flex items-center gap-1.5 text-[10px] font-bold text-slate-600 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 px-2.5 py-1 rounded-full border border-slate-200 hover:border-indigo-200 transition-colors uppercase cursor-pointer group shadow-sm overflow-hidden" onClick={e => e.stopPropagation()} title="Cambiar fecha del evento">
@@ -829,11 +843,7 @@ export default function EventHubScreen() {
                       </div>
                       <div
                         className="space-y-1 text-center min-w-0"
-                        title={
-                          ev.eventType === 'Bautizos'
-                            ? 'Igual que «Registros totales» del dashboard (modo Todos): filas activas en sedes del evento más acompañantes canónicos con nombre (cada persona una vez).'
-                            : 'Igual que «Registros totales» del dashboard (modo Todos): inscritos activos en sedes del evento. En Campa, servidor «Ambos» puede contar ×2 si está activada la opción en costo real.'
-                        }
+                        title="Igual que «Registros totales» del dashboard (modo Todos): inscritos activos en sedes del evento. En Campa, servidor «Ambos» puede contar ×2 si está activada la opción en costo real."
                       >
                         <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Registros totales</p>
                         <p className="text-base font-black text-indigo-600 tabular-nums">

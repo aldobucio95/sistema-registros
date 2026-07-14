@@ -1,185 +1,6 @@
 /**
- * Registro global: lista en cascada titular → acompañantes (una fila por persona).
+ * Registro global: lista titular por fila (sin expansión de acompañantes).
  */
-import {
-  BAUTIZOS_ATTENDANCE,
-  BAUTIZOS_SERVER_ASSIGNMENT_LABEL,
-  bautizosCompanionParticipatesAsServer,
-  buildActiveRegistrantMetaForCompanionDedupe,
-  buildBautizosCanonicalCompanionPlan,
-  getBautizosCompanionsArray,
-  isBautizosCompanionBaptized,
-  isBautizosPastorAttendance,
-} from './bautizosParty.js';
-import { normalizeBirthDateToIso } from './birthDateIsoUtils.js';
-import {
-  isCompanionWaitlistPending,
-  isCompanionWaitlistVirtualParticipant,
-  resolveCompanionWaitlistVirtualLocation,
-} from './bautizosCompanionWaitlist.js';
-
-function buildCompanionPartyPerson(host, companion, index) {
-  const hostId = String(host?.id || '').trim();
-  const cid = String(companion?.id || index).trim();
-  const nm = String(companion?.name || '').trim();
-  const baptized = isBautizosCompanionBaptized(companion);
-  const rel = String(companion?.relationship || companion?.linkedCompanionRelationship || '').trim();
-  return {
-    id: `gr-companion:${hostId}:${cid}`,
-    eventId: host?.eventId,
-    name: nm,
-    location: String(host?.location || '').trim(),
-    status: host?.status || 'active',
-    gender: String(companion?.gender || '').trim(),
-    age: companion?.age != null ? String(companion.age).trim() : '',
-    birthDate: normalizeBirthDateToIso(companion?.birthDate) || '',
-    phone: String(companion?.phone || '').trim(),
-    vnpPersonId: String(companion?.vnpPersonId || '').trim(),
-    relationship: rel,
-    baptismShirtSize: companion?.baptismShirtSize || '',
-    bautizosAttendanceType: baptized
-      ? BAUTIZOS_ATTENDANCE.bautizado
-      : String(companion?.bautizosAttendanceType || '').trim(),
-    willBeBaptized: companion?.willBeBaptized,
-    wantsBautizosTransport: companion?.wantsBautizosTransport,
-    isServer: bautizosCompanionParticipatesAsServer(companion) ? 'Si' : 'No',
-    serverAssignment: bautizosCompanionParticipatesAsServer(companion)
-      ? String(companion?.serverAssignment || '').trim() || BAUTIZOS_SERVER_ASSIGNMENT_LABEL
-      : '',
-    assignedServeArea: String(companion?.assignedServeArea || '').trim(),
-    preferredServeArea: String(companion?.preferredServeArea || '').trim(),
-    servesInCongress: companion?.servesInCongress || 'No',
-    congressServeArea: companion?.congressServeArea || '',
-    registeredAt: companion?.registeredAt || host?.registeredAt,
-    __globalRegistryCompanionRow: true,
-    __hostRegistrantId: hostId,
-    __sourceRegistrantName: String(host?.name || '').trim(),
-    __companionRelationship: rel,
-    ...(isBautizosPastorAttendance(host) ? { __pastorCourtesyCompanion: true } : {}),
-    ...(isCompanionWaitlistPending(companion) ? { __companionWaitlistPending: true } : {}),
-  };
-}
-
-function companionSubLabel(person, hostPerson) {
-  const hostName = String(hostPerson?.name || person?.__sourceRegistrantName || '').trim();
-  const rel = String(person?.__companionRelationship || person?.relationship || '').trim();
-  if (hostName && rel) return `Acompañante de ${hostName} · ${rel}`;
-  if (hostName) return `Acompañante de ${hostName}`;
-  return 'Acompañante del titular';
-}
-
-function groupCanonicalCompanionsByHost(plan, titularIdSet) {
-  const byHost = new Map();
-  for (const [canonKey, entry] of plan) {
-    const hostId = String(entry?.registrantId || '').trim();
-    if (!hostId || !titularIdSet.has(hostId)) continue;
-    if (!byHost.has(hostId)) byHost.set(hostId, []);
-    byHost.get(hostId).push({ canonKey, entry });
-  }
-  return byHost;
-}
-
-/**
- * @param {object[]} titulars — titulares de la sección (ya filtrados)
- * @param {object[]} rosterForPlan — roster del evento para dedupe
- * @param {{ section?: 'active'|'waitlist'|'cancelled' }} [options]
- * @returns {GlobalRegistryPartyRow[]}
- */
-export function buildGlobalRegistryPartyRowsFromTitulars(titulars, rosterForPlan, options = {}) {
-  const list = Array.isArray(titulars) ? titulars : [];
-  if (list.length === 0) return [];
-  const roster = Array.isArray(rosterForPlan) ? rosterForPlan : list;
-  const meta = buildActiveRegistrantMetaForCompanionDedupe(roster);
-  const titularIdSet = new Set(list.map((p) => String(p?.id || '').trim()).filter(Boolean));
-  const plan = buildBautizosCanonicalCompanionPlan(roster, meta, {
-    includeBaptizedCompanions: true,
-  });
-  const companionsByHost = groupCanonicalCompanionsByHost(plan, titularIdSet);
-  const out = [];
-
-  for (const host of list) {
-    const hostId = String(host?.id || '').trim();
-    if (!hostId) continue;
-
-    out.push({
-      key: `titular:${hostId}`,
-      person: host,
-      isSubRegistration: false,
-      disableExpand: false,
-    });
-
-    const nested = [];
-    const baptizedStandalone = [];
-    for (const { canonKey, entry } of companionsByHost.get(hostId) || []) {
-      const c = entry?.sourceCompanion || {};
-      if (!String(c?.name || '').trim()) continue;
-      const person = buildCompanionPartyPerson(entry.sourceRegistrant || host, c, 0);
-      if (isBautizosCompanionBaptized(c)) {
-        baptizedStandalone.push({ person, canonKey });
-      } else {
-        nested.push({ person, canonKey });
-      }
-    }
-
-    for (const { person, canonKey } of nested) {
-      out.push({
-        key: `nested:${canonKey}`,
-        person,
-        hostPerson: host,
-        isSubRegistration: true,
-        disableExpand: true,
-        subRegistrationLabel: companionSubLabel(person, host),
-      });
-    }
-
-    for (const c of getBautizosCompanionsArray(host)) {
-      if (!isCompanionWaitlistPending(c) || !String(c?.name || '').trim()) continue;
-      const person = buildCompanionPartyPerson(host, c, 0);
-      out.push({
-        key: `wl-nested:${hostId}:${String(c?.id || '')}`,
-        person,
-        hostPerson: host,
-        isSubRegistration: true,
-        disableExpand: true,
-        subRegistrationLabel: companionSubLabel(person, host),
-        companionWaitlistPending: true,
-      });
-    }
-    for (const { person, canonKey } of baptizedStandalone) {
-      const hostName = String(host?.name || '').trim();
-      out.push({
-        key: `baptized:${canonKey}`,
-        person,
-        hostPerson: host,
-        isSubRegistration: false,
-        disableExpand: true,
-        subRegistrationLabel: hostName
-          ? `Bautizado · antes en el grupo de ${hostName}`
-          : 'Bautizado (registro propio)',
-      });
-    }
-  }
-
-  return out;
-}
-
-export function buildGlobalRegistryPartyRowFromWaitlistVirtual(virtualPerson, rosterForPlan = []) {
-  const hostName = String(virtualPerson?._companionWaitlistHostName || '').trim();
-  const location = resolveCompanionWaitlistVirtualLocation(virtualPerson, rosterForPlan);
-  const person =
-    location && String(virtualPerson?.location || '').trim() !== location
-      ? { ...virtualPerson, location }
-      : virtualPerson;
-  return {
-    key: `cw:${String(virtualPerson?.id || '')}`,
-    person,
-    isSubRegistration: false,
-    disableExpand: true,
-    subRegistrationLabel: hostName
-      ? `Acompañante en espera · grupo de ${hostName}`
-      : 'Acompañante en lista de espera',
-  };
-}
 
 function titularOnlyPartyRows(titulars) {
   return (titulars || []).map((person) => ({
@@ -191,47 +12,41 @@ function titularOnlyPartyRows(titulars) {
 }
 
 /**
+ * @param {object[]} titulars — titulares de la sección (ya filtrados)
+ * @param {object[]} _rosterForPlan — reservado (compat)
+ * @param {{ section?: 'active'|'waitlist'|'cancelled' }} [_options]
+ * @returns {GlobalRegistryPartyRow[]}
+ */
+export function buildGlobalRegistryPartyRowsFromTitulars(titulars, _rosterForPlan, _options = {}) {
+  return titularOnlyPartyRows(titulars);
+}
+
+export function buildGlobalRegistryPartyRowFromWaitlistVirtual(virtualPerson, _rosterForPlan = []) {
+  const hostName = String(virtualPerson?._companionWaitlistHostName || '').trim();
+  return {
+    key: `cw:${String(virtualPerson?.id || '')}`,
+    person: virtualPerson,
+    isSubRegistration: false,
+    disableExpand: true,
+    subRegistrationLabel: hostName
+      ? `Acompañante en espera · grupo de ${hostName}`
+      : 'Acompañante en lista de espera',
+  };
+}
+
+/**
  * Construye las tres secciones del registro global (activos / espera / cancelados).
  */
 export function buildGlobalRegistryPartySections({
-  isBautizos,
   activeTitulars = [],
   waitlistRows = [],
   cancelledTitulars = [],
-  rosterForPlan = [],
-}) {
-  if (!isBautizos) {
-    return {
-      active: titularOnlyPartyRows(activeTitulars),
-      waitlist: titularOnlyPartyRows(waitlistRows),
-      cancelled: titularOnlyPartyRows(cancelledTitulars),
-    };
-  }
-
-  const active = buildGlobalRegistryPartyRowsFromTitulars(activeTitulars, rosterForPlan, {
-    section: 'active',
-  });
-
-  const waitlist = [];
-  const processedTitulars = new Set();
-  for (const row of waitlistRows || []) {
-    if (isCompanionWaitlistVirtualParticipant(row)) {
-      waitlist.push(buildGlobalRegistryPartyRowFromWaitlistVirtual(row, rosterForPlan));
-      continue;
-    }
-    const id = String(row?.id || '').trim();
-    if (!id || processedTitulars.has(id)) continue;
-    processedTitulars.add(id);
-    waitlist.push(
-      ...buildGlobalRegistryPartyRowsFromTitulars([row], rosterForPlan, { section: 'waitlist' })
-    );
-  }
-
-  const cancelled = buildGlobalRegistryPartyRowsFromTitulars(cancelledTitulars, rosterForPlan, {
-    section: 'cancelled',
-  });
-
-  return { active, waitlist, cancelled };
+} = {}) {
+  return {
+    active: titularOnlyPartyRows(activeTitulars),
+    waitlist: titularOnlyPartyRows(waitlistRows),
+    cancelled: titularOnlyPartyRows(cancelledTitulars),
+  };
 }
 
 /** Extrae personas planas para conteos de toolbar / filtros. */

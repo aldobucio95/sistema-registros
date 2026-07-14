@@ -1,11 +1,8 @@
 import React from 'react';
-import { isCompanionWaitlistPhantomStoredParticipant, isCompanionWaitlistVirtualParticipant, resolveCompanionWaitlistVirtualLocation, resolveParticipantEffectiveLocation } from '../../bautizosCompanionWaitlist.js';
 import { getParticipantOutstandingGross } from '../../cashCutRefunds.js';
 import RosterSectionScrollWrap from '../../components/RosterSectionScrollWrap.jsx';
 import { buildGlobalRegistryPartySections, globalRegistryPartyRowsToPersons, sortGlobalRegistryPartyRows } from '../../globalRegistryPartyRows.js';
 import { aggregateLocationRosterSectionCountsForLocations } from '../../locationRosterTypeSummary.js';
-import { getBautizosGlobalRegistryRowOutstandingGross } from '../../publicRegistrationLogic.js';
-import { shouldUseBautizosLegacyPartyFinances, isBautizosLegacyCompanionVirtualRow } from '../../bautizos/bautizosLegacyPaymentAdapter.js';
 import { LocationRosterActivosChip, LocationRosterCancelledChip, LocationRosterWaitlistChip } from '../../screens/locationRoster/LocationRosterSectionChips.jsx';
 import { uiRosterMobile } from '../../ui/uiFormatClasses.js';
 import { AlertTriangle, Ban, ChevronDown, ChevronUp, GraduationCap, MapPin, TableProperties, Users } from 'lucide-react';
@@ -14,13 +11,16 @@ import VirtualizedTableBody from '../../components/roster/VirtualizedTableBody.j
 import VirtualizedRosterMobileList from '../../components/roster/VirtualizedRosterMobileList.jsx';
 import ExpandedRosterDetailRowLazy from '../../components/roster/ExpandedRosterDetailRowLazy.jsx';
 
+function resolveParticipantEffectiveLocation(p) {
+  return String(p?.cancelledFromLocation || p?.location || '').trim();
+}
+
 function GlobalRegistryPageContent() {
   const {
     PARTICIPANT_STATUS_ARCHIVED,
     PARTICIPANT_STATUS_CANCELLED,
     ROSTER_TH_FINANCES,
     ROSTER_TH_PARTICIPANT,    allParticipants,
-    bautizosGlobalRegistryFinanceOpts,
     cancelledData,
     computeNetAmountByMethod,
     currentEvent,
@@ -32,7 +32,6 @@ function GlobalRegistryPageContent() {
     globalLocationFilters,
     globalRegistryListFilters,
     handleAssignParticipantLocation,
-    isBautizos,
     isRosterRowInteractiveClickTarget,
     renderGlobalRegistryListToolbar,
     renderRegistrationFinancesColumn,
@@ -53,15 +52,14 @@ function GlobalRegistryPageContent() {
         (p) => String(p?.eventId || '') === String(currentEvent?.id || '')
       );
       const isValidEventLocation = (p) => {
-        const r = resolveParticipantEffectiveLocation(p, rosterForEvent);
+        const r = resolveParticipantEffectiveLocation(p);
         return r && eventLocs.has(r);
       };
       const sourceRows = rosterForEvent.filter((p) => {
-        if (isCompanionWaitlistPhantomStoredParticipant(p)) return false;
         const status = p?.status || 'active';
         if (status === PARTICIPANT_STATUS_ARCHIVED) return false;
         if (!(status === 'active' || status === 'waitlist' || status === PARTICIPANT_STATUS_CANCELLED)) return false;
-        const locRaw = resolveParticipantEffectiveLocation(p, rosterForEvent);
+        const locRaw = resolveParticipantEffectiveLocation(p);
         const validLoc = locRaw && eventLocs.has(locRaw);
         if (validLoc && !visibleLocations.includes(locRaw)) return false;
         return true;
@@ -86,22 +84,10 @@ function GlobalRegistryPageContent() {
       });
       const activosTitularsInScope = locsInScope.flatMap((loc) => data[loc] || []);
       const grSortKey = String(globalRegistryListFilters.sortBy || 'registered-desc').trim();
-      const grSortDebt = (p) => {
-        if (isBautizos && shouldUseBautizosLegacyPartyFinances(p, currentEvent) && bautizosGlobalRegistryFinanceOpts) {
-          const host = resolveGlobalRegistryFinanceHost(p);
-          return getBautizosGlobalRegistryRowOutstandingGross(
-            p,
-            host,
-            currentEvent,
-            bautizosGlobalRegistryFinanceOpts
-          );
-        }
-        return getParticipantOutstandingGross(p, getLiquidationTarget, computeNetAmountByMethod);
-      };
+      const grSortDebt = (p) =>
+        getParticipantOutstandingGross(p, getLiquidationTarget, computeNetAmountByMethod);
       const filterGlobalRegistrySectionRows = (rows, preserveOrder = false) =>
-        filterParticipantRows(rows, preserveOrder, globalRegistryListFilters, {
-          expandBautizosCompanions: false,
-        });
+        filterParticipantRows(rows, preserveOrder, globalRegistryListFilters, {});
       const activosTitularsFiltered = filterGlobalRegistrySectionRows(activosTitularsInScope, false);
       const waitlistSortedFiltered = (() => {
         const sorted = locsInScope.flatMap((loc) => getSortedWaitlistForLocation(loc));
@@ -117,7 +103,6 @@ function GlobalRegistryPageContent() {
       const applyGlobalRegistryPartySort = (partyRows) =>
         sortGlobalRegistryPartyRows(partyRows, grSortKey, { getDebt: grSortDebt });
       const partySections = buildGlobalRegistryPartySections({
-        isBautizos,
         activeTitulars: activosTitularsFiltered,
         waitlistRows: waitlistSortedFiltered,
         cancelledTitulars: cancelledTitularsFiltered,
@@ -127,7 +112,6 @@ function GlobalRegistryPageContent() {
       const waitlistRows = applyGlobalRegistryPartySort(partySections.waitlist);
       const cancelledRows = applyGlobalRegistryPartySort(partySections.cancelled);
       const validSourceParty = buildGlobalRegistryPartySections({
-        isBautizos,
         activeTitulars: activosTitularsInScope,
         waitlistRows: locsInScope.flatMap((loc) => getSortedWaitlistForLocation(loc)),
         cancelledTitulars: locsInScope.flatMap((loc) => cancelledData[loc] || []),
@@ -147,15 +131,10 @@ function GlobalRegistryPageContent() {
       const showGrCancelled = grSearchActive ? cancelledRows.length > 0 : rosterSectionExpanded.cancelled;
       const globalRegistryColumnOpts = {
         useUnspecifiedPlaceholder: true,
-        hideBautizosCompanionCountChip: true,
       };
       const globalRegistryRowLoc = (person) => {
-        const effective = resolveParticipantEffectiveLocation(person, rosterForEvent);
+        const effective = resolveParticipantEffectiveLocation(person);
         if (effective) return effective;
-        if (isCompanionWaitlistVirtualParticipant(person)) {
-          const fromHost = resolveCompanionWaitlistVirtualLocation(person, validSource);
-          if (fromHost) return fromHost;
-        }
         return (
           person.location ||
           (Array.isArray(currentEvent?.locations) && currentEvent.locations.length > 0
@@ -189,8 +168,6 @@ function GlobalRegistryPageContent() {
       waitlistData,
       cancelledData,
       globalRegistryListFilters,
-      isBautizos,
-      bautizosGlobalRegistryFinanceOpts,
       rosterSectionExpanded,
       resolveGlobalRegistryFinanceHost,
     ]);
@@ -224,12 +201,12 @@ function GlobalRegistryPageContent() {
               items={sectionPartyRows}
               isItemExpanded={(partyRow) => {
                 const person = partyRow.person;
-                return !partyRow.disableExpand && !isBautizosLegacyCompanionVirtualRow(person) && expandedRows.has(person.id);
+                return !partyRow.disableExpand && expandedRows.has(person.id);
               }}
               renderItem={(partyRow, partyRowIndex) => {
               const person = partyRow.person;
               const isExpanded =
-                !partyRow.disableExpand && !isBautizosLegacyCompanionVirtualRow(person) && expandedRows.has(person.id);
+                !partyRow.disableExpand && expandedRows.has(person.id);
               const rowLoc = globalRegistryRowLoc(person);
               const rowDisplayIndex = partyRowIndex + 1;
               return renderRosterPersonMobileCard(person, rowLoc, {
@@ -273,12 +250,12 @@ function GlobalRegistryPageContent() {
                   colSpan={3}
                   isItemExpanded={(partyRow) => {
                     const person = partyRow.person;
-                    return !partyRow.disableExpand && !isBautizosLegacyCompanionVirtualRow(person) && expandedRows.has(person.id);
+                    return !partyRow.disableExpand && expandedRows.has(person.id);
                   }}
                   renderItem={(partyRow, partyRowIndex) => {
                   const person = partyRow.person;
                   const isExpanded =
-                    !partyRow.disableExpand && !isBautizosLegacyCompanionVirtualRow(person) && expandedRows.has(person.id);
+                    !partyRow.disableExpand && expandedRows.has(person.id);
                   const rowLoc = globalRegistryRowLoc(person);
                   const rowDisplayIndex = partyRowIndex + 1;
                   const columnOpts = {
@@ -452,7 +429,7 @@ function GlobalRegistryPageContent() {
               <Users size={18} className="text-indigo-600 shrink-0" />
               <span className="text-sm font-black text-slate-800 uppercase tracking-wider">Activos (inscritos)</span>
               <LocationRosterActivosChip
-                isBautizos={isBautizos}
+                isBautizos={false}
                 activeCount={globalSectionDisplayCounts.active}
               />
               {grSearchActive && activeRows.length > 0 ? (

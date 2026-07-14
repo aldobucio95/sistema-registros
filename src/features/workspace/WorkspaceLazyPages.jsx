@@ -9,9 +9,6 @@ export const ExpenseListPage = lazy(() => import('./pages/ExpenseListPage.jsx'))
 export const PastoresWorkspacePage = lazy(() => import('./pages/PastoresWorkspacePage.jsx'));
 export const BecadosWorkspacePage = lazy(() => import('./pages/BecadosWorkspacePage.jsx'));
 export const BautizadosWorkspacePage = lazy(() => import('./pages/BautizadosWorkspacePage.jsx'));
-export const BautizosCompanionsWorkspacePage = lazy(() => import('./pages/BautizosCompanionsWorkspacePage.jsx'));
-export const BautizosAsistentesWorkspacePage = lazy(() => import('./pages/BautizosAsistentesWorkspacePage.jsx'));
-export const BautizosCortesiasWorkspacePage = lazy(() => import('./pages/BautizosCortesiasWorkspacePage.jsx'));
 export const ResponsivasWorkspacePage = lazy(() => import('./pages/ResponsivasWorkspacePage.jsx'));
 export const TransportPlanningWorkspacePage = lazy(() => import('./pages/TransportPlanningWorkspacePage.jsx'));
 
@@ -20,9 +17,6 @@ const TAB_CHUNK_IMPORTS = {
   Bautizados: () => import('./pages/BautizadosWorkspacePage.jsx'),
   ServersPage: () => import('./pages/ServerProfilesPage.jsx'),
   Becados: () => import('./pages/BecadosWorkspacePage.jsx'),
-  BautizosCompanions: () => import('./pages/BautizosCompanionsWorkspacePage.jsx'),
-  BautizosAsistentes: () => import('./pages/BautizosAsistentesWorkspacePage.jsx'),
-  BautizosCortesias: () => import('./pages/BautizosCortesiasWorkspacePage.jsx'),
   Responsivas: () => import('./pages/ResponsivasWorkspacePage.jsx'),
   PastoresPage: () => import('./pages/PastoresWorkspacePage.jsx'),
   TransportPlanning: () => import('./pages/TransportPlanningWorkspacePage.jsx'),

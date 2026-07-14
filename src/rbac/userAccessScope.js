@@ -48,24 +48,17 @@ export function buildScopeRows(targetUser, events, globalPanelNav, editorConfig 
 
     const eventType = String(ev.eventType || ev.type || '').trim();
     const isCampa = eventType === 'Campa';
-    const isBautizos = eventType === 'Bautizos';
     const transportSectionEligible = getTransportSectionEligibleForEventDoc(ev, editorConfig || {});
     const sectionKeys = PANEL_NAV_KEYS.filter((k) =>
       isPanelNavKeyAllowed(targetUser, k, {
         globalPanelNav,
         isCampa,
-        isBautizos,
         eventId: ev.id,
         isSuperUser: false,
         transportSectionEligible,
       })
     );
-    const sectionLabel = sectionKeys
-      .map((k) => {
-        if (k === 'becados' && eventType === 'Bautizos') return 'Acompañantes';
-        return PANEL_KEY_LABELS[k] || k;
-      })
-      .join(' · ');
+    const sectionLabel = sectionKeys.map((k) => PANEL_KEY_LABELS[k] || k).join(' · ');
 
     return {
       id: ev.id,

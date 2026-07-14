@@ -233,9 +233,8 @@ export function isPanelNavKeyAllowed(user, key, ctx) {
   if (merged[key] === false) return false;
 
   if (key === 'responsivas' && !isCampa) return false;
-  const isBautizos = ctx?.isBautizos === true;
-  if (key === 'serversPage' && !isCampa && !isBautizos) return false;
-  if (key === 'bautizados' && !isCampa && !isBautizos) return false;
+  if (key === 'serversPage' && !isCampa) return false;
+  if (key === 'bautizados' && !isCampa) return false;
 
   return true;
 }
@@ -254,7 +253,6 @@ export function getPanelNavKeysEnabledInAnyEvent(user, events, globalPanelNav = 
   for (const ev of inScope) {
     const eventType = String(ev?.eventType || ev?.type || '').trim();
     const isCampa = eventType === 'Campa';
-    const isBautizos = eventType === 'Bautizos';
     const transportSectionEligible =
       editorConfig && typeof editorConfig === 'object'
         ? getTransportSectionEligibleForEventDoc(ev, editorConfig)
@@ -266,7 +264,6 @@ export function getPanelNavKeysEnabledInAnyEvent(user, events, globalPanelNav = 
           globalPanelNav,
           eventId: ev.id,
           isCampa,
-          isBautizos,
           isSuperUser: false,
           transportSectionEligible,
         })

@@ -10,9 +10,6 @@ export const TAB_TO_ROUTE_SEGMENT = {
   Bautizados: 'bautizados',
   ServersPage: 'servidores',
   Becados: 'becados',
-  BautizosCompanions: 'acompanantes',
-  BautizosAsistentes: 'asistentes',
-  BautizosCortesias: 'cortesias',
   Responsivas: 'responsivas',
   RegistroGlobal: 'registro-global',
   PastoresPage: 'pastores',
@@ -176,20 +173,17 @@ export function parseAppPathname(pathname) {
 
 /**
  * Convierte parse de evento + locations del evento a activeTab (string).
- * @param {string} [eventType] Tipo de evento (p. ej. `Bautizos`) para mapear rutas compartidas.
+ * @param {string} [eventType] Reservado por compatibilidad de firma; ignorado.
  */
 export function routeSegmentToActiveTab(routeSegment, locationSlug, locations, eventType = null) {
+  void eventType;
   if (routeSegment === 'sede' && locationSlug && Array.isArray(locations)) {
     const want = slugify(decodeURIComponent(String(locationSlug)));
     const match = locations.find((loc) => slugify(loc) === want);
     return match || locations[0] || 'Summary';
   }
-  const et = String(eventType || '').trim();
   if (routeSegment === 'acompanantes') {
-    return et === 'Bautizos' ? 'BautizosCompanions' : 'Summary';
-  }
-  if (routeSegment === 'becados' && et === 'Bautizos') {
-    return 'BautizosCompanions';
+    return 'Summary';
   }
   const tab = ROUTE_SEGMENT_TO_TAB[routeSegment];
   return tab || 'Summary';

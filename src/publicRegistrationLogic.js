@@ -1,10 +1,3 @@
-import { getBautizosEffectiveListPrice } from './bautizos/bautizosPricing.js';
-import { shouldPersistBautizosCompanionsOnSave } from './bautizos/bautizosLegacyReadAdapter.js';
-import {
-  isBautizosLegacyCompanionVirtualRow,
-  isBautizosLegacyHostStoredRow,
-  parseBautizosCompanionKeyFromVirtualRowId,
-} from './bautizos/bautizosLegacyPaymentAdapter.js';
 import { setDoc, getDoc, getDocs, query, where, limit, updateDoc } from 'firebase/firestore';
 import { getDocRef, getColRef } from './firebaseRefs.js';
 import { buildLogId, writeSnapshotDoc } from './activityLogCore.js';
@@ -18,46 +11,6 @@ import {
   participantAgeBracketForResponsiva,
 } from './responsivaSignLogic.js';
 import { BLOOD_TYPE_UNSPECIFIED } from './registrationFormShared.js';
-import {
-  appendBautizosCompanionsValidationIssues,
-  appendBautizosTransportChoiceIssues,
-  BAUTIZOS_ATTENDANCE,
-  bautizosAttendancePaysEventListPrice,
-  bautizosWillBeBaptizedFromAttendance,
-  getBautizosCompanionsArray,
-  getBautizosLineListPrice,
-  isBautizosUnder3YearsAtEvent,
-  isFreeBautizosAttendance,
-  isBautizosPastorAttendance,
-  normalizeBautizosAttendanceType,
-  syncBautizosAttendanceServerFields,
-  normalizeArrivalCarCount,
-  normalizeBautizosCompanionsForPersist,
-  getBautizosBaptizedCompanionSubmitBlockingError,
-  hasBautizosBaptizedCompanionInParty,
-  getBautizosSplitPartySlotDescriptors,
-  buildParticipantLikeForBautizosSplitSlot,
-  buildSplitPartyCompanionsForSlot,
-  getBautizosSplitPartySubmitBlockingError,
-  buildBautizosSplitPartyVirtualEntry,
-  getBautizosSplitPartyDerivedMembers,
-  normalizeBaptismShirtSize,
-  participantHasBaptismChip,
-  isBautizosCompanionBaptized,
-  bautizosCompanionIsAlsoBautizadoRegistrant,
-  bautizosDashboardTitularCountsForScope,
-  bautizosDashboardCompanionCountsForScope,
-  normalizeBautizosDashboardScope,
-  buildBautizosCanonicalCompanionPlan,
-  buildActiveRegistrantMetaForCompanionDedupe,
-} from './bautizosParty.js';
-import { applyCompanionWaitlistCapOnEdit } from './bautizosCompanionWaitlist.js';
-import {
-  buildCarMetaPatchesAfterSave,
-  buildMergedFamilyCarInventory,
-  familyHasAnyCarTransport,
-  getFamilyCarInventoryValidationIssues,
-} from './bautizosCarMeta.js';
 import { persistEventCarMetaPatches } from './transportCarMetaStore.js';
 import { applyParticipantNameFormattingForSave } from './participantNameFormat.js';
 import { isCardPaymentAllowedForLocation } from './cardPaymentEligibility.js';
@@ -83,12 +36,11 @@ import {
 } from './eventCapUnits.js';
 
 /** Orden de grupos en el modal QR (admin). */
-export const PUBLIC_OPTIONAL_GROUP_ORDER = ['general', 'salud', 'bautizos', 'viaje', 'asistencia', 'pago'];
+export const PUBLIC_OPTIONAL_GROUP_ORDER = ['general', 'salud', 'viaje', 'asistencia', 'pago'];
 
 export const PUBLIC_OPTIONAL_GROUP_LABELS = {
   general: 'Datos generales',
   salud: 'Salud',
-  bautizos: 'Bautizos',
   viaje: 'Viaje y transporte',
   asistencia: 'Asistencia (campa)',
   pago: 'Pagos y descuentos',
@@ -107,10 +59,6 @@ export const PUBLIC_OPTIONAL_KEYS = [
   { key: 'allergies', label: 'Alergias', group: 'salud' },
   { key: 'diseases', label: 'Enfermedades', group: 'salud' },
   { key: 'disability', label: 'Discapacidades', group: 'salud' },
-  { key: 'bautizosCompanions', label: 'Acompañantes / familia', group: 'bautizos' },
-  { key: 'bautizosAttendanceType', label: 'Tipo de asistencia (bautizado / asistente / servidor / empleado / cortesía)', group: 'bautizos' },
-  { key: 'bautizosFood', label: 'Comida (evento Bautizos)', group: 'bautizos' },
-  { key: 'bautizosTransport', label: 'Transporte (evento Bautizos)', group: 'bautizos' },
   { key: 'travelFrom', label: 'Sale de / origen', group: 'viaje' },
   { key: 'travelTo', label: 'Regresa a / destino', group: 'viaje' },
   { key: 'transportExtras', label: 'Llega/regresa en carro y tipo de transporte', group: 'viaje' },
@@ -164,10 +112,6 @@ const OPTIONAL_KEY_TO_EDITOR_KEY = {
   campAssignment: 'campAssignment',
   attendanceSpecial: 'attendanceSpecial',
   discountCampaign: 'discountCampaign',
-  bautizosCompanions: 'bautizosCompanions',
-  bautizosAttendanceType: 'bautizosAttendanceType',
-  bautizosFood: 'bautizosFood',
-  bautizosTransport: 'bautizosTransport',
   initialDeposit: null,
   paymentInfo: null,
 };
@@ -186,10 +130,7 @@ export function publicOptionalKeysForEventType(eventType) {
       if (t !== 'Campa') return false;
     }
     if (['serverRole', 'serverProfileExtra'].includes(key)) {
-      if (t !== 'Campa' && t !== 'Bautizos') return false;
-    }
-    if (group === 'bautizos' || ['bautizosCompanions', 'bautizosAttendanceType', 'bautizosFood', 'bautizosTransport'].includes(key)) {
-      if (t !== 'Bautizos') return false;
+      if (t !== 'Campa') return false;
     }
     if (isDesayuno && (key === 'travelFrom' || key === 'travelTo' || key === 'transportExtras')) {
       return false;
@@ -265,10 +206,6 @@ const EDITOR_REGISTRATION_FIELD_KEYS = [
   'attendanceSpecial',
   'travelFrom',
   'travelTo',
-  'bautizosFood',
-  'bautizosTransport',
-  'bautizosCompanions',
-  'bautizosAttendanceType',
   'transportExtras',
   'discountCampaign',
   'customFields',
@@ -916,582 +853,70 @@ const resolveMatchedCampaignForNewEntry = (entry, eventLike) => {
   return resolveCampaignForPerson(entry, eventLike);
 };
 
-/** Valores por defecto si el evento no define `bautizosListPriceFood` / `bautizosListPriceTransport`. */
+/** @deprecated Bautizos-evento eliminado en v2; stubs de compatibilidad para AppMain. */
 export const DEFAULT_BAUTIZOS_LIST_PRICE_FOOD = 150;
 export const DEFAULT_BAUTIZOS_LIST_PRICE_TRANSPORT = 350;
-
-/** @deprecated Usar DEFAULT_BAUTIZOS_LIST_PRICE_* o precios en el evento. */
+/** @deprecated */
 export const BAUTIZOS_PRICE_FOOD = DEFAULT_BAUTIZOS_LIST_PRICE_FOOD;
-/** @deprecated Usar DEFAULT_BAUTIZOS_LIST_PRICE_* o precios en el evento. */
+/** @deprecated */
 export const BAUTIZOS_PRICE_TRANSPORT = DEFAULT_BAUTIZOS_LIST_PRICE_TRANSPORT;
-/** @deprecated Suma de los valores por defecto; con evento configurado usar comida + transporte. */
+/** @deprecated */
 export const BAUTIZOS_PRICE_FOOD_AND_TRANSPORT =
   DEFAULT_BAUTIZOS_LIST_PRICE_FOOD + DEFAULT_BAUTIZOS_LIST_PRICE_TRANSPORT;
 
-export function getBautizosListPriceBreakdown(eventLike) {
-  const food = Number(eventLike?.bautizosListPriceFood ?? DEFAULT_BAUTIZOS_LIST_PRICE_FOOD) || 0;
-  const transport = Number(eventLike?.bautizosListPriceTransport ?? DEFAULT_BAUTIZOS_LIST_PRICE_TRANSPORT) || 0;
-  return { food, transport, both: food + transport };
+export function getBautizosListPriceBreakdown(_eventLike) {
+  return { food: 0, transport: 0, both: 0 };
 }
-
-/** Misma semántica que `resolveLlegaEnCarro` en App.jsx (checkbox o legado `transportType`). */
-const resolveLlegaEnCarroPricing = (personLike) => {
-  if (typeof personLike?.llegaEnCarro === 'boolean') return personLike.llegaEnCarro;
-  if (isSiValue(personLike?.llegaEnCarro)) return true;
-  if (personLike?.llegaEnCarro === 'No') return false;
-  return (personLike?.transportType || 'Camión') === 'Carro';
-};
-
-const resolveRegresaEnCarroPricing = (personLike) => {
-  if (typeof personLike?.regresaEnCarro === 'boolean') return personLike.regresaEnCarro;
-  if (isSiValue(personLike?.regresaEnCarro)) return true;
-  if (personLike?.regresaEnCarro === 'No') return false;
-  return (personLike?.transportType || 'Camión') === 'Carro';
-};
-
-/**
- * Evento Bautizos: la comida va siempre en lista; el transporte se cobra solo si pide transporte
- * y no indica llegar y regresar en carro (en ese caso el costo de transporte es 0).
- */
-export function getBautizosListPrice(personLike, eventLike = null) {
-  if (isBautizosUnder3YearsAtEvent(personLike, eventLike)) return 0;
-  const { food, transport } = getBautizosListPriceBreakdown(eventLike);
-  const arrivesByCar = resolveLlegaEnCarroPricing(personLike);
-  const transportWanted = isSiValue(personLike?.wantsBautizosTransport);
-  const chargeTransport = transportWanted && !arrivesByCar;
-  if (chargeTransport) return food + transport;
-  return food;
+export function getBautizosListPrice() { return 0; }
+export function getBautizosTitularListPrice() { return 0; }
+export function getBautizosCompanionsListPriceSum() { return 0; }
+export function getBautizosCompanionInformativeListPrice() { return 0; }
+export function getBautizosCompanionsInformativeListPriceSum() { return 0; }
+export function getBautizosPartyListPrice() { return 0; }
+export function getBautizosSplitPartyHostListPrice() { return 0; }
+export function getBautizosDashboardCompanionListSubtotal() { return 0; }
+export function getBautizosPartyLiquidationSplit(_p, _e, _m, liquidationTarget) {
+  const t = Math.max(0, Number(liquidationTarget) || 0);
+  return { titularOwed: t, companionOwed: 0 };
 }
-
-/**
- * Lista del titular en Bautizos: bautizado y servidor pagan lista activa; empleado y cortesía $0.
- * Los acompañantes van aparte.
- */
-export function getBautizosTitularListPrice(personLike, eventLike = null) {
-  if (!eventLike || eventLike.eventType !== 'Bautizos') return 0;
-  if (!bautizosAttendancePaysEventListPrice(personLike)) return 0;
-  return getBautizosListPrice(personLike, eventLike);
+export function buildBautizosDashboardLiquidationUnits() { return []; }
+export function getBautizosFifoUnitBalances(units) { return units || []; }
+export function resolveBautizosGlobalRegistryRowFinances(personLike) {
+  const registered = Number(personLike?.registeredCost) || 0;
+  return { listPrice: registered, paidGross: 0, outstandingGross: registered };
 }
-
-/** Suma del precio de lista de todas las filas de acompañante (cada una comida ± transporte propios). */
-export function getBautizosCompanionsListPriceSum(personLike, eventLike = null) {
-  if (isBautizosPastorAttendance(personLike)) return 0;
-  const { food, transport } = getBautizosListPriceBreakdown(eventLike);
-  let sum = 0;
-  for (const c of getBautizosCompanionsArray(personLike)) {
-    if (c?.companionWaitlistPending === true) continue;
-    sum += getBautizosLineListPrice(c, food, transport, eventLike);
-  }
-  return sum;
-}
-
-/**
- * Suma de lista de acompañantes solo para desglose informativo en fichas: incluye el costo «de referencia»
- * de filas vinculadas a otro documento del mismo grupo (`linkedNoExtraCharge`). Si se pasa `rosterParticipants`,
- * para esas filas se usa el precio titular del documento enlazado (`linkedRegistrantId`), que refleja transporte
- * y reglas reales; si no hay coincidencia, se usa la fila persistida con `ignoreLinkedCharge`.
- * @param {object|null|undefined} personLike
- * @param {object|null|undefined} eventLike
- * @param {object[]|null|undefined} [rosterParticipants] — p. ej. `allParticipants` del roster para resolver vínculos
- */
-/**
- * Costo de lista de una fila de acompañante para desglose en UI (ficha expandida, WhatsApp, etc.).
- * Si está vinculada a otro documento del grupo, usa el precio titular del registro enlazado.
- */
-export function getBautizosCompanionInformativeListPrice(companionRow, eventLike = null, rosterParticipants = null) {
-  if (!eventLike || eventLike.eventType !== 'Bautizos') return 0;
-  const { food, transport } = getBautizosListPriceBreakdown(eventLike);
-  const lid = String(companionRow?.linkedRegistrantId || '').trim();
-  const roster = Array.isArray(rosterParticipants) ? rosterParticipants : null;
-  if (lid && roster) {
-    const linkedP = roster.find((p) => p && String(p.id) === lid);
-    if (linkedP) return getBautizosTitularListPrice(linkedP, eventLike);
-  }
-  return getBautizosLineListPrice(companionRow, food, transport, eventLike, { ignoreLinkedCharge: true });
-}
-
-export function getBautizosCompanionsInformativeListPriceSum(personLike, eventLike = null, rosterParticipants = null) {
-  if (isBautizosPastorAttendance(personLike)) return 0;
-  let sum = 0;
-  for (const c of getBautizosCompanionsArray(personLike)) {
-    sum += getBautizosCompanionInformativeListPrice(c, eventLike, rosterParticipants);
-  }
-  return sum;
-}
-
-/** Lista total del registro (titular bautizado + acompañantes): valor conjunto para liquidación y columnas de lista. */
-export function getBautizosPartyListPrice(personLike, eventLike = null) {
-  return getBautizosTitularListPrice(personLike, eventLike) + getBautizosCompanionsListPriceSum(personLike, eventLike);
-}
-
-/**
- * Precio de lista del host en un grupo partido (titular + acompañantes simples + titulares derivados bautizados).
- * Usa el formulario virtual del grupo, no los stubs `p:` a $0 del documento host persistido.
- */
-export function getBautizosSplitPartyHostListPrice(hostPerson, roster, eventLike, editedOverlay = null) {
-  const derived = getBautizosSplitPartyDerivedMembers(hostPerson, roster);
-  if (!derived.length) return getBautizosPartyListPrice(hostPerson, eventLike);
-  const overlay = editedOverlay && typeof editedOverlay === 'object' ? editedOverlay : {};
-  const virtual = buildBautizosSplitPartyVirtualEntry(hostPerson, derived, overlay);
-  return getBautizosPartyListPrice(virtual, eventLike);
-}
-
-/** Subtotal de lista de filas «acompañantes» del dashboard (nombre, no bautizado en subregistro, no duplicado titular). */
-export function getBautizosDashboardCompanionListSubtotal(personLike, eventLike, companionDedupeMeta = null) {
-  if (!eventLike || eventLike.eventType !== 'Bautizos') return 0;
-  if (isBautizosPastorAttendance(personLike)) return 0;
-  const { food, transport } = getBautizosListPriceBreakdown(eventLike);
-  let sum = 0;
-  for (const c of getBautizosCompanionsArray(personLike)) {
-    const nm = String(c?.name || '').trim();
-    if (!nm) continue;
-    const line = getBautizosLineListPrice(c, food, transport, eventLike);
-    if (isBautizosCompanionBaptized(c)) continue;
-    if (
-      companionDedupeMeta &&
-      bautizosCompanionIsAlsoBautizadoRegistrant(
-        c,
-        companionDedupeMeta.bautizadoIdSet,
-        companionDedupeMeta.bautizadoNameSet,
-        companionDedupeMeta.vnpToBautizadoId
-      )
-    ) {
-      continue;
-    }
-    sum += line;
-  }
-  return sum;
-}
-
-/**
- * Reparte el monto a liquidar entre inscrito (línea titular bautizado) y acompañantes (lista dashboard),
- * proporcional a sus subtotales de lista. Si no hay peso de lista, todo va al titular.
- */
-export function getBautizosPartyLiquidationSplit(personLike, eventLike, companionDedupeMeta, liquidationTarget) {
-  const L = Math.max(0, Number(liquidationTarget) || 0);
-  if (!eventLike || eventLike.eventType !== 'Bautizos') {
-    return { titularOwed: L, companionOwed: 0 };
-  }
-  const wT = getBautizosTitularListPrice(personLike, eventLike);
-  const wC = getBautizosDashboardCompanionListSubtotal(personLike, eventLike, companionDedupeMeta);
-  const den = wT + wC;
-  if (!Number.isFinite(den) || den <= 0.005) {
-    return { titularOwed: L, companionOwed: 0 };
-  }
-  const titularOwed = L * (wT / den);
-  const companionOwed = L - titularOwed;
-  return { titularOwed, companionOwed };
-}
-
-/**
- * Unidades de liquidación (titular + cada acompañante canónico) para el dashboard Bautizos.
- * Cada unidad tiene un `owed` proporcional al monto a liquidar del registro.
- */
-export function buildBautizosDashboardLiquidationUnits(
-  personLike,
-  eventLike,
-  companionDedupeMeta,
-  liquidationTarget,
-  opts = {}
-) {
-  const bzScope = normalizeBautizosDashboardScope(opts.bzScope ?? 'all');
-  const canonicalCompanionInfos = Array.isArray(opts.canonicalCompanionInfos)
-    ? opts.canonicalCompanionInfos
-    : null;
-  const L = Math.max(0, Number(liquidationTarget) || 0);
-  if (!eventLike || eventLike.eventType !== 'Bautizos') {
-    return L > 0.005 ? [{ kind: 'titular', owed: L }] : [];
-  }
-  const { food, transport } = getBautizosListPriceBreakdown(eventLike);
-  const weighted = [];
-
-  if (bautizosDashboardTitularCountsForScope(personLike, bzScope)) {
-    const wT = getBautizosTitularListPrice(personLike, eventLike);
-    weighted.push({ kind: 'titular', weight: Math.max(0, wT) });
-  }
-
-  const pushCompanionUnit = (companionLike, hostLike) => {
-    if (!bautizosDashboardCompanionCountsForScope(companionLike, bzScope, hostLike)) return;
-    const nm = String(companionLike?.name || '').trim();
-    if (!nm) return;
-    const w = getBautizosLineListPrice(companionLike, food, transport, eventLike);
-    weighted.push({
-      kind: 'companion',
-      weight: Math.max(0, w),
-      companionKey: String(companionLike?.id || '').trim(),
-      companionName: nm,
-    });
-  };
-
-  if (canonicalCompanionInfos) {
-    for (const info of canonicalCompanionInfos) {
-      pushCompanionUnit(info?.sourceCompanion, info?.sourceRegistrant || personLike);
-    }
-  } else {
-    for (const c of getBautizosCompanionsArray(personLike)) {
-      const nm = String(c?.name || '').trim();
-      if (!nm) continue;
-      if (isBautizosCompanionBaptized(c) && bzScope !== 'baptized' && bzScope !== 'all') continue;
-      if (
-        companionDedupeMeta &&
-        bautizosCompanionIsAlsoBautizadoRegistrant(
-          c,
-          companionDedupeMeta.bautizadoIdSet,
-          companionDedupeMeta.bautizadoNameSet,
-          companionDedupeMeta.vnpToBautizadoId
-        )
-      ) {
-        continue;
-      }
-      pushCompanionUnit(c, personLike);
-    }
-  }
-
-  const den = weighted.reduce((s, u) => s + u.weight, 0);
-  if (den <= 0.005) {
-    if (L <= 0.005) return weighted.map((u) => mapLiquidationUnit(u, 0));
-    if (weighted.length === 0 && bautizosDashboardTitularCountsForScope(personLike, bzScope)) {
-      return [{ kind: 'titular', owed: L }];
-    }
-    return weighted.map((u) => mapLiquidationUnit(u, 0));
-  }
-  return weighted.map((u) => mapLiquidationUnit(u, (L * u.weight) / den));
-}
-
-function mapLiquidationUnit(unit, owed) {
+export function getBautizosGlobalRegistryRowOutstandingGross() { return 0; }
+export function countBautizosFifoLiquidationUnits() { return 0; }
+export function allocateBautizosDashboardPayments(paidGross) {
+  const g = Number(paidGross) || 0;
   return {
-    kind: unit.kind,
-    owed,
-    companionKey: unit.companionKey,
-    companionName: unit.companionName,
+    titularOwed: 0,
+    companionOwed: 0,
+    paidGrossTitular: g,
+    paidGrossCompanion: 0,
+    paidNetTitular: g,
+    paidNetCompanion: 0,
+    historyRows: [],
   };
 }
 
-/** Reparte abonos en orden FIFO sobre cada unidad de liquidación. */
-export function getBautizosFifoUnitBalances(units, paidGross) {
-  let remaining = Math.max(0, Number(paidGross) || 0);
-  return (units || []).map((u) => {
-    const owed = Math.max(0, Number(u?.owed) || 0);
-    if (owed <= 0.005) {
-      return {
-        ...u,
-        owed,
-        paidAllocated: 0,
-        balance: 0,
-        isLiquidated: true,
-      };
-    }
-    const applied = Math.min(remaining, owed);
-    remaining -= applied;
-    const balance = Math.max(0, owed - applied);
-    return {
-      ...u,
-      owed,
-      paidAllocated: applied,
-      balance: balance <= 0.005 ? 0 : balance,
-      isLiquidated: balance <= 0.005,
-    };
-  });
+export function getBautizosCompanionsArray(personLike) {
+  const raw = personLike?.bautizosCompanions;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((c) => c && typeof c === 'object');
 }
+export function isFreeBautizosAttendance() { return false; }
+export function minorHasRequiredGuardianCompanion() { return true; }
 
-function parseGlobalRegistryCompanionKeyFromPerson(companionPerson) {
-  return parseBautizosCompanionKeyFromVirtualRowId(companionPerson?.id);
-}
 
-function findBautizosCompanionLiquidationUnitIndex(units, companionPerson) {
-  const cid = parseGlobalRegistryCompanionKeyFromPerson(companionPerson);
-  const name = String(companionPerson?.name || '').trim().toLowerCase();
-  if (cid) {
-    const byKey = (units || []).findIndex(
-      (u) => u.kind === 'companion' && String(u.companionKey || '') === cid
-    );
-    if (byKey >= 0) return byKey;
-  }
-  if (name) {
-    const byName = (units || []).findIndex(
-      (u) =>
-        u.kind === 'companion' &&
-        String(u.companionName || '')
-          .trim()
-          .toLowerCase() === name
-    );
-    if (byName >= 0) return byName;
-  }
-  return -1;
-}
-
-function buildCanonicalCompanionInfosForHost(hostPerson, roster, companionDedupeMeta) {
-  const hostId = String(hostPerson?.id || '').trim();
-  if (!hostId) return [];
-  const rosterList = Array.isArray(roster) ? roster : [];
-  const meta = companionDedupeMeta || buildActiveRegistrantMetaForCompanionDedupe(rosterList);
-  const plan = buildBautizosCanonicalCompanionPlan(rosterList, meta, { includeBaptizedCompanions: true });
-  const out = [];
-  for (const [, entry] of plan) {
-    if (String(entry?.registrantId || '') !== hostId) continue;
-    out.push({
-      sourceCompanion: entry.sourceCompanion,
-      sourceRegistrant: entry.sourceRegistrant || hostPerson,
-    });
-  }
-  return out;
-}
-
-/**
- * Finanzas de una fila del registro global Bautizos: acompañantes heredan abonos del titular vía FIFO proporcional.
- */
-export function resolveBautizosGlobalRegistryRowFinances(
-  personLike,
-  hostPerson,
-  eventLike,
-  opts = {}
-) {
-  const {
-    companionDedupeMeta = null,
-    roster = [],
-    getLiquidationTargetFn,
-    getPaidGrossFromHostFn,
-    getPaidDisplayFn,
-  } = opts;
-  const getLiq = typeof getLiquidationTargetFn === 'function' ? getLiquidationTargetFn : () => 0;
-  const getPaidGross =
-    typeof getPaidGrossFromHostFn === 'function'
-      ? getPaidGrossFromHostFn
-      : (p) => Math.max(0, Number(p?.paid ?? 0) || 0);
-  const getPaidDisplay =
-    typeof getPaidDisplayFn === 'function' ? getPaidDisplayFn : (p) => getPaidGross(p);
-
-  if (
-    personLike?.__pastorCourtesyCompanion === true ||
-    (isBautizosLegacyCompanionVirtualRow(personLike) && isBautizosPastorAttendance(hostPerson))
-  ) {
-    return {
-      liquidationTarget: 0,
-      paidDisplay: 0,
-      balance: 0,
-      isLiquidated: true,
-      usesHostPayments: true,
-    };
-  }
-
-  if (isBautizosLegacyHostStoredRow(personLike)) {
-    const hostLiq = getLiq(personLike);
-    const paidGross = getPaidGross(personLike);
-    const units = buildBautizosDashboardLiquidationUnits(
-      personLike,
-      eventLike,
-      companionDedupeMeta,
-      hostLiq
-    );
-    const balances = getBautizosFifoUnitBalances(units, paidGross);
-    const titular = balances.find((u) => u.kind === 'titular') || balances[0];
-    if (!titular) {
-      const balance = Math.max(0, hostLiq - paidGross);
-      return {
-        liquidationTarget: hostLiq,
-        paidDisplay: paidGross,
-        balance,
-        isLiquidated: hostLiq <= 0.005 || balance <= 0.005,
-        usesHostPayments: false,
-      };
-    }
-    return {
-      liquidationTarget: titular.owed,
-      paidDisplay: titular.paidAllocated,
-      balance: titular.balance,
-      isLiquidated: titular.isLiquidated,
-      usesHostPayments: false,
-    };
-  }
-
-  if (isBautizosLegacyCompanionVirtualRow(personLike) && hostPerson) {
-    const hostLiq = getLiq(hostPerson);
-    const paidGross = getPaidGross(hostPerson);
-    const canonicalCompanionInfos = buildCanonicalCompanionInfosForHost(
-      hostPerson,
-      roster,
-      companionDedupeMeta
-    );
-    const units = buildBautizosDashboardLiquidationUnits(
-      hostPerson,
-      eventLike,
-      companionDedupeMeta,
-      hostLiq,
-      { bzScope: 'all', canonicalCompanionInfos }
-    );
-    const balances = getBautizosFifoUnitBalances(units, paidGross);
-    const idx = findBautizosCompanionLiquidationUnitIndex(balances, personLike);
-    if (idx < 0) {
-      const { food, transport } = getBautizosListPriceBreakdown(eventLike);
-      const cid = parseGlobalRegistryCompanionKeyFromPerson(personLike);
-      const companionSource =
-        canonicalCompanionInfos.find(
-          (info) => String(info?.sourceCompanion?.id || '') === cid
-        )?.sourceCompanion || null;
-      const fallbackOwed = companionSource
-        ? getBautizosLineListPrice(companionSource, food, transport, eventLike)
-        : 0;
-      return {
-        liquidationTarget: fallbackOwed,
-        paidDisplay: 0,
-        balance: fallbackOwed,
-        isLiquidated: fallbackOwed <= 0.005,
-        usesHostPayments: true,
-      };
-    }
-    const unit = balances[idx];
-    return {
-      liquidationTarget: unit.owed,
-      paidDisplay: unit.paidAllocated,
-      balance: unit.balance,
-      isLiquidated: unit.isLiquidated,
-      usesHostPayments: true,
-    };
-  }
-
-  const liquidationTarget = getLiq(personLike);
-  const paidDisplay = getPaidDisplay(personLike);
-  const balance = Math.max(0, liquidationTarget - paidDisplay);
-  return {
-    liquidationTarget,
-    paidDisplay,
-    balance,
-    isLiquidated: liquidationTarget <= 0.005 || balance <= 0.005,
-    usesHostPayments: false,
-  };
-}
-
-/** Adeudo bruto pendiente de una fila del registro global (acompañante = parte FIFO del titular). */
-export function getBautizosGlobalRegistryRowOutstandingGross(
-  personLike,
-  hostPerson,
-  eventLike,
-  opts = {}
-) {
-  if (personLike?.__pastorCourtesyCompanion === true) return 0;
-  const finance = resolveBautizosGlobalRegistryRowFinances(personLike, hostPerson, eventLike, opts);
-  return Math.max(0, finance.balance);
-}
-
-/** Aplica abonos en orden FIFO: cada unidad se liquida por completo antes de pasar a la siguiente. */
-export function countBautizosFifoLiquidationUnits(units, paidGross) {
-  let remaining = Math.max(0, Number(paidGross) || 0);
-  let paidOff = 0;
-  let withDebt = 0;
-  for (const u of units || []) {
-    const owed = Math.max(0, Number(u?.owed) || 0);
-    if (owed <= 0.005) {
-      paidOff += 1;
-      continue;
-    }
-    const applied = Math.min(remaining, owed);
-    remaining -= applied;
-    if (owed - applied <= 0.005) paidOff += 1;
-    else withDebt += 1;
-  }
-  return { paidOff, withDebt };
-}
-
-/**
- * Aplica pagos en orden (historial): primero cubren la parte del inscrito, luego la de acompañantes.
- * El excedente tras cubrir ambas partes se contabiliza como acompañante.
- * `computeNet(gross, method)` debe coincidir con la lógica del panel (comisiones).
- */
-export function allocateBautizosDashboardPayments(
-  personLike,
-  eventLike,
-  companionDedupeMeta,
-  liquidationTarget,
-  paymentHistory,
-  legacyPaidGross,
-  defaultPaymentMethod,
-  computeNet
-) {
-  const liq = Math.max(0, Number(liquidationTarget) || 0);
-  const { titularOwed, companionOwed } = getBautizosPartyLiquidationSplit(
-    personLike,
-    eventLike,
-    companionDedupeMeta,
-    liq
-  );
-  let owedT = titularOwed;
-  let owedC = companionOwed;
-  const hist = Array.isArray(paymentHistory) ? paymentHistory.filter((h) => h && h.kind !== 'comment') : [];
-  const defM = defaultPaymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-  const lines =
-    hist.length > 0
-      ? hist.map((h) => ({
-          gross: Number(h.amount || 0) || 0,
-          method: h.method || defM,
-          service: h.service,
-        }))
-      : Number(legacyPaidGross) > 0
-        ? [{ gross: Number(legacyPaidGross) || 0, method: defM, service: null }]
-        : [];
-
-  let paidGrossTitular = 0;
-  let paidGrossCompanion = 0;
-  let paidNetTitular = 0;
-  let paidNetCompanion = 0;
-  const historyRows = [];
-
-  for (const line of lines) {
-    const g = line.gross;
-    if (g <= 1e-12) continue;
-    const method = line.method || defM;
-    const net = typeof computeNet === 'function' ? computeNet(g, method) : g;
-    let payTG = Math.min(g, owedT);
-    owedT -= payTG;
-    const rem = g - payTG;
-    let payCG = Math.min(rem, owedC);
-    owedC -= payCG;
-    const surplus = rem - payCG;
-    payCG += surplus;
-
-    const netT = g > 1e-12 ? (net * payTG) / g : 0;
-    const netC = net - netT;
-
-    paidGrossTitular += payTG;
-    paidGrossCompanion += payCG;
-    paidNetTitular += netT;
-    paidNetCompanion += netC;
-    historyRows.push({
-      gross: g,
-      method,
-      service: line.service,
-      payTG,
-      payCG,
-      netT,
-      netC,
-      net,
-    });
-  }
-
-  return {
-    titularOwed,
-    companionOwed,
-    paidGrossTitular,
-    paidGrossCompanion,
-    paidNetTitular,
-    paidNetCompanion,
-    historyRows,
-  };
-}
-
-export { isFreeBautizosAttendance, minorHasRequiredGuardianCompanion, getBautizosCompanionsArray } from './bautizosParty.js';
 
 /**
  * Costo de lista según perfil. Precios `pricing` ya vienen de `getPricingFromSnapshotForDate` (fijo o por fechas).
  * Servidor «Ambos» con `ambosServeInSegment` Teens/Jóvenes: participa en ambos segmentos pero solo sirve en uno;
  * en el otro va como campista → costo servidor de ese segmento + costo campista (`global`).
  * Sin `ambosServeInSegment` (histórico): tarifa única `serverAmbos`.
- * `eventLike`: si `eventType === 'Bautizos'`, la lista es **titular solo si va a bautizarse** (`participantHasBaptismChip`)
- * más **suma de precios por fila de acompañante** (comida ± transporte cada uno); cortesía/empleado no pagan línea titular pero sí pueden tener cobro por acompañantes.
  */
 export const getPersonCost = (person, pricing, eventLike = null) => {
-  if (eventLike?.eventType === 'Bautizos') {
-    return getBautizosEffectiveListPrice(person, eventLike);
-  }
   if (isFreeAttendanceType(normalizeAttendanceSpecial(person))) return 0;
   if (!pricing) return 0;
   const g = Number(pricing.global) || 0;
@@ -1560,27 +985,20 @@ const resolveRegisteredCost = (person, pricing, eventLike = null) => {
   return getPersonCost(person, pricing, eventLike);
 };
 
-const applyBautizosLegacyHostTitularLiquidationSplit = (person, eventLike, partyLiquidation) => {
-  if (!isBautizosLegacyHostStoredRow(person)) return partyLiquidation;
-  const { titularOwed } = getBautizosPartyLiquidationSplit(person, eventLike, null, partyLiquidation);
-  return titularOwed;
-};
-
 const getLiquidationTarget = (person, currentPricing, eventLike = null) => {
   if (isFreeAttendanceType(normalizeAttendanceSpecial(person))) return 0;
-  if (eventLike?.eventType === 'Bautizos' && isFreeBautizosAttendance(person)) return 0;
   const listPrice = resolveRegisteredCost(person, currentPricing, eventLike);
   let toLiquidate = listPrice;
   if (!isSiValue(person?.isScholarship)) {
-    return applyBautizosLegacyHostTitularLiquidationSplit(person, eventLike, toLiquidate);
+    return toLiquidate;
   }
   if (person?.scholarshipType === 'partial') {
     const montoBecado = parseFloat(person.scholarshipPartialAmount || 0);
     if (!Number.isFinite(montoBecado) || montoBecado <= 0) {
-      return applyBautizosLegacyHostTitularLiquidationSplit(person, eventLike, toLiquidate);
+      return toLiquidate;
     }
     toLiquidate = Math.max(0, Math.min(listPrice - montoBecado, listPrice));
-    return applyBautizosLegacyHostTitularLiquidationSplit(person, eventLike, toLiquidate);
+    return toLiquidate;
   }
   return 0;
 };
@@ -1604,7 +1022,7 @@ const isValidPhone = (phone) => (phone.startsWith('+') ? phone.length > 5 : phon
 
 /** Misma obligatoriedad que «Nuevo registro» en App.jsx para el bloque de emergencia. */
 export const emergencyContactRequiredForEventType = (evType) =>
-  evType === 'Campa' || evType === 'Bautizos' || evType === 'General';
+  evType === 'Campa' || evType === 'General';
 
 const appendEmergencyContactIssues = (merged, issues) => {
   if (!String(merged.emergencyContact || '').trim()) issues.push('Nombre del contacto de emergencia');
@@ -1688,20 +1106,6 @@ export const applyOptionalVisibilityDefaults = (entry, optionalVisibility, event
   }
   if (!vis.attendanceSpecial) out.attendanceSpecialType = ATTENDANCE_SPECIAL.ninguno;
   if (!vis.customFields) out.customData = {};
-  if (eventLike?.eventType === 'Bautizos') {
-    out.wantsBautizosFood = SI;
-    out.carrosLlegada = normalizeArrivalCarCount(out.carrosLlegada);
-    if (out.wantsBautizosTransport == null || String(out.wantsBautizosTransport).trim() === '') out.wantsBautizosTransport = 'No';
-    if (vis.bautizosTransport === false) {
-      out.wantsBautizosTransport = 'No';
-      out.llegaEnCarro = false;
-      out.regresaEnCarro = false;
-      out.travelFrom = out.location || '';
-      out.travelTo = out.location || '';
-    }
-    if (!vis.bautizosCompanions) out.bautizosCompanions = [];
-    if (!vis.bautizosAttendanceType) out.bautizosAttendanceType = 'bautizado';
-  }
   return out;
 };
 
@@ -1738,7 +1142,7 @@ export const getPublicRegistrationFormIssues = (
   if (!(merged.birthDate || '').trim()) issues.push('Fecha de nacimiento');
   if (!(merged.location || '').trim()) issues.push('Sede');
 
-  if ((evType === 'Campa' || evType === 'Bautizos') && fvSens('bloodType') && !String(merged.bloodType ?? '').trim()) {
+  if (evType === 'Campa' && fvSens('bloodType') && !String(merged.bloodType ?? '').trim()) {
     issues.push('Tipo de sangre');
   }
 
@@ -1798,27 +1202,7 @@ export const getPublicRegistrationFormIssues = (
     if (v('attendanceSpecial') && isFreeAttendanceType(normalizeAttendanceSpecial(merged))) return issues;
   }
 
-  if (evType === 'Bautizos') {
-    appendEmergencyContactIssues(merged, issues);
-    if (fvSens('allergies') && merged.hasAllergy !== 'No' && String(merged.allergyDetails || '').trim() === '' && String(merged.allergyCategory || '').trim() === '') {
-      issues.push('Alergias: categoría o detalle');
-    }
-    if (fvSens('diseases') && merged.hasDisease !== 'No' && String(merged.diseaseDetails || '').trim() === '') {
-      issues.push('Detalle de enfermedad');
-    }
-    if (fvSens('disability') && merged.hasDisability !== 'No' && String(merged.disabilityDetails || '').trim() === '') {
-      issues.push('Detalle de discapacidad');
-    }
-    if (v('bautizosTransport')) {
-      appendBautizosTransportChoiceIssues(merged, issues, '', v, eventLike);
-      if (isSiValue(merged.wantsBautizosTransport) && !resolveLlegaEnCarroPricing(merged)) {
-        if (v('travelFrom') && !(merged.travelFrom || '').trim()) issues.push('Sede de salida (transporte)');
-        if (v('travelTo') && !(merged.travelTo || '').trim()) issues.push('Sede de regreso (transporte)');
-      }
-    }
-    appendBautizosCompanionsValidationIssues(merged, issues, fvSens, eventLike);
-  }
-
+  
   if (evType === 'General') {
     appendEmergencyContactIssues(merged, issues);
   }
@@ -1832,8 +1216,7 @@ export const getPublicRegistrationFormIssues = (
 
   const paid = parseFloat(merged.paid) || 0;
   const min = Number(minDep) || 0;
-  const bautizosNoCharge = evType === 'Bautizos' && getPersonCost(merged, currentPricing, eventLike) === 0;
-  if (v('paymentInfo') && vis.initialDeposit !== false && !bautizosNoCharge && paid < min) {
+  if (v('paymentInfo') && vis.initialDeposit !== false && paid < min) {
     issues.push(`Abono inicial (mínimo $${min.toLocaleString('es-MX')})`);
   }
   if (
@@ -1923,23 +1306,7 @@ function shouldRedirectPublicRegistrationToWaitlist(entry, loc, eventForCaps, pa
     globalCap <= 0 && locCap > 0 && (computeEventCapUsedUnitsBySede(participants, eventForCaps)[loc] ?? 0) + incomingUnits > locCap;
   if (!partyExceedsGlobal && !partyExceedsLoc) return false;
 
-  if (String(eventForCaps?.eventType || '') === 'Bautizos') {
-    const hostOnlyRows = buildCapSimulationRows(
-      { ...entry, bautizosCompanions: [] },
-      eventForCaps,
-      loc,
-      vnpCapHelpers
-    );
-    const hostOnlyUnits = computeIncomingRegistrationCapUnits(hostOnlyRows, participants, eventForCaps);
-    const hostFitsGlobal =
-      globalCap <= 0 || computeEventCapUsedUnits(participants, eventForCaps) + hostOnlyUnits <= globalCap;
-    const hostFitsLoc =
-      globalCap > 0 ||
-      locCap <= 0 ||
-      (computeEventCapUsedUnitsBySede(participants, eventForCaps)[loc] ?? 0) + hostOnlyUnits <= locCap;
-    if (hostFitsGlobal && hostFitsLoc) return false;
-  }
-  return true;
+    return true;
 }
 
 export async function fetchParticipantsForEvent(eventId) {
@@ -2033,357 +1400,6 @@ async function appendPublicRegistrationActivityLog({
   }
 }
 
-/**
- * Bautizos público: varios registros completos (uno por bautizado del grupo) con vínculos cruzados `p:`.
- * @param {'active' | 'waitlist'} mode
- */
-async function submitPublicBautizosSplitRegistration({
-  entry,
-  loc,
-  eventSnapshot,
-  globalSnapshot,
-  participants,
-  currentPricing,
-  mode,
-}) {
-  const splitDesc = getBautizosSplitPartySlotDescriptors(entry);
-  if (!splitDesc?.length) {
-    return {
-      ok: false,
-      error: [
-        'Motivo: no se pudo definir el grupo de registros (titular + personas marcadas para bautizarse como acompañantes).',
-        'Comprueba que cada acompañante que va a bautizarse tenga nombre y datos completos, o recarga el formulario.',
-        'Si el problema continúa, contacta a la organización.',
-      ].join('\n'),
-    };
-  }
-  const vnpH = { canonicalizeVnpPersonId, generateVnpPersonId };
-  const docIdBySlot = {};
-  for (const d of splitDesc) {
-    let pl0 = buildParticipantLikeForBautizosSplitSlot(entry, loc, d);
-    if (d.slotKey !== 'host') pl0.age = calculateAgeFromBirthDate(pl0.birthDate || '') || '';
-    const vnp0 = canonicalizeVnpPersonId(pl0.vnpPersonId || '') || generateVnpPersonId(pl0);
-    docIdBySlot[d.slotKey] = await resolveParticipantDocumentIdForWrite(vnp0, eventSnapshot.id);
-  }
-  const splitErr = getBautizosSplitPartySubmitBlockingError({
-    personLike: entry,
-    loc,
-    participants,
-    eventId: eventSnapshot.id,
-    docIdBySlotKey: docIdBySlot,
-    canonicalizeVnpPersonId,
-    generateVnpPersonId,
-    participantBlocksDuplicateRegistration,
-    phoneDuplicateInEvent,
-    isPhoneShareFamilyAllowed,
-    digitsOnlyPhone,
-    calculateAgeFromBirthDate,
-  });
-  if (splitErr) {
-    return {
-      ok: false,
-      error: [
-        'Motivo: validación del grupo (varios registros por acompañantes bautizados).',
-        '',
-        splitErr,
-      ].join('\n'),
-    };
-  }
-
-  for (const d of splitDesc) {
-    const g = await loadParticipantRegistrationWriteGate(docIdBySlot[d.slotKey], eventSnapshot.id);
-    if (!g.ok) return { ok: false, error: g.error };
-  }
-
-  const publicRegisteredBy = resolvePublicRegisteredBy(entry);
-  const serviceSlots = globalSnapshot?.serviceSlots;
-  const paymentServiceBase = getAutoPaymentServiceForPublic(
-    new Date(),
-    eventSnapshot,
-    loc,
-    serviceSlots,
-    globalSnapshot?.cashCutScheduleByLocation,
-  );
-  const regInstant = new Date();
-  const regIso = regInstant.toISOString();
-  const hostDocId = docIdBySlot.host;
-  const baseRegisteredCost = getPersonCost(entry, currentPricing, eventSnapshot);
-  const { selectedDiscountCampaignId: _sc, ...entryCore } = entry;
-
-  const initialPaidGross = mode === 'active' ? parseFloat(entry.paid) || 0 : 0;
-  let paymentMethod = mode === 'active' && entry.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-  if (paymentMethod === 'Tarjeta' && !isCardPaymentAllowedForLocation(eventSnapshot, loc)) {
-    paymentMethod = 'Efectivo';
-  }
-  const commissionRate = getCardCommissionRate(globalSnapshot);
-  const commission = paymentMethod === 'Tarjeta' ? initialPaidGross * commissionRate : 0;
-  const initialPaidNet = paymentMethod === 'Tarjeta' ? initialPaidGross - commission : initialPaidGross;
-  const initialHistory =
-    mode === 'active' && initialPaidGross > 0
-      ? [
-          {
-            id: Date.now() + 1,
-            date: regInstant.toLocaleString('es-MX'),
-            recordedAt: regIso,
-            amount: initialPaidGross,
-            netAmount: initialPaidNet,
-            method: paymentMethod,
-            service: paymentServiceBase,
-            reference: paymentMethod === 'Tarjeta' ? String(entry.cardReference || '').trim() : '',
-            commission,
-            registeredBy: publicRegisteredBy,
-          },
-        ]
-      : [];
-
-  let hostPersonDataForWa = null;
-  const avisoUrlSplit = buildPrivacyNoticePublicUrl('');
-  const paymentDeadlineSplit = String(eventSnapshot?.paymentDeadlineDate || '').trim();
-
-  for (let i = 0; i < splitDesc.length; i++) {
-    const d = splitDesc[i];
-    const isHost = d.slotKey === 'host';
-    let pl = buildParticipantLikeForBautizosSplitSlot(entry, loc, d);
-    if (!isHost) pl.age = calculateAgeFromBirthDate(pl.birthDate || '') || '';
-    const candVnp = canonicalizeVnpPersonId(pl.vnpPersonId || '') || generateVnpPersonId(pl);
-    const docIdW = docIdBySlot[d.slotKey];
-    const idExistsW = participants.some((p) => String(p.vnpPersonId || '') === String(candVnp));
-    const comps = buildSplitPartyCompanionsForSlot({
-      personLike: entry,
-      loc,
-      targetSlotKey: d.slotKey,
-      docIdBySlotKey: docIdBySlot,
-      vnpCompanionHelpers: vnpH,
-    });
-
-    if (isHost) {
-      const personDataH = {
-        ...entryCore,
-        id: docIdW,
-        status: mode,
-        registeredAt: regIso,
-        registeredBy: publicRegisteredBy,
-        vnpPersonId: candVnp,
-        isFirstVnpId: !idExistsW,
-        location: loc,
-        travelFrom: entry.travelFrom || loc,
-        travelTo: entry.travelTo || loc,
-        eventId: eventSnapshot.id,
-        paymentHistory: mode === 'active' ? initialHistory : [],
-        registeredCost: baseRegisteredCost,
-        registeredCostManual: false,
-        campAssignment: '',
-        paid: mode === 'active' ? initialPaidGross : 0,
-        paidNet: mode === 'active' ? initialPaidNet : 0,
-        paymentMethod,
-        paymentService: paymentServiceBase,
-        cardReference: mode === 'active' && paymentMethod === 'Tarjeta' ? String(entry.cardReference || '').trim() : '',
-        whatsAppFinanceNotifications: [],
-        responsivaStatus: resolveResponsivaStatus(entry, eventSnapshot),
-        scholarshipPendingApproval: false,
-        scholarshipType: 'none',
-        scholarshipPartialAmount: 0,
-        discountCampaignId: '',
-        discountCampaignConcept: '',
-        discountCampaignAppliedAt: null,
-        refundPendingAmount: 0,
-        refundPendingReason: '',
-      };
-      if (mode === 'waitlist') {
-        personDataH.waitlistCreatedAt = Date.now();
-      }
-      personDataH.isScholarship = 'No';
-      personDataH.isServer = 'No';
-      personDataH.serverAssignment = '';
-      personDataH.ambosServeInSegment = '';
-      personDataH.attendanceSpecialType = ATTENDANCE_SPECIAL.ninguno;
-      personDataH.carrosLlegada = normalizeArrivalCarCount(personDataH.carrosLlegada);
-      if (resolveLlegaEnCarroPricing(personDataH)) personDataH.wantsBautizosTransport = 'No';
-      personDataH.bautizosAttendanceType = normalizeBautizosAttendanceType(personDataH.bautizosAttendanceType);
-      personDataH.bautizosCompanions = comps;
-      const btH = normalizeBautizosAttendanceType(personDataH.bautizosAttendanceType);
-      personDataH.willBeBaptized = bautizosWillBeBaptizedFromAttendance(btH);
-      personDataH.baptismSegment = '';
-      personDataH.baptismShirtSize = normalizeBaptismShirtSize(entry.baptismShirtSize);
-      applyParticipantNameFormattingForSave(personDataH);
-      if (mode === 'active') {
-        const liqPub = Number(getLiquidationTarget(personDataH, currentPricing, eventSnapshot)) || 0;
-        const isLiquidado = personDataH.isScholarship === 'No' && initialPaidGross >= liqPub;
-        const registerCreatedAt = Date.now() + i;
-        const pendingAfterReg = Math.max(liqPub - initialPaidGross, 0);
-        personDataH.whatsAppFinanceNotifications = [
-          {
-            id: `wa-reg-${registerCreatedAt}`,
-            kind: 'registro',
-            amount: initialPaidGross,
-            pendingAmount: pendingAfterReg,
-            isLiquidado,
-            liquidationTarget: liqPub,
-            createdAt: registerCreatedAt,
-            sent: false,
-            sentAt: null,
-            message: buildFinanceWhatsAppMessage({
-              person: personDataH,
-              loc,
-              amount: initialPaidGross,
-              pendingAmount: pendingAfterReg,
-              isLiquidado,
-              kind: 'registro',
-              reportedAtMs: registerCreatedAt,
-              liquidationTarget: liqPub,
-              eventSnapshot,
-              rosterParticipants: participants,
-              avisoUrl: avisoUrlSplit,
-              paymentDeadlineDate: paymentDeadlineSplit,
-            }),
-          },
-        ];
-      }
-      await setDoc(
-        getDocRef('app_participants', docIdW),
-        prepareParticipantDocForFirestore(personDataH)
-      );
-      hostPersonDataForWa = personDataH;
-
-      await appendPublicRegistrationActivityLog({
-        eventSnapshot,
-        loc,
-        personName: personDataH.name,
-        participantId: docIdW,
-        waitlist: mode === 'waitlist',
-        initialPaidGross: mode === 'active' ? initialPaidGross : 0,
-        paymentMethod,
-        paymentService: paymentServiceBase,
-        isLiquidado:
-          mode === 'active'
-            ? personDataH.isScholarship === 'No' &&
-              initialPaidGross >= (Number(getLiquidationTarget(personDataH, currentPricing, eventSnapshot)) || 0)
-            : false,
-        scholarshipPending: false,
-        participantData: { id: docIdW, ...personDataH },
-      });
-    } else {
-      const { selectedDiscountCampaignId: _sat, ...coreSat } = pl;
-      const personDataS = {
-        ...coreSat,
-        id: docIdW,
-        status: mode,
-        registeredAt: regIso,
-        registeredBy: publicRegisteredBy,
-        vnpPersonId: candVnp,
-        isFirstVnpId: !idExistsW,
-        location: loc,
-        travelFrom: pl.travelFrom || loc,
-        travelTo: pl.travelTo || loc,
-        eventId: eventSnapshot.id,
-        paymentHistory: [],
-        paid: 0,
-        paidNet: 0,
-        paymentMethod: 'Efectivo',
-        paymentService: getAutoPaymentServiceForPublic(
-          new Date(),
-          eventSnapshot,
-          loc,
-          serviceSlots,
-          globalSnapshot?.cashCutScheduleByLocation,
-        ),
-        cardReference: '',
-        whatsAppFinanceNotifications: [],
-        responsivaStatus: resolveResponsivaStatus(pl, eventSnapshot),
-        scholarshipPendingApproval: false,
-        scholarshipType: 'none',
-        scholarshipPartialAmount: 0,
-        discountCampaignId: '',
-        discountCampaignConcept: '',
-        discountCampaignAppliedAt: null,
-        refundPendingAmount: 0,
-        refundPendingReason: '',
-        registeredCostManual: true,
-        registeredCost: 0,
-        bautizosSplitPartyHostParticipantId: hostDocId,
-        campAssignment: '',
-      };
-      if (mode === 'waitlist') {
-        personDataS.waitlistCreatedAt = Date.now();
-      }
-      personDataS.isScholarship = 'No';
-      personDataS.isServer = 'No';
-      personDataS.serverAssignment = '';
-      personDataS.ambosServeInSegment = '';
-      personDataS.attendanceSpecialType = ATTENDANCE_SPECIAL.ninguno;
-      personDataS.carrosLlegada = normalizeArrivalCarCount(personDataS.carrosLlegada);
-      if (resolveLlegaEnCarroPricing(personDataS)) personDataS.wantsBautizosTransport = 'No';
-      personDataS.bautizosAttendanceType = BAUTIZOS_ATTENDANCE.bautizado;
-      personDataS.bautizosCompanions = comps;
-      personDataS.willBeBaptized = SI;
-      personDataS.baptismSegment = '';
-      personDataS.baptismShirtSize = normalizeBaptismShirtSize(entry.baptismShirtSize);
-      applyParticipantNameFormattingForSave(personDataS);
-      await setDoc(
-        getDocRef('app_participants', docIdW),
-        prepareParticipantDocForFirestore(personDataS)
-      );
-    }
-  }
-
-  if (familyHasAnyCarTransport(entry, entry.bautizosCompanions)) {
-    const hostCompsForCar = buildSplitPartyCompanionsForSlot({
-      personLike: entry,
-      loc,
-      targetSlotKey: 'host',
-      docIdBySlotKey: docIdBySlot,
-      vnpCompanionHelpers: vnpH,
-    });
-    const carPatches = buildCarMetaPatchesAfterSave({
-      hostPerson: { ...entry, id: hostDocId },
-      companions: hostCompsForCar,
-      plan: eventSnapshot.transportPlanning,
-      draftMetaByVehicleKey: entry.draftCarMetaByVehicleKey || {},
-      hostId: hostDocId,
-    });
-    if (carPatches.length) {
-      await persistEventCarMetaPatches({
-        eventId: eventSnapshot.id,
-        patches: carPatches,
-        currentPlan: eventSnapshot.transportPlanning,
-        getDocRef,
-        updateDoc,
-      });
-    }
-  }
-
-  let responsivaSignUrl = '';
-  if (mode === 'active' && hostPersonDataForWa) {
-    try {
-      const ageBracket = participantAgeBracketForResponsiva(parseInt(hostPersonDataForWa?.age, 10));
-      const canSignNow =
-        ageBracket === 'adult' &&
-        hostPersonDataForWa.responsivaStatus !== 'Entregada' &&
-        isResponsivaDigitalActiveForParticipant(hostPersonDataForWa, eventSnapshot);
-      if (canSignNow) {
-        const token = await createResponsivaSignTokenDoc({
-          participantId: hostDocId,
-          eventId: eventSnapshot.id,
-          person: hostPersonDataForWa,
-        });
-        responsivaSignUrl = token?.signUrl || '';
-      }
-    } catch (e) {
-      console.warn('public responsiva sign token (split)', e);
-    }
-  }
-
-  return {
-    ok: true,
-    participantId: hostDocId,
-    responsivaSignUrl,
-    waitlist: mode === 'waitlist',
-  };
-}
-
-/**
- * Registro público (misma forma que handleAddEntry / handleAddToWaitlist en App.jsx).
- */
 export async function submitPublicRegistration({
   rawEntry,
   loc,
@@ -2436,9 +1452,6 @@ export async function submitPublicRegistration({
 
   const personOfInterestBlock = await assertRegistrationNotPersonOfInterest(entry, evType, {
     generateVnpPersonId,
-    buildParticipantLikeForBautizosSplitSlot,
-    getBautizosSplitPartySlotDescriptors,
-    hasBautizosBaptizedCompanionInParty,
     canMarkPersonsOfInterest: false,
   });
   if (personOfInterestBlock) {
@@ -2491,18 +1504,7 @@ export async function submitPublicRegistration({
     });
   }
 
-  if (evType === 'Bautizos' && hasBautizosBaptizedCompanionInParty(entry)) {
-    return submitPublicBautizosSplitRegistration({
-      entry,
-      loc,
-      eventSnapshot,
-      globalSnapshot,
-      participants,
-      currentPricing,
-      mode: 'active',
-    });
-  }
-
+  
   const phoneDigits = digitsOnlyPhone(entry.phone);
   const vnpId = canonicalizeVnpPersonId(entry.vnpPersonId || '');
   const candidateVnpId = vnpId || generateVnpPersonId(entry);
@@ -2538,37 +1540,7 @@ export async function submitPublicRegistration({
     };
   }
 
-  const vnpCompanionHelpersPub = { canonicalizeVnpPersonId, generateVnpPersonId };
-  let normalizedBautizosCompanionsPub = null;
-  if (evType === 'Bautizos') {
-    normalizedBautizosCompanionsPub = normalizeBautizosCompanionsForPersist(entry, loc, vnpCompanionHelpersPub);
-    const compErrPub = getBautizosBaptizedCompanionSubmitBlockingError({
-      hostEntry: entry,
-      hostDocId: docId,
-      normalizedCompanions: normalizedBautizosCompanionsPub,
-      participants,
-      eventId: eventSnapshot.id,
-      excludeParticipantId: undefined,
-      canonicalizeVnpPersonId,
-      generateVnpPersonId,
-      participantBlocksDuplicateRegistration,
-      phoneDuplicateInEvent,
-      isPhoneShareFamilyAllowed,
-      digitsOnlyPhone,
-      calculateAgeFromBirthDate,
-    });
-    if (compErrPub) {
-      return {
-        ok: false,
-        error: [
-          'Motivo: no se cumplen las reglas de teléfono o duplicados para un acompañante marcado como bautizado.',
-          '',
-          compErrPub,
-        ].join('\n'),
-      };
-    }
-  }
-
+  
   const gate = await loadParticipantRegistrationWriteGate(docId, eventSnapshot.id);
   if (!gate.ok) {
     return { ok: false, error: gate.error };
@@ -2614,9 +1586,8 @@ export async function submitPublicRegistration({
   const baseRegisteredCost = getPersonCost(entry, currentPricing, eventSnapshot);
   const skipCampaignForAttendance =
     (isCampa || evType === 'General') && isFreeAttendanceType(normalizeAttendanceSpecial(entry));
-  const skipCampaignNonCampaPricing = evType === 'Bautizos';
-  const matchedCampaign = skipCampaignForAttendance || skipCampaignNonCampaPricing ? null : resolveMatchedCampaignForNewEntry(entry, eventSnapshot);
-  if (entry.selectedDiscountCampaignId && !skipCampaignForAttendance && !skipCampaignNonCampaPricing && !matchedCampaign) {
+  const matchedCampaign = skipCampaignForAttendance ? null : resolveMatchedCampaignForNewEntry(entry, eventSnapshot);
+  if (entry.selectedDiscountCampaignId && !skipCampaignForAttendance && !matchedCampaign) {
     return {
       ok: false,
       error: [
@@ -2626,10 +1597,9 @@ export async function submitPublicRegistration({
     };
   }
   const registeredCost =
-    (evType === 'Bautizos' && isBautizosPastorAttendance(entry)) ||
     ((isCampa || evType === 'General') && normalizeAttendanceSpecial(entry) === ATTENDANCE_SPECIAL.pastor)
       ? 0
-      : skipCampaignForAttendance || skipCampaignNonCampaPricing
+      : skipCampaignForAttendance
         ? baseRegisteredCost
         : matchedCampaign
           ? Math.max(0, Number(matchedCampaign.finalAmount) || 0)
@@ -2674,40 +1644,7 @@ export async function submitPublicRegistration({
     refundPendingReason: '',
   };
 
-  if (evType === 'Bautizos') {
-    personData.carrosLlegada = normalizeArrivalCarCount(personData.carrosLlegada);
-    if (resolveLlegaEnCarroPricing(personData)) personData.wantsBautizosTransport = 'No';
-    personData.bautizosAttendanceType = normalizeBautizosAttendanceType(personData.bautizosAttendanceType);
-    if (shouldPersistBautizosCompanionsOnSave(entry)) {
-      personData.bautizosCompanions =
-        normalizedBautizosCompanionsPub || normalizeBautizosCompanionsForPersist(personData, loc, vnpCompanionHelpersPub);
-      personData.bautizosCompanions = applyCompanionWaitlistCapOnEdit({
-        originalCompanions: entry?.bautizosCompanions || [],
-        nextCompanions: personData.bautizosCompanions,
-        hostPerson: personData,
-        participants,
-        event: eventSnapshot,
-        loc,
-        getGlobalCap: () => Math.max(0, Number(eventSnapshot.eventTotalCap ?? 0)),
-        getGlobalCapUsed: () => computeEventCapUsedUnits(participants, eventSnapshot),
-        getLocCap: (l) => Number(eventSnapshot.locationCaps?.[l] || 0),
-        getLocCapUsed: (l) => computeEventCapUsedUnitsBySede(participants, eventSnapshot)[l] ?? 0,
-      });
-    } else {
-      delete personData.bautizosCompanions;
-    }
-    const bType = normalizeBautizosAttendanceType(personData.bautizosAttendanceType);
-    personData.willBeBaptized = bautizosWillBeBaptizedFromAttendance(bType);
-    personData.baptismSegment = '';
-    Object.assign(
-      personData,
-      syncBautizosAttendanceServerFields({
-        ...personData,
-        isServer: entry.isServer ?? personData.isServer,
-      })
-    );
-  }
-
+  
   if (isCampa) {
     personData.willBeBaptized = isSiValue(entry.willBeBaptized) ? SI : 'No';
     if (!isSiValue(personData.willBeBaptized) || !isSiValue(entry.isServer) || entry.serverAssignment !== 'Ambos') {
@@ -2721,20 +1658,20 @@ export async function submitPublicRegistration({
       personData.scholarshipPartialAmount = 0;
       personData.attendanceSpecialType = entry.attendanceSpecialType;
     }
-  } else if (evType !== 'Bautizos') {
+  } else {
     personData.willBeBaptized = 'No';
     personData.baptismSegment = '';
   }
 
   if (!isCampa) {
     personData.isScholarship = 'No';
-    if (evType !== 'Bautizos') {
+    {
       personData.isServer = 'No';
       personData.serverAssignment = '';
       personData.ambosServeInSegment = '';
     }
     personData.attendanceSpecialType = ATTENDANCE_SPECIAL.ninguno;
-    if (evType !== 'Bautizos') {
+    {
       personData.canSwim = 'No';
       personData.hasAllergy = 'No';
       personData.hasDisease = 'No';
@@ -2742,30 +1679,7 @@ export async function submitPublicRegistration({
     }
   }
 
-  if (evType === 'Bautizos' && familyHasAnyCarTransport(personData, personData.bautizosCompanions)) {
-    const carIssues = getFamilyCarInventoryValidationIssues(
-      buildMergedFamilyCarInventory({
-        hostPerson: personData,
-        companions: personData.bautizosCompanions,
-        plan: eventSnapshot.transportPlanning,
-        hostSourceKey: 'p:draft-host',
-        draftMetaByVehicleKey: entry.draftCarMetaByVehicleKey || rawEntry.draftCarMetaByVehicleKey || {},
-        useBlankSlotMeta: true,
-      }),
-      { hostPerson: personData, companions: personData.bautizosCompanions }
-    );
-    if (carIssues.length) {
-      return {
-        ok: false,
-        error: [
-          'Motivo: cada rubro del vehículo y la tripulación son obligatorios. Si aún no tiene el dato, márquelo como pendiente.',
-          '',
-          carIssues.map((t, i) => `${i + 1}. ${t}`).join('\n'),
-        ].join('\n'),
-      };
-    }
-  }
-
+  
   applyParticipantNameFormattingForSave(personData);
   const liqPub = Number(getLiquidationTarget(personData, currentPricing, eventSnapshot)) || 0;
   const isLiquidado = personData.isScholarship === 'No' && initialPaidGross >= liqPub;
@@ -2806,25 +1720,7 @@ export async function submitPublicRegistration({
     getDocRef('app_participants', docId),
     prepareParticipantDocForFirestore(personData)
   );
-  if (evType === 'Bautizos' && familyHasAnyCarTransport(personData, personData.bautizosCompanions)) {
-    const carPatches = buildCarMetaPatchesAfterSave({
-      hostPerson: personData,
-      companions: personData.bautizosCompanions,
-      plan: eventSnapshot.transportPlanning,
-      draftMetaByVehicleKey: entry.draftCarMetaByVehicleKey || rawEntry.draftCarMetaByVehicleKey || {},
-      hostId: docId,
-    });
-    if (carPatches.length) {
-      await persistEventCarMetaPatches({
-        eventId: eventSnapshot.id,
-        patches: carPatches,
-        currentPlan: eventSnapshot.transportPlanning,
-        getDocRef,
-        updateDoc,
-      });
-    }
-  }
-  await appendParticipantActivityEntry({
+    await appendParticipantActivityEntry({
     participantId: docId,
     eventId: eventSnapshot.id,
     actorUsername: publicRegisteredBy,
@@ -2912,18 +1808,7 @@ async function submitWaitlist({
     };
   }
 
-  if (evType === 'Bautizos' && hasBautizosBaptizedCompanionInParty(entry)) {
-    return submitPublicBautizosSplitRegistration({
-      entry,
-      loc,
-      eventSnapshot,
-      globalSnapshot,
-      participants,
-      currentPricing,
-      mode: 'waitlist',
-    });
-  }
-
+  
   const phoneDigits = digitsOnlyPhone(entry.phone);
   const finalVnpPersonId = canonicalizeVnpPersonId(entry.vnpPersonId || '') || generateVnpPersonId(entry);
   const docId = await resolveParticipantDocumentIdForWrite(finalVnpPersonId, eventSnapshot.id);
@@ -2958,37 +1843,7 @@ async function submitWaitlist({
     };
   }
 
-  const vnpCompanionHelpersWl = { canonicalizeVnpPersonId, generateVnpPersonId };
-  let normalizedBautizosCompanionsWl = null;
-  if (evType === 'Bautizos') {
-    normalizedBautizosCompanionsWl = normalizeBautizosCompanionsForPersist(entry, loc, vnpCompanionHelpersWl);
-    const compErrWl = getBautizosBaptizedCompanionSubmitBlockingError({
-      hostEntry: entry,
-      hostDocId: docId,
-      normalizedCompanions: normalizedBautizosCompanionsWl,
-      participants,
-      eventId: eventSnapshot.id,
-      excludeParticipantId: undefined,
-      canonicalizeVnpPersonId,
-      generateVnpPersonId,
-      participantBlocksDuplicateRegistration,
-      phoneDuplicateInEvent,
-      isPhoneShareFamilyAllowed,
-      digitsOnlyPhone,
-      calculateAgeFromBirthDate,
-    });
-    if (compErrWl) {
-      return {
-        ok: false,
-        error: [
-          'Motivo: no se cumplen las reglas de teléfono o duplicados para un acompañante marcado como bautizado (lista de espera).',
-          '',
-          compErrWl,
-        ].join('\n'),
-      };
-    }
-  }
-
+  
   const gateWl = await loadParticipantRegistrationWriteGate(docId, eventSnapshot.id);
   if (!gateWl.ok) {
     return { ok: false, error: gateWl.error };
@@ -3004,9 +1859,8 @@ async function submitWaitlist({
   const baseRegisteredCost = getPersonCost(entry, currentPricing, eventSnapshot);
   const skipCampaignWl =
     (evType === 'Campa' || evType === 'General') && isFreeAttendanceType(normalizeAttendanceSpecial(entry));
-  const skipCampaignBautizosWl = evType === 'Bautizos';
-  const matchedCampaign = skipCampaignWl || skipCampaignBautizosWl ? null : resolveMatchedCampaignForNewEntry(entry, eventSnapshot);
-  if (entry.selectedDiscountCampaignId && !skipCampaignWl && !skipCampaignBautizosWl && !matchedCampaign) {
+  const matchedCampaign = skipCampaignWl ? null : resolveMatchedCampaignForNewEntry(entry, eventSnapshot);
+  if (entry.selectedDiscountCampaignId && !skipCampaignWl && !matchedCampaign) {
     return {
       ok: false,
       error: [
@@ -3046,10 +1900,9 @@ async function submitWaitlist({
     responsivaStatus: resolveResponsivaStatus(entry, eventSnapshot),
     campAssignment: initialCampAssignment,
     registeredCost:
-      (evType === 'Bautizos' && isBautizosPastorAttendance(entry)) ||
-      ((evType === 'Campa' || evType === 'General') && normalizeAttendanceSpecial(entry) === ATTENDANCE_SPECIAL.pastor)
+        ((evType === 'Campa' || evType === 'General') && normalizeAttendanceSpecial(entry) === ATTENDANCE_SPECIAL.pastor)
         ? 0
-        : skipCampaignWl || skipCampaignBautizosWl
+        : skipCampaignWl
           ? baseRegisteredCost
           : matchedCampaign
             ? Math.max(0, Number(matchedCampaign.finalAmount) || 0)
@@ -3069,20 +1922,20 @@ async function submitWaitlist({
     } else {
       personData.baptismSegment = String(entry.baptismSegment || '').trim();
     }
-  } else if (evType !== 'Bautizos') {
+  } else {
     personData.willBeBaptized = 'No';
     personData.baptismSegment = '';
   }
 
   if (evType !== 'Campa') {
     personData.isScholarship = 'No';
-    if (evType !== 'Bautizos') {
+    {
       personData.isServer = 'No';
       personData.serverAssignment = '';
       personData.ambosServeInSegment = '';
     }
     personData.attendanceSpecialType = ATTENDANCE_SPECIAL.ninguno;
-    if (evType !== 'Bautizos') {
+    {
       personData.canSwim = 'No';
       personData.hasAllergy = 'No';
       personData.hasDisease = 'No';
@@ -3101,24 +1954,7 @@ async function submitWaitlist({
     personData.scholarshipPartialAmount = 0;
   }
 
-  if (evType === 'Bautizos') {
-    personData.carrosLlegada = normalizeArrivalCarCount(personData.carrosLlegada);
-    if (resolveLlegaEnCarroPricing(personData)) personData.wantsBautizosTransport = 'No';
-    personData.bautizosAttendanceType = normalizeBautizosAttendanceType(personData.bautizosAttendanceType);
-    personData.bautizosCompanions =
-      normalizedBautizosCompanionsWl || normalizeBautizosCompanionsForPersist(personData, loc, vnpCompanionHelpersWl);
-    const bTypeWl = normalizeBautizosAttendanceType(personData.bautizosAttendanceType);
-    personData.willBeBaptized = bautizosWillBeBaptizedFromAttendance(bTypeWl);
-    personData.baptismSegment = '';
-    Object.assign(
-      personData,
-      syncBautizosAttendanceServerFields({
-        ...personData,
-        isServer: entry.isServer ?? personData.isServer,
-      })
-    );
-  }
-
+  
   applyParticipantNameFormattingForSave(personData);
   if (evType === 'Campa' && isSiValue(entry.isScholarship)) {
     const now = Date.now();
@@ -3146,25 +1982,7 @@ async function submitWaitlist({
     getDocRef('app_participants', docId),
     prepareParticipantDocForFirestore(personData)
   );
-  if (evType === 'Bautizos' && familyHasAnyCarTransport(personData, personData.bautizosCompanions)) {
-    const carPatches = buildCarMetaPatchesAfterSave({
-      hostPerson: personData,
-      companions: personData.bautizosCompanions,
-      plan: eventSnapshot.transportPlanning,
-      draftMetaByVehicleKey: entry.draftCarMetaByVehicleKey || rawEntry.draftCarMetaByVehicleKey || {},
-      hostId: docId,
-    });
-    if (carPatches.length) {
-      await persistEventCarMetaPatches({
-        eventId: eventSnapshot.id,
-        patches: carPatches,
-        currentPlan: eventSnapshot.transportPlanning,
-        getDocRef,
-        updateDoc,
-      });
-    }
-  }
-  await appendPublicRegistrationActivityLog({
+    await appendPublicRegistrationActivityLog({
     eventSnapshot,
     loc,
     personName: personData.name,
@@ -3274,11 +2092,9 @@ export function buildPublicProfileImportPayload(src, { eventType, defaultLocatio
     customData: {},
     travelFrom: loc,
     travelTo: loc,
-    wantsBautizosFood: src.wantsBautizosFood || 'No',
-    wantsBautizosTransport: src.wantsBautizosTransport || 'No',
     llegaEnCarro: resolveLlegaEnCarroImport(src),
     regresaEnCarro: resolveRegresaEnCarroImport(src),
-    carrosLlegada: normalizeArrivalCarCount(src.carrosLlegada),
+    carrosLlegada: Math.max(0, parseInt(src.carrosLlegada, 10) || 0),
     transportType: src.transportType || 'Camión',
     paymentMethod: 'Efectivo',
     cardReference: '',
@@ -3299,17 +2115,6 @@ export function buildPublicProfileImportPayload(src, { eventType, defaultLocatio
     base.baptismSegment = src.baptismSegment || '';
     const mix = String(src.ambosServeInSegment || '').trim();
     base.ambosServeInSegment = mix === 'Teens' || mix === 'Jóvenes' ? mix : '';
-  }
-  if (eventType === 'Bautizos') {
-    base.wantsBautizosFood = SI;
-    base.bautizosAttendanceType = normalizeBautizosAttendanceType(src.bautizosAttendanceType);
-    if (shouldPersistBautizosCompanionsOnSave(src)) {
-      base.bautizosCompanions = normalizeBautizosCompanionsForPersist(
-        { ...src, location: loc },
-        loc,
-        { canonicalizeVnpPersonId, generateVnpPersonId }
-      );
-    }
   }
   return base;
 }

@@ -1,27 +1,17 @@
 import { formatNosVemosDateLabel } from './eventDateHelpers.js';
 import { SI_LABEL } from './appConstants.js';
 import { WA_EMOJI as E } from './whatsappEmojiConstants.js';
-import { getBautizosCompanionsArray } from './bautizosParty.js';
-import { getBautizosCompanionInformativeListPrice, getBautizosTitularListPrice } from './publicRegistrationLogic.js';
 import { dedupeUnsentCarDataNotifications } from './carDataWhatsApp.js';
+import { buildCarDataWaSubjectContext } from './bautizosCarMeta.js';
 import {
-  buildCarDataWaSubjectContext,
-  carCrewRequiresPassengerSelection,
-} from './bautizosCarMeta.js';
-import {
-  buildBautizosPartyDetailedLines,
-  buildBautizosTransportSummaryLines,
-  buildBautizosFinanceStatusLines,
-  buildBautizosPerLineLiquidationLines,
   buildPaymentDeadlineAndRefundBlock,
   buildCarDataStatusLines,
   buildWaMessageHeader,
   resolveWaOrgContactLabel,
-  resolvePromotedCompanionNames,
   formatPaymentDeadlineLabel,
-} from './whatsappBautizosStatusBlocks.js';
+} from './whatsappMessageBlocks.js';
 
-export { resolveVnOfficeContactLabel } from './whatsappBautizosStatusBlocks.js';
+export { resolveVnOfficeContactLabel } from './whatsappMessageBlocks.js';
 
 const SI_CANON = 'Si';
 
@@ -83,88 +73,6 @@ export function eventDateLabelForNosVemos(eventSnapshot, person) {
 
 export function isCampaEventType(eventSnapshot) {
   return String(eventSnapshot?.eventType || '') === 'Campa';
-}
-
-export function isBautizosEventType(eventSnapshot) {
-  return String(eventSnapshot?.eventType || '') === 'Bautizos';
-}
-
-/**
- * Líneas de desglose de lista para el registro raíz (titular + cada acompañante con nombre).
- * @param {object} person
- * @param {object} eventSnapshot
- * @param {object[]|null|undefined} [rosterParticipants]
- * @returns {string[]}
- */
-export function buildBautizosPartyCostBreakdownLines(person, eventSnapshot, rosterParticipants = null) {
-  if (!isBautizosEventType(eventSnapshot)) return [];
-  if (String(person?.bautizosSplitPartyHostParticipantId || '').trim()) return [];
-
-  const companions = getBautizosCompanionsArray(person).filter((c) => String(c?.name || '').trim());
-  if (!companions.length) return [];
-
-  const lines = [];
-
-  const titularPrice = getBautizosTitularListPrice(person, eventSnapshot);
-  lines.push(`    ${E.barChart} Titular (bautizado): $${formatFinanceMoneyMx(titularPrice)}`);
-
-  companions.forEach((c, idx) => {
-    const name = String(c?.name || '').trim();
-    const price = getBautizosCompanionInformativeListPrice(c, eventSnapshot, rosterParticipants);
-    const rel = String(c?.relationship || '').trim();
-    const relSuffix =
-      rel && rel !== 'Integrante del mismo registro' ? ` (${rel})` : '';
-    lines.push(
-      `    ${E.idBadge} Acompañante ${idx + 1}: ${name}${relSuffix} — $${formatFinanceMoneyMx(price)}`
-    );
-  });
-
-  return lines;
-}
-
-/**
- * Titular + acompañantes con nombre (Bautizos, registro raíz).
- * @param {object} person
- * @param {object} eventSnapshot
- * @returns {string[]}
- */
-export function buildBautizosPartyRosterLines(person, eventSnapshot) {
-  if (!isBautizosEventType(eventSnapshot)) return [];
-  if (String(person?.bautizosSplitPartyHostParticipantId || '').trim()) return [];
-
-  const titularName = String(person?.name || '').trim();
-  const companions = getBautizosCompanionsArray(person).filter((c) => String(c?.name || '').trim());
-  if (!titularName && !companions.length) return [];
-
-  const lines = [];
-  if (titularName) {
-    lines.push(`    ${E.idBadge} Titular (bautizado): ${titularName}`);
-  }
-  companions.forEach((c, idx) => {
-    const name = String(c?.name || '').trim();
-    const rel = String(c?.relationship || '').trim();
-    const relSuffix = rel && rel !== 'Integrante del mismo registro' ? ` (${rel})` : '';
-    lines.push(`    ${E.idBadge} Acompañante ${idx + 1}: ${name}${relSuffix}`);
-  });
-  return lines;
-}
-
-function appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants = null, opts = {}) {
-  const rosterLines = buildBautizosPartyDetailedLines(person, eventSnapshot, rosterParticipants, opts);
-  if (rosterLines.length) lines.push(...rosterLines);
-}
-
-function appendBautizosTransportIfAny(lines, person, eventSnapshot, rosterParticipants = null) {
-  const transportLines = buildBautizosTransportSummaryLines(
-    person,
-    eventSnapshot,
-    eventSnapshot?.transportPlanning,
-    rosterParticipants
-  );
-  if (transportLines.length) {
-    lines.push('');
-    lines.push(...transportLines);
-  }
 }
 
 function resolvePaymentDeadlineFromContext(p, eventSnapshot) {
@@ -249,19 +157,10 @@ export function buildFinanceWhatsAppMessage(p) {
     lines.push('');
     lines.push(`    ${E.calendar} Fecha de registro: ${repLoc}`);
     lines.push(`    ${E.idBadge} Tu ID único es: ${vnpId}`);
-    appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
-    appendBautizosTransportIfAny(lines, person, eventSnapshot, rosterParticipants);
     if (showMoney) {
       lines.push(`    ${E.dollarBanknote} Abono: $${amtTxt}`);
       lines.push(`    ${E.barChart} Saldo pendiente: ${isLiquidado ? `Liquidado ${E.checkMark}` : `$${pendTxt}`}`);
-      const breakdown = buildBautizosPartyCostBreakdownLines(person, eventSnapshot, rosterParticipants);
-      if (breakdown.length) {
-        lines.push('');
-        lines.push(`    ${E.card} Desglose de costos de lista:`);
-        lines.push(...breakdown);
-      }
       if (hasDebt) {
-        lines.push(...buildBautizosPerLineLiquidationLines(person, eventSnapshot, amount, liq));
         lines.push(...buildPaymentDeadlineAndRefundBlock(ev, true, deadline));
       }
     }
@@ -278,12 +177,10 @@ export function buildFinanceWhatsAppMessage(p) {
     lines.push('');
     lines.push(`    ${E.calendar} Fecha y hora de abono: ${repLoc}`);
     lines.push(`    ${E.idBadge} Tu ID único es: ${vnpId}`);
-    appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
     lines.push(`    ${E.dollarBanknote} Abono aplicado: $${amtTxt}`);
     if (showMoney) {
       lines.push(`    ${E.barChart} Saldo pendiente: ${isLiquidado ? `Liquidado ${E.checkMark}` : `$${pendTxt}`}`);
       if (hasDebt) {
-        lines.push(...buildBautizosPerLineLiquidationLines(person, eventSnapshot, liq - pendingAmount, liq));
       }
     }
     lines.push('');
@@ -298,7 +195,6 @@ export function buildFinanceWhatsAppMessage(p) {
     lines.push(`${E.wave} ¡Hola! ${personName}, movimiento registrado en ${eventName}.`);
     lines.push(`    ${E.calendar} Fecha: ${repLoc}`);
     lines.push(`    ${E.idBadge} Tu ID único es: ${vnpId}`);
-    appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
     lines.push(`    ${E.dollarBanknote} Monto: $${amt}`);
     lines.push(`    ${E.barChart} Saldo pendiente: ${isLiquidado ? `Liquidado ${E.checkMark}` : `$${pend}`}`);
     lines.push('');
@@ -355,22 +251,17 @@ export function buildGenericManualWhatsAppMessage(p) {
   lines.push('');
   lines.push(`    ${E.calendar} Fecha y hora del mensaje: ${repLoc}`);
   lines.push(`    ${E.idBadge} Tu ID único es: ${vnpId}`);
-  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
-  appendBautizosTransportIfAny(lines, person, eventSnapshot, rosterParticipants);
 
+  const paidLabel = formatFinanceMoneyMx(paid);
+  const targetLabel = formatFinanceMoneyMx(target);
+  const debtLabel = formatFinanceMoneyMx(debt);
+  lines.push(`    ${E.dollarBanknote} Costo / liquidación: $${targetLabel}`);
+  lines.push(`    ${E.barChart} Pagado: $${paidLabel}`);
   lines.push(
-    ...buildBautizosFinanceStatusLines({
-      target,
-      paid,
-      debt,
-      isScholarship: isSiStored(person?.isScholarship),
-      scholarshipType: person?.scholarshipType,
-      scholarshipPartialAmount: person?.scholarshipPartialAmount,
-    })
+    `    ${E.ledger} Saldo: ${debt > 0.005 ? `$${debtLabel}` : `Liquidado ${E.checkMark}`}`
   );
 
   if (debt > 0.005) {
-    lines.push(...buildBautizosPerLineLiquidationLines(person, eventSnapshot, paid, target));
     lines.push(...buildPaymentDeadlineAndRefundBlock(ev, true, deadline));
   }
 
@@ -387,7 +278,13 @@ export function buildGenericManualWhatsAppMessage(p) {
 /**
  * Baja de inscripción (mismo tono que avisos financieros: sin markdown de Telegram).
  */
-export function buildBajaWhatsAppMessage({ person, loc, reportedAtMs = Date.now(), eventSnapshot, rosterParticipants = null }) {
+export function buildBajaWhatsAppMessage({
+  person,
+  loc,
+  reportedAtMs = Date.now(),
+  eventSnapshot,
+  rosterParticipants = null,
+}) {
   const ev = eventSnapshot || {};
   const eventName = String(ev?.name || '').trim() || 'el evento';
   const name = String(person?.name || '').trim() || '';
@@ -404,14 +301,12 @@ export function buildBajaWhatsAppMessage({ person, loc, reportedAtMs = Date.now(
     '',
     `    ${E.calendar} Fecha y sede del movimiento: ${repLoc}`,
     `    ${E.idBadge} Tu ID único es: ${vnpId}`,
-  ];
-  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
-  lines.push(
     '',
     `${E.warning} Si esto fue un error, contáctanos de inmediato.`,
     '',
-    `${E.speechBalloon} Cualquier duda, estamos para servirte.`
-  );
+    `${E.speechBalloon} Cualquier duda, estamos para servirte.`,
+  ];
+  void rosterParticipants;
   return lines.join('\n');
 }
 
@@ -448,7 +343,6 @@ export function buildScholarshipPendingWhatsAppMessage({
     `    ${E.calendar} Fecha y sede del reporte: ${repLoc}`,
     `    ${E.idBadge} Tu ID único es: ${vnpId}`,
   ];
-  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
   lines.push(
     `    ${E.graduationCap} Solicitud de beca ${isPartial ? 'parcial' : 'total'} registrada; está pendiente de aprobación administrativa.`,
     ...(partialLine ? [`    ${E.dollarBanknote} ${partialLine}`] : []),
@@ -502,8 +396,6 @@ export function buildPromoteWaitlistWhatsAppMessage({
     `    ${E.calendar} Fecha y hora del movimiento: ${repLoc}`,
     `    ${E.idBadge} Tu ID único es: ${vnpId}`,
   ];
-  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
-  appendBautizosTransportIfAny(lines, person, eventSnapshot, rosterParticipants);
 
   if (isBecado && st === 'partial' && partialAmt > 0.005) {
     lines.push(
@@ -520,7 +412,6 @@ export function buildPromoteWaitlistWhatsAppMessage({
       `    ${E.barChart} Saldo pendiente: ${debt <= 0.005 ? `Liquidado ${E.checkMark}` : `$${formatFinanceMoneyMx(debt)}`}`
     );
     if (debt > 0.005) {
-      lines.push(...buildBautizosPerLineLiquidationLines(person, eventSnapshot, paid, target));
       lines.push(...buildPaymentDeadlineAndRefundBlock(ev, true, deadline));
     }
   }
@@ -535,132 +426,6 @@ export function buildPromoteWaitlistWhatsAppMessage({
   return lines.join('\n');
 }
 
-/**
- * Promoción parcial de acompañante(s) de lista de espera — aviso al titular.
- */
-export function buildPromoteCompanionWaitlistWhatsAppMessage({
-  person,
-  loc,
-  reportedAtMs = Date.now(),
-  eventSnapshot,
-  financeSnapshot,
-  promotedCompanionIds = [],
-  rosterParticipants = null,
-  paymentDeadlineDate = '',
-}) {
-  const ev = eventSnapshot || {};
-  const eventName = String(ev?.name || '').trim() || 'el evento';
-  const name = String(person?.name || '').trim() || '';
-  const vnpId = String(person?.vnpPersonId || '').trim() || 'N/A';
-  const repLoc = formatFinanceDateTimeWithLocation(reportedAtMs, loc);
-  const org = resolveWaOrgContactLabel(loc, ev);
-  const deadline = resolvePaymentDeadlineFromContext({ paymentDeadlineDate }, ev);
-  const promotedNames = resolvePromotedCompanionNames(person, promotedCompanionIds);
-  const promotedLabel = promotedNames.length ? promotedNames.join(', ') : 'tu acompañante';
-
-  const fs = financeSnapshot || {};
-  const target = Math.max(0, Number(fs.target) || 0);
-  const paid = Math.max(0, Number(fs.paid) || 0);
-  const debt = Math.max(target - paid, 0);
-
-  const lines = [
-    buildWaMessageHeader({
-      personName: name,
-      officeLabel: org,
-      purposeLine: `para informarte sobre la confirmación de acompañante(s) en ${eventName}. ${E.whiteCheck}`,
-    }),
-    '',
-    `    ${E.calendar} Fecha y hora del movimiento: ${repLoc}`,
-    `    ${E.idBadge} Tu ID único es: ${vnpId}`,
-    `    ${E.megaphone} Se confirmó en la lista de inscritos a: ${promotedLabel}.`,
-  ];
-  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants, {
-    promotedCompanionIds,
-  });
-  appendBautizosTransportIfAny(lines, person, eventSnapshot, rosterParticipants);
-
-  lines.push(
-    ...buildBautizosFinanceStatusLines({
-      target,
-      paid,
-      debt,
-      showBreakdown: true,
-      person,
-      eventSnapshot,
-      rosterParticipants,
-    })
-  );
-
-  if (debt > 0.005) {
-    lines.push(...buildBautizosPerLineLiquidationLines(person, eventSnapshot, paid, target));
-    lines.push(...buildPaymentDeadlineAndRefundBlock(ev, true, deadline));
-  }
-
-  lines.push('');
-  const nosVemos = debt <= 0.005 ? eventDateLabelForNosVemos(ev, person) : '';
-  if (nosVemos) {
-    lines.push(`${E.partyPopper} ¡Nos vemos el ${nosVemos}! ${E.sparkles} ¡No faltes!`);
-    lines.push('');
-  }
-  lines.push(WA_FINANCE_REGISTRATION_REVIEW_NOTE);
-  return lines.join('\n');
-}
-
-/**
- * Recordatorio de pago (cola automática semanal o manual): saldo pendiente y fecha límite del evento.
- * @param {{
- *   person: object,
- *   loc: string,
- *   pendingDebt: number,
- *   paymentDeadlineDate: string,
- *   reportedAtMs?: number,
- *   eventSnapshot: object,
- * }} p
- */
-export function buildPaymentReminderWhatsAppMessage(p) {
-  const {
-    person,
-    loc,
-    pendingDebt,
-    paymentDeadlineDate,
-    reportedAtMs = Date.now(),
-    eventSnapshot,
-    rosterParticipants = null,
-  } = p;
-
-  const ev = eventSnapshot || {};
-  const eventName = String(ev?.name || '').trim() || 'el evento';
-  const personName = String(person?.name || '').trim() || '';
-  const vnpId = String(person?.vnpPersonId || '').trim() || 'N/A';
-  const repLoc = formatFinanceDateTimeWithLocation(reportedAtMs, loc);
-  const org = resolveWaOrgContactLabel(loc, ev);
-  const debtTxt = formatFinanceMoneyMx(Math.max(0, Number(pendingDebt) || 0));
-  const deadlineLabel = formatPaymentDeadlineLabel(paymentDeadlineDate || ev?.paymentDeadlineDate);
-
-  const lines = [
-    buildWaMessageHeader({
-      personName,
-      officeLabel: org,
-      purposeLine: `con un recordatorio para liquidar tu lugar en ${eventName}. ${E.card}`,
-    }),
-    '',
-    `    ${E.calendar} Fecha del aviso: ${repLoc}`,
-    `    ${E.idBadge} Tu ID único es: ${vnpId}`,
-  ];
-  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
-  lines.push(
-    `    ${E.barChart} Monto pendiente por liquidar: $${debtTxt}`,
-    `    ${E.tearOffCalendar} Fecha límite de pago: ${deadlineLabel}`,
-    '',
-    'Por favor realiza tu pago a tiempo para conservar tu lugar. Si ya liquidaste, ignora este mensaje o envíanos tu comprobante por este medio.',
-    '',
-    'Debes liquidar tu registro antes de esa fecha. Si no se liquida a tiempo, no se garantiza la devolución del dinero abonado.',
-    '',
-    WA_FINANCE_REGISTRATION_REVIEW_NOTE
-  );
-  return lines.join('\n');
-}
-
 /** Rubros solicitados en mensaje WA de datos de carro. */
 function carWaRequestFieldLines(crewOpts) {
   const fields = ['Marca', 'Modelo', 'Color', 'Placas', 'Conductor'];
@@ -669,7 +434,7 @@ function carWaRequestFieldLines(crewOpts) {
 }
 
 /**
- * Solicitud de datos de vehículo y tripulación (Bautizos, solo titular).
+ * Solicitud de datos de vehículo y tripulación (solo titular).
  * @param {{
  *   person: object,
  *   loc: string,
@@ -702,10 +467,10 @@ export function buildCarDataRequestWhatsAppMessage(p) {
     requiresPassengers:
       typeof requiresPassengers === 'boolean'
         ? requiresPassengers
-        : carCrewRequiresPassengerSelection(person, getBautizosCompanionsArray(person)),
+        : false,
   };
   const subject =
-    carDataSubjectContext || buildCarDataWaSubjectContext(person, getBautizosCompanionsArray(person));
+    carDataSubjectContext || buildCarDataWaSubjectContext(person, []);
   const lines = [
     buildWaMessageHeader({
       personName,
@@ -716,13 +481,7 @@ export function buildCarDataRequestWhatsAppMessage(p) {
     `${E.calendar} Fecha del aviso: ${repLoc}`,
     `${E.idBadge} Tu ID único es: ${vnpId}`,
   ];
-  appendBautizosPartyDetailedLines(lines, person, eventSnapshot, rosterParticipants);
-  const transportLines = buildBautizosTransportSummaryLines(
-    person,
-    eventSnapshot,
-    eventSnapshot?.transportPlanning,
-    rosterParticipants
-  );
+  const transportLines = [];
   if (transportLines.length) {
     lines.push('');
     lines.push(...transportLines);
@@ -810,7 +569,7 @@ const STRUCTURED_KINDS_WITH_REVIEW_NOTE = new Set([
  * @param {object} eventSnapshot
  * @param {(n: object) => string} getMarkKey
  * @param {(p: object) => number} [getLiquidationTarget] — para recomponer promoción si falta `waFinanceSnapshot`
- * @param {object[]|null} [rosterParticipants] — para desglose de acompañantes en Bautizos
+ * @param {object[]|null} [rosterParticipants]
  */
 export function buildMergedFinanceWhatsAppMessage(
   person,
@@ -866,16 +625,7 @@ export function buildMergedFinanceWhatsAppMessage(
         });
       } else if (k === 'promocion_acompanante') {
         const financeSnapshot = resolveWaFinanceSnapshotFromNotification(n, person, getLiquidationTarget);
-        block = buildPromoteCompanionWaitlistWhatsAppMessage({
-          person,
-          loc,
-          reportedAtMs: n.createdAt,
-          eventSnapshot,
-          financeSnapshot,
-          promotedCompanionIds: n.promotedCompanionIds,
-          rosterParticipants,
-          paymentDeadlineDate: n.paymentDeadlineDate,
-        });
+        block = String(n.message || "").trim() || null;
       } else if (k === 'baja') {
         block = buildBajaWhatsAppMessage({
           person,

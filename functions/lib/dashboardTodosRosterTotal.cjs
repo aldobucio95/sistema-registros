@@ -2,20 +2,16 @@
 
 /**
  * Bundle lógico para Cloud Functions (CommonJS).
- * Mantener alineado con `src/dashboardTodosRosterTotal.js` y `functions/lib/bautizosFlat.cjs`.
+ * Mantener alineado con `src/dashboardTodosRosterTotal.js`.
  */
-
-const {
-  flattenBautizosParticipantsForRead,
-  computeBautizosTodosTotal,
-  expandBautizosGlobalRegistryRows,
-  computeBautizosActiveBreakdown,
-  getBautizosCompanionsArray,
-  isCompanionWaitlistPhantomStoredParticipant,
-} = require('./bautizosFlat.cjs');
 
 const SI = 'Si';
 const SI_LABEL = 'Sí';
+
+function isCompanionWaitlistPhantomStoredParticipant(personLike) {
+  if (personLike?._isCompanionWaitlistVirtual === true) return true;
+  return String(personLike?.id || '').trim().startsWith('cw:');
+}
 
 function isSiValue(v) {
   const s = String(v ?? '').trim();
@@ -100,9 +96,6 @@ function computeDashboardTodosRosterTotal(participantRows, eventRow) {
   const rosterBase = filterDashboardTodosRosterRows(scoped, eventRow);
   const evType = String(eventRow.eventType || '');
 
-  if (evType === 'Bautizos') {
-    return computeBautizosTodosTotal(rosterBase);
-  }
   if (evType === 'Campa') {
     return computeCampaTodosTotal(rosterBase, eventRow);
   }
@@ -114,7 +107,6 @@ function computeRowTodosUnitContribution(personRow, eventRow) {
   const evType = String(eventRow.eventType || '');
   if (!participantIsActiveInRoster(personRow)) return 0;
   if (!participantLocationInEventLocations(personRow, eventRow)) return 0;
-  if (evType === 'Bautizos') return 1;
   if (evType === 'Campa') {
     const o = eventRow?.campaRealCostCountOptions;
     const countAmbosDouble = !o || typeof o !== 'object' || o.countAmbosDoubleInAllCounts !== false;
@@ -133,15 +125,6 @@ function computeEventCapUsedUnitsBySede(participantRows, eventRow) {
 
   const rosterBase = filterEventCapRosterBase(participantRows, eventRow);
   const evType = String(eventRow.eventType || '');
-
-  if (evType === 'Bautizos') {
-    const flat = flattenBautizosParticipantsForRead(rosterBase);
-    for (const p of flat) {
-      const loc = String(p?.location || '').trim();
-      if (Object.prototype.hasOwnProperty.call(byLoc, loc)) byLoc[loc] += 1;
-    }
-    return byLoc;
-  }
 
   if (evType === 'Campa') {
     const o = eventRow?.campaRealCostCountOptions;
@@ -169,7 +152,4 @@ module.exports = {
   filterEventCapRosterBase,
   computeRowTodosUnitContribution,
   computeEventCapUsedUnitsBySede,
-  expandBautizosGlobalRegistryRows,
-  computeBautizosActiveBreakdown,
-  getBautizosCompanionsArray,
 };

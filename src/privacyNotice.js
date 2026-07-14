@@ -109,19 +109,6 @@ export const SENSITIVE_PARTICIPANT_FIELDS = [
   'disabilityDetails',
 ];
 
-/** Campos de salud por acompañante Bautizos. */
-export const SENSITIVE_COMPANION_FIELDS = [
-  'bloodType',
-  'hasAllergy',
-  'allergyCategory',
-  'allergyDetails',
-  'hasDisease',
-  'diseaseDetails',
-  'diseaseMedication',
-  'hasDisability',
-  'disabilityDetails',
-];
-
 export function defaultPrivacyNoticeConfig() {
   const now = new Date().toISOString();
   return {
@@ -242,20 +229,6 @@ export function buildPublicPrivacyDocument(privacyNotice) {
   };
 }
 
-function companionHasSensitiveData(row) {
-  if (!row || typeof row !== 'object') return false;
-  if (String(row.bloodType || '').trim() && row.bloodType !== BLOOD_TYPE_UNSPECIFIED) return true;
-  if (isSiValue(row.hasAllergy) && (String(row.allergyDetails || '').trim() || String(row.allergyCategory || '').trim())) {
-    return true;
-  }
-  if (isSiValue(row.hasAllergy)) return true;
-  if (isSiValue(row.hasDisease) && String(row.diseaseDetails || '').trim()) return true;
-  if (isSiValue(row.hasDisease)) return true;
-  if (isSiValue(row.hasDisability) && String(row.disabilityDetails || '').trim()) return true;
-  if (isSiValue(row.hasDisability)) return true;
-  return false;
-}
-
 /** ¿El participante tiene algún dato sensible capturado? */
 export function participantHasSensitiveHealthData(person) {
   if (!person || typeof person !== 'object') return false;
@@ -267,27 +240,11 @@ export function participantHasSensitiveHealthData(person) {
   }
   if (isSiValue(person.hasDisability) || String(person.disabilityDetails || '').trim()) return true;
   if (isSiValue(person.canSwim)) return true;
-  const companions = Array.isArray(person.bautizosCompanions) ? person.bautizosCompanions : [];
-  if (companions.some(companionHasSensitiveData)) return true;
   if (person.responsivaDigital && typeof person.responsivaDigital === 'object') {
     const rd = person.responsivaDigital;
     if (String(rd.signatureDataUrl || '').trim() || String(rd.signatureUrl || '').trim()) return true;
   }
   return false;
-}
-
-function clearedCompanionSensitiveFields() {
-  return {
-    bloodType: BLOOD_TYPE_UNSPECIFIED,
-    hasAllergy: 'No',
-    allergyCategory: '',
-    allergyDetails: '',
-    hasDisease: 'No',
-    diseaseDetails: '',
-    diseaseMedication: '',
-    hasDisability: 'No',
-    disabilityDetails: '',
-  };
 }
 
 /** Limpia datos sensibles sin marcar purga (alta/edición sin consentimiento). */
@@ -305,13 +262,6 @@ export function clearedSensitiveParticipantFields(person) {
   patch.emergencyContactResponsiva = '';
   patch.emergencyPhoneResponsiva = '';
 
-  const companions = Array.isArray(person?.bautizosCompanions) ? person.bautizosCompanions : [];
-  if (companions.length > 0) {
-    patch.bautizosCompanions = companions.map((row) => ({
-      ...row,
-      ...clearedCompanionSensitiveFields(),
-    }));
-  }
   return patch;
 }
 
@@ -336,7 +286,6 @@ export function normalizeSensitiveConsentValue(consentRaw) {
 /** Huella comparable de datos médicos sensibles (para ediciones sin re-consentir). */
 export function sensitiveHealthDataFingerprint(person) {
   if (!person || typeof person !== 'object') return '';
-  const companions = Array.isArray(person.bautizosCompanions) ? person.bautizosCompanions : [];
   return JSON.stringify({
     bloodType: String(person.bloodType ?? '').trim(),
     hasAllergy: String(person.hasAllergy ?? '').trim(),
@@ -348,17 +297,6 @@ export function sensitiveHealthDataFingerprint(person) {
     hasDisability: String(person.hasDisability ?? '').trim(),
     disabilityDetails: String(person.disabilityDetails ?? '').trim(),
     canSwim: String(person.canSwim ?? '').trim(),
-    bautizosCompanions: companions.map((c) => ({
-      bloodType: String(c?.bloodType ?? '').trim(),
-      hasAllergy: String(c?.hasAllergy ?? '').trim(),
-      allergyCategory: String(c?.allergyCategory ?? '').trim(),
-      allergyDetails: String(c?.allergyDetails ?? '').trim(),
-      hasDisease: String(c?.hasDisease ?? '').trim(),
-      diseaseDetails: String(c?.diseaseDetails ?? '').trim(),
-      diseaseMedication: String(c?.diseaseMedication ?? '').trim(),
-      hasDisability: String(c?.hasDisability ?? '').trim(),
-      disabilityDetails: String(c?.disabilityDetails ?? '').trim(),
-    })),
   });
 }
 
@@ -449,13 +387,6 @@ export function stripAllPersonalParticipantFields(person) {
   patch.status = 'archived';
   patch.privacyRetentionPurgedAt = new Date().toISOString();
   patch.sensitiveDataPurgedAt = patch.privacyRetentionPurgedAt;
-  if (Array.isArray(person?.bautizosCompanions)) {
-    patch.bautizosCompanions = person.bautizosCompanions.map((row) => ({
-      ...row,
-      name: 'Acompañante purgado',
-      ...clearedCompanionSensitiveFields(),
-    }));
-  }
   return patch;
 }
 

@@ -6,7 +6,6 @@ export const EVENT_NAV_TABS_WITHOUT_LOCATION = new Set([
   'ExpenseList',
   'CashCut',
   'Becados',
-  'BautizosCompanions',
   'Responsivas',
   'RegistroGlobal',
   'TransportPlanning',
@@ -19,7 +18,6 @@ export function isLocationRosterTab(activeTab) {
 
 import {
   ROSTER_EXTRA_FILTER_DEFAULTS,
-  BAUTIZOS_DROPDOWN_FILTER_COUNT_KEYS,
 } from './rosterParticipantFilters.js';
 
 /** Filtros de lista por sede (misma forma que el estado en App.jsx). */
@@ -77,31 +75,9 @@ export function mergeLocationRosterFilters(saved) {
   return out;
 }
 
-/** Filtros de lista listos para aplicar: rellena defaults y anula filtros de Campa en eventos Bautizos. */
-export function listFiltersForEventApplication(saved, eventType) {
-  const merged = mergeLocationRosterFilters(saved);
-  if (String(eventType || '').trim() !== 'Bautizos') return merged;
-  return {
-    ...merged,
-    filterRosterRole: 'all',
-    filterAssignment: 'all',
-    filterBaptism: 'all',
-    filterScholarship: 'all',
-    filterMaritalStatus: 'all',
-    filterPaymentType: 'all',
-    filterTravelFrom: 'all',
-    filterTravelTo: 'all',
-    filterSwim: 'all',
-    filterMedical: 'all',
-    filterGender: 'all',
-    filterBloodType: 'all',
-    filterBautizosFood: 'all',
-    filterBautizosTransport: 'all',
-    filterBautizosCompanions: 'all',
-    filterDiscountCampaign: 'all',
-    filterCustomFieldKey: 'all',
-    filterCustomFieldPresence: 'all',
-  };
+/** Filtros de lista listos para aplicar (rellena defaults). */
+export function listFiltersForEventApplication(saved, _eventType) {
+  return mergeLocationRosterFilters(saved);
 }
 
 const CAMP_DROPDOWN_FILTER_COUNT_KEYS = [
@@ -132,20 +108,18 @@ export function countActiveDropdownListFilters(saved, eventType) {
   const merged = mergeLocationRosterFilters(saved);
   const et = String(eventType || '').trim();
   const keys =
-    et === 'Bautizos'
-      ? BAUTIZOS_DROPDOWN_FILTER_COUNT_KEYS
-      : et === 'Campa'
-        ? CAMP_DROPDOWN_FILTER_COUNT_KEYS
-        : [
-            'filterRegistrationStatus',
-            'filterRosterRole',
-            'filterLiquidation',
-            'filterWhatsAppPending',
-            'filterFirstTimeId',
-            'filterPendingRefund',
-            'filterResponsiva',
-            'filterPersonOfInterest',
-          ];
+    et === 'Campa'
+      ? CAMP_DROPDOWN_FILTER_COUNT_KEYS
+      : [
+          'filterRegistrationStatus',
+          'filterRosterRole',
+          'filterLiquidation',
+          'filterWhatsAppPending',
+          'filterFirstTimeId',
+          'filterPendingRefund',
+          'filterResponsiva',
+          'filterPersonOfInterest',
+        ];
   let n = 0;
   for (const key of keys) {
     if (merged[key] !== defaults[key]) n += 1;
@@ -213,8 +187,6 @@ export function createEmptyListFiltersPrefsRoot() {
 
 export function createEmptyTransportUiPrefs() {
   return {
-    /** Sección «Personas por carro» (tarjetas familiares Bautizos). */
-    bautizosCarCardsOpen: false,
     /** Bloque «Detalle fila a fila». */
     rowByRowOpen: false,
     /** Sección «Carros compartidos (grupos manuales)». */
@@ -247,7 +219,6 @@ export function normalizeTransportUiPrefs(raw) {
         .map((x) => String(x).trim())
     : [];
   return {
-    bautizosCarCardsOpen: raw.bautizosCarCardsOpen === true,
     rowByRowOpen: raw.rowByRowOpen === true,
     manualCarGroupsOpen: raw.manualCarGroupsOpen === true,
     expandedCarDetailKeys,
@@ -345,11 +316,7 @@ export function applyLocationRosterFilters(snapshot, setters) {
   if (typeof setters.setFilterMaritalStatus === 'function') setters.setFilterMaritalStatus(f.filterMaritalStatus);
   if (typeof setters.setFilterRegistrationStatus === 'function') setters.setFilterRegistrationStatus(f.filterRegistrationStatus);
   if (typeof setters.setFilterPaymentMethod === 'function') setters.setFilterPaymentMethod(f.filterPaymentMethod);
-  if (typeof setters.setFilterBautizosAttendance === 'function') setters.setFilterBautizosAttendance(f.filterBautizosAttendance);
   if (typeof setters.setFilterBloodType === 'function') setters.setFilterBloodType(f.filterBloodType);
-  if (typeof setters.setFilterBautizosFood === 'function') setters.setFilterBautizosFood(f.filterBautizosFood);
-  if (typeof setters.setFilterBautizosTransport === 'function') setters.setFilterBautizosTransport(f.filterBautizosTransport);
-  if (typeof setters.setFilterBautizosCompanions === 'function') setters.setFilterBautizosCompanions(f.filterBautizosCompanions);
   if (typeof setters.setFilterAge === 'function') setters.setFilterAge(f.filterAge);
   if (typeof setters.setFilterDiscountCampaign === 'function') setters.setFilterDiscountCampaign(f.filterDiscountCampaign);
   if (typeof setters.setFilterCustomFieldKey === 'function') setters.setFilterCustomFieldKey(f.filterCustomFieldKey);
@@ -381,11 +348,7 @@ export function captureLocationRosterFiltersFromState(state) {
     filterMaritalStatus: state.filterMaritalStatus,
     filterRegistrationStatus: state.filterRegistrationStatus,
     filterPaymentMethod: state.filterPaymentMethod,
-    filterBautizosAttendance: state.filterBautizosAttendance,
     filterBloodType: state.filterBloodType,
-    filterBautizosFood: state.filterBautizosFood,
-    filterBautizosTransport: state.filterBautizosTransport,
-    filterBautizosCompanions: state.filterBautizosCompanions,
     filterAge: state.filterAge,
     filterDiscountCampaign: state.filterDiscountCampaign,
     filterCustomFieldKey: state.filterCustomFieldKey,
@@ -421,11 +384,7 @@ export function migrateLegacyLocalFiltersToPrefs(root, eventId, locationName, le
     filterBaptism: legacyParsed.filterBaptism,
     filterMaritalStatus: legacyParsed.filterMaritalStatus,
     filterPaymentMethod: legacyParsed.filterPaymentMethod,
-    filterBautizosAttendance: legacyParsed.filterBautizosAttendance,
     filterBloodType: legacyParsed.filterBloodType,
-    filterBautizosFood: legacyParsed.filterBautizosFood,
-    filterBautizosTransport: legacyParsed.filterBautizosTransport,
-    filterBautizosCompanions: legacyParsed.filterBautizosCompanions,
     filterAge: legacyParsed.filterAge,
     filterDiscountCampaign: legacyParsed.filterDiscountCampaign,
     filterCustomFieldKey: legacyParsed.filterCustomFieldKey,

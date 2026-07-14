@@ -90,7 +90,6 @@ import TransportPlanHeaderCard from '../transport/sections/TransportPlanHeaderCa
 import TransportBusGroupsSection from '../transport/sections/TransportBusGroupsSection.jsx';
 import TransportCarArrivalShell from '../transport/sections/TransportCarArrivalShell.jsx';
 import TransportManualCarGroupsSection from '../transport/sections/TransportManualCarGroupsSection.jsx';
-import TransportBautizosCarCardsSection from '../transport/sections/TransportBautizosCarCardsSection.jsx';
 import TransportRowByRowSection from '../transport/sections/TransportRowByRowSection.jsx';
 import { isTransportV2Plan } from '../transport/v2/transportMigration.js';
 import { saveVehiclePatch } from '../transport/v2/transportService.js';
@@ -178,7 +177,7 @@ export default function TransportPlanningPage({
   const eventId = currentEvent?.id;
   useTransportV2Migration(eventId, currentEvent?.transportPlanning, updateDoc);
   const eventType = String(currentEvent?.eventType || '').trim();
-  const isBautizos = eventType === 'Bautizos';
+  const isBautizos = false;
   const splitCampaBySubevent = isCampa && countAmbosDoubleInAllCounts !== false;
   const locations = useMemo(() => {
     if (Array.isArray(visibleLocations) && visibleLocations.length > 0) {
@@ -2731,182 +2730,6 @@ export default function TransportPlanningPage({
           }}
         />
 
-        <TransportBautizosCarCardsSection
-          groups={[]}
-          isOpen={transportUiPrefs?.bautizosCarCardsOpen === true}
-          onOpenChange={(next) => patchTransportUiPrefs({ bautizosCarCardsOpen: next })}
-          renderGroupCard={(grp) => {
-                const groupPeople = grp.lines.length;
-                const groupEff = resolveDisplayGroupCars(grp);
-                const leader = resolveGroupLeader(grp);
-                const cardHosts = grp.isFamily && leader ? [leader] : grp.hosts;
-                return (
-                  <div
-                    key={`grp-${grp.groupId}`}
-                    className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-4 shadow-sm flex flex-col gap-3"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-[10px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        {grp.isFamily ? 'Familia' : 'Registro'} · {grp.hosts.length} titular{grp.hosts.length !== 1 ? 'es' : ''} · {groupPeople}{' '}
-                        persona{groupPeople !== 1 ? 's' : ''}
-                      </p>
-                      {canEdit && grp.hosts.length > 1 ? (
-                        <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 inline-flex items-center gap-2">
-                          Titular familiar
-                          <select
-                            className={`${inputSm} w-44`}
-                            value={String(leader?.hostId || '')}
-                            onChange={(e) => setGroupLeader(grp, e.target.value)}
-                          >
-                            {grp.hosts.map((h) => (
-                              <option key={h.hostId} value={h.hostId}>
-                                {h.hostName}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      ) : null}
-                    </div>
-                    <div className="space-y-3">
-                      {cardHosts.map((host) => {
-                        const cardLines =
-                          grp.isFamily && leader
-                            ? (grp.lines || []).map((ln) => {
-                                if (ln.kind === 'participant' && String(ln.hostId || '') !== String(leader.hostId || '')) {
-                                  return { ...ln, kind: 'companion' };
-                                }
-                                return ln;
-                              })
-                            : host.lines;
-                        const fam = {
-                          memberKeys: host.memberKeys,
-                          hostCarros: host.hostCarros,
-                          lines: cardLines,
-                        };
-                        const famOverride =
-                          plan.familyCarOverride && plan.familyCarOverride[host.hostId] != null
-                            ? plan.familyCarOverride[host.hostId]
-                            : '';
-                        const carCtx = resolveHostCarContext(host.hostId);
-                        const titularSk = carCtx.hostSourceKey;
-                        const eff = grp.isFamily
-                          ? groupEff
-                          : bautizosFamilyEffectiveCarCount(host.hostId, fam, plan, keyToGroup);
-                        const slots = resolveSlotsForTitular(
-                          titularSk,
-                          eff,
-                          expandedFamilyCardKeys.has(host.hostId),
-                          carCtx.hostPerson,
-                          carCtx.companions,
-                          cardLines
-                        );
-                        const crewMemberOptions = buildCrewMemberOptions(carCtx);
-                        const confirmedCars = countConfirmedCarsInSet(planForCarMetaRead, titularSk, eff);
-                        const familyCrewOpts = {
-                          requiresPassengers:
-                            crewMemberOptions.length > 1 ||
-                            crewMemberOptions.some((m) => m.kind === 'companion'),
-                        };
-                        return (
-                          <TransportBautizosCarCard
-                            key={host.hostId}
-                            cardKey={host.hostId}
-                            cardExpanded={expandedFamilyCardKeys.has(host.hostId)}
-                            onToggleCard={() =>
-                              void handleToggleFamilyCard(host.hostId, titularSk, eff)
-                            }
-                            expandedCarFormKeys={expandedCarFormKeys}
-                            onToggleCarForm={(formKey) =>
-                              void handleToggleCarForm(formKey, titularSk, eff)
-                            }
-                            titularSk={titularSk}
-                            effectiveCars={eff}
-                            seatsPerCar={plan.bautizosCarCapacity}
-                            slots={slots}
-                            titularSummary={plan.bautizosCarMetaSummaryByTitular?.[titularSk]}
-                            isLoadingMeta={loadingTitularSks.has(titularSk)}
-                            getSlotMeta={(carIndex) => getCarMeta(titularSk, carIndex)}
-                            crewOpts={familyCrewOpts}
-                            header={
-                              <>
-                                <p
-                                  className="text-sm font-black text-slate-900 dark:text-slate-100 truncate"
-                                  title={host.hostName}
-                                >
-                                  {host.hostName}
-                                </p>
-                                <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
-                                  Sede {host.location} · {cardLines.length} persona
-                                  {cardLines.length !== 1 ? 's' : ''} en carro
-                                  {grp.isFamily ? ' · titular familiar' : ''}
-                                  {carCtx.inheritedFromTitular && carCtx.titularName
-                                    ? ` · datos del titular ${carCtx.titularName}`
-                                    : ''}
-                                </p>
-                                <p className="text-[10px] text-slate-600 dark:text-slate-300 mt-1">
-                                  Carros en registro:{' '}
-                                  <span className="font-black tabular-nums text-indigo-600 dark:text-indigo-400">
-                                    {host.hostCarros}
-                                  </span>
-                                  {' · '}Carros efectivos:{' '}
-                                  <span className="font-black tabular-nums text-indigo-600 dark:text-indigo-400">
-                                    {eff}
-                                  </span>
-                                  {eff >= 2 ? (
-                                    <>
-                                      {' · '}
-                                      <span className="font-black tabular-nums text-emerald-700 dark:text-emerald-400">
-                                        {confirmedCars} confirmados
-                                      </span>
-                                    </>
-                                  ) : null}
-                                </p>
-                              </>
-                            }
-                            toolbar={
-                              <>
-                                {renderCarDataWhatsAppButton(host.hostId, host.location, true)}
-                                {canEdit ? (
-                                  <label className="flex flex-col gap-0.5 text-[10px] font-bold text-slate-600 dark:text-slate-300 shrink-0">
-                                    Cantidad carros por familia
-                                    <input
-                                      type="number"
-                                      min={1}
-                                      className={`${inputSm} w-20`}
-                                      placeholder="1"
-                                      title="Sobrescribe el total de carros de este registro/familia"
-                                      value={famOverride === '' ? '' : famOverride}
-                                      onChange={(e) => {
-                                        const v = e.target.value;
-                                        if (v === '') {
-                                          setPlan((prev) => {
-                                            const next = normalizeTransportPlanning(prev);
-                                            const o = { ...(next.familyCarOverride || {}) };
-                                            delete o[host.hostId];
-                                            return { ...next, familyCarOverride: o };
-                                          });
-                                        } else setFamilyOverride(host.hostId, v);
-                                      }}
-                                    />
-                                  </label>
-                                ) : null}
-                              </>
-                            }
-                            bulkActions={renderCarVehicleBulkActions(titularSk, eff)}
-                            renderCarForm={(carIndex, effective) =>
-                              renderCarVehicleMetaBlock(titularSk, carIndex, effective, {
-                                compact: true,
-                                memberOptions: crewMemberOptions,
-                              })
-                            }
-                          />
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-          }}
-        />
 
         <TransportRowByRowSection
           isOpen={transportUiPrefs?.rowByRowOpen === true}

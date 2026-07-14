@@ -3,8 +3,8 @@ import { Church, Filter } from 'lucide-react';
 import {
   BAPTISM_SHIRT_SIZES,
   normalizeBaptismShirtSize,
-  buildBautizadosListBaseRows,
-} from '../../../bautizosParty.js';
+} from '../../../campaBaptism.js';
+import { buildBautizadosListBaseRows } from '../../../bautizosParty.js';
 import { buildLocationScopeSet, participantInLocationScope } from '../../../rbac/permissions.js';
 import {
   uiButtons, uiForm, uiShell,

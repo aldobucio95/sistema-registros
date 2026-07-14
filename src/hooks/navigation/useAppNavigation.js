@@ -17,7 +17,6 @@ const PANEL_NAV_TAB_KEYS = {
   ExpenseList: 'expenseList',
   CashCut: 'cashCut',
   Becados: 'becados',
-  BautizosCompanions: 'becados',
   Responsivas: 'responsivas',
   RegistroGlobal: 'registroGlobal',
   TransportPlanning: 'transporte',
@@ -30,7 +29,6 @@ const EVENT_NAV_TABS_WITHOUT_LOCATION = [
   'ExpenseList',
   'CashCut',
   'Becados',
-  'BautizosCompanions',
   'Responsivas',
   'RegistroGlobal',
   'TransportPlanning',
@@ -115,13 +113,9 @@ export function useAppNavigation({
       }
       const evForNav = eventId ? events.find((e) => String(e.id) === String(eventId)) : null;
       let resolvedTab = tab;
-      if (tab && evForNav) {
-        if (tab === 'Becados' && evForNav.eventType === 'Bautizos') resolvedTab = 'BautizosCompanions';
-        if (tab === 'BautizosCompanions' && evForNav.eventType !== 'Bautizos') resolvedTab = 'Becados';
-      }
       if (view === 'events' && eventId && tab === 'Bautizados') {
-        if (evForNav && evForNav.eventType !== 'Campa' && evForNav.eventType !== 'Bautizos') {
-          showToast('Bautizados solo aplica a eventos tipo Campa o Bautizos.');
+        if (evForNav && evForNav.eventType !== 'Campa') {
+          showToast('Bautizados solo aplica a eventos tipo Campa.');
           setIsMobileMenuOpen(false);
           return;
         }

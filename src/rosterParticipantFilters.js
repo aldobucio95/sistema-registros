@@ -1,18 +1,6 @@
 /**
  * Filtros de lista de participantes (roster / registro global): claves extra y lógica por tipo de evento.
  */
-import {
-  BAUTIZOS_ATTENDANCE,
-  bautizosParticipatesAsServer,
-  dedupeParticipantRowsById,
-  expandBautizosGlobalRegistryRows,
-} from './bautizosParty.js';
-import { flattenBautizosParticipantsForRead } from './bautizos/bautizosLegacyReadAdapter.js';
-import {
-  participantIsBautizado,
-  participantIsAcompanante,
-  resolveBautizosFlatAttendanceType,
-} from './bautizos/bautizosAttendance.js';
 import { isSiValue } from './publicRegistrationLogic.js';
 import {
   BLOOD_TYPE_STATS_OTHER,
@@ -21,7 +9,6 @@ import {
   classifyBloodTypeForStats,
 } from './registrationFormShared.js';
 import { personLikeIsPersonOfInterest } from './vnpPersonFlags.js';
-import { participantMatchesCarDataFilter } from './carDataWhatsApp.js';
 
 /** Estado de registro (activo / lista de espera / cancelado) en filtros anidados. */
 export const REGISTRATION_STATUS_FILTER_OPTIONS = Object.freeze([
@@ -33,67 +20,23 @@ export const REGISTRATION_STATUS_FILTER_OPTIONS = Object.freeze([
 
 /** Claves añadidas a createEmptyLocationRosterFilters / registro global. */
 export const ROSTER_EXTRA_FILTER_KEYS = [
-  'filterBautizosAttendance',
   'filterBloodType',
-  'filterBautizosFood',
-  'filterBautizosTransport',
-  'filterBautizosCompanions',
   'filterDiscountCampaign',
   'filterCustomFieldKey',
   'filterCustomFieldPresence',
   'filterAge',
   'filterPersonOfInterest',
-  'filterCarDataPending',
 ];
 
 export const ROSTER_EXTRA_FILTER_DEFAULTS = Object.freeze({
-  filterBautizosAttendance: 'all',
   filterBloodType: 'all',
-  filterBautizosFood: 'all',
-  filterBautizosTransport: 'all',
-  filterBautizosCompanions: 'all',
   filterDiscountCampaign: 'all',
   filterCustomFieldKey: 'all',
   filterCustomFieldPresence: 'all',
   filterAge: 'all',
   filterPersonOfInterest: 'all',
-  filterCarDataPending: 'all',
 });
 
-/** Tipo de asistencia (evento Bautizos) en filtros anidados. */
-export const BAUTIZOS_ATTENDANCE_FILTER_OPTIONS = Object.freeze([
-  { id: 'all', label: 'Todos' },
-  { id: BAUTIZOS_ATTENDANCE.bautizado, label: 'Bautizados' },
-  { id: BAUTIZOS_ATTENDANCE.acompanante, label: 'Acompañante' },
-  { id: 'companions', label: 'Acompañante (legado)' },
-  { id: BAUTIZOS_ATTENDANCE.asistente, label: 'Asistente' },
-  { id: BAUTIZOS_ATTENDANCE.servidor, label: 'Servidor' },
-  { id: BAUTIZOS_ATTENDANCE.empleado, label: 'Empleado' },
-  { id: BAUTIZOS_ATTENDANCE.cortesia, label: 'Cortesía' },
-  { id: BAUTIZOS_ATTENDANCE.pastor, label: 'Pastor' },
-]);
-
-/** Transporte Bautizos: camión del evento vs llegada en carro. */
-export const BAUTIZOS_TRANSPORT_FILTER_OPTIONS = Object.freeze([
-  { id: 'all', label: 'Todos' },
-  { id: 'evento', label: 'Evento' },
-  { id: 'carro', label: 'Carro' },
-]);
-
-export const BAUTIZOS_AGE_FILTER_OPTIONS = Object.freeze([
-  { id: 'all', label: 'Todos' },
-  { id: 'minor', label: 'Menor de edad' },
-  { id: 'adult', label: 'Mayor de edad' },
-]);
-
-/** Personas de interés (marca global VNPM) en filtros anidados. */
-export const PERSON_OF_INTEREST_FILTER_OPTIONS = Object.freeze([
-  { id: 'all', label: 'Todos' },
-  { id: 'marked', label: 'Marcadas como de interés' },
-  { id: 'not-marked', label: 'Sin marca de interés' },
-]);
-
-/** Claves que cuentan para el badge de filtros activos (evento Bautizos). */
 export function participantMatchesRegistrationStatusFilter(personLike, filterId) {
   const id = String(filterId || 'all').trim();
   if (!id || id === 'all') return true;
@@ -104,9 +47,8 @@ export function participantMatchesRegistrationStatusFilter(personLike, filterId)
   return true;
 }
 
-export const BAUTIZOS_DROPDOWN_FILTER_COUNT_KEYS = Object.freeze([
+export const DROPDOWN_FILTER_COUNT_KEYS = Object.freeze([
   'filterRegistrationStatus',
-  'filterBautizosAttendance',
   'filterTransport',
   'filterAge',
   'filterLiquidation',
@@ -115,8 +57,10 @@ export const BAUTIZOS_DROPDOWN_FILTER_COUNT_KEYS = Object.freeze([
   'filterPendingRefund',
   'filterResponsiva',
   'filterPersonOfInterest',
-  'filterCarDataPending',
 ]);
+
+/** @deprecated Alias de compatibilidad. */
+export const BAUTIZOS_DROPDOWN_FILTER_COUNT_KEYS = DROPDOWN_FILTER_COUNT_KEYS;
 
 const filterOptionActive = (id) => {
   const s = String(id ?? 'all').trim();
@@ -135,10 +79,6 @@ function participantHasDiscountCampaign(p) {
     String(p?.discountCampaignId || '').trim() ||
     String(p?.selectedDiscountCampaignId || '').trim()
   );
-}
-
-export function participantHasNamedBautizosCompanions(p) {
-  return getBautizosCompanionsArray(p).some((c) => String(c?.name || '').trim());
 }
 
 function participantCustomFieldPresence(p, fieldKey) {
@@ -164,59 +104,7 @@ export function getParticipantAgeYearsForFilter(p) {
   return Number.isFinite(age) && age >= 0 && age <= 120 ? age : NaN;
 }
 
-/** Coincide con filtro de tipo de asistencia Bautizos (filas planas). */
-export function participantMatchesBautizosAttendanceFilter(personLike, filterId) {
-  const id = String(filterId || 'all').trim();
-  if (!id || id === 'all') return true;
-  if (id === 'companions' || id === BAUTIZOS_ATTENDANCE.acompanante) {
-    return participantIsAcompanante(personLike);
-  }
-  if (id === BAUTIZOS_ATTENDANCE.bautizado) {
-    return participantIsBautizado(personLike);
-  }
-  if (id === BAUTIZOS_ATTENDANCE.servidor) {
-    return bautizosParticipatesAsServer(personLike);
-  }
-  return resolveBautizosFlatAttendanceType(personLike) === id;
-}
-
-/**
- * Tipos de asistencia (filtros) a los que pertenece una fila.
- * Una persona combinada (p. ej. Empleado + servidor) puede aparecer en varios;
- * los totales de lista deben contar filas únicas, no la suma de estos ids.
- */
-export function resolveBautizosAttendanceFilterIdsForRow(personLike) {
-  const out = [];
-  for (const op of BAUTIZOS_ATTENDANCE_FILTER_OPTIONS) {
-    if (op.id === 'all') continue;
-    if (participantMatchesBautizosAttendanceFilter(personLike, op.id)) out.push(op.id);
-  }
-  return out;
-}
-
-/** Cuenta personas/filas únicas que coinciden con un filtro de asistencia (sin doble conteo entre tipos). */
-export function countRowsMatchingBautizosAttendanceFilter(rows, filterId) {
-  let n = 0;
-  for (const row of rows || []) {
-    if (participantMatchesBautizosAttendanceFilter(row, filterId)) n += 1;
-  }
-  return n;
-}
-
-/**
- * Transporte Bautizos usando `filterTransport`: evento = camión del evento; carro = llega en carro.
- * Acepta ids legados go-bus / go-car por registros guardados.
- */
-export function participantMatchesBautizosTransportFilter(personLike, filterId, resolveLlegaEnCarro) {
-  const id = String(filterId || 'all').trim();
-  if (!id || id === 'all') return true;
-  const car = typeof resolveLlegaEnCarro === 'function' ? resolveLlegaEnCarro(personLike) : false;
-  if (id === 'carro' || id === 'go-car') return car;
-  if (id === 'evento' || id === 'go-bus') return isSiValue(personLike?.wantsBautizosTransport) && !car;
-  return true;
-}
-
-export function participantMatchesBautizosAgeFilter(personLike, filterId) {
+export function participantMatchesAgeFilter(personLike, filterId) {
   const id = String(filterId || 'all').trim();
   if (!id || id === 'all') return true;
   const age = getParticipantAgeYearsForFilter(personLike);
@@ -235,60 +123,19 @@ export function participantMatchesPersonOfInterestFilter(personLike, filterId, i
   return true;
 }
 
-/**
- * Filtros que solo aplican a titulares (antes de expandir acompañantes canónicos).
- */
-export function applyTitularOnlyBautizosRosterFilters(rows, f) {
-  let r = rows;
-  if (f.filterBautizosCompanions === 'with') {
-    r = r.filter((p) => participantHasNamedBautizosCompanions(p));
-  } else if (f.filterBautizosCompanions === 'without') {
-    r = r.filter((p) => !participantHasNamedBautizosCompanions(p));
-  }
-  return r;
-}
-
-/**
- * Expande titulares a filas virtuales (plan canónico del dashboard) para que el listado
- * y los filtros de tipo de asistencia incluyan bautizados + acompañantes por separado.
- */
-function partitionRowsByRegistrationStatus(rows) {
-  const active = [];
-  const waitlist = [];
-  const rest = [];
-  for (const p of rows || []) {
-    const st = p?.status || 'active';
-    if (st === 'active') active.push(p);
-    else if (st === 'waitlist') waitlist.push(p);
-    else rest.push(p);
-  }
-  return { active, waitlist, rest };
-}
-
-export function prepareBautizosRowsForRosterFilter(rows, f, { roster } = {}) {
-  const rosterList = Array.isArray(roster) ? roster : rows;
-  const regStatus = String(f?.filterRegistrationStatus || 'all').trim();
-  let base = rows || [];
-  if (regStatus === 'waitlist') {
-    base = (rows || []).filter((p) => (p?.status || 'active') === 'waitlist');
-  } else if (regStatus === 'active') {
-    base = (rows || []).filter((p) => (p?.status || 'active') === 'active');
-  } else if (regStatus === 'cancelled') {
-    base = (rows || []).filter((p) => (p?.status || 'active') === 'cancelled');
-  }
-  const expanded = expandBautizosGlobalRegistryRows(base, rosterList);
-  return dedupeParticipantRowsById(flattenBautizosParticipantsForRead(expanded));
-}
-
-/** @deprecated Usar prepareBautizosRowsForRosterFilter */
-export const prepareBautizosRowsForCompanionAttendanceFilter = prepareBautizosRowsForRosterFilter;
+/** Personas de interés (marca global VNPM) en filtros anidados. */
+export const PERSON_OF_INTEREST_FILTER_OPTIONS = Object.freeze([
+  { id: 'all', label: 'Todos' },
+  { id: 'marked', label: 'Marcadas como de interés' },
+  { id: 'not-marked', label: 'Sin marca de interés' },
+]);
 
 /**
  * Aplica filtros dependientes del tipo de evento sobre `processedData` (ya filtrado por criterios comunes).
  */
 export function applyEventScopedRosterFilters(processedData, f, ctx) {
   let rows = processedData;
-  const { isCampa, isBautizos, isGeneral, customFields, resolveLlegaEnCarro, eventSnapshot, roster } = ctx;
+  const { isCampa, isGeneral, customFields } = ctx;
 
   if (isCampa) {
     if (filterOptionActive(f.filterSwim)) {
@@ -305,28 +152,6 @@ export function applyEventScopedRosterFilters(processedData, f, ctx) {
         if (f.filterBloodType === 'other') return cls === BLOOD_TYPE_STATS_OTHER;
         return cls === f.filterBloodType;
       });
-    }
-  }
-
-  if (isBautizos) {
-    if (filterOptionActive(f.filterBautizosAttendance)) {
-      rows = rows.filter((p) => participantMatchesBautizosAttendanceFilter(p, f.filterBautizosAttendance));
-    }
-    if (filterOptionActive(f.filterAge)) {
-      rows = rows.filter((p) => participantMatchesBautizosAgeFilter(p, f.filterAge));
-    }
-    if (filterOptionActive(f.filterBautizosFood)) {
-      const wantSi = f.filterBautizosFood === 'Si' || f.filterBautizosFood === 'Sí';
-      rows = rows.filter((p) => isSiValue(p.wantsBautizosFood) === wantSi);
-    }
-    if (filterOptionActive(f.filterBautizosTransport) && !filterOptionActive(f.filterTransport)) {
-      const wantSi = f.filterBautizosTransport === 'Si' || f.filterBautizosTransport === 'Sí';
-      rows = rows.filter((p) => isSiValue(p.wantsBautizosTransport) === wantSi);
-    }
-    if (filterOptionActive(f.filterCarDataPending)) {
-      rows = rows.filter((p) =>
-        participantMatchesCarDataFilter(p, f.filterCarDataPending, eventSnapshot, roster)
-      );
     }
   }
 

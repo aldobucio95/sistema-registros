@@ -11,9 +11,6 @@ import {
   PastoresWorkspacePage,
   BecadosWorkspacePage,
   BautizadosWorkspacePage,
-  BautizosCompanionsWorkspacePage,
-  BautizosAsistentesWorkspacePage,
-  BautizosCortesiasWorkspacePage,
   ResponsivasWorkspacePage,
   TransportPlanningWorkspacePage,
 } from './WorkspaceLazyPages.jsx';
@@ -34,7 +31,7 @@ export default function WorkspaceTabContent({ contentTab }) {
 
   if (
     contentTab === 'Bautizados' &&
-    (shell.isCampa || shell.isBautizos) &&
+    shell.isCampa &&
     shell.isPanelNavSectionAllowed('bautizados')
   ) {
     return (
@@ -46,7 +43,7 @@ export default function WorkspaceTabContent({ contentTab }) {
 
   if (
     contentTab === 'ServersPage' &&
-    (shell.isCampa || shell.isBautizos) &&
+    shell.isCampa &&
     shell.isPanelNavSectionAllowed('serversPage')
   ) {
     return (
@@ -56,34 +53,10 @@ export default function WorkspaceTabContent({ contentTab }) {
     );
   }
 
-  if (contentTab === 'Becados' && !shell.isBautizos && shell.isPanelNavSectionAllowed('becados')) {
+  if (contentTab === 'Becados' && shell.isPanelNavSectionAllowed('becados')) {
     return (
       <Suspense fallback={<ScreenLoadingFallback title="Cargando becados…" />}>
         <BecadosWorkspacePage />
-      </Suspense>
-    );
-  }
-
-  if (contentTab === 'BautizosCompanions' && shell.isPanelNavSectionAllowed('becados') && shell.isBautizos) {
-    return (
-      <Suspense fallback={<ScreenLoadingFallback title="Cargando acompañantes…" />}>
-        <BautizosCompanionsWorkspacePage />
-      </Suspense>
-    );
-  }
-
-  if (contentTab === 'BautizosAsistentes' && shell.isBautizos) {
-    return (
-      <Suspense fallback={<ScreenLoadingFallback title="Cargando asistentes…" />}>
-        <BautizosAsistentesWorkspacePage />
-      </Suspense>
-    );
-  }
-
-  if (contentTab === 'BautizosCortesias' && shell.isBautizos) {
-    return (
-      <Suspense fallback={<ScreenLoadingFallback title="Cargando cortesías…" />}>
-        <BautizosCortesiasWorkspacePage />
       </Suspense>
     );
   }

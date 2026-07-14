@@ -1,20 +1,17 @@
 /**
  * Total «Registros totales» del dashboard en modo Todos (misma noción para hub `activeRosterUnitsTotal`).
  *
- * Cloud Functions usa la copia CommonJS `functions/lib/dashboardTodosRosterTotal.cjs` (misma lógica + helpers
- * canónicos de `bautizosParty.js`); si cambias reglas aquí, actualiza ese archivo en el mismo commit.
+ * Cloud Functions usa la copia CommonJS `functions/lib/dashboardTodosRosterTotal.cjs` (misma lógica);
+ * si cambias reglas aquí, actualiza ese archivo en el mismo commit.
  */
 
-import { computeBautizosTodosTotal as computeBautizosFlatTodosTotal } from './bautizos/bautizosCounts.js';
-import { flattenBautizosParticipantsForRead } from './bautizos/bautizosLegacyReadAdapter.js';
+const SI = 'Si';
+const SI_LABEL = 'Sí';
 
 function isCompanionWaitlistPhantomStoredParticipant(personLike) {
   if (personLike?._isCompanionWaitlistVirtual === true) return true;
   return String(personLike?.id || '').trim().startsWith('cw:');
 }
-
-const SI = 'Si';
-const SI_LABEL = 'Sí';
 
 function isSiValue(v) {
   const s = String(v ?? '').trim();
@@ -83,10 +80,6 @@ export function filterEventCapRosterBase(participantRows, eventRow) {
   return filterDashboardTodosRosterRows(scoped, eventRow);
 }
 
-function computeBautizosTodosTotal(rosterBase) {
-  return computeBautizosFlatTodosTotal(rosterBase);
-}
-
 function computeCampaTodosTotal(rosterBase, eventRow) {
   const o = eventRow?.campaRealCostCountOptions;
   const countAmbosDouble = !o || typeof o !== 'object' || o.countAmbosDoubleInAllCounts !== false;
@@ -113,9 +106,6 @@ export function computeDashboardTodosRosterTotal(participantRows, eventRow) {
   const rosterBase = filterDashboardTodosRosterRows(scoped, eventRow);
   const evType = String(eventRow.eventType || '');
 
-  if (evType === 'Bautizos') {
-    return computeBautizosTodosTotal(rosterBase);
-  }
   if (evType === 'Campa') {
     return computeCampaTodosTotal(rosterBase, eventRow);
   }
@@ -125,16 +115,10 @@ export function computeDashboardTodosRosterTotal(participantRows, eventRow) {
 /**
  * Contribución de una sola fila al total «Registros totales» / `activeRosterUnitsTotal`.
  * @returns {number} unidades (0 si no cuenta en roster activo)
- * @returns {null} si el tipo de evento requiere recálculo completo (Bautizos)
  */
 export function computeRowTodosUnitContribution(personRow, eventRow) {
   if (!personRow || !eventRow || typeof eventRow !== 'object') return 0;
   const evType = String(eventRow.eventType || '');
-  if (evType === 'Bautizos') {
-    if (!participantIsActiveInRoster(personRow)) return 0;
-    if (!participantLocationInEventLocations(personRow, eventRow)) return 0;
-    return 1;
-  }
   if (!participantIsActiveInRoster(personRow)) return 0;
   if (!participantLocationInEventLocations(personRow, eventRow)) return 0;
   if (evType === 'Campa') {
@@ -149,7 +133,6 @@ export function computeRowTodosUnitContribution(personRow, eventRow) {
 
 /**
  * Unidades de cupo activas por sede (misma base que `computeDashboardTodosRosterTotal`, desglosada por `location`).
- * Bautizos: filas activas en la sede + acompañantes canónicos atribuidos al host de esa sede.
  */
 export function computeEventCapUsedUnitsBySede(participantRows, eventRow) {
   if (!eventRow || typeof eventRow !== 'object') return {};
@@ -159,15 +142,6 @@ export function computeEventCapUsedUnitsBySede(participantRows, eventRow) {
 
   const rosterBase = filterEventCapRosterBase(participantRows, eventRow);
   const evType = String(eventRow.eventType || '');
-
-  if (evType === 'Bautizos') {
-    const flat = flattenBautizosParticipantsForRead(rosterBase);
-    for (const p of flat) {
-      const loc = String(p?.location || '').trim();
-      if (Object.prototype.hasOwnProperty.call(byLoc, loc)) byLoc[loc] += 1;
-    }
-    return byLoc;
-  }
 
   if (evType === 'Campa') {
     const o = eventRow?.campaRealCostCountOptions;

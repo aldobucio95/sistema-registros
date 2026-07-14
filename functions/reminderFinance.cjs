@@ -23,142 +23,6 @@ function normalizeAttendanceSpecial(personLike) {
 
 const isFreeAttendanceType = (t) => t === ATTENDANCE_SPECIAL.empleado || t === ATTENDANCE_SPECIAL.cortesia;
 
-const BAUTIZOS_ATTENDANCE = {
-  bautizado: 'bautizado',
-  acompanante: 'acompanante',
-  asistente: 'asistente',
-  servidor: 'servidor',
-  empleado: 'empleado',
-  cortesia: 'cortesia',
-  pastor: 'pastor',
-};
-
-function normalizeBautizosAttendanceType(raw) {
-  const s = String(raw || '')
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-  if (s === 'servidor') return BAUTIZOS_ATTENDANCE.servidor;
-  if (s === 'empleado') return BAUTIZOS_ATTENDANCE.empleado;
-  if (s === 'cortesia') return BAUTIZOS_ATTENDANCE.cortesia;
-  if (s === 'acompanante') return BAUTIZOS_ATTENDANCE.acompanante;
-  if (s === 'asistente') return BAUTIZOS_ATTENDANCE.asistente;
-  if (s === 'pastor') return BAUTIZOS_ATTENDANCE.pastor;
-  return BAUTIZOS_ATTENDANCE.bautizado;
-}
-
-function isFreeBautizosAttendance(personLike) {
-  return normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.cortesia;
-}
-
-function participantHasBaptismChip(personLike, eventType) {
-  const et = String(eventType || '').trim();
-  if (et === 'Bautizos') {
-    return normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.bautizado;
-  }
-  return false;
-}
-
-function getBautizosTitularListPrice(personLike, eventLike = null) {
-  if (!eventLike || eventLike.eventType !== 'Bautizos') return 0;
-  if (isFreeBautizosAttendance(personLike)) return 0;
-  const t = normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType);
-  if (t === BAUTIZOS_ATTENDANCE.empleado) return 0;
-  if (t === BAUTIZOS_ATTENDANCE.servidor) return getBautizosListPrice(personLike, eventLike);
-  if (participantHasBaptismChip(personLike, 'Bautizos')) return getBautizosListPrice(personLike, eventLike);
-  return 0;
-}
-
-function getBautizosCompanionsArray(personLike) {
-  const raw = personLike?.bautizosCompanions;
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((c) => c && typeof c === 'object');
-}
-
-function resolveLlegaEnCarroLine(line) {
-  if (typeof line?.llegaEnCarro === 'boolean') return line.llegaEnCarro;
-  if (isSiValue(line?.llegaEnCarro)) return true;
-  if (line?.llegaEnCarro === 'No') return false;
-  return false;
-}
-
-function bautizosCompanionAgeYearsCompletedAsOf(birthDate, asOfYmd) {
-  if (!birthDate || typeof birthDate !== 'string') return null;
-  const b = new Date(`${birthDate}T00:00:00`);
-  if (Number.isNaN(b.getTime())) return null;
-  const refStr = String(asOfYmd || '').trim();
-  const ref = refStr ? new Date(`${refStr}T12:00:00`) : new Date();
-  if (Number.isNaN(ref.getTime())) return null;
-  let age = ref.getFullYear() - b.getFullYear();
-  const monthDiff = ref.getMonth() - b.getMonth();
-  if (monthDiff < 0 || (monthDiff === 0 && ref.getDate() < b.getDate())) age -= 1;
-  if (!Number.isFinite(age) || age < 0 || age > 120) return null;
-  return age;
-}
-
-function resolveBautizosLapInfantPolicyReferenceIso(eventLike) {
-  if (!eventLike || typeof eventLike !== 'object') return '';
-  const start = String(eventLike.dateStart || '').trim();
-  if (start) return start;
-  return String(eventLike.date || '').trim();
-}
-
-function isBautizosUnder3YearsAtEvent(personLike, eventLike) {
-  const ref = resolveBautizosLapInfantPolicyReferenceIso(eventLike);
-  const age = bautizosCompanionAgeYearsCompletedAsOf(String(personLike?.birthDate || '').trim(), ref);
-  return age !== null && age < 3;
-}
-
-function isBautizosLapInfantCompanion(companionLike, eventLike) {
-  return isBautizosUnder3YearsAtEvent(companionLike, eventLike);
-}
-
-function getBautizosLineListPrice(line, food, transport, eventLike = null) {
-  if (line?.linkedNoExtraCharge || String(line?.linkedCompanionSourceKey || '').trim()) return 0;
-  if (isBautizosUnder3YearsAtEvent(line, eventLike)) return 0;
-  const arrivesByCar = resolveLlegaEnCarroLine(line);
-  const transportWanted = isSiValue(line?.wantsBautizosTransport);
-  const chargeTransport = transportWanted && !arrivesByCar;
-  if (chargeTransport) return food + transport;
-  return food;
-}
-
-const DEFAULT_BAUTIZOS_LIST_PRICE_FOOD = 150;
-const DEFAULT_BAUTIZOS_LIST_PRICE_TRANSPORT = 350;
-
-function getBautizosListPriceBreakdown(eventLike) {
-  const food = Number(eventLike?.bautizosListPriceFood ?? DEFAULT_BAUTIZOS_LIST_PRICE_FOOD) || 0;
-  const transport = Number(eventLike?.bautizosListPriceTransport ?? DEFAULT_BAUTIZOS_LIST_PRICE_TRANSPORT) || 0;
-  return { food, transport, both: food + transport };
-}
-
-function resolveLlegaEnCarroPricing(personLike) {
-  if (typeof personLike?.llegaEnCarro === 'boolean') return personLike.llegaEnCarro;
-  if (isSiValue(personLike?.llegaEnCarro)) return true;
-  if (personLike?.llegaEnCarro === 'No') return false;
-  return (personLike?.transportType || 'Camión') === 'Carro';
-}
-
-function getBautizosListPrice(personLike, eventLike = null) {
-  if (isBautizosUnder3YearsAtEvent(personLike, eventLike)) return 0;
-  const { food, transport } = getBautizosListPriceBreakdown(eventLike);
-  const arrivesByCar = resolveLlegaEnCarroPricing(personLike);
-  const transportWanted = isSiValue(personLike?.wantsBautizosTransport);
-  const chargeTransport = transportWanted && !arrivesByCar;
-  if (chargeTransport) return food + transport;
-  return food;
-}
-
-function getBautizosPartyListPrice(personLike, eventLike = null) {
-  const { food, transport } = getBautizosListPriceBreakdown(eventLike);
-  let total = getBautizosTitularListPrice(personLike, eventLike);
-  for (const c of getBautizosCompanionsArray(personLike)) {
-    total += getBautizosLineListPrice(c, food, transport, eventLike);
-  }
-  return total;
-}
-
 function normalizeServerTierCosts(globalCost, tierOrEvent) {
   const g = Number(globalCost) || 0;
   const legacySrv = Number(tierOrEvent?.serverCost) || 0;
@@ -247,49 +111,7 @@ function getPricingFromSnapshotForDate(event, dateMs) {
   return { global, ...srv };
 }
 
-function isLegacyBautizosParticipant(personLike) {
-  const raw = personLike?.bautizosCompanions;
-  if (!Array.isArray(raw)) return false;
-  return raw.some((c) => c && typeof c === 'object' && String(c?.name || '').trim().length >= 2);
-}
-
-function bautizosAttendancePaysEventListPrice(personLike) {
-  if (isFreeBautizosAttendance(personLike)) return false;
-  const t = normalizeBautizosAttendanceType(personLike?.bautizosAttendanceType);
-  return t === BAUTIZOS_ATTENDANCE.bautizado || t === BAUTIZOS_ATTENDANCE.acompanante || t === BAUTIZOS_ATTENDANCE.asistente || t === BAUTIZOS_ATTENDANCE.servidor;
-}
-
-function getBautizosIndividualListPrice(personLike, eventLike = null) {
-  if (!eventLike || eventLike.eventType !== 'Bautizos') return 0;
-  if (!bautizosAttendancePaysEventListPrice(personLike)) return 0;
-  if (isBautizosUnder3YearsAtEvent(personLike, eventLike)) return 0;
-  const { food, transport } = getBautizosListPriceBreakdown(eventLike);
-  let total = 0;
-  if (isSiValue(personLike?.wantsBautizosFood)) total += food;
-  const arrivesByCar = resolveLlegaEnCarroPricing(personLike);
-  const transportWanted = isSiValue(personLike?.wantsBautizosTransport);
-  if (transportWanted && !arrivesByCar) total += transport;
-  return total;
-}
-
-function getBautizosEffectiveListPrice(personLike, eventLike = null) {
-  if (!personLike) return 0;
-  if (isFreeBautizosAttendance(personLike)) return 0;
-  if (personLike?.registeredCostManual === true) {
-    const m = parseFloat(personLike?.registeredCost);
-    if (Number.isFinite(m) && m >= 0) return m;
-  }
-  const persisted = parseFloat(personLike?.registeredCost);
-  if (isLegacyBautizosParticipant(personLike) && Number.isFinite(persisted) && persisted >= 0) {
-    return persisted;
-  }
-  return getBautizosIndividualListPrice(personLike, eventLike);
-}
-
-function getPersonCost(person, pricing, eventLike = null) {
-  if (eventLike?.eventType === 'Bautizos') {
-    return getBautizosEffectiveListPrice(person, eventLike);
-  }
+function getPersonCost(person, pricing) {
   if (!pricing) return 0;
   const g = Number(pricing.global) || 0;
   if (!isSiValue(person?.isServer)) return g;
@@ -311,20 +133,19 @@ function getPersonCost(person, pricing, eventLike = null) {
   return g;
 }
 
-function resolveRegisteredCost(person, pricing, eventLike = null) {
+function resolveRegisteredCost(person, pricing) {
   if (person?.registeredCostManual === true) {
     const m = parseFloat(person?.registeredCost);
     if (Number.isFinite(m) && m >= 0) return m;
   }
   const parsed = parseFloat(person?.registeredCost);
   if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  return getPersonCost(person, pricing, eventLike);
+  return getPersonCost(person, pricing);
 }
 
-function getLiquidationTarget(person, currentPricing, eventLike = null) {
+function getLiquidationTarget(person, currentPricing) {
   if (isFreeAttendanceType(normalizeAttendanceSpecial(person))) return 0;
-  if (eventLike?.eventType === 'Bautizos' && isFreeBautizosAttendance(person)) return 0;
-  const listPrice = resolveRegisteredCost(person, currentPricing, eventLike);
+  const listPrice = resolveRegisteredCost(person, currentPricing);
   if (!isSiValue(person?.isScholarship)) return listPrice;
   if (person?.scholarshipType === 'partial') {
     const montoBecado = parseFloat(person.scholarshipPartialAmount || 0);
@@ -342,7 +163,7 @@ function computeParticipantLiquidationTarget(person, eventLike) {
     if (Number.isFinite(t)) regMs = t;
   }
   const pricing = getPricingFromSnapshotForDate(eventLike, regMs);
-  return getLiquidationTarget(person, pricing, eventLike);
+  return getLiquidationTarget(person, pricing);
 }
 
 module.exports = { computeParticipantLiquidationTarget };
