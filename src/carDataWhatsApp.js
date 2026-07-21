@@ -139,15 +139,43 @@ function buildCarDataInventoryForAnchor(anchor, eventSnapshot) {
 
 export function personInventoryNeedsCarDataAttention(person, eventSnapshot, roster) {
   if (!person || !eventSnapshot) return false;
+
+  const plan = eventSnapshot?.transportPlanning;
+  const pid = String(person?.id || '').trim();
+  if (!pid) return false;
+
+  // v3: unidades con resumen denormalizado; persona es conductor o pasajero de un carro pendiente
+  const summaryById = plan?.carUnitSummaryById;
+  const carAssign = plan?.carAssign;
+  if (summaryById && typeof summaryById === 'object' && Number(plan?.transportVersion) >= 3) {
+    const sk = `p:${pid}`;
+    const unitId = String(carAssign?.[sk] || '').trim();
+    if (unitId) {
+      const summary = summaryById[unitId];
+      if (summary) return summary.needsAttention === true && summary.maybeAbsent !== true;
+    }
+    // También: unidades donde esta persona es driver en el resumen
+    for (const [uid, summary] of Object.entries(summaryById)) {
+      if (!summary || summary.maybeAbsent === true) continue;
+      if (String(summary.driverSourceKey || '').trim() === sk && summary.needsAttention === true) {
+        return true;
+      }
+      // Si no está asignada pero hay carros pendientes sin conductor y llega en carro — no marcar a todos
+      void uid;
+    }
+    // Si está en carAssign a unidad pendiente
+    if (unitId && summaryById[unitId]?.needsAttention === true) return true;
+  }
+
   const anchor = resolveBautizosCarDataAnchor(person, roster, eventSnapshot);
   if (!anchor.eligible || !anchor.anchorPerson) return false;
   if (String(anchor.waRecipient?.id || '').trim() !== String(person?.id || '').trim()) return false;
   const anchorSk = `p:${String(anchor.anchorPerson?.id || '').trim()}`;
-  const summary = eventSnapshot?.transportPlanning?.bautizosCarMetaSummaryByTitular?.[anchorSk];
+  const summary = plan?.bautizosCarMetaSummaryByTitular?.[anchorSk];
   if (summary) {
     const crewOpts = buildCarMetaCrewOptsForTitular(
       anchorSk,
-      eventSnapshot.transportPlanning,
+      plan,
       roster
     );
     return titularSummaryNeedsAttention(summary, crewOpts);

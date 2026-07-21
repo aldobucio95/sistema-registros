@@ -199,6 +199,7 @@ function GlobalRegistryPageContent() {
           ) : (
             <VirtualizedRosterMobileList
               items={sectionPartyRows}
+              enabled={true}
               isItemExpanded={(partyRow) => {
                 const person = partyRow.person;
                 return !partyRow.disableExpand && expandedRows.has(person.id);
@@ -247,6 +248,7 @@ function GlobalRegistryPageContent() {
               ) : (
                 <VirtualizedTableBody
                   items={sectionPartyRows}
+                  enabled={true}
                   colSpan={3}
                   isItemExpanded={(partyRow) => {
                     const person = partyRow.person;
@@ -357,6 +359,7 @@ function GlobalRegistryPageContent() {
                   {invalidFiltered.length === 0 ? null : (
                     <VirtualizedTableBody
                       items={invalidFiltered}
+                      enabled={true}
                       colSpan={4}
                       isItemExpanded={(person) => expandedRows.has(person.id)}
                       renderItem={(person, index) => {

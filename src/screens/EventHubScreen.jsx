@@ -21,6 +21,7 @@ import PanelNoticeToast from '../components/PanelNoticeToast.jsx';
 import MobileCompactToolbar, { MobileCompactToolbarPanel } from '../components/mobile/MobileCompactToolbar.jsx';
 import MobileMenuSection from '../components/mobile/MobileMenuSection.jsx';
 import MobileSearchField from '../components/mobile/MobileSearchField.jsx';
+import EditEventModal from '../components/events/EditEventModal.jsx';
 
 const LogsPageContentLazy = lazy(() => import('./logs/LogsPageContent.jsx'));
 
@@ -227,7 +228,7 @@ export default function EventHubScreen() {
     openPermanentDeleteArchivedParticipantConfirm, visibleEvents, activeRosterUnitsByEventId, getPricingFromSnapshot,
     draggedEventId, setDraggedEventId, handleDragOver, handleDrop, resolvePreferredLandingTab,
     formatDisplayDate, addLog, updateDoc, getDocRef, setRenameModal, setDeleteEventModal,
-    deleteEventModal, confirmDeleteEvent, renameModal, handleRenameEvent, newEventData,
+    deleteEventModal, confirmDeleteEvent, renameModal, handleRenameEvent, openEditEventModal, newEventData,
     setNewEventData, isAddEventModalOpen, setIsAddEventModalOpen, handleCreateEvent,
     btnPrimary, btnSecondary, inputClasses, labelClasses, restoreModal, setRestoreModal, confirmRestore,
     registryConfirmModalEl, editorRegFieldsModalEl, panelNavModalEl, privacyNoticeModalEl, editingUser,
@@ -796,7 +797,7 @@ export default function EventHubScreen() {
                           {ev._isDebug && ev._debugSessionId === globalConfig?.debugSessionId && <Bug size={14} className="text-orange-500" title="Cambio no permanente" />}
                         </h3>
                         {hasAdminRights && (
-                          <button onClick={(e) => { e.stopPropagation(); setRenameModal({isOpen: true, id: ev.id, name: ev.name}); }} className="text-slate-300 hover:text-indigo-600 p-1 flex-shrink-0">
+                          <button onClick={(e) => { e.stopPropagation(); openEditEventModal(ev); }} className="text-slate-300 hover:text-indigo-600 p-1 flex-shrink-0" title="Editar evento">
                             <Edit3 size={16} />
                           </button>
                         )}
@@ -1573,28 +1574,14 @@ export default function EventHubScreen() {
         )}
 
 
-        {renameModal.isOpen && (
-          <div className={`${uiModal.overlay} z-50`}>
-            <button type="button" className={uiModal.backdrop} onClick={() => setRenameModal({isOpen: false, id: null, name: ''})} aria-label="Cerrar modal renombrar evento" />
-            <form
-              className={`${uiModal.panel} max-w-sm p-6 animate-in zoom-in-95 duration-200`}
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleRenameEvent();
-              }}
-            >
-              <h3 className="text-lg font-bold text-slate-800 mb-1">Renombrar Evento</h3>
-              <p className="text-sm text-slate-500 mb-6">Ingresa el nuevo nombre para este evento.</p>
-              <div className="space-y-4">
-                <input type="text" autoFocus className={inputClasses} placeholder="Nombre del Evento" value={renameModal.name} onChange={e => setRenameModal({...renameModal, name: e.target.value})} />
-                <div className="flex gap-3 pt-2">
-                  <button type="button" onClick={() => setRenameModal({isOpen: false, id: null, name: ''})} className={btnSecondary}>Cancelar</button>
-                  <button type="submit" disabled={!renameModal.name.trim()} className={btnPrimary}>Guardar</button>
-                </div>
-              </div>
-            </form>
-          </div>
-        )}
+        <EditEventModal
+          renameModal={renameModal}
+          setRenameModal={setRenameModal}
+          onSubmit={handleRenameEvent}
+          btnPrimary={btnPrimary}
+          btnSecondary={btnSecondary}
+          inputClasses={inputClasses}
+        />
 
         {restoreModal.isOpen && (
           <div className={`${uiModal.overlay} z-50`}>

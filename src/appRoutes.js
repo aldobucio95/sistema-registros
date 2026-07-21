@@ -7,12 +7,21 @@ import { sanitizeFirestoreDocId } from './firestoreDocId.js';
 /** Pestañas fijas del panel → segmento de URL (después de /eventos/:slug/) */
 export const TAB_TO_ROUTE_SEGMENT = {
   Summary: 'dashboard',
-  Bautizados: 'bautizados',
-  ServersPage: 'servidores',
-  Becados: 'becados',
+  RoleServidor: 'servidor',
+  RoleEmpleado: 'empleado',
+  RoleBautizado: 'bautizado',
+  RoleBecado: 'becado',
+  RoleCampero: 'campero',
+  RoleCortesia: 'cortesia',
+  RolePastor: 'pastor',
+  RoleAsistente: 'asistente',
+  // Alias legado
+  Bautizados: 'bautizado',
+  ServersPage: 'servidor',
+  Becados: 'becado',
+  PastoresPage: 'pastor',
   Responsivas: 'responsivas',
   RegistroGlobal: 'registro-global',
-  PastoresPage: 'pastores',
   TransportPlanning: 'transporte',
   CashCut: 'corte-caja',
   ExpenseList: 'gastos',
@@ -21,6 +30,11 @@ export const TAB_TO_ROUTE_SEGMENT = {
 export const ROUTE_SEGMENT_TO_TAB = Object.fromEntries(
   Object.entries(TAB_TO_ROUTE_SEGMENT).map(([tab, seg]) => [seg, tab])
 );
+// Alias de URLs antiguas → pestañas canónicas
+ROUTE_SEGMENT_TO_TAB.bautizados = 'RoleBautizado';
+ROUTE_SEGMENT_TO_TAB.servidores = 'RoleServidor';
+ROUTE_SEGMENT_TO_TAB.becados = 'RoleBecado';
+ROUTE_SEGMENT_TO_TAB.pastores = 'RolePastor';
 
 export function slugify(str) {
   if (str == null || str === '') return '';

@@ -30,6 +30,11 @@ import {
   sortTransportLinesByRosterOrder,
   suggestBautizosFamilyCarGroups,
   totalCarsCount,
+  getCarUnits,
+  getCarLinesForUnit,
+  getUnassignedCarLines,
+  assignPersonToCarUnit,
+  getDefaultCarCapacity,
   getTransportAttendanceEntry,
   applyTransportPlanningAutoNormalization,
   transportPlanningStructureSignature,
@@ -76,21 +81,30 @@ import { uiModal, uiButtons } from '../ui/uiFormatClasses.js';
 import ScreenLoadingFallback from './ScreenLoadingFallback.jsx';
 import { runComputeWorkerJob } from '../workers/computeWorkerClient.js';
 import { slimEventForTransportWorker } from '../workers/computeTasks/transportPlanningData.js';
-import { useTransportV2Migration } from '../transport/hooks/useTransportV2Migration.js';
+import { useTransportV3Migration } from '../transport/hooks/useTransportV3Migration.js';
 import {
   CAR_META_SAVE_DEBOUNCE_MS,
   PLAN_STRUCTURE_SAVE_DEBOUNCE_MS,
+  clampInt,
+} from '../transport/transportConstants.js';
+import {
   btnPrimary,
   btnSecondary,
   btnWhatsAppCarData,
   inputSm,
-  clampInt,
 } from '../transport/transportPlanningUi.jsx';
-import TransportPlanHeaderCard from '../transport/sections/TransportPlanHeaderCard.jsx';
-import TransportBusGroupsSection from '../transport/sections/TransportBusGroupsSection.jsx';
-import TransportCarArrivalShell from '../transport/sections/TransportCarArrivalShell.jsx';
-import TransportManualCarGroupsSection from '../transport/sections/TransportManualCarGroupsSection.jsx';
-import TransportRowByRowSection from '../transport/sections/TransportRowByRowSection.jsx';
+import TransportWorkspaceHeader from '../transport/sections/TransportWorkspaceHeader.jsx';
+import TransportModeSegment from '../transport/sections/TransportModeSegment.jsx';
+import TransportBusBoardSection from '../transport/sections/TransportBusBoardSection.jsx';
+import TransportCarPlanningBoard from '../transport/sections/TransportCarPlanningBoard.jsx';
+import TransportUnitEditorDrawer from '../transport/sections/TransportUnitEditorDrawer.jsx';
+import {
+  blankCarUnitDoc,
+  buildCarUnitSummaryEntry,
+  makeCarUnitId,
+  normalizeCarUnitPlanEntry,
+  saveCarUnitPatch,
+} from '../transport/v3/index.js';
 import { isTransportV2Plan } from '../transport/v2/transportMigration.js';
 import { saveVehiclePatch } from '../transport/v2/transportService.js';
 import { parseVehicleDocId, vehicleDocIdFromLegacyKey } from '../transport/v2/transportSchema.js';
@@ -175,7 +189,7 @@ export default function TransportPlanningPage({
   resolveParticipantById,
 }) {
   const eventId = currentEvent?.id;
-  useTransportV2Migration(eventId, currentEvent?.transportPlanning, updateDoc);
+  useTransportV3Migration(eventId, currentEvent?.transportPlanning, updateDoc);
   const eventType = String(currentEvent?.eventType || '').trim();
   const isBautizos = false;
   const splitCampaBySubevent = isCampa && countAmbosDoubleInAllCounts !== false;
@@ -227,14 +241,36 @@ export default function TransportPlanningPage({
     bautizosCarDisplayGroups: [],
   });
 
+  /** Claves estables: evita re-cómputo al auto-guardar transportPlanning / snapshot del evento. */
+  const locationsKey = useMemo(
+    () => (locations || []).map((x) => String(x || '').trim()).filter(Boolean).join('\0'),
+    [locations]
+  );
+  const slimEventKey = useMemo(() => {
+    const slim = slimEventForTransportWorker(currentEvent);
+    if (!slim) return '';
+    return [
+      String(slim.id || ''),
+      String(slim.eventType || ''),
+      String(slim.bautizosLapInfantMaxAge ?? ''),
+      String(slim.bautizosLapInfantPolicy ?? ''),
+    ].join('|');
+  }, [
+    currentEvent?.id,
+    currentEvent?.eventType,
+    currentEvent?.bautizosLapInfantMaxAge,
+    currentEvent?.bautizosLapInfantPolicy,
+  ]);
+
   useEffect(() => {
     const reqId = ++transportComputeReqRef.current;
     setTransportWorkerPending(true);
+    const slimEvent = slimEventForTransportWorker(currentEvent);
     const payload = {
       roster: deferredRoster,
       eventType,
       locations,
-      eventLike: slimEventForTransportWorker(currentEvent),
+      eventLike: slimEvent,
     };
     runComputeWorkerJob('transportPlanning', payload, { participantCount: deferredRoster.length })
       .then((result) => {
@@ -257,10 +293,16 @@ export default function TransportPlanningPage({
     return () => {
       transportComputeReqRef.current += 1;
     };
-  }, [deferredRoster, eventType, locations, currentEvent, isBautizos]);
+    // Intencional: NO depender de currentEvent completo ni de transportPlanning
+    // (cada auto-guardado de carro disparaba «Preparando listas…» en bucle).
+  }, [deferredRoster, eventType, locationsKey, slimEventKey, locations, currentEvent?.id]);
 
   const { busLines, carLines, bautizosCarDisplayGroups } = transportComputed;
-  const showTransportBodyPending = rosterComputePending || transportWorkerPending;
+  /** Solo bloquear el cuerpo en la primera carga; no parpadear en re-cómputos. */
+  const showTransportBodyPending =
+    (rosterComputePending || transportWorkerPending) &&
+    busLines.length === 0 &&
+    carLines.length === 0;
 
   const sedeScopeHint =
     visibleLocations.length === 1
@@ -294,6 +336,9 @@ export default function TransportPlanningPage({
     transportPlanningFromEventDoc(currentEvent?.transportPlanning)
   );
   const [saving, setSaving] = useState(false);
+  const [transportMode, setTransportMode] = useState('buses');
+  const [unitDrawer, setUnitDrawer] = useState(null);
+  const [personAssignSk, setPersonAssignSk] = useState('');
   const [mergeConflictModal, setMergeConflictModal] = useState(null);
   /** Meta de carro cargada bajo demanda desde subcolección (no está en app_events). */
   const [loadedCarMetaByKey, setLoadedCarMetaByKey] = useState({});
@@ -667,6 +712,11 @@ export default function TransportPlanningPage({
     () => totalCarsCount(carLines, plan, isBautizos, evRosterFiltered),
     [carLines, plan, isBautizos, evRosterFiltered]
   );
+
+  const pendingCarUnitsCount = useMemo(() => {
+    const map = plan?.carUnitSummaryById || {};
+    return Object.values(map).filter((e) => e && e.needsAttention === true && e.maybeAbsent !== true).length;
+  }, [plan?.carUnitSummaryById]);
 
   const pendingCarDataTitularCount = useMemo(() => {
     if (!isBautizos || typeof titularHasPendingCarData !== 'function') return 0;
@@ -1245,30 +1295,6 @@ export default function TransportPlanningPage({
         y += 22;
       }
 
-      const seatsForSlotting = Math.max(1, parseInt(plan.bautizosCarCapacity, 10) || 5);
-
-      const resolvePdfGroupLeader = (grp) => {
-        const hosts = Array.isArray(grp?.hosts) ? grp.hosts : [];
-        if (!hosts.length) return null;
-        const manualHostId = String(plan?.bautizosGroupTitularByGroupId?.[String(grp?.groupId || '')] || '').trim();
-        if (manualHostId) {
-          const pick = hosts.find((h) => String(h?.hostId || '').trim() === manualHostId);
-          if (pick) return pick;
-        }
-        const adults = hosts.filter((h) => Number.isFinite(h?.hostAge) && h.hostAge >= 18);
-        if (adults.length > 0) {
-          return [...adults].sort((a, b) => (b.hostAge || 0) - (a.hostAge || 0))[0] || null;
-        }
-        return hosts[0] || null;
-      };
-
-      const getHostParticipantSourceKeyPdf = (host) => {
-        const participantLine = (host?.lines || []).find((ln) => ln?.kind === 'participant');
-        if (participantLine?.sourceKey) return String(participantLine.sourceKey);
-        const hid = String(host?.hostId || '').trim();
-        return hid ? `p:${hid}` : '';
-      };
-
       const carSectionMinContentH = carLines.length ? 96 : 24;
       sectionTitle('Llegan en carro (vehículo particular)', carSectionMinContentH);
       if (!carLines.length) {
@@ -1278,148 +1304,128 @@ export default function TransportPlanningPage({
         doc.text('No hay registros que lleguen en carro.', M.l + 4, y);
         y += 22;
       } else {
-        let displayGroups = bautizosCarDisplayGroups;
-        if (isBautizos && (!displayGroups || displayGroups.length === 0) && bautizosFamilyInfo?.size) {
-          displayGroups = [];
-          for (const [hostId, fam] of bautizosFamilyInfo.entries()) {
-            const lines = fam.lines || [];
-            const participantLine = lines.find((l) => l.kind === 'participant') || lines[0];
-            displayGroups.push({
-              groupId: hostId,
-              isFamily: false,
-              hosts: [
-                {
-                  hostId,
-                  hostName: String(participantLine?.name || '—').trim(),
-                  location: String(participantLine?.location || '').trim() || '—',
-                  hostAge: null,
-                  lines,
-                  memberKeys: fam.memberKeys || [],
-                  hostCarros: fam.hostCarros ?? 1,
-                },
-              ],
-              lines,
-            });
-          }
-        }
+      const seatsForSlotting = Math.max(
+        1,
+        parseInt(plan.defaultCarCap, 10) || parseInt(plan.bautizosCarCapacity, 10) || 5
+      );
 
-        const buildNonBautizosBlocks = () => {
-          const blocks = [];
-          const usedGroupIds = new Set();
-          for (const line of carLines) {
-            const g = keyToGroup.get(line.sourceKey);
-            if (g && (g.memberKeys || []).length > 1 && !usedGroupIds.has(g.id)) {
-              usedGroupIds.add(g.id);
-              const memberLines = carLines.filter((l) => (g.memberKeys || []).includes(String(l.sourceKey).trim()));
-              const c = parseInt(g.cars, 10);
-              const K =
-                Number.isFinite(c) && c >= 1 ? c : Math.max(1, Math.ceil(memberLines.length / seatsForSlotting));
-              const titularLine = memberLines.find((l) => l.kind === 'participant') || memberLines[0];
-              const slots = assignBautizosMembersToCarSlots(memberLines, K, seatsForSlotting, evRosterFiltered);
+      const buildV3CarPdfBlocks = () => {
+        const units = getCarUnits(plan);
+        const blocks = units.map((unit, i) => {
+          const memberLines = getCarLinesForUnit(carLines, plan, unit.id);
+          const summary = plan.carUnitSummaryById?.[unit.id] || {};
+          const driverSk = String(summary.driverSourceKey || '').trim();
+          const driverLine = memberLines.find((l) => l.sourceKey === driverSk) || memberLines[0];
+          const members = memberLines.map((l) => ({
+            sourceKey: l.sourceKey,
+            name: l.name,
+            kind: l.kind,
+          }));
+          return {
+            kind: 'unit',
+            title: unit.label || `Carro ${i + 1}`,
+            titularName: String(driverLine?.name || summary.driverLabel || '—'),
+            titularHostId: String(driverLine?.hostId || ''),
+            titularSk: driverSk || String(driverLine?.sourceKey || ''),
+            unitId: unit.id,
+            effCars: 1,
+            slots: [
+              {
+                carIndex: 1,
+                members,
+                meta: {
+                  brand: summary.brand || '',
+                  model: summary.model || '',
+                  color: summary.color || '',
+                  plates: summary.plates || '',
+                  maybeAbsent: summary.maybeAbsent === true,
+                },
+              },
+            ],
+            savingsNote: '',
+          };
+        });
+        const unassigned = getUnassignedCarLines(carLines, plan);
+        if (unassigned.length) {
+          blocks.push({
+            kind: 'unassigned',
+            title: `Sin asignar (${unassigned.length})`,
+            titularName: '—',
+            titularHostId: '',
+            titularSk: '',
+            unitId: '',
+            effCars: 0,
+            slots: [
+              {
+                carIndex: 1,
+                members: unassigned.map((l) => ({
+                  sourceKey: l.sourceKey,
+                  name: l.name,
+                  kind: l.kind,
+                })),
+                meta: { brand: '', model: '', color: '', plates: '', maybeAbsent: false },
+              },
+            ],
+            savingsNote: '',
+          });
+        }
+        return blocks;
+      };
+
+      const useV3Cars = Number(plan.transportVersion) >= 3 || getCarUnits(plan).length > 0;
+
+        const allCarBlocks = useV3Cars ? buildV3CarPdfBlocks() : (() => {
+          // Legacy PDF (pre-v3)
+          let displayGroups = bautizosCarDisplayGroups;
+          const keyToGroupPdf = buildCarGroupKeyToGroup(plan);
+          const buildNonBautizosBlocks = () => {
+            const blocks = [];
+            const usedGroupIds = new Set();
+            for (const line of carLines) {
+              const g = keyToGroupPdf.get(line.sourceKey);
+              if (g && (g.memberKeys || []).length > 1 && !usedGroupIds.has(g.id)) {
+                usedGroupIds.add(g.id);
+                const memberLines = carLines.filter((l) => (g.memberKeys || []).includes(String(l.sourceKey).trim()));
+                const c = parseInt(g.cars, 10);
+                const K =
+                  Number.isFinite(c) && c >= 1 ? c : Math.max(1, Math.ceil(memberLines.length / seatsForSlotting));
+                const titularLine = memberLines.find((l) => l.kind === 'participant') || memberLines[0];
+                const slots = assignBautizosMembersToCarSlots(memberLines, K, seatsForSlotting, evRosterFiltered);
+                blocks.push({
+                  kind: 'group',
+                  title: getCarGroupDisplayLabel(g),
+                  titularName: String(titularLine?.name || '—'),
+                  titularHostId: String(titularLine?.hostId || titularLine?.sourceKey || ''),
+                  titularSk: String(titularLine?.sourceKey || ''),
+                  effCars: K,
+                  slots,
+                });
+              }
+            }
+            for (const line of carLines) {
+              const g = keyToGroupPdf.get(line.sourceKey);
+              if (g && (g.memberKeys || []).length > 1) continue;
+              const eff = effectiveCarsForCarLine(line, plan, keyToGroupPdf, isBautizos, bautizosFamilyInfo);
+              const slots = assignBautizosMembersToCarSlots([line], eff, seatsForSlotting, evRosterFiltered);
               blocks.push({
-                kind: 'group',
-                title: getCarGroupDisplayLabel(g),
-                titularName: String(titularLine?.name || '—'),
-                titularHostId: String(titularLine?.hostId || titularLine?.sourceKey || ''),
-                titularSk: String(titularLine?.sourceKey || ''),
-                effCars: K,
+                kind: 'single',
+                title: 'Vehículo individual',
+                titularName: String(line.name || '—'),
+                titularHostId: String(line.hostId || line.sourceKey || ''),
+                titularSk: String(line.sourceKey || ''),
+                effCars: eff,
                 slots,
               });
             }
-          }
-          for (const line of carLines) {
-            const g = keyToGroup.get(line.sourceKey);
-            if (g && (g.memberKeys || []).length > 1) continue;
-            const eff = effectiveCarsForCarLine(line, plan, keyToGroup, isBautizos, bautizosFamilyInfo);
-            const slots = assignBautizosMembersToCarSlots([line], eff, seatsForSlotting, evRosterFiltered);
-            blocks.push({
-              kind: 'single',
-              title: 'Vehículo individual',
-              titularName: String(line.name || '—'),
-              titularHostId: String(line.hostId || line.sourceKey || ''),
-              titularSk: String(line.sourceKey || ''),
-              effCars: eff,
-              slots,
-            });
-          }
-          return blocks;
-        };
-
-        const carBlocks =
-          isBautizos && displayGroups?.length
-            ? displayGroups
-                .map((grp, gi) => {
-                const leader = resolvePdfGroupLeader(grp);
-                const leaderHost = leader || grp.hosts?.[0];
-                const leaderHostId = String(leaderHost?.hostId || '').trim();
-                const carCtx = resolveHostCarContext(leaderHostId);
-                const titularSk = carCtx.hostSourceKey;
-                const pdfManualKeys = new Set(
-                  buildManualCarGroupViews(plan, carLines).flatMap((v) => v.memberKeys || [])
-                );
-                const filteredLines = (grp.lines || []).filter(
-                  (l) => !pdfManualKeys.has(String(l.sourceKey || '').trim())
-                );
-                if (filteredLines.length === 0) return null;
-                const eff = resolveDisplayGroupCars(grp);
-                const slots = buildBautizosCarSlotsForTransport({
-                  plan,
-                  hostSourceKey: titularSk,
-                  effectiveCars: eff,
-                  hostPerson: carCtx.hostPerson,
-                  companions: carCtx.companions,
-                  labelIndex: carCtx.labelIndex,
-                  fallbackLines: filteredLines,
-                  roster: evRosterFiltered,
-                  seatsPerCar: seatsForSlotting,
-                });
-                const titleBase = grp.isFamily ? `Grupo familiar ${gi + 1}` : `Registro ${gi + 1}`;
-                return {
-                  kind: 'bautizos',
-                  title: `${titleBase} · ${filteredLines.length} persona${filteredLines.length !== 1 ? 's' : ''}`,
-                  titularName: String(leader?.hostName || grp.hosts?.[0]?.hostName || '—'),
-                  titularHostId: String(leader?.hostId || grp.hosts?.[0]?.hostId || ''),
-                  titularSk,
-                  effCars: eff,
-                  slots,
-                  grp,
-                };
-              })
-                .filter(Boolean)
-            : buildNonBautizosBlocks();
-
-        const manualPdfBlocks = isBautizos
-          ? buildManualCarGroupViews(plan, carLines).map((view) => {
-              const titularLine =
-                view.memberLines.find((l) => l.kind === 'participant') || view.memberLines[0];
-              const slots = assignBautizosMembersToCarSlots(
-                view.memberLines,
-                view.effectiveCars,
-                seatsForSlotting,
-                evRosterFiltered
-              );
-              return {
-                kind: 'manual',
-                title: `${view.label} · ${view.memberLines.length} personas · carro compartido`,
-                titularName: String(titularLine?.name || '—'),
-                titularHostId: String(titularLine?.hostId || ''),
-                titularSk: view.titularSk,
-                effCars: view.effectiveCars,
-                slots,
-                savingsNote:
-                  view.carsBeforeMerge > view.effectiveCars
-                    ? `Registro: ${view.carsBeforeMerge} carro(s) → Plan: ${view.effectiveCars} compartido(s)`
-                    : '',
-              };
-            })
-          : [];
-
-        const allCarBlocks = [...manualPdfBlocks, ...carBlocks];
+            return blocks;
+          };
+          return buildNonBautizosBlocks();
+        })();
 
         const estimateCarBlockHeight = (blk) => {
           let h = 34 + 14 + 12 + 8;
           blk.slots.forEach((slot) => {
-            const vm = getCarMetaForExport(blk.titularSk, slot.carIndex);
+            const vm = slot.meta || getCarMetaForExport(blk.titularSk, slot.carIndex);
             const vLine = [vm.brand, vm.model].filter(Boolean).join(' ') || '—';
             doc.setFontSize(8.5);
             const tentative = vm.maybeAbsent ? ' · Quizá no vaya' : '';
@@ -1484,7 +1490,7 @@ export default function TransportPlanningPage({
 
           blk.slots.forEach((slot) => {
             const nMembers = slot.members.length;
-            const vm = getCarMetaForExport(blk.titularSk, slot.carIndex);
+            const vm = slot.meta || getCarMetaForExport(blk.titularSk, slot.carIndex);
             const slotRowsPreview = slot.members.map((m) => {
               const line = carLines.find((l) => String(l.sourceKey) === String(m.sourceKey));
               const isTit =
@@ -2501,899 +2507,191 @@ export default function TransportPlanningPage({
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-6xl mx-auto">
-      <TransportPlanHeaderCard
+      <TransportWorkspaceHeader
         sedeScopeHint={sedeScopeHint}
         evRosterFilteredLength={evRosterFiltered.length}
         busLinesLength={showTransportBodyPending ? 0 : busLines.length}
         carLinesLength={showTransportBodyPending ? 0 : carLines.length}
         totalUnitsAll={showTransportBodyPending ? 0 : totalUnitsAll}
         carsTotal={showTransportBodyPending ? 0 : carsTotal}
+        pendingCarDataCount={
+          showTransportBodyPending ? 0 : Math.max(pendingCarUnitsCount || 0, pendingCarDataTitularCount || 0)
+        }
         onExportPdf={exportTransportPlanPdf}
-        isBautizos={isBautizos}
         canSendCarDataWhatsApp={canSendCarDataWhatsApp}
-        pendingCarDataTitularCount={pendingCarDataTitularCount}
         onBulkSendCarDataWhatsApp={onBulkSendCarDataWhatsApp}
         saving={saving}
         canEdit={canEdit}
         plan={plan}
-        setDefaultCaps={setDefaultCaps}
         setPlan={setPlan}
         isCampa={isCampa}
-        normalizeTransportPlanning={normalizeTransportPlanning}
       />
 
       {showTransportBodyPending ? (
         <ScreenLoadingFallback title="Preparando listas de transporte…" />
       ) : (
         <>
-      {typeof renderGlobalRegistryListToolbar === 'function'
-        ? renderGlobalRegistryListToolbar(
-            basePool,
-            'Solo afectan a esta vista de Transporte (misma barra que Registro global y Acompañantes). Filtra quién aparece en camión y carro según los criterios elegidos.'
-          )
-        : null}
+          {typeof renderGlobalRegistryListToolbar === 'function'
+            ? renderGlobalRegistryListToolbar(
+                basePool,
+                'Solo afectan a esta vista de Transporte (misma barra que Registro global y Acompañantes). Filtra quién aparece en camión y carro según los criterios elegidos.'
+              )
+            : null}
 
-      <TransportBusGroupsSection
-        busSectionsEffective={busSectionsEffective}
-        busLines={busLines}
-        plan={plan}
-        isCampa={isCampa}
-        splitCampaBySubevent={splitCampaBySubevent}
-        canEdit={canEdit}
-        canEditTransportOps={canEditTransportOps}
-        openBusPassengerGroups={openBusPassengerGroups}
-        toggleBusPassengerGroup={toggleBusPassengerGroup}
-        sortPassengersForDisplay={sortPassengersForDisplay}
-        resolveCampaAmbosTransit={resolveCampaAmbosTransit}
-        setCampaAmbosTransit={setCampaAmbosTransit}
-        suggestUnitsForGroup={suggestUnitsForGroup}
-        addUnit={addUnit}
-        removeUnit={removeUnit}
-        updateUnit={updateUnit}
-        assignBus={assignBus}
-        renderTransportAttendanceCheckbox={renderTransportAttendanceCheckbox}
-      />
+          <TransportModeSegment mode={transportMode} onChange={setTransportMode} />
 
-      <TransportCarArrivalShell
-        isBautizos={isBautizos}
-        canEdit={canEdit}
-        bautizosCarCapacity={plan.bautizosCarCapacity}
-        onApplyBautizosFamilies={applyBautizosFamilies}
-      >
-        <TransportManualCarGroupsSection
-          views={manualCarGroupViews}
-          isOpen={transportUiPrefs?.manualCarGroupsOpen === true}
-          onOpenChange={(next) => patchTransportUiPrefs({ manualCarGroupsOpen: next })}
-          renderGroupCard={(view) => {
-                const savings = view.carsBeforeMerge > view.effectiveCars;
-                const manualSlots = resolveSlotsForTitular(
-                  view.titularSk,
-                  view.effectiveCars,
-                  expandedFamilyCardKeys.has(view.id),
-                  evRosterFiltered.find(
-                    (p) => String(p?.id || '').trim() === String(view.titularSk || '').replace(/^p:/, '')
-                  ),
-                  [],
-                  view.memberLines
-                );
-                const manualCrewOpts = {
-                  requiresPassengers: manualGroupCrewRequiresPassengers(view.memberLines.length),
-                };
-                const titularSummary = plan.bautizosCarMetaSummaryByTitular?.[view.titularSk];
-                return (
-                  <TransportBautizosCarCard
-                    key={view.id}
-                    cardKey={view.id}
-                    cardExpanded={expandedFamilyCardKeys.has(view.id)}
-                    onToggleCard={() =>
-                      void handleToggleFamilyCard(view.id, view.titularSk, view.effectiveCars)
-                    }
-                    expandedCarFormKeys={expandedCarFormKeys}
-                    onToggleCarForm={(formKey) =>
-                      void handleToggleCarForm(formKey, view.titularSk, view.effectiveCars)
-                    }
-                    titularSk={view.titularSk}
-                    effectiveCars={view.effectiveCars}
-                    seatsPerCar={plan.bautizosCarCapacity}
-                    slots={manualSlots}
-                    titularSummary={titularSummary}
-                    isLoadingMeta={loadingTitularSks.has(view.titularSk)}
-                    getSlotMeta={(carIndex) => getCarMeta(view.titularSk, carIndex)}
-                    crewOpts={manualCrewOpts}
-                    showCollapsedCrew
-                    collapsedTitularLabel={view.titularName}
-                    className="rounded-xl border border-indigo-200 dark:border-indigo-600/50 bg-white dark:bg-slate-900 p-4 shadow-sm"
-                    header={
-                      <>
-                        <p className="text-sm font-black text-indigo-800 dark:text-indigo-200 truncate" title={view.titularName}>
-                          {view.titularName}
-                        </p>
-                        <p className="text-[10px] font-bold text-indigo-600 dark:text-indigo-300 mt-0.5">
-                          Titular del grupo · conductor
-                        </p>
-                        <p className="text-[10px] font-bold text-indigo-500/90 dark:text-indigo-400/90 mt-1">
-                          {view.label} · {view.memberLines.length} persona{view.memberLines.length !== 1 ? 's' : ''} ·{' '}
-                          {view.effectiveCars} carro{view.effectiveCars !== 1 ? 's' : ''} compartido
-                          {view.effectiveCars !== 1 ? 's' : ''}
-                        </p>
-                        {savings ? (
-                          <p className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 mt-1">
-                            Registro: {view.carsBeforeMerge} carro{view.carsBeforeMerge !== 1 ? 's' : ''} → Plan:{' '}
-                            {view.effectiveCars} compartido{view.effectiveCars !== 1 ? 's' : ''}
-                          </p>
-                        ) : view.inheritedCars > 1 ? (
-                          <p className="text-[10px] font-semibold text-slate-600 dark:text-slate-300 mt-1">
-                            Máximo registrado entre titulares: {view.inheritedCars} carro
-                            {view.inheritedCars !== 1 ? 's' : ''} (incluye «quizá no vaya»)
-                          </p>
-                        ) : null}
-                      </>
-                    }
-                    headerControls={
-                      canEdit && (view.participantHosts || []).length > 1 ? (
-                        <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex flex-col gap-0.5">
-                          Cambiar titular del grupo (datos de carro)
-                          <select
-                            className={`${inputSm} max-w-full sm:max-w-[16rem]`}
-                            value={String(view.titularSk || '').replace(/^p:/, '')}
-                            onChange={(e) => setManualGroupLeader(view, e.target.value)}
-                          >
-                            {(view.participantHosts || []).map((h) => (
-                              <option key={h.hostId} value={h.hostId}>
-                                {h.name}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      ) : null
-                    }
-                    toolbar={
-                      <>
-                        {canEdit ? (
-                          <>
-                            <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex flex-col gap-0.5">
-                              Carros del grupo
-                              <input
-                                type="number"
-                                min={1}
-                                className={`${inputSm} w-20`}
-                                value={view.effectiveCars}
-                                onChange={(e) =>
-                                  setGroupCars(view.id, e.target.value, {
-                                    groupLabel: view.label || '',
-                                    titularName: view.titularName || '',
-                                  })
-                                }
-                              />
-                            </label>
-                            <button
-                              type="button"
-                              className={btnSecondary}
-                              onClick={() => openAddMembersModal(view)}
-                              disabled={carLinesEligibleForManualGroupAdd.length === 0}
-                              title={
-                                carLinesEligibleForManualGroupAdd.length === 0
-                                  ? 'No hay personas disponibles fuera de grupos manuales'
-                                  : 'Agregar personas al grupo'
-                              }
-                            >
-                              <Plus size={14} className="shrink-0" />
-                              Agregar miembros
-                            </button>
-                            <button
-                              type="button"
-                              className={btnSecondary}
-                              onClick={() => unmergeManualCarGroup(view.id)}
-                            >
-                              Separar grupo
-                            </button>
-                          </>
-                        ) : null}
-                        {renderCarDataWhatsAppButton(
-                          String(view.titularSk || '').replace(/^p:/, ''),
-                          view.memberLines?.[0]?.location,
-                          true
-                        )}
-                      </>
-                    }
-                    expandedPrefix={
-                      <ul className="flex flex-wrap gap-1.5">
-                        {view.memberLines.map((line) => (
-                          <li
-                            key={line.sourceKey}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-indigo-100/90 dark:bg-indigo-900/50 text-[10px] font-bold text-indigo-900 dark:text-indigo-100 border border-indigo-200/80 dark:border-indigo-600/40"
-                          >
-                            <span className="truncate max-w-[12rem]" title={line.name}>
-                              {line.name}
-                            </span>
-                            {line.kind === 'companion' ? (
-                              <span className="text-indigo-500 dark:text-indigo-300 font-semibold">Acomp.</span>
-                            ) : (
-                              <span className="text-indigo-600 dark:text-indigo-300 font-black uppercase text-[9px]">
-                                Titular
-                              </span>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    }
-                    bulkActions={renderCarVehicleBulkActions(view.titularSk, view.effectiveCars)}
-                    renderCarForm={(carIndex, eff) =>
-                      renderCarVehicleMetaBlock(view.titularSk, carIndex, eff, {
-                        compact: true,
-                        memberOptions: buildMemberOptionsFromLines(view.memberLines),
-                        requirePassengers: manualGroupCrewRequiresPassengers(view.memberLines.length),
-                      })
-                    }
-                  />
-                );
-          }}
-        />
-
-
-        <TransportRowByRowSection
-          isOpen={transportUiPrefs?.rowByRowOpen === true}
-          onOpenChange={(next) => patchTransportUiPrefs({ rowByRowOpen: next })}
-          carLinesLength={carLines.length}
-          canEdit={canEdit}
-          isCampa={isCampa}
-          isBautizos={isBautizos}
-          mergingManualGroup={mergingManualGroup}
-          carPickSize={carPick.size}
-          onMergeSelected={mergeSelectedCars}
-          carTableColSpan={carTableColSpan}
-          footerNote={
-            isBautizos
-              ? 'Por defecto, titular y acompañantes comparten los carros indicados en el registro del titular. Con varios carros, ingrese marca, modelo, color y placas de cada uno, y asigne conductor y pasajeros (o márquelos como pendientes). Los grupos manuales comparten los mismos datos por carro. «Quizá no vaya» excluye ese carro del conteo estimado (debe quedar al menos un carro confirmado). Los cambios se sincronizan con el registro por sede y global.'
-              : 'Con 2 o más carros registrados, capture los datos de cada vehículo y use «Quizá no vaya» si alguno podría no asistir al final.'
-          }
-        >
-                {carLines.length === 0 ? (
-                  <tr>
-                    <td colSpan={carTableColSpan} className="px-4 py-8 text-center text-slate-400 italic">
-                      No hay registros que lleguen en carro.
-                    </td>
-                  </tr>
-                ) : (
-                  <>
-                    {isBautizos
-                      ? manualCarGroupViews.flatMap((view) => {
-                          const manualRows = [];
-                          const vehicleDetailKey = `manual-vehicles:${view.id}`;
-                          const vehicleOpen = expandedCarDetailKeys.has(vehicleDetailKey);
-                          manualRows.push(
-                            <tr
-                              key={`manual-hdr-${view.id}`}
-                              className="bg-indigo-50/90 dark:bg-indigo-950/50 border-y border-indigo-200/80 dark:border-indigo-700/50"
-                            >
-                              <td colSpan={carTableColSpan} className="px-3 py-2">
-                                <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-black text-indigo-800 dark:text-indigo-200">
-                                  <span>
-                                    {view.label} · {view.memberLines.length} persona
-                                    {view.memberLines.length !== 1 ? 's' : ''} · {view.effectiveCars} carro
-                                    {view.effectiveCars !== 1 ? 's' : ''} compartido
-                                    {view.effectiveCars !== 1 ? 's' : ''}
-                                    {view.carsBeforeMerge > view.effectiveCars
-                                      ? ` · Registro: ${view.carsBeforeMerge} → Plan: ${view.effectiveCars}`
-                                      : ''}
-                                  </span>
-                                  {canEdit ? (
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <button
-                                        type="button"
-                                        className={btnSecondary}
-                                        onClick={() => openAddMembersModal(view)}
-                                        disabled={carLinesEligibleForManualGroupAdd.length === 0}
-                                      >
-                                        <Plus size={12} className="shrink-0" />
-                                        Agregar miembros
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className={btnSecondary}
-                                        onClick={() => unmergeManualCarGroup(view.id)}
-                                      >
-                                        Separar grupo
-                                      </button>
-                                    </div>
-                                  ) : null}
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                          for (const line of view.memberLines) {
-                            const sk = line.sourceKey;
-                            manualRows.push(
-                              <tr key={`manual-${view.id}-${sk}`} className="bg-indigo-50/30 dark:bg-indigo-950/20">
-                                {canEdit ? (
-                                  <td className="px-3 py-2">
-                                    <input
-                                      type="checkbox"
-                                      className="rounded border-slate-300"
-                                      checked={carPick.has(sk)}
-                                      onChange={() => toggleCarPick(sk)}
-                                    />
-                                  </td>
-                                ) : null}
-                                <td className="px-3 py-2 font-semibold text-slate-800 dark:text-slate-100">
-                                  {line.name}
-                                  {line.kind === 'participant' ? (
-                                    <span className="ml-2 text-[10px] font-black uppercase text-indigo-600 dark:text-indigo-400">
-                                      Titular
-                                    </span>
-                                  ) : null}
-                                </td>
-                                <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{line.location || '—'}</td>
-                                <td className="px-3 py-2 tabular-nums">{line.carrosLlegada}</td>
-                                <td className="px-3 py-2">
-                                  <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400">
-                                    {view.label} · {view.effectiveCars} efectivo{view.effectiveCars !== 1 ? 's' : ''}
-                                  </span>
-                                </td>
-                                {renderCollapsedCarMetaCells(view.titularSk, 1)}
-                                <td className="px-3 py-2">{renderTransportAttendanceCheckbox(sk)}</td>
-                                {isBautizos ? <td className="px-3 py-2 text-slate-400">—</td> : null}
-                              </tr>
-                            );
-                          }
-                          manualRows.push(
-                            <tr key={`manual-veh-hdr-${view.id}`} className="bg-indigo-50/20 dark:bg-indigo-950/15">
-                              <td colSpan={carTableColSpan} className="px-3 py-2">
-                                {renderCarDetailToggle(
-                                  vehicleDetailKey,
-                                  vehicleOpen ? 'Ocultar datos de carro del grupo' : 'Ver datos de carro del grupo',
-                                  `${view.effectiveCars} carro${view.effectiveCars !== 1 ? 's' : ''}`,
-                                  () =>
-                                    void handleToggleCarDetailKey(
-                                      vehicleDetailKey,
-                                      view.titularSk,
-                                      view.effectiveCars
-                                    )
-                                )}
-                              </td>
-                            </tr>
-                          );
-                          if (vehicleOpen) {
-                            manualRows.push(
-                              <tr key={`manual-veh-${view.id}`}>
-                                <td colSpan={carTableColSpan} className="px-3 py-3 bg-slate-50/50 dark:bg-slate-800/30">
-                                  {renderCarVehicleBulkActions(view.titularSk, view.effectiveCars)}
-                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                    {Array.from({ length: view.effectiveCars }, (_, i) =>
-                                      renderCarVehicleMetaBlock(view.titularSk, i + 1, view.effectiveCars, {
-                                        compact: true,
-                                        memberOptions: buildMemberOptionsFromLines(view.memberLines),
-                                        requirePassengers: manualGroupCrewRequiresPassengers(view.memberLines.length),
-                                      })
-                                    )}
-                                  </div>
-                                </td>
-                              </tr>
-                            );
-                          }
-                          return manualRows;
-                        })
-                      : null}
-                    {isBautizos
-                      ? bautizosCarDisplayGroups.flatMap((grp) => {
-                    const familyRows = [];
-                    const groupEff = resolveDisplayGroupCars(grp);
-                    const leader = resolveGroupLeader(grp);
-                    familyRows.push(
-                      <tr key={`fam-${grp.groupId}`} className="bg-slate-50/80 dark:bg-slate-800/40">
-                        <td colSpan={carTableColSpan} className="px-3 py-2 text-[10px] font-black uppercase tracking-wide text-slate-600 dark:text-slate-300">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span>
-                              {grp.isFamily ? 'Grupo familiar' : 'Registro'} · {grp.hosts.length} titular{grp.hosts.length !== 1 ? 'es' : ''} · {grp.lines.length} personas
-                            </span>
-                            {canEdit && grp.hosts.length > 1 ? (
-                              <label className="text-[10px] font-bold normal-case tracking-normal text-slate-600 dark:text-slate-300 inline-flex items-center gap-2">
-                                Titular familiar
-                                <select
-                                  className={`${inputSm} w-44`}
-                                  value={String(leader?.hostId || '')}
-                                  onChange={(e) => setGroupLeader(grp, e.target.value)}
-                                >
-                                  {grp.hosts.map((h) => (
-                                    <option key={h.hostId} value={h.hostId}>
-                                      {h.hostName}
-                                    </option>
-                                  ))}
-                                </select>
-                              </label>
-                            ) : null}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                    for (const host of grp.hosts) {
-                      const fam = { memberKeys: host.memberKeys, hostCarros: host.hostCarros, lines: host.lines };
-                      const hostEff = grp.isFamily ? groupEff : bautizosFamilyEffectiveCarCount(host.hostId, fam, plan, keyToGroup);
-                      const famOverride =
-                        plan.familyCarOverride && plan.familyCarOverride[host.hostId] != null
-                          ? plan.familyCarOverride[host.hostId]
-                          : '';
-                      const hostCarCtx = resolveHostCarContext(
-                        grp.isFamily ? String((leader || host)?.hostId || host.hostId) : host.hostId
-                      );
-                      const hostTitularSk = hostCarCtx.hostSourceKey;
-                      const showVehicleRows = !grp.isFamily || String(host.hostId) === String(leader?.hostId || host.hostId);
-                      const hostVehicleDetailKey = `bautizos-host:${grp.groupId}:${host.hostId}`;
-                      const hostVehicleDetailsOpen = expandedCarDetailKeys.has(hostVehicleDetailKey);
-                      familyRows.push(
-                        <tr key={`host-${grp.groupId}-${host.hostId}`} className="bg-white/70 dark:bg-slate-900/40">
-                          <td colSpan={carTableColSpan} className="px-3 py-2 text-[10px] font-bold text-slate-500 dark:text-slate-400">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <span>
-                                {host.hostName} · sede {host.location} · carros registro {host.hostCarros} · efectivos {hostEff}
-                                {showVehicleRows && hostEff >= 2 ? (
-                                  <span className="text-emerald-700 dark:text-emerald-400">
-                                    {' '}
-                                    · {countConfirmedCarsInSet(planForCarMetaRead, hostTitularSk, hostEff)} confirmados
-                                  </span>
-                                ) : null}
-                              </span>
-                              <div className="flex flex-wrap items-center gap-2">
-                                {showVehicleRows
-                                  ? renderCarDataWhatsAppButton(host.hostId, host.location, true)
-                                  : null}
-                                {showVehicleRows
-                                  ? renderCarDetailToggle(
-                                      hostVehicleDetailKey,
-                                      hostVehicleDetailsOpen ? 'Ocultar datos de carro' : 'Ver datos de carro',
-                                      `${hostEff} carro${hostEff !== 1 ? 's' : ''}`
-                                    )
-                                  : null}
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                      if (showVehicleRows && hostVehicleDetailsOpen) {
-                        familyRows.push(
-                          <tr key={`host-vehicles-${grp.groupId}-${host.hostId}`}>
-                            <td colSpan={carTableColSpan} className="px-3 py-3 bg-slate-50/50 dark:bg-slate-800/30">
-                              {renderCarVehicleBulkActions(hostTitularSk, hostEff)}
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                {Array.from({ length: hostEff }, (_, i) =>
-                                  renderCarVehicleMetaBlock(hostTitularSk, i + 1, hostEff, {
-                                    compact: true,
-                                    memberOptions: buildCrewMemberOptions(hostCarCtx),
-                                  })
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      }
-                      for (const line of host.lines) {
-                        const sk = line.sourceKey;
-                        if (manualGroupedKeys.has(String(sk).trim())) continue;
-                        const g = keyToGroup.get(sk);
-                        const isTitularRow =
-                          String(line?.kind || '') === 'participant' &&
-                          String(host?.hostId || '') === String((leader || host)?.hostId || '');
-                        const eff = grp.isFamily
-                          ? groupEff
-                          : effectiveCarsForCarLine(line, plan, keyToGroup, isBautizos, bautizosFamilyInfo);
-                        const lineHasVehicleDetails =
-                          isTitularRow && showVehicleRows && String(host.hostId) === String((leader || host)?.hostId || '');
-                        familyRows.push(
-                          <tr key={`${grp.groupId}-${sk}`}>
-                            {canEdit ? (
-                              <td className="px-3 py-2">
-                                <input
-                                  type="checkbox"
-                                  className="rounded border-slate-300"
-                                  checked={carPick.has(sk)}
-                                  onChange={() => toggleCarPick(sk)}
-                                />
-                              </td>
-                            ) : null}
-                            <td className="px-3 py-2 font-semibold text-slate-800 dark:text-slate-100">
-                              {line.name}
-                              {isTitularRow ? (
-                                <span className="ml-2 text-[10px] font-black uppercase text-indigo-600 dark:text-indigo-400">Titular</span>
-                              ) : null}
-                              {lineHasVehicleDetails ? (
-                                <div className="mt-1">
-                                  {renderCarDetailToggle(
-                                    `bautizos-host:${grp.groupId}:${host.hostId}`,
-                                    expandedCarDetailKeys.has(`bautizos-host:${grp.groupId}:${host.hostId}`)
-                                      ? 'Ocultar datos'
-                                      : 'Ver datos de carro',
-                                    `${eff} carro${eff !== 1 ? 's' : ''}`
-                                  )}
-                                </div>
-                              ) : null}
-                            </td>
-                            <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{line.location || '—'}</td>
-                            <td className="px-3 py-2 tabular-nums">{line.carrosLlegada}</td>
-                            <td className="px-3 py-2">
-                              {g && g.memberKeys && g.memberKeys.length > 1 ? (
-                                <div className="flex flex-col gap-1">
-                                  <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400">
-                                    {getCarGroupDisplayLabel(g)}
-                                  </span>
-                                  {canEdit ? (
-                                    <input
-                                      type="number"
-                                      min={1}
-                                      className={`${inputSm} w-20`}
-                                      value={parseInt(g.cars, 10) >= 1 ? g.cars : eff}
-                                      onChange={(e) =>
-                                        setGroupCars(g.id, e.target.value, {
-                                          groupLabel: getCarGroupDisplayLabel(g),
-                                        })
-                                      }
-                                    />
-                                  ) : (
-                                    <span className="tabular-nums font-bold">{eff}</span>
-                                  )}
-                                </div>
-                              ) : (
-                                <span className="tabular-nums">{eff}</span>
-                              )}
-                            </td>
-                            {renderCollapsedCarMetaCells(
-                              String(line.kind) !== 'participant' &&
-                                (parseInt(line.carrosLlegada, 10) || 0) >= 1
-                                ? sk
-                                : hostTitularSk,
-                              1
-                            )}
-                            <td className="px-3 py-2">{renderTransportAttendanceCheckbox(sk)}</td>
-                            <td className="px-3 py-2">
-                              {line.kind === 'participant' ? (
-                                canEdit ? (
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    className={`${inputSm} w-20`}
-                                    placeholder="—"
-                                    value={famOverride === '' ? '' : famOverride}
-                                    onChange={(e) => {
-                                      const v = e.target.value;
-                                      if (v === '') {
-                                        setPlan((prev) => {
-                                          const next = normalizeTransportPlanning(prev);
-                                          const o = { ...(next.familyCarOverride || {}) };
-                                          delete o[host.hostId];
-                                          return { ...next, familyCarOverride: o };
-                                        });
-                                      } else setFamilyOverride(host.hostId, v);
-                                    }}
-                                  />
-                                ) : (
-                                  <span className="tabular-nums">{famOverride !== '' ? famOverride : '—'}</span>
-                                )
-                              ) : (
-                                '—'
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      }
-                    }
-                    return familyRows;
-                  })
-                      : !isBautizos
-                        ? carLines.flatMap((line) => {
-                    const sk = line.sourceKey;
-                    const g = keyToGroup.get(sk);
-                    const eff = effectiveCarsForCarLine(line, plan, keyToGroup, isBautizos, bautizosFamilyInfo);
-                    const isGroup = g && g.memberKeys && g.memberKeys.length > 1;
-                    const isTitularForVehicles = !isGroup || line.kind === 'participant';
-                    const titularSk = line.kind === 'participant' ? sk : sk;
-                    const carDetailKey = `car:${sk}`;
-                    const carDetailsOpen = expandedCarDetailKeys.has(carDetailKey);
-                    const rows = [
-                      <tr key={sk}>
-                        {canEdit ? (
-                          <td className="px-3 py-2">
-                            <input
-                              type="checkbox"
-                              className="rounded border-slate-300"
-                              checked={carPick.has(sk)}
-                              onChange={() => toggleCarPick(sk)}
-                            />
-                          </td>
-                        ) : null}
-                        <td className="px-3 py-2 font-semibold text-slate-800 dark:text-slate-100">{line.name}</td>
-                        <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{line.location || '—'}</td>
-                        <td className="px-3 py-2 tabular-nums">{line.carrosLlegada}</td>
-                        <td className="px-3 py-2">
-                          {isGroup ? (
-                            <div className="flex flex-col gap-1">
-                              <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400">
-                                {getCarGroupDisplayLabel(g)}
-                              </span>
-                              {canEdit ? (
-                                <input
-                                  type="number"
-                                  min={1}
-                                  className={`${inputSm} w-20`}
-                                  value={parseInt(g.cars, 10) >= 1 ? g.cars : eff}
-                                  onChange={(e) =>
-                                    setGroupCars(g.id, e.target.value, {
-                                      groupLabel: getCarGroupDisplayLabel(g),
-                                    })
-                                  }
-                                />
-                              ) : (
-                                <span className="tabular-nums font-bold">{eff}</span>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="tabular-nums">{eff}</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2">
-                          {isTitularForVehicles
-                            ? renderCarDetailToggle(
-                                carDetailKey,
-                                carDetailsOpen ? 'Ocultar datos' : 'Ver datos de carro',
-                                `${eff} carro${eff !== 1 ? 's' : ''}`
-                              )
-                            : (
-                              <span className="text-slate-400">—</span>
-                            )}
-                        </td>
-                        <td className="px-3 py-2 text-slate-400">—</td>
-                        <td className="px-3 py-2 text-slate-400">—</td>
-                        <td className="px-3 py-2 text-slate-400">—</td>
-                        <td className="px-3 py-2">{renderTransportAttendanceCheckbox(sk)}</td>
-                      </tr>,
-                    ];
-                    if (isTitularForVehicles && carDetailsOpen) {
-                      const crewMemberOptions = isGroup
-                        ? buildMemberOptionsFromGroup(g, carLines)
-                        : buildMemberOptionsFromLines([line]);
-                      rows.push(
-                        <tr key={`${sk}-vehicles`}>
-                          <td colSpan={carTableColSpan} className="px-3 py-3 bg-slate-50/50 dark:bg-slate-800/30">
-                            {renderCarVehicleBulkActions(titularSk, eff)}
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                              {Array.from({ length: eff }, (_, i) =>
-                                renderCarVehicleMetaBlock(titularSk, i + 1, eff, {
-                                  compact: true,
-                                  memberOptions: crewMemberOptions,
-                                })
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    }
-                    return rows;
-                  })
-                        : null}
-                  </>
-                )}
-        </TransportRowByRowSection>
-      </TransportCarArrivalShell>
-
+          {transportMode === 'buses' ? (
+            <TransportBusBoardSection
+              busSectionsEffective={busSectionsEffective}
+              busLines={busLines}
+              plan={plan}
+              isCampa={isCampa}
+              splitCampaBySubevent={splitCampaBySubevent}
+              canEdit={canEdit}
+              sortPassengersForDisplay={sortPassengersForDisplay}
+              resolveCampaAmbosTransit={resolveCampaAmbosTransit}
+              suggestUnitsForGroup={suggestUnitsForGroup}
+              addUnit={addUnit}
+              onOpenBusUnit={(groupKey, unitId, section) =>
+                setUnitDrawer({ kind: 'bus', groupKey, unitId, section })
+              }
+            />
+          ) : (
+            <TransportCarPlanningBoard
+              eventId={eventId}
+              plan={plan}
+              setPlan={setPlan}
+              carLines={carLines}
+              canEdit={canEdit}
+              onOpenCarUnit={(unitId, initialDriverSourceKey) =>
+                setUnitDrawer({
+                  kind: 'car',
+                  unitId,
+                  initialDriverSourceKey: initialDriverSourceKey || '',
+                })
+              }
+              onOpenPersonAssign={(sourceKey) => setPersonAssignSk(sourceKey)}
+            />
+          )}
         </>
       )}
 
-      {mergeConflictModal ? (
-        <div className={uiModal.overlay} role="dialog" aria-modal="true" aria-labelledby="manual-merge-title">
+      <TransportUnitEditorDrawer
+        open={!!unitDrawer}
+        onClose={() => setUnitDrawer(null)}
+        kind={unitDrawer?.kind || 'car'}
+        eventId={eventId}
+        plan={plan}
+        setPlan={setPlan}
+        unitId={unitDrawer?.unitId || ''}
+        groupKey={unitDrawer?.groupKey || ''}
+        section={unitDrawer?.section || null}
+        carLines={carLines}
+        busLines={busLines}
+        canEdit={canEdit}
+        canEditTransportOps={canEditTransportOps}
+        customCarCatalog={customCarCatalog}
+        assignBus={assignBus}
+        updateUnit={updateUnit}
+        removeUnit={removeUnit}
+        renderTransportAttendanceCheckbox={renderTransportAttendanceCheckbox}
+        sortPassengersForDisplay={sortPassengersForDisplay}
+        initialDriverSourceKey={unitDrawer?.initialDriverSourceKey || ''}
+      />
+
+      {personAssignSk ? (
+        <div className={uiModal.overlay} role="dialog" aria-modal="true" aria-labelledby="assign-person-title">
           <button
             type="button"
             className={uiModal.backdrop}
             aria-label="Cerrar"
-            onClick={() => setMergeConflictModal(null)}
+            onClick={() => setPersonAssignSk('')}
           />
-          <div className={uiModal.panelMd}>
+          <div className={uiModal.panelSm}>
             <div className={uiModal.header}>
-              <div className="min-w-0">
-                <h3 id="manual-merge-title" className={uiModal.title}>
-                  Datos de carro en conflicto
-                </h3>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
-                  Varias personas del grupo ya tienen datos de vehículo. Elige cuáles conservar y qué hacer con los
-                  demás titulares.
-                </p>
-              </div>
+              <h3 id="assign-person-title" className={uiModal.title}>
+                Asignar a carro
+              </h3>
               <button
                 type="button"
                 className={uiButtons.closeIcon}
-                onClick={() => setMergeConflictModal(null)}
-                aria-label="Cerrar modal"
+                onClick={() => setPersonAssignSk('')}
+                aria-label="Cerrar"
               >
                 <X size={18} />
               </button>
             </div>
-            <div className={`${uiModal.body} space-y-4`}>
-              <div>
-                <p className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 mb-2">
-                  Conservar datos de
-                </p>
-                <div className="space-y-2">
-                  {mergeConflictModal.sources.map((src) => (
-                    <label
-                      key={src.titularSk}
-                      className="flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-600 px-3 py-2 cursor-pointer"
-                    >
-                      <input
-                        type="radio"
-                        name="manual-merge-source"
-                        className="mt-0.5"
-                        checked={mergeConflictModal.selectedSourceSk === src.titularSk}
-                        onChange={() =>
-                          setMergeConflictModal((prev) => ({
-                            ...prev,
-                            selectedSourceSk: src.titularSk,
-                            anchorTitularSk: src.titularSk,
-                          }))
-                        }
-                      />
-                      <span className="min-w-0">
-                        <span className="text-xs font-bold text-slate-800 dark:text-slate-100">{src.label}</span>
-                        <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{src.preview}</span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
+            <div className={`${uiModal.body} space-y-2`}>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {carLines.find((l) => l.sourceKey === personAssignSk)?.name || personAssignSk}
+              </p>
+              {canEdit ? (
+                <button
+                  type="button"
+                  className={uiButtons.primary}
+                  onClick={() => {
+                    const sk = personAssignSk;
+                    const id = makeCarUnitId();
+                    const n = getCarUnits(plan).length + 1;
+                    const cap = getDefaultCarCapacity(plan);
+                    const entry = normalizeCarUnitPlanEntry(
+                      { id, label: `Carro ${n}`, capacity: cap },
+                      n - 1
+                    );
+                    const doc = blankCarUnitDoc({
+                      eventId,
+                      unitId: id,
+                      label: entry.label,
+                      capacity: entry.capacity,
+                    });
+                    doc.driverSourceKey = sk;
+                    setPlan((prev) => {
+                      const normalized = normalizeTransportPlanning(prev);
+                      return {
+                        ...normalized,
+                        transportVersion: Math.max(3, Number(normalized.transportVersion) || 0),
+                        carUnits: [...getCarUnits(normalized), entry],
+                        carAssign: { ...(normalized.carAssign || {}), [sk]: id },
+                        carUnitSummaryById: {
+                          ...(normalized.carUnitSummaryById || {}),
+                          [id]: buildCarUnitSummaryEntry(doc),
+                        },
+                      };
+                    });
+                    void saveCarUnitPatch(eventId, id, doc, { driverLabel: '' });
+                    setPersonAssignSk('');
+                    setUnitDrawer({ kind: 'car', unitId: id, initialDriverSourceKey: sk });
+                  }}
+                >
+                  Crear carro con esta persona
+                </button>
+              ) : null}
+              <div className="space-y-1 max-h-48 overflow-y-auto">
+                {getCarUnits(plan).map((u) => (
+                  <button
+                    key={u.id}
+                    type="button"
+                    className={uiButtons.secondary + ' w-full justify-start'}
+                    disabled={!canEdit && !canEditTransportOps}
+                    onClick={() => {
+                      const sk = personAssignSk;
+                      setPlan((prev) => assignPersonToCarUnit(prev, sk, u.id));
+                      setPersonAssignSk('');
+                      setUnitDrawer({ kind: 'car', unitId: u.id });
+                    }}
+                  >
+                    {u.label || u.id}
+                  </button>
+                ))}
+                {getCarUnits(plan).length === 0 ? (
+                  <p className="text-xs text-slate-400 italic">No hay carros. Crea uno nuevo.</p>
+                ) : null}
               </div>
-              <div>
-                <p className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 mb-2">
-                  Datos de los demás titulares
-                </p>
-                <div className="space-y-2">
-                  <label className="flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-600 px-3 py-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="manual-merge-orphan"
-                      className="mt-0.5"
-                      checked={mergeConflictModal.orphanMode === 'maybeAbsent'}
-                      onChange={() =>
-                        setMergeConflictModal((prev) => ({ ...prev, orphanMode: 'maybeAbsent' }))
-                      }
-                    />
-                    <span className="text-xs text-slate-700 dark:text-slate-200">
-                      Marcar como <strong>quizá no vaya</strong> (conservar por si acaso)
-                    </span>
-                  </label>
-                  <label className="flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-600 px-3 py-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="manual-merge-orphan"
-                      className="mt-0.5"
-                      checked={mergeConflictModal.orphanMode === 'clear'}
-                      onChange={() =>
-                        setMergeConflictModal((prev) => ({ ...prev, orphanMode: 'clear' }))
-                      }
-                    />
-                    <span className="text-xs text-slate-700 dark:text-slate-200">
-                      <strong>Eliminar</strong> los datos duplicados de los otros titulares
-                    </span>
-                  </label>
-                </div>
-              </div>
-            </div>
-            <div className={uiModal.footer}>
-              <button type="button" className={uiButtons.secondary} onClick={() => setMergeConflictModal(null)}>
-                Cancelar
-              </button>
-              <button
-                type="button"
-                className={uiButtons.primary}
-                onClick={() =>
-                  finalizeManualGroupMerge(
-                    mergeConflictModal.keys,
-                    mergeConflictModal.memberLines,
-                    mergeConflictModal.anchorTitularSk || mergeConflictModal.selectedSourceSk,
-                    mergeConflictModal.selectedSourceSk,
-                    mergeConflictModal.orphanMode,
-                    mergeConflictModal.hydratedCache
-                  )
-                }
-              >
-                Crear grupo manual
-              </button>
             </div>
           </div>
         </div>
       ) : null}
 
-      {addMembersModal ? (
-        <div className={uiModal.overlay} role="dialog" aria-modal="true" aria-labelledby="manual-add-members-title">
-          <button
-            type="button"
-            className={uiModal.backdrop}
-            aria-label="Cerrar"
-            onClick={() => setAddMembersModal(null)}
-          />
-          <div className={uiModal.panelMd}>
-            <div className={uiModal.header}>
-              <div className="min-w-0">
-                <h3 id="manual-add-members-title" className={uiModal.title}>
-                  Agregar miembros al grupo
-                </h3>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
-                  {addMembersModal.label}
-                  {addMembersModal.titularName
-                    ? ` · Titular: ${addMembersModal.titularName}`
-                    : ''}
-                  . Busca y agrega personas que llegan en carro y aún no pertenecen a un grupo manual.
-                </p>
-              </div>
-              <button
-                type="button"
-                className={uiButtons.closeIcon}
-                onClick={() => setAddMembersModal(null)}
-                aria-label="Cerrar modal"
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <div className={`${uiModal.body} space-y-4 max-h-[min(60vh,28rem)] overflow-y-auto`}>
-              <ManualGroupMemberSearchPicker
-                key={addMembersModal.groupId}
-                options={manualGroupAddMemberOptions}
-                selectedKeys={[...(addMembersModal.selectedKeys || [])]}
-                onAdd={addMemberPick}
-                onRemove={removeMemberPick}
-                disabled={mergingManualGroup}
-                inputClassName={inputSm}
-              />
-              <div>
-                <p className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 mb-2">
-                  Si el nuevo titular ya tiene datos de carro propios
-                </p>
-                <div className="space-y-2">
-                  <label className="flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-600 px-3 py-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="manual-add-orphan"
-                      className="mt-0.5"
-                      checked={addMembersModal.orphanMode === 'maybeAbsent'}
-                      onChange={() =>
-                        setAddMembersModal((prev) => (prev ? { ...prev, orphanMode: 'maybeAbsent' } : prev))
-                      }
-                    />
-                    <span className="text-xs text-slate-700 dark:text-slate-200">
-                      Marcar como <strong>quizá no vaya</strong> (conservar por si acaso)
-                    </span>
-                  </label>
-                  <label className="flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-600 px-3 py-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="manual-add-orphan"
-                      className="mt-0.5"
-                      checked={addMembersModal.orphanMode === 'clear'}
-                      onChange={() =>
-                        setAddMembersModal((prev) => (prev ? { ...prev, orphanMode: 'clear' } : prev))
-                      }
-                    />
-                    <span className="text-xs text-slate-700 dark:text-slate-200">
-                      <strong>Eliminar</strong> los datos duplicados del titular agregado
-                    </span>
-                  </label>
-                </div>
-              </div>
-            </div>
-            <div className={uiModal.footer}>
-              <button type="button" className={uiButtons.secondary} onClick={() => setAddMembersModal(null)}>
-                Cancelar
-              </button>
-              <button
-                type="button"
-                className={uiButtons.primary}
-                disabled={
-                  mergingManualGroup ||
-                  !addMembersModal.selectedKeys?.size ||
-                  carLinesEligibleForManualGroupAdd.length === 0
-                }
-                onClick={() => void confirmAddMembersToManualGroup()}
-              >
-                {mergingManualGroup ? 'Agregando…' : 'Agregar al grupo'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

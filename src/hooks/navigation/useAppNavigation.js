@@ -9,21 +9,33 @@ import {
 import { buildPathFromNavState, isEventSelectionPath } from '../../appRoutes.js';
 import { canViewSystemLogs } from '../../rbac/permissions.js';
 import { isResponsivaEventSectionVisible } from '../../responsivaSignLogic.js';
+import { ATTENDANCE_ROLE_PANEL_KEY, ATTENDANCE_ROLE_TAB } from '../../attendanceRoles.js';
+import { isAttendanceTypeEnabled } from '../../eventTypePresets.js';
 
 const PANEL_NAV_TAB_KEYS = {
   Summary: 'dashboard',
-  Bautizados: 'bautizados',
-  ServersPage: 'serversPage',
+  RoleServidor: 'roleServidor',
+  RoleEmpleado: 'roleEmpleado',
+  RoleBautizado: 'roleBautizado',
+  RoleBecado: 'roleBecado',
+  RoleCampero: 'roleCampero',
+  RoleCortesia: 'roleCortesia',
+  RolePastor: 'rolePastor',
+  RoleAsistente: 'roleAsistente',
+  Bautizados: 'roleBautizado',
+  ServersPage: 'roleServidor',
   ExpenseList: 'expenseList',
   CashCut: 'cashCut',
-  Becados: 'becados',
+  Becados: 'roleBecado',
   Responsivas: 'responsivas',
   RegistroGlobal: 'registroGlobal',
   TransportPlanning: 'transporte',
+  PastoresPage: 'rolePastor',
 };
 
 const EVENT_NAV_TABS_WITHOUT_LOCATION = [
   'Summary',
+  ...Object.values(ATTENDANCE_ROLE_TAB),
   'Bautizados',
   'ServersPage',
   'ExpenseList',
@@ -113,9 +125,21 @@ export function useAppNavigation({
       }
       const evForNav = eventId ? events.find((e) => String(e.id) === String(eventId)) : null;
       let resolvedTab = tab;
-      if (view === 'events' && eventId && tab === 'Bautizados') {
-        if (evForNav && evForNav.eventType !== 'Campa') {
-          showToast('Bautizados solo aplica a eventos tipo Campa.');
+      if (view === 'events' && eventId && resolvedTab && ATTENDANCE_ROLE_TAB) {
+        const roleEntry = Object.entries(ATTENDANCE_ROLE_TAB).find(([, t]) => t === resolvedTab);
+        const legacyRole =
+          resolvedTab === 'Bautizados'
+            ? 'bautizado'
+            : resolvedTab === 'ServersPage'
+              ? 'servidor'
+              : resolvedTab === 'Becados'
+                ? 'becado'
+                : resolvedTab === 'PastoresPage'
+                  ? 'pastor'
+                  : null;
+        const roleKey = roleEntry?.[0] || legacyRole;
+        if (roleKey && evForNav && !isAttendanceTypeEnabled(evForNav, roleKey)) {
+          showToast(`El tipo «${roleKey}» no está habilitado en este evento.`);
           setIsMobileMenuOpen(false);
           return;
         }
@@ -128,13 +152,6 @@ export function useAppNavigation({
         }
         if (evForNav && !isResponsivaEventSectionVisible(evForNav)) {
           showToast('Responsivas no está activa para este evento (revisa la configuración por edad).');
-          setIsMobileMenuOpen(false);
-          return;
-        }
-      }
-      if (view === 'events' && eventId && tab === 'PastoresPage') {
-        if (!hasAdminRights) {
-          showToast('Solo administradores pueden acceder a Pastores.');
           setIsMobileMenuOpen(false);
           return;
         }

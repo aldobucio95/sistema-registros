@@ -125,7 +125,33 @@ export default defineConfig(({ command }) => {
         checks: { pluginTimings: false },
         output: {
           codeSplitting: {
+            /**
+             * Evita que un group captura dependencias en cascada (p. ej. firebase
+             * dentro de app-handlers). Esta versión de Rolldown no acepta el flag
+             * por group; va a nivel de codeSplitting.
+             */
+            includeDependenciesRecursively: false,
             groups: [
+              {
+                name: 'app-handlers-a',
+                test: /[\\/]hooks[\\/]workspace[\\/]useAppMainHandlersPartA\.jsx$/,
+                priority: 50,
+              },
+              {
+                name: 'app-handlers-b',
+                test: /[\\/]hooks[\\/]workspace[\\/]useAppMainHandlersPartB\.jsx$/,
+                priority: 50,
+              },
+              {
+                name: 'app-module-scope',
+                test: /[\\/]app[\\/]helpers[\\/]appMainModuleScope\.jsx$/,
+                priority: 45,
+              },
+              {
+                name: 'public-registration-logic',
+                test: /[\\/]publicRegistrationLogic\.js$/,
+                priority: 45,
+              },
               {
                 name: 'firebase-vendor',
                 test: /node_modules[\\/]firebase/,

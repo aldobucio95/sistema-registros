@@ -1,16 +1,22 @@
+/** Textos del menú lateral según tipo de evento. */
 import { eventTypeIsDesayuno } from './transportPlanningEligibility.js';
+import { ATTENDANCE_ROLE_PANEL_KEY } from './attendanceRoles.js';
+import { isAttendanceTypeEnabled } from './eventTypePresets.js';
 
 /**
- * Textos del menú lateral según tipo de evento.
- * @param {{ key: string, label: string, hint?: string }} item Entrada de `PANEL_NAV_CONFIG_ITEMS`.
- * @param {string | null | undefined} eventType `currentEvent.eventType` o el del evento en el formulario de usuario.
+ * Si la entrada del menú lateral aplica al tipo de evento.
+ * Roles: se filtran por enabledAttendanceTypes del evento cuando hay doc;
+ * sin doc, se muestran todas las claves de rol (el create/edit las acota).
  */
-/** Si la entrada del menú lateral aplica al tipo de evento (p. ej. Servidores solo en Campa). */
-export function panelNavSidebarItemAppliesToEvent(itemKey, eventType) {
-  const et = String(eventType || '').trim();
-  if (itemKey === 'serversPage') return et === 'Campa';
-  if (itemKey === 'bautizados') return et === 'Campa';
-  if (itemKey === 'transporte') return !eventTypeIsDesayuno(et);
+export function panelNavSidebarItemAppliesToEvent(itemKey, eventType, eventDoc = null) {
+  if (eventTypeIsDesayuno(eventType) && itemKey === 'transporte') return false;
+  const roleEntry = Object.entries(ATTENDANCE_ROLE_PANEL_KEY).find(([, pk]) => pk === itemKey);
+  if (roleEntry) {
+    if (eventDoc) return isAttendanceTypeEnabled(eventDoc, roleEntry[0]);
+    return true;
+  }
+  // Alias legado
+  if (itemKey === 'serversPage' || itemKey === 'bautizados' || itemKey === 'becados') return false;
   return true;
 }
 

@@ -584,7 +584,7 @@ export const uiSidebar = {
   navIcon: 'shrink-0 w-4 h-4',
   activeDot: 'w-1.5 h-1.5 rounded-full lg:w-1 lg:h-1',
   countBadgeBase: 'px-1.5 py-0.5 rounded-full font-black text-[9px] lg:text-[8px] lg:px-1 lg:py-px',
-  /** Etiquetas de sección Principal / Sedes / Consolidado — más legibles en escritorio. */
+  /** Etiquetas de sección del menú lateral (Resumen / Asistencias / Registros / Operación / Finanzas). */
   sectionLabelNavDesktop:
     'text-[10px] font-black text-slate-600 uppercase tracking-[0.2em] lg:text-[11px] lg:tracking-[0.18em]',
   sectionWrapNavDesktop:

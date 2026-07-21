@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { SUMMARY_TABLE_COLUMN_LABELS, SUMMARY_TABLE_MONEY_KEYS, defaultViewPrefs, getSummaryTableColumnDefaultsForEventType, getSummaryTableColumnKeysForEventType } from '../../app/helpers/dashboardSummaryTableConfig.js';
+import { SUMMARY_TABLE_COLUMN_LABELS, SUMMARY_TABLE_MONEY_KEYS, SUMMARY_ROLE_COLUMN_TO_KEY, EMPTY_SUMMARY_TABLE_STATS, defaultViewPrefs, getSummaryTableColumnDefaultsForEventType, getSummaryTableColumnKeysForEventType } from '../../app/helpers/dashboardSummaryTableConfig.js';
 import { discountCampaignHasDateRange, isDiscountCampaignVigenteOnDate } from '../../app/helpers/discountCampaignHelpers.js';
 import { describeCampaSpouseCluster } from '../../campaFamilyCollision.js';
 import { enrichPaymentHistoryWithRefundDisbursements, getCancelledRefundPendingAmount, getParticipantEffectivePaidNet, getParticipantNetPaidFromHistory, getParticipantOutstandingGross, getParticipantPhysicalRecaudadoGross, getParticipantPhysicalRecaudadoNet } from '../../cashCutRefunds.js';
@@ -14,42 +14,17 @@ import { BLOOD_TYPES_ABO_RH, BLOOD_TYPE_UNSPECIFIED } from '../../registrationFo
 import { DEFAULT_RESPONSIVA_BODY, DEFAULT_RESPONSIVA_BODY_ADULT, isResponsivaDigitalAdultsBranchEnabled, isResponsivaDigitalMinorsBranchEnabled, isResponsivaEnabledForEvent, isResponsivaGeneralAdultsBranchEnabled, isResponsivaGeneralMinorsBranchEnabled } from '../../responsivaSignLogic.js';
 import { uiBanner, uiButtons, uiDashboard, uiDropdown, uiFilter, uiMobileMenu, uiModal, uiTextarea } from '../../ui/uiFormatClasses.js';
 import { computeWaitlistCountsForEvent } from '../../waitlistDashboardCounts.js';
-import { Activity, AlertTriangle, Briefcase, Bus, Calendar, CalendarRange, CheckCircle2, ChevronDown, ChevronUp, Church, ClipboardList, CreditCard, DollarSign, Droplets, FileText, Filter, Gift, GraduationCap, Link2, ListPlus, MapPin, PieChart, QrCode, Receipt, Scale, Scissors, Settings2, ShieldAlert, SlidersHorizontal, TableProperties, Trash2, UserCircle, UserPlus, Users, Wallet, X, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, Briefcase, Calendar, CalendarRange, CheckCircle2, ChevronDown, ChevronUp, Church, ClipboardList, CreditCard, DollarSign, Droplets, FileText, Filter, Gift, GraduationCap, Link2, ListPlus, MapPin, PieChart, QrCode, Receipt, Scale, Scissors, Settings2, ShieldAlert, SlidersHorizontal, TableProperties, Trash2, UserCircle, UserPlus, Users, Wallet, X, XCircle } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { useWorkspaceShell } from '../../screens/eventWorkspace/WorkspaceShellContext.jsx';
+import {
+  ATTENDANCE_ROLE_LABELS,
+  ATTENDANCE_ROLE_MENU_ORDER,
+  attendanceRolesFromLegacyPerson,
+  isMultiRolePerson,
+} from '../../attendanceRoles.js';
+import { resolveEventAttendanceConfig } from '../../eventTypePresets.js';
 function DashboardSummaryPageContent() {
-  const isBautizos = false;
-  const BAUTIZOS_ATTENDANCE = Object.freeze({});
-  const normalizeBautizosAttendanceType = () => '';
-  const participantMatchesBautizosDashboardPartyScope = () => true;
-  const resolveBautizosDashboardGlobalScope = () => 'all';
-  const countBautizosDashboardPeople = () => 0;
-  const getBautizosCompanionsArray = () => [];
-  const isBautizosCompanionBaptized = () => false;
-  const isBautizosLapInfantCompanion = () => false;
-  const collectBautizosParticipatingServerRows = () => [];
-  const flatRowMatchesBautizosDashboardScope = () => false;
-  const summarizeBautizosFlatRoster = () => null;
-  const getBautizosListPriceBreakdown = () => null;
-  const buildBautizosLocationTableStats = () => ({});
-  const allocateBautizosDashboardPayments = () => ({});
-  const bautizosDashboardFilterTitularRows = (rows) => rows || [];
-  const bautizosDashboardFilterCanonicalCompanions = (rows) => rows || [];
-  const bautizosDashboardIncludeRegistrationFinancials = () => true;
-  const bautizosDashboardScopeUsesSplitPayments = () => false;
-  const bautizosDashboardTitularCountsForScope = () => true;
-  const bautizosDashboardCompanionCountsForScope = () => true;
-  const bautizosLineGoesByCar = () => false;
-  const bautizosParticipatesAsServer = () => false;
-  const normalizeArrivalCarCount = () => 0;
-  const normalizeBautizosDashboardScope = () => 'all';
-  const getBautizosDashboardScopeLabel = () => '';
-  const getBautizosDashboardScopeChartHint = () => '';
-  const BAUTIZOS_DASHBOARD_SCOPE_OPTIONS = [];
-  const buildActiveRegistrantMetaForCompanionDedupe = () => ({});
-  const buildBautizadoMetaForCanonical = () => ({});
-  const buildBautizosCanonicalCompanionPlan = () => new Map();
-  const bautizosDashScope = 'all';
   const {
     ATTENDANCE_SPECIAL,
     BLOOD_BAR_BG_CLASSES,
@@ -239,10 +214,8 @@ function DashboardSummaryPageContent() {
         </div>;
   }, [isCampa, summaryCampaScopes]);
 
-  /** Bautizos: botonera global fija (Todos, Bautizados, Acompañantes, tipos de asistencia). */
-
-  /** En Bautizos el alcance es global (barra fija); en Campa: Teens/Jóvenes por tarjeta. */
-  const renderSummaryDashScopeSlot = useCallback(sectionKey => renderCampaScopeSegmentToggle(sectionKey), [isBautizos, renderCampaScopeSegmentToggle]);
+  /** En Campa: Teens/Jóvenes por tarjeta. */
+  const renderSummaryDashScopeSlot = useCallback(sectionKey => renderCampaScopeSegmentToggle(sectionKey), [renderCampaScopeSegmentToggle]);
   const toggleDupGroup = key => {
     setExpandedDupGroups(prev => {
       const n = new Set(prev);
@@ -573,7 +546,6 @@ function DashboardSummaryPageContent() {
   const sChartServers = getDashboardSummaryForCampaScope('chartServers');
   const sChartAges = getDashboardSummaryForCampaScope('chartAges');
   const sChartBaptism = getDashboardSummaryForCampaScope('chartBaptism');
-  const sChartAttendanceSpecial = getDashboardSummaryForCampaScope('chartAttendanceSpecial');
   const sSectionTravelDepart = getDashboardSummaryForCampaScope('sectionTravelDepart');
   const sSectionTravelReturn = getDashboardSummaryForCampaScope('sectionTravelReturn');
   const sChartCustom = getDashboardSummaryForCampaScope('chartCustom');
@@ -611,8 +583,8 @@ function DashboardSummaryPageContent() {
   const attendanceEmpleadoList = rosterRegulars.filter(p => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.empleado);
   const attendanceCortesiaList = rosterRegulars.filter(p => normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.cortesia);
   const freeAttendanceNeedsTransport = [...attendanceEmpleadoList, ...attendanceCortesiaList].filter(p => !resolveLlegaEnCarro(p));
-  const rosterListForModal = summaryRosterModal.type === 'scholarship' ? rosterScholarship : summaryRosterModal.type === 'servers' ? rosterServersList : summaryRosterModal.type === 'realCostX2' ? rosterRealCostX2List : summaryRosterModal.type === 'cortesia' ? attendanceCortesiaList : summaryRosterModal.type === 'empleado' ? attendanceEmpleadoList : summaryRosterModal.type === 'bautizos_servidor' ? bautizosDashServidorListForDash : summaryRosterModal.type === 'bautizos_cortesia' ? bautizosDashCortesiaListForDash : summaryRosterModal.type === 'bautizos_empleado' ? bautizosDashEmpleadoListForDash : summaryRosterModal.type === 'bautizos_transport' || summaryRosterModal.type === 'bautizos_llega_carro' || summaryRosterModal.type === 'bautizosCompanions' ? [] : rosterRegulars;
-  const summaryModalScopeKey = summaryRosterModal.type === 'scholarship' ? 'dashScholarship' : summaryRosterModal.type === 'servers' ? 'dashServers' : summaryRosterModal.type === 'realCostX2' ? 'dashRealCostX2' : summaryRosterModal.type === 'cortesia' ? 'dashCortesia' : summaryRosterModal.type === 'empleado' ? 'dashEmpleado' : summaryRosterModal.type === 'bautizos_transport' ? 'dashBautizosTransport' : summaryRosterModal.type === 'bautizos_llega_carro' ? 'dashBautizosCars' : summaryRosterModal.type === 'bautizos_servidor' ? 'dashBautizosServidores' : summaryRosterModal.type === 'bautizos_cortesia' ? 'dashBautizosCortesia' : summaryRosterModal.type === 'bautizos_empleado' ? 'dashBautizosEmpleado' : 'dashRegs';
+  const rosterListForModal = summaryRosterModal.type === 'scholarship' ? rosterScholarship : summaryRosterModal.type === 'servers' ? rosterServersList : summaryRosterModal.type === 'realCostX2' ? rosterRealCostX2List : summaryRosterModal.type === 'cortesia' ? attendanceCortesiaList : summaryRosterModal.type === 'empleado' ? attendanceEmpleadoList : rosterRegulars;
+  const summaryModalScopeKey = summaryRosterModal.type === 'scholarship' ? 'dashScholarship' : summaryRosterModal.type === 'servers' ? 'dashServers' : summaryRosterModal.type === 'realCostX2' ? 'dashRealCostX2' : summaryRosterModal.type === 'cortesia' ? 'dashCortesia' : summaryRosterModal.type === 'empleado' ? 'dashEmpleado' : 'dashRegs';
   const rosterModalBzScope = 'all';
   const rosterModalCampaScope = summaryCampaScopes[summaryModalScopeKey] || 'all';
   let rosterListForModalForCampa = rosterListForModal;
@@ -620,7 +592,7 @@ function DashboardSummaryPageContent() {
     rosterListForModalForCampa = rosterListForModal.filter(p => participantMatchesBautizosDashboardPartyScope(p, rosterModalBzScope));
   }
   const rosterListForModalFiltered = rosterListForModalForCampa.filter(p => campaAttendanceScopeMatches(isCampa, p, rosterModalCampaScope));
-  const summaryModalColSpan = summaryRosterModal.type === 'scholarship' ? 2 : summaryRosterModal.type === 'realCostX2' ? 3 : summaryRosterModal.type === 'cortesia' || summaryRosterModal.type === 'empleado' || summaryRosterModal.type === 'bautizos_servidor' || summaryRosterModal.type === 'bautizos_cortesia' || summaryRosterModal.type === 'bautizos_empleado' ? isDesayunoEvent ? 2 : 3 : summaryRosterModal.type === 'bautizos_transport' || summaryRosterModal.type === 'bautizos_llega_carro' ? 5 : summaryRosterModal.type === 'servers' ? isDesayunoEvent ? 3 : 4 : summaryRosterModal.type === 'bautizosCompanions' ? 4 : isDesayunoEvent ? 3 : 4;
+  const summaryModalColSpan = summaryRosterModal.type === 'scholarship' ? 2 : summaryRosterModal.type === 'realCostX2' ? 3 : summaryRosterModal.type === 'cortesia' || summaryRosterModal.type === 'empleado' ? isDesayunoEvent ? 2 : 3 : summaryRosterModal.type === 'servers' ? isDesayunoEvent ? 3 : 4 : isDesayunoEvent ? 3 : 4;
 
   // Sección 1: filtros y gráficas por Método/Servicio (Neto o Bruto)
   const sIncomeChart = getDashboardSummaryForCampaScope('chartIncome');
@@ -703,18 +675,10 @@ function DashboardSummaryPageContent() {
     };
   };
   const buildTableByLocation = campaScope => {
-    const bzScope = false ? bautizosDashScope : 'all';
-    const allSummaryRowsFlat = dashboardLocs.flatMap(l => applySummaryLikeFilters(data[l] || [], campaScope, {
-      skipBautizosParty: true
-    }));
-    const tableBzDedupeMeta = false ? buildActiveRegistrantMetaForCompanionDedupe(allSummaryRowsFlat.filter(p => !participantIsCancelled(p))) : null;
     const filterSummaryStatusRows = rows => {
       let sectionRows = applySummaryLikeFilters(rows || [], campaScope, {
         skipBautizosParty: true
       });
-      if (false) {
-        sectionRows = sectionRows.filter(p => bautizosDashboardTitularCountsForScope(p, bzScope));
-      }
       if (isCampa) {
         sectionRows = sectionRows.filter(p => campaAttendanceScopeMatches(isCampa, p, campaScope));
       }
@@ -722,155 +686,71 @@ function DashboardSummaryPageContent() {
     };
     const summarySectionWeight = p => currentEvent?.eventType === 'Campa' && campaScope === 'all' && countAmbosDoubleInAllCounts && participantCountsAsRealCostX2(p, currentEvent) ? 2 : 1;
     const waitlistCountsForTable = computeWaitlistCountsForEvent(allParticipants, currentEvent, dashboardLocs, {
-      dashboardScope: bzScope,
+      dashboardScope: 'all',
       sectionWeight: summarySectionWeight
     });
     return dashboardLocs.map(loc => {
       const filtered = applySummaryLikeFilters(data[loc] || [], campaScope, {
         skipBautizosParty: true
       });
-      const filteredBzParty = false ? applySummaryLikeFilters(data[loc] || [], campaScope) : filtered;
       const stats = filtered.reduce((acc, p) => {
         const allScopeDoubleWeight = currentEvent?.eventType === 'Campa' && campaScope === 'all' && countAmbosDoubleInAllCounts && participantCountsAsRealCostX2(p, currentEvent) ? 2 : 1;
-        const bzPartyMatch = currentEvent?.eventType !== 'Bautizos' || bautizosDashboardTitularCountsForScope(p, bzScope);
-        const bzFinMatch = currentEvent?.eventType !== 'Bautizos' || bautizosDashboardIncludeRegistrationFinancials(p, bzScope);
         const liq = getLiquidationTarget(p);
         const paidGross = getParticipantNetPaidFromHistory(p, computeNetAmountByMethod);
         const paidNet = getParticipantEffectivePaidNet(p, computeNetAmountByMethod);
-        const recaudado = showGrossWithoutCommission ? paidGross : paidNet;
-        const bzAlloc = false ? allocateBautizosDashboardPayments(p, currentEvent, tableBzDedupeMeta, liq, p.paymentHistory, paidGross, p.paymentMethod, computeNetAmountByMethod) : null;
-        let recaudadoAdd = recaudado;
-        let pendingAdd = Math.max(0, liq - paidGross);
-        let expectedAdd = liq;
-        if (bzAlloc && bautizosDashboardScopeUsesSplitPayments(bzScope)) {
-          if (bzScope === 'companions') {
-            recaudadoAdd = showGrossWithoutCommission ? bzAlloc.paidGrossCompanion : bzAlloc.paidNetCompanion;
-            pendingAdd = Math.max(0, bzAlloc.companionOwed - bzAlloc.paidGrossCompanion);
-            expectedAdd = bzAlloc.companionOwed;
-          } else if (bzScope === 'baptized') {
-            recaudadoAdd = showGrossWithoutCommission ? bzAlloc.paidGrossTitular : bzAlloc.paidNetTitular;
-            pendingAdd = Math.max(0, bzAlloc.titularOwed - bzAlloc.paidGrossTitular);
-            expectedAdd = bzAlloc.titularOwed;
-          }
+        let recaudadoAdd = showGrossWithoutCommission ? paidGross : paidNet;
+        const pendingAdd = Math.max(0, liq - paidGross);
+        const expectedAdd = liq;
+        const enriched = enrichPaymentHistoryWithRefundDisbursements(p, computeNetAmountByMethod);
+        if (enriched.length > 0) {
+          const physicalGross = Math.max(0, enriched.reduce((sum, h) => sum + (Number(h.amount) || 0), 0));
+          const physicalNet = Math.max(0, enriched.reduce((sum, h) => {
+            const method = h.method === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+            const amt = Number(h.amount) || 0;
+            if (Number.isFinite(Number(h.netAmount))) return sum + Number(h.netAmount);
+            return sum + computeNetAmountByMethod(amt, method);
+          }, 0));
+          recaudadoAdd = showGrossWithoutCommission ? physicalGross : physicalNet;
         } else {
-          const enriched = enrichPaymentHistoryWithRefundDisbursements(p, computeNetAmountByMethod);
-          if (enriched.length > 0) {
-            const physicalGross = Math.max(0, enriched.reduce((sum, h) => sum + (Number(h.amount) || 0), 0));
-            const physicalNet = Math.max(0, enriched.reduce((sum, h) => {
-              const method = h.method === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-              const amt = Number(h.amount) || 0;
-              if (Number.isFinite(Number(h.netAmount))) return sum + Number(h.netAmount);
-              return sum + computeNetAmountByMethod(amt, method);
-            }, 0));
-            recaudadoAdd = showGrossWithoutCommission ? physicalGross : physicalNet;
+          recaudadoAdd = showGrossWithoutCommission ? getParticipantPhysicalRecaudadoGross(p, paidGross) : getParticipantPhysicalRecaudadoNet(p, paidNet, computeNetAmountByMethod);
+        }
+        acc.count += allScopeDoubleWeight;
+        if (isSiValue(p.isScholarship)) acc.scholarship += allScopeDoubleWeight;
+        if (isSiValue(p.isServer)) acc.servers += allScopeDoubleWeight;
+        {
+          const roles = attendanceRolesFromLegacyPerson(p);
+          if (roles.servidor) acc.roleServidor += allScopeDoubleWeight;
+          if (roles.empleado) acc.roleEmpleado += allScopeDoubleWeight;
+          if (roles.bautizado) acc.roleBautizado += allScopeDoubleWeight;
+          if (roles.becado) acc.roleBecado += allScopeDoubleWeight;
+          if (roles.campero) acc.roleCampero += allScopeDoubleWeight;
+          if (roles.cortesia) acc.roleCortesia += allScopeDoubleWeight;
+          if (roles.pastor) acc.rolePastor += allScopeDoubleWeight;
+          if (roles.asistente) acc.roleAsistente += allScopeDoubleWeight;
+          if (isMultiRolePerson(p)) acc.multiRole += allScopeDoubleWeight;
+        }
+        if (currentEvent?.eventType === 'Campa') {
+          if (isSiValue(p.isServer)) {
+            const sa = String(p.serverAssignment || '').trim();
+            if (sa === 'Teens' || sa === 'Ambos') acc.teens += allScopeDoubleWeight;
+            if (sa === 'Jóvenes' || sa === 'Ambos') acc.jovenes += allScopeDoubleWeight;
           } else {
-            recaudadoAdd = showGrossWithoutCommission ? getParticipantPhysicalRecaudadoGross(p, paidGross) : getParticipantPhysicalRecaudadoNet(p, paidNet, computeNetAmountByMethod);
+            const ageNum = parseInt(p.age, 10);
+            const assignment = String(p.campAssignment || (ageNum < 18 ? 'Teens' : 'Jóvenes')).trim();
+            if (assignment === 'Teens') acc.teens += allScopeDoubleWeight;
+            if (assignment === 'Jóvenes') acc.jovenes += allScopeDoubleWeight;
           }
         }
-        if (bzPartyMatch) {
-          acc.count += allScopeDoubleWeight;
-          if (isSiValue(p.isScholarship)) acc.scholarship += allScopeDoubleWeight;
-          if (false) {
-            if (bautizosParticipatesAsServer(p)) acc.servers += allScopeDoubleWeight;
-            const bzAtt = normalizeBautizosAttendanceType(p.bautizosAttendanceType);
-            if (bzAtt === BAUTIZOS_ATTENDANCE.asistente) acc.asistentesBautizos += allScopeDoubleWeight;
-            if (bzAtt === BAUTIZOS_ATTENDANCE.cortesia) acc.cortesia += allScopeDoubleWeight;
-            if (bzAtt === BAUTIZOS_ATTENDANCE.pastor) acc.pastores += allScopeDoubleWeight;
-          } else if (isSiValue(p.isServer)) {
-            acc.servers += allScopeDoubleWeight;
-          } else {
-            acc.serveNo += allScopeDoubleWeight;
-          }
-          if (currentEvent?.eventType === 'Campa') {
-            if (isSiValue(p.isServer)) {
-              const sa = String(p.serverAssignment || '').trim();
-              if (sa === 'Teens' || sa === 'Ambos') acc.teens += allScopeDoubleWeight;
-              if (sa === 'Jóvenes' || sa === 'Ambos') acc.jovenes += allScopeDoubleWeight;
-            } else {
-              const ageNum = parseInt(p.age, 10);
-              const assignment = String(p.campAssignment || (ageNum < 18 ? 'Teens' : 'Jóvenes')).trim();
-              if (assignment === 'Teens') acc.teens += allScopeDoubleWeight;
-              if (assignment === 'Jóvenes') acc.jovenes += allScopeDoubleWeight;
-            }
-          }
-          if (currentEvent?.eventType !== 'Bautizos' && normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.cortesia) {
-            acc.cortesia += allScopeDoubleWeight;
-          }
-          if (currentEvent?.eventType !== 'Bautizos' && normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.pastor) {
-            acc.pastores += allScopeDoubleWeight;
-          }
-          if (currentEvent?.eventType === 'Campa' && isSiValue(p.willBeBaptized)) acc.bautizos += allScopeDoubleWeight;
-        }
-        if (bzFinMatch) {
-          acc.paid += recaudadoAdd;
-          if (bzAlloc && bautizosDashboardScopeUsesSplitPayments(bzScope)) {
-            let efectivoGross = 0;
-            let efectivoNet = 0;
-            let tarjetaGross = 0;
-            let tarjetaNet = 0;
-            for (const r of bzAlloc.historyRows) {
-              const method = r.method || (p.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
-              const g = bzScope === 'companions' ? r.payCG : r.payTG;
-              const n = bzScope === 'companions' ? r.netC : r.netT;
-              if (method === 'Tarjeta') {
-                tarjetaGross += g;
-                tarjetaNet += n;
-              } else {
-                efectivoGross += g;
-                efectivoNet += n;
-              }
-            }
-            acc.paidEfectivo += showGrossWithoutCommission ? efectivoGross : efectivoNet;
-            acc.paidTarjeta += showGrossWithoutCommission ? tarjetaGross : tarjetaNet;
-            acc.paidTarjetaGross += tarjetaGross;
-            acc.paidTarjetaNet += tarjetaNet;
-          } else {
-            const pm = getPersonRecaudadoByPaymentMethod(p);
-            acc.paidEfectivo += showGrossWithoutCommission ? pm.efectivoGross : pm.efectivoNet;
-            acc.paidTarjeta += showGrossWithoutCommission ? pm.tarjetaGross : pm.tarjetaNet;
-            acc.paidTarjetaGross += pm.tarjetaGross;
-            acc.paidTarjetaNet += pm.tarjetaNet;
-          }
-          acc.pending += pendingAdd;
-          acc.expected += expectedAdd;
-        }
+        acc.paid += recaudadoAdd;
+        const pm = getPersonRecaudadoByPaymentMethod(p);
+        acc.paidEfectivo += showGrossWithoutCommission ? pm.efectivoGross : pm.efectivoNet;
+        acc.paidTarjeta += showGrossWithoutCommission ? pm.tarjetaGross : pm.tarjetaNet;
+        acc.paidTarjetaGross += pm.tarjetaGross;
+        acc.paidTarjetaNet += pm.tarjetaNet;
+        acc.pending += pendingAdd;
+        acc.expected += expectedAdd;
         return acc;
-      }, {
-        count: 0,
-        activeRegistrants: 0,
-        bautizados: 0,
-        companions: 0,
-        companionsTotal: 0,
-        bautizosTransport: 0,
-        bautizosCarro: 0,
-        asistentesBautizos: 0,
-        empleadosBautizos: 0,
-        pastores: 0,
-        scholarship: 0,
-        servers: 0,
-        serveNo: 0,
-        bautizos: 0,
-        teens: 0,
-        jovenes: 0,
-        waitlist: 0,
-        cancelled: 0,
-        refund: 0,
-        paid: 0,
-        paidEfectivo: 0,
-        paidTarjeta: 0,
-        paidTarjetaGross: 0,
-        paidTarjetaNet: 0,
-        pending: 0,
-        expected: 0,
-        cortesia: 0,
-        pastores: 0
-      });
-      if (false) {
-        const flatStats = buildBautizosLocationTableStats(filtered, loc, bzScope, {
-          participantIsCancelled
-        });
-        Object.assign(stats, flatStats);
-      }
+      }, EMPTY_SUMMARY_TABLE_STATS());
       stats.waitlist = waitlistCountsForTable.bySede[loc]?.total ?? 0;
       const cancelledRows = filterSummaryStatusRows(cancelledData[loc]);
       stats.cancelled = cancelledRows.reduce((n, p) => n + summarySectionWeight(p), 0);
@@ -892,7 +772,7 @@ function DashboardSummaryPageContent() {
       teens: isCampa ? buildTableByLocation('teens') : null,
       jovenes: isCampa ? buildTableByLocation('jovenes') : null
     };
-  }, [data, cancelledData, allParticipants, currentEvent, currentPricing, bautizosDashScope, dashboardLocs, isCampa, isBautizos, countAmbosDoubleInAllCounts, showGrossWithoutCommission, includeCortesiaInRealCost, includeEmpleadoInRealCost, donations, dashboardLocations, dashboardHasFullLocationAccess]);
+  }, [data, cancelledData, allParticipants, currentEvent, currentPricing, dashboardLocs, isCampa, countAmbosDoubleInAllCounts, showGrossWithoutCommission, includeCortesiaInRealCost, includeEmpleadoInRealCost, donations, dashboardLocations, dashboardHasFullLocationAccess]);
   const getCachedTable = scope => {
     if (scope === 'teens') return tableCache.teens || tableCache.all;
     if (scope === 'jovenes') return tableCache.jovenes || tableCache.all;
@@ -900,8 +780,6 @@ function DashboardSummaryPageContent() {
   };
   const tableByLocation = getCachedTable(summaryCampaScopes.tableDetails || 'all');
   const tableByLocationLocChart = getCachedTable(summaryCampaScopes.chartLocations || 'all');
-  const tableByLocationBautizosCompSplit = getCachedTable('all');
-  const tableByLocationBautizosTransportCar = getCachedTable('all');
   const tableByLocationIncomeChart = getCachedTable(summaryCampaScopes.chartIncome || 'all');
   const tableByLocationRecaudado = getCachedTable(summaryCampaScopes.dashRecaudado || 'all');
   const tableByLocationPendiente = getCachedTable(summaryCampaScopes.dashPendiente || 'all');
@@ -954,82 +832,47 @@ function DashboardSummaryPageContent() {
   const reduceGlobalTableStats = tbl => tbl.reduce((acc, {
     stats
   }) => {
-    acc.count += stats.count;
-    acc.activeRegistrants += stats.activeRegistrants || 0;
-    acc.companions += stats.companions || 0;
-    acc.companionsTotal += stats.companionsTotal || 0;
-    acc.bautizosTransport += stats.bautizosTransport || 0;
-    acc.bautizosCarro += stats.bautizosCarro || 0;
-    acc.asistentesBautizos += stats.asistentesBautizos || 0;
-    acc.empleadosBautizos += stats.empleadosBautizos || 0;
-    acc.scholarship += stats.scholarship;
-    acc.servers += stats.servers;
-    acc.serveNo += stats.serveNo;
-    acc.bautizos += stats.bautizos;
-    acc.teens += stats.teens;
-    acc.jovenes += stats.jovenes;
+    acc.count += stats.count || 0;
+    acc.roleServidor += stats.roleServidor || 0;
+    acc.roleEmpleado += stats.roleEmpleado || 0;
+    acc.roleBautizado += stats.roleBautizado || 0;
+    acc.roleBecado += stats.roleBecado || 0;
+    acc.roleCampero += stats.roleCampero || 0;
+    acc.roleCortesia += stats.roleCortesia || 0;
+    acc.rolePastor += stats.rolePastor || 0;
+    acc.roleAsistente += stats.roleAsistente || 0;
+    acc.multiRole += stats.multiRole || 0;
+    acc.scholarship += stats.scholarship || 0;
+    acc.servers += stats.servers || 0;
+    acc.teens += stats.teens || 0;
+    acc.jovenes += stats.jovenes || 0;
     acc.waitlist += stats.waitlist || 0;
-    acc.cancelled += stats.cancelled;
-    acc.refund += stats.refund;
-    acc.paid += stats.paid;
-    acc.donations += stats.donations;
-    acc.paidEfectivo += stats.paidEfectivo;
-    acc.paidTarjeta += stats.paidTarjeta;
+    acc.cancelled += stats.cancelled || 0;
+    acc.refund += stats.refund || 0;
+    acc.paid += stats.paid || 0;
+    acc.donations += stats.donations || 0;
+    acc.paidEfectivo += stats.paidEfectivo || 0;
+    acc.paidTarjeta += stats.paidTarjeta || 0;
     acc.paidTarjetaGross += stats.paidTarjetaGross || 0;
     acc.paidTarjetaNet += stats.paidTarjetaNet || 0;
-    acc.pending += stats.pending;
-    acc.expected += stats.expected;
-    acc.cortesia += stats.cortesia;
-    acc.bautizados += stats.bautizados || 0;
+    acc.pending += stats.pending || 0;
+    acc.expected += stats.expected || 0;
     return acc;
-  }, {
-    count: 0,
-    activeRegistrants: 0,
-    bautizados: 0,
-    companions: 0,
-    companionsTotal: 0,
-    bautizosTransport: 0,
-    bautizosCarro: 0,
-    asistentesBautizos: 0,
-    empleadosBautizos: 0,
-    pastores: 0,
-    scholarship: 0,
-    servers: 0,
-    serveNo: 0,
-    bautizos: 0,
-    teens: 0,
-    jovenes: 0,
-    waitlist: 0,
-    cancelled: 0,
-    refund: 0,
-    paid: 0,
-    donations: 0,
-    paidEfectivo: 0,
-    paidTarjeta: 0,
-    paidTarjetaGross: 0,
-    paidTarjetaNet: 0,
-    pending: 0,
-    expected: 0,
-    cortesia: 0
-  });
+  }, EMPTY_SUMMARY_TABLE_STATS());
   const globalTableStats = reduceGlobalTableStats(tableByLocation);
   const globalTableStatsRecaudado = reduceGlobalTableStats(tableByLocationRecaudado);
   const globalTableStatsPendiente = reduceGlobalTableStats(tableByLocationPendiente);
   const globalTableStatsBalance = reduceGlobalTableStats(tableByLocationBalance);
-  const donationsInRecaudadoCard = bautizosScopedFinances ? 0 : donationsTotalForBalance;
+  const donationsInRecaudadoCard = donationsTotalForBalance;
   const paidDisplayedTotal = globalTableStatsRecaudado.paid + donationsInRecaudadoCard;
   const pendienteDisplayed = globalTableStatsPendiente.pending;
-  /** Totales globales con el mismo alcance que cada torta Bautizos (filtros propios por tarjeta). */
   const globalLocChartTableStats = reduceGlobalTableStats(tableByLocationLocChart);
-  const globalBzCompSplitStats = reduceGlobalTableStats(tableByLocationBautizosCompSplit);
-  const globalBzTransportCarStats = reduceGlobalTableStats(tableByLocationBautizosTransportCar);
   /** Misma base que tabla + gráficas por sede: filtros activos y bruto/neto según el botón de comisión. */
   const paidFromRegistrationsFiltered = globalTableStats.paid;
-  /** Balance neto: alcance propio de la tarjeta (dashBalance). En Bautizos usa la misma tabla filtrada por Todos/Bautizados/Acompañantes. */
+  /** Balance neto: alcance propio de la tarjeta (dashBalance). */
   const sBalCard = getDashboardSummaryForCampaScope('dashBalance');
   const recaudadoAllForBalanceNeto = showGrossWithoutCommission ? sBalCard.globalStats.all.paidGross ?? sBalCard.globalStats.all.paid : sBalCard.globalStats.all.paid;
   const balScope = summaryCampaScopes.dashBalance || 'all';
-  const balBzScope = bautizosDashScope;
   const rosterRealCostX2ListForBalance = eventRosterRows.filter(
     (p) =>
       participantCountsAsRealCostX2(p, currentEvent) && campaAttendanceScopeMatches(isCampa, p, balScope)
@@ -1050,21 +893,16 @@ function DashboardSummaryPageContent() {
   const totalRealCostUnitsForBalance = totalRegsForBalanceCard + realCostExtraUnitsForBalance;
   const balanceNeto = recaudadoAllForBalanceNeto + donationsInRecaudadoCard - realCostNum * totalRealCostUnitsForBalance - totalPastorRealCostForBalance;
   const summaryColumnKeysForEvent = getSummaryTableColumnKeysForEventType(currentEvent?.eventType);
-  const isSummaryColHiddenForBautizos = key => false;
-  const isSummaryColBautizosOnly = () => true;
+  const eventAttendanceCfg = currentEvent ? resolveEventAttendanceConfig(currentEvent) : null;
   const showSummaryTableColumn = key => {
     if (summaryTableColumns[key] === false) return false;
-    if (isSummaryColHiddenForBautizos(key)) return false;
-    if (false) return false;
-    if (key === 'bautizos' && !isCampa) return false;
+    if ((key === 'teens' || key === 'jovenes') && !isCampa) return false;
+    const roleKey = SUMMARY_ROLE_COLUMN_TO_KEY[key];
+    if (roleKey && eventAttendanceCfg && !eventAttendanceCfg.enabledAttendanceTypes[roleKey]) return false;
     return true;
   };
   const summaryColumnHeaderLabel = key => SUMMARY_TABLE_COLUMN_LABELS[key] || key;
-  const getSummaryStatValue = (statsObj, colKey) => {
-    if (colKey === 'serveYes') return statsObj.servers;
-    if (colKey === 'serveNo') return statsObj.serveNo;
-    return statsObj[colKey];
-  };
+  const getSummaryStatValue = (statsObj, colKey) => statsObj?.[colKey] ?? 0;
   const summaryVisibleColCount = 1 + summaryColumnKeysForEvent.filter(k => showSummaryTableColumn(k)).length;
   /** Tabla auto + min-widths + nowrap: evita columnas encimadas con muchas columnas (table-fixed forzaba anchos incompatibles con min-w). */
   const sumStickyLocBase = 'sticky left-0 z-[2] border-r border-slate-200/90 dark:border-slate-600 shadow-[4px_0_8px_-4px_rgba(15,23,42,0.12)] dark:shadow-[4px_0_8px_-4px_rgba(0,0,0,0.35)]';
@@ -1081,38 +919,34 @@ function DashboardSummaryPageContent() {
   const summaryColBodyClass = key => {
     const num = `${sumCellNum} ${sumCellClick}`;
     switch (key) {
-      case 'scholarship':
+      case 'roleBecado':
         return `${num} text-purple-700 font-bold`;
-      case 'serveYes':
+      case 'roleServidor':
         return `${num} text-amber-700 font-bold`;
-      case 'serveNo':
+      case 'roleCampero':
         return `${num} text-slate-600 font-bold`;
-      case 'bautizos':
+      case 'roleBautizado':
         return `${num} text-sky-700 font-bold`;
+      case 'roleEmpleado':
+        return `${num} text-teal-700 font-bold`;
+      case 'roleCortesia':
+        return `${num} text-fuchsia-700 font-bold`;
+      case 'rolePastor':
+        return `${num} text-violet-700 font-bold`;
+      case 'roleAsistente':
+        return `${num} text-indigo-600 font-bold`;
+      case 'multiRole':
+        return `${num} text-rose-700 font-bold`;
       case 'teens':
         return `${num} text-indigo-700 font-bold`;
       case 'jovenes':
         return `${num} text-blue-700 font-bold`;
-      case 'companions':
-        return `${num} text-teal-700 font-bold`;
-      case 'asistentesBautizos':
-        return `${num} text-amber-700 font-bold`;
-      case 'bautizados':
-        return `${num} text-violet-700 dark:text-violet-300 font-bold`;
-      case 'bautizosTransport':
-        return `${num} text-indigo-700 font-bold`;
-      case 'bautizosCarro':
-        return `${num} text-cyan-700 font-bold`;
-      case 'empleadosBautizos':
-        return `${num} text-teal-700 font-bold`;
       case 'cancelled':
         return `${num} text-slate-700 font-bold`;
       case 'waitlist':
         return `${num} text-amber-700 font-bold`;
       case 'refund':
         return `${num} text-amber-700 font-bold`;
-      case 'cortesia':
-        return `${num} text-fuchsia-700 font-bold`;
       case 'count':
         return `${num} font-medium text-slate-700`;
       default:
@@ -1122,38 +956,34 @@ function DashboardSummaryPageContent() {
   const summaryColFootClass = key => {
     const num = `${sumFootNum} ${sumCellClick}`;
     switch (key) {
-      case 'scholarship':
+      case 'roleBecado':
         return `${num} text-purple-700 dark:text-purple-300`;
-      case 'serveYes':
+      case 'roleServidor':
         return `${num} text-amber-700 dark:text-amber-300`;
-      case 'serveNo':
+      case 'roleCampero':
         return `${num} text-slate-700 dark:text-slate-200`;
-      case 'bautizos':
+      case 'roleBautizado':
         return `${num} text-sky-700 dark:text-sky-300`;
+      case 'roleEmpleado':
+        return `${num} text-teal-700 dark:text-teal-300`;
+      case 'roleCortesia':
+        return `${num} text-fuchsia-700 dark:text-fuchsia-300`;
+      case 'rolePastor':
+        return `${num} text-violet-700 dark:text-violet-300`;
+      case 'roleAsistente':
+        return `${num} text-indigo-700 dark:text-indigo-300`;
+      case 'multiRole':
+        return `${num} text-rose-700 dark:text-rose-300`;
       case 'teens':
         return `${num} text-indigo-700 dark:text-indigo-300`;
       case 'jovenes':
         return `${num} text-blue-700 dark:text-blue-300`;
-      case 'companions':
-        return `${num} text-teal-700 dark:text-teal-300`;
-      case 'asistentesBautizos':
-        return `${num} text-amber-700 dark:text-amber-300`;
-      case 'bautizados':
-        return `${num} text-violet-700 dark:text-violet-300`;
-      case 'bautizosTransport':
-        return `${num} text-indigo-700 dark:text-indigo-300`;
-      case 'bautizosCarro':
-        return `${num} text-cyan-700 dark:text-cyan-300`;
-      case 'empleadosBautizos':
-        return `${num} text-teal-700 dark:text-teal-300`;
       case 'cancelled':
         return `${num} text-slate-700 dark:text-slate-200`;
       case 'waitlist':
         return `${num} text-amber-700 dark:text-amber-300`;
       case 'refund':
         return `${num} text-amber-700 dark:text-amber-300`;
-      case 'cortesia':
-        return `${num} text-fuchsia-700 dark:text-fuchsia-300`;
       case 'count':
         return `${num} text-indigo-900 dark:text-indigo-100`;
       default:
@@ -1196,20 +1026,18 @@ function DashboardSummaryPageContent() {
   };
   const participantMatchesSummaryMetric = (p, metric) => {
     const evCampa = currentEvent?.eventType === 'Campa';
-    const liq = getLiquidationTarget(p);
-    const paidGross = getParticipantNetPaidFromHistory(p, computeNetAmountByMethod);
     const isCancelled = participantIsCancelled(p);
+    const roleCol = SUMMARY_ROLE_COLUMN_TO_KEY[metric];
+    if (roleCol) {
+      if (isCancelled) return false;
+      return !!attendanceRolesFromLegacyPerson(p)[roleCol];
+    }
+    if (metric === 'multiRole') {
+      return !isCancelled && isMultiRolePerson(p);
+    }
     switch (metric) {
       case 'count':
         return !isCancelled;
-      case 'scholarship':
-        return !isCancelled && isSiValue(p.isScholarship);
-      case 'serveYes':
-        return !isCancelled && (false ? bautizosParticipatesAsServer(p) : isSiValue(p.isServer));
-      case 'serveNo':
-        return !isCancelled && (false ? !bautizosParticipatesAsServer(p) : !isSiValue(p.isServer));
-      case 'bautizos':
-        return evCampa && !isCancelled && isSiValue(p.willBeBaptized);
       case 'teens':
         {
           if (!evCampa || isCancelled) return false;
@@ -1252,21 +1080,9 @@ function DashboardSummaryPageContent() {
         }
       case 'pending':
         return getParticipantOutstandingGross(p, getLiquidationTarget, computeNetAmountByMethod) > 0;
-      case 'cortesia':
-        return !isCancelled && (false ? normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.cortesia : normalizeAttendanceSpecial(p) === ATTENDANCE_SPECIAL.cortesia);
       case 'expected':
         return true;
-      case 'empleadosBautizos':
-        return !isCancelled && false && normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.empleado;
-      case 'pastores':
-        return !isCancelled && isPastorParticipant(p, currentEvent?.eventType);
-      case 'asistentesBautizos':
-        return !isCancelled && false && normalizeBautizosAttendanceType(p.bautizosAttendanceType) === BAUTIZOS_ATTENDANCE.asistente;
-      case 'bautizados':
-        return !isCancelled && false && false;
-      case 'companions':
-      case 'bautizosTransport':
-      case 'bautizosCarro':
+      case 'donations':
         return false;
       default:
         return false;
@@ -1275,35 +1091,6 @@ function DashboardSummaryPageContent() {
   const getParticipantsForSummaryCell = (scope, locationLabel, metric) => {
     const tableScope = summaryCampaScopes.tableDetails || 'all';
     const locs = scope === 'global' ? dashboardLocs : [locationLabel];
-    const locSet = new Set(locs.map(l => String(l).trim()));
-    const buildBautizosCanonicalForTable = () => {
-      const allRows = dashboardLocs.flatMap(l => applySummaryLikeFilters(data[l] || [], tableScope));
-      return buildBautizosCanonicalCompanionPlan(allRows, buildActiveRegistrantMetaForCompanionDedupe(allRows.filter(p => !participantIsCancelled(p))), {
-        includeBaptizedCompanions: true
-      });
-    };
-    const buildBautizosWaitlistCanonicalForTable = () => {
-      const activeRows = dashboardLocs.flatMap(l => applySummaryLikeFilters(data[l] || [], tableScope, {
-        skipBautizosParty: true
-      }));
-      const waitlistTitulars = dashboardLocs.flatMap(l => applySummaryLikeFilters(waitlistData[l] || [], tableScope, {
-        skipBautizosParty: true
-      }));
-      const rosterById = new Map();
-      for (const p of activeRows) {
-        const id = String(p?.id || '').trim();
-        if (id) rosterById.set(id, p);
-      }
-      for (const p of waitlistTitulars) {
-        const id = String(p?.id || '').trim();
-        if (id) rosterById.set(id, p);
-      }
-      const roster = [...rosterById.values()];
-      return buildBautizosCanonicalCompanionPlan(roster, buildActiveRegistrantMetaForCompanionDedupe(roster.filter(p => !participantIsCancelled(p))), {
-        includeBaptizedCompanions: true,
-        waitlistOnly: true
-      });
-    };
     if (metric === 'cancelled' || metric === 'refund') {
       const cxlOut = [];
       const cxlSeen = new Set();
@@ -1345,16 +1132,15 @@ function DashboardSummaryPageContent() {
   };
   const summaryMetricLabels = {
     count: 'Inscritos',
-    bautizados: 'Bautizados',
-    companions: 'Acompañantes',
-    asistentesBautizos: 'Asistentes',
-    bautizosTransport: 'Transporte del evento',
-    bautizosCarro: 'Llevan carro',
-    empleadosBautizos: 'Empleados',
-    scholarship: 'Becados',
-    serveYes: 'Servidores',
-    serveNo: 'Camperos',
-    bautizos: 'Bautizos',
+    roleServidor: 'Servidor',
+    roleEmpleado: 'Empleado',
+    roleBautizado: 'Bautizado',
+    roleBecado: 'Becado',
+    roleCampero: 'Campero',
+    roleCortesia: 'Cortesía',
+    rolePastor: 'Pastor',
+    roleAsistente: 'Asistente',
+    multiRole: 'Multi-rol',
     teens: 'Teens',
     jovenes: 'Jóvenes',
     cancelled: 'Cancelados',
@@ -1365,7 +1151,6 @@ function DashboardSummaryPageContent() {
     paidEfectivo: 'Recaudado (efectivo)',
     paidTarjeta: 'Recaudado (tarjeta)',
     pending: 'Saldo pendiente',
-    cortesia: 'Cortesías',
     expected: 'Total esperado (meta a liquidar)'
   };
   const summaryCellModalRows = summaryCellDetailModal.isOpen && summaryCellDetailModal.metric !== 'donations' ? getParticipantsForSummaryCell(summaryCellDetailModal.scope, summaryCellDetailModal.locationLabel, summaryCellDetailModal.metric) : [];
@@ -1530,13 +1315,16 @@ function DashboardSummaryPageContent() {
                   key: 'chartAgeBrackets',
                   label: 'Gráfica: Rangos de Edad'
                 }, {
+                  key: 'chartAttendanceRoles',
+                  label: 'Gráfica: Tipos de asistencia'
+                }, {
                   key: 'chartBloodType',
                   label: 'Gráfica: Tipo de Sangre',
                   show: isCampa
                 }, {
                   key: 'chartScholarship',
                   label: 'Gráfica: Becas',
-                  show: isCampa
+                  show: !!eventAttendanceCfg?.enabledAttendanceTypes?.becado
                 }, {
                   key: 'chartSwimming',
                   label: 'Gráfica: Nado',
@@ -1556,10 +1344,6 @@ function DashboardSummaryPageContent() {
                 }, {
                   key: 'chartBaptism',
                   label: 'Gráfica: Bautizos',
-                  show: isCampa
-                }, {
-                  key: 'chartAttendanceSpecial',
-                  label: 'Gráfica: Empleado / Cortesía',
                   show: isCampa
                 }, {
                   key: 'chartCustom',
@@ -1777,15 +1561,15 @@ function DashboardSummaryPageContent() {
               <div className="p-6 border-b border-slate-100 flex items-start justify-between gap-4 shrink-0">
                 <div>
                   <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                    {summaryRosterModal.type === 'scholarship' ? <GraduationCap size={20} className="text-purple-600" /> : summaryRosterModal.type === 'servers' ? <Users size={20} className="text-amber-600" /> : summaryRosterModal.type === 'realCostX2' ? <Scale size={20} className="text-violet-600" /> : summaryRosterModal.type === 'cortesia' ? <Gift size={20} className="text-pink-600" /> : summaryRosterModal.type === 'empleado' ? <Briefcase size={20} className="text-sky-600" /> : summaryRosterModal.type === 'bautizos_transport' ? <Bus size={20} className="text-indigo-600" /> : summaryRosterModal.type === 'bautizos_llega_carro' ? <MapPin size={20} className="text-cyan-600" /> : summaryRosterModal.type === 'bautizos_servidor' ? <Users size={20} className="text-amber-600" /> : summaryRosterModal.type === 'bautizos_cortesia' ? <Gift size={20} className="text-pink-600" /> : summaryRosterModal.type === 'bautizos_empleado' ? <Briefcase size={20} className="text-sky-600" /> : summaryRosterModal.type === 'bautizosCompanions' ? <UserPlus size={20} className="text-teal-600" /> : <Users size={20} className="text-blue-600" />}
-                    {summaryRosterModal.type === 'scholarship' ? 'Becados' : summaryRosterModal.type === 'servers' ? 'Servidores' : summaryRosterModal.type === 'realCostX2' ? 'Conteo x2 costo real' : summaryRosterModal.type === 'cortesia' ? 'Cortesías' : summaryRosterModal.type === 'empleado' ? 'Empleados' : summaryRosterModal.type === 'bautizos_transport' ? 'Transporte solicitado' : summaryRosterModal.type === 'bautizos_llega_carro' ? 'Lleva carro' : summaryRosterModal.type === 'bautizos_servidor' ? 'Servidores (bautizos)' : summaryRosterModal.type === 'bautizos_cortesia' ? 'Cortesías (bautizos)' : summaryRosterModal.type === 'bautizos_empleado' ? 'Empleados (bautizos)' : summaryRosterModal.type === 'bautizosCompanions' ? 'Acompañantes' : 'Registrados (Regulares)'}
+                    {summaryRosterModal.type === 'scholarship' ? <GraduationCap size={20} className="text-purple-600" /> : summaryRosterModal.type === 'servers' ? <Users size={20} className="text-amber-600" /> : summaryRosterModal.type === 'realCostX2' ? <Scale size={20} className="text-violet-600" /> : summaryRosterModal.type === 'cortesia' ? <Gift size={20} className="text-pink-600" /> : summaryRosterModal.type === 'empleado' ? <Briefcase size={20} className="text-sky-600" /> : <Users size={20} className="text-blue-600" />}
+                    {summaryRosterModal.type === 'scholarship' ? 'Becados' : summaryRosterModal.type === 'servers' ? 'Servidores' : summaryRosterModal.type === 'realCostX2' ? 'Conteo x2 costo real' : summaryRosterModal.type === 'cortesia' ? 'Cortesías' : summaryRosterModal.type === 'empleado' ? 'Empleados' : 'Registrados (Regulares)'}
                   </h3>
                   <p className="text-sm text-slate-500 mt-1">
                     Total:{' '}
                     <strong>
-                      {summaryRosterModal.type === 'bautizosCompanions' ? bautizosCompanionModalRows.length : summaryRosterModal.type === 'bautizos_transport' ? bautizosTransportModalRows.length : summaryRosterModal.type === 'bautizos_llega_carro' ? bautizosCarModalRows.length : rosterListForModalFiltered.length}
+                      {rosterListForModalFiltered.length}
                     </strong>
-                    {summaryRosterModal.type === 'bautizos_llega_carro' ? ` · Carros registrados: ${bautizosDashCarsTotal}` : ''}
+                    {''}
                     {summaryRosterModal.type === 'regular' && (attendanceEmpleadoList.length > 0 || attendanceCortesiaList.length > 0) ? ` · Empleado: ${attendanceEmpleadoList.length} · Cortesía: ${attendanceCortesiaList.length}` : ''}
                   </p>
                 </div>
@@ -1816,89 +1600,7 @@ function DashboardSummaryPageContent() {
 
               <div className="flex-1 min-h-0 overflow-y-auto p-6">
                 <div className="overflow-x-auto border border-slate-100 rounded-xl">
-                  {summaryRosterModal.type === 'bautizos_transport' ? <table className="w-full text-left text-sm">
-                      <thead>
-                        <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                          <th className="px-4 py-3">Nombre</th>
-                          <th className="px-4 py-3">Tipo</th>
-                          <th className="px-4 py-3">Inscrito</th>
-                          <th className="px-4 py-3">Sede</th>
-                          <th className="px-4 py-3">Detalle</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-50">
-                        {bautizosTransportModalRows.length ? bautizosTransportModalRows.map((r, i) => <tr key={r.id} className="hover:bg-slate-50/50">
-                              <td className="px-4 py-3 align-top text-slate-700">
-                                <span className="inline-flex items-center justify-center min-w-[1.6rem] h-6 px-1 rounded-md bg-slate-100 border border-slate-200/80 text-[11px] font-black tabular-nums text-slate-600 shrink-0 mr-2 align-middle">
-                                  {i + 1}
-                                </span>
-                                <span className="font-bold text-slate-800 align-middle">{r.displayName}</span>
-                              </td>
-                              <td className="px-4 py-3 text-slate-600">{r.lineKind}</td>
-                              <td className="px-4 py-3 text-slate-600">{r.registradoName || '—'}</td>
-                              <td className="px-4 py-3 text-slate-600">{r.location || '—'}</td>
-                              <td className="px-4 py-3 text-slate-600 text-[11px] leading-snug">{r.transportSummary}</td>
-                            </tr>) : <tr>
-                            <td colSpan={5} className="px-4 py-8 text-center text-slate-400 text-xs italic">
-                              Nadie solicitó transporte con el alcance actual.
-                            </td>
-                          </tr>}
-                      </tbody>
-                    </table> : summaryRosterModal.type === 'bautizos_llega_carro' ? <table className="w-full text-left text-sm">
-                      <thead>
-                        <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                          <th className="px-4 py-3">Nombre</th>
-                          <th className="px-4 py-3">Tipo</th>
-                          <th className="px-4 py-3">Inscrito</th>
-                          <th className="px-4 py-3">Sede</th>
-                          <th className="px-4 py-3">Carros</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-50">
-                        {bautizosCarModalRows.length ? bautizosCarModalRows.map((r, i) => <tr key={r.id} className="hover:bg-slate-50/50">
-                              <td className="px-4 py-3 align-top text-slate-700">
-                                <span className="inline-flex items-center justify-center min-w-[1.6rem] h-6 px-1 rounded-md bg-slate-100 border border-slate-200/80 text-[11px] font-black tabular-nums text-slate-600 shrink-0 mr-2 align-middle">
-                                  {i + 1}
-                                </span>
-                                <span className="font-bold text-slate-800 align-middle">{r.displayName}</span>
-                              </td>
-                              <td className="px-4 py-3 text-slate-600">{r.lineKind}</td>
-                              <td className="px-4 py-3 text-slate-600">{r.registradoName || '—'}</td>
-                              <td className="px-4 py-3 text-slate-600">{r.location || '—'}</td>
-                              <td className="px-4 py-3 text-slate-700 font-black">{r.cars}</td>
-                            </tr>) : <tr>
-                            <td colSpan={5} className="px-4 py-8 text-center text-slate-400 text-xs italic">
-                              Nadie llega en carro con el alcance actual.
-                            </td>
-                          </tr>}
-                      </tbody>
-                    </table> : summaryRosterModal.type === 'bautizosCompanions' ? <table className="w-full text-left text-sm">
-                      <thead>
-                        <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
-                          <th className="px-4 py-3">Nombre acompañante</th>
-                          <th className="px-4 py-3">Acompaña a</th>
-                          <th className="px-4 py-3">Parentesco</th>
-                          <th className="px-4 py-3">Sede</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-50">
-                        {bautizosCompanionModalRows.length ? bautizosCompanionModalRows.map((r, i) => <tr key={r.id} className="hover:bg-slate-50/50">
-                              <td className="px-4 py-3 align-top text-slate-700">
-                                <span className="inline-flex items-center justify-center min-w-[1.6rem] h-6 px-1 rounded-md bg-slate-100 border border-slate-200/80 text-[11px] font-black tabular-nums text-slate-600 shrink-0 mr-2 align-middle">
-                                  {i + 1}
-                                </span>
-                                <span className="font-bold text-slate-800 align-middle">{r.companionName}</span>
-                              </td>
-                              <td className="px-4 py-3 text-slate-700 font-semibold">{r.registradoName || '—'}</td>
-                              <td className="px-4 py-3 text-slate-600">{r.relationship || '—'}</td>
-                              <td className="px-4 py-3 text-slate-600">{r.location || '—'}</td>
-                            </tr>) : <tr>
-                            <td colSpan={4} className="px-4 py-8 text-center text-slate-400 text-xs italic">
-                              No hay acompañantes registrados.
-                            </td>
-                          </tr>}
-                      </tbody>
-                    </table> : <table className="w-full text-left text-sm">
+                  {<table className="w-full text-left text-sm">
                       <thead>
                         <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-widest font-black border-b border-slate-100">
                           <th className="px-4 py-3">Nombre</th>
@@ -1910,7 +1612,7 @@ function DashboardSummaryPageContent() {
                           {summaryRosterModal.type === 'realCostX2' && <th className="px-4 py-3">Asignación</th>}
                           {summaryRosterModal.type === 'cortesia' && !isDesayunoEvent && <th className="px-4 py-3">Transporte</th>}
                           {summaryRosterModal.type === 'empleado' && !isDesayunoEvent && <th className="px-4 py-3">Transporte</th>}
-                          {(summaryRosterModal.type === 'bautizos_servidor' || summaryRosterModal.type === 'bautizos_cortesia' || summaryRosterModal.type === 'bautizos_empleado') && !isDesayunoEvent && <th className="px-4 py-3">Transporte</th>}
+                          
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
@@ -1935,7 +1637,7 @@ function DashboardSummaryPageContent() {
                                 {summaryRosterModal.type === 'realCostX2' && <td className="px-4 py-3 text-slate-600">{String(p.serverAssignment || '').trim() || '—'}</td>}
                                 {summaryRosterModal.type === 'cortesia' && !isDesayunoEvent && <td className="px-4 py-3 text-slate-600">{resolveTransportSummary(p, currentEvent?.eventType, currentEvent)}</td>}
                                 {summaryRosterModal.type === 'empleado' && !isDesayunoEvent && <td className="px-4 py-3 text-slate-600">{resolveTransportSummary(p, currentEvent?.eventType, currentEvent)}</td>}
-                                {(summaryRosterModal.type === 'bautizos_servidor' || summaryRosterModal.type === 'bautizos_cortesia' || summaryRosterModal.type === 'bautizos_empleado') && !isDesayunoEvent && <td className="px-4 py-3 text-slate-600">{resolveTransportSummary(p, currentEvent?.eventType, currentEvent)}</td>}
+                                
                               </tr>) : <tr>
                             <td colSpan={summaryModalColSpan} className="px-4 py-8 text-center text-slate-400 text-xs italic">
                               No hay registros para mostrar.
@@ -2153,7 +1855,7 @@ function DashboardSummaryPageContent() {
                   </div>} />}
 
             <div className="relative">
-              {hasAdminRights && !isBautizos && <button type="button" className="absolute top-3 right-3 z-10 p-1.5 bg-white/95 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors shadow-sm border border-slate-100" onClick={e => {
+              {hasAdminRights && <button type="button" className="absolute top-3 right-3 z-10 p-1.5 bg-white/95 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors shadow-sm border border-slate-100" onClick={e => {
             e.stopPropagation();
             openPricingModal();
           }} title="Configurar precios y campañas">
@@ -2180,7 +1882,7 @@ function DashboardSummaryPageContent() {
                           </span>
                         </div>
                       </div> : null}
-                    {currentEvent?.pricingType === 'dynamic' && !isBautizos ? <p className="text-[10px] text-indigo-600 font-bold uppercase pt-0.5">Vigente según fecha de registro</p> : null}
+                    {currentEvent?.pricingType === 'dynamic' ? <p className="text-[10px] text-indigo-600 font-bold uppercase pt-0.5">Vigente según fecha de registro</p> : null}
                   </div>} expandKey="dashPricing" expandedKey={summaryDashExpandKey} onExpandToggle={toggleSummaryDashCard} detail={<div className="space-y-3 w-full max-w-none text-[11px] text-slate-700">
                     <div className="rounded-xl border border-slate-200 bg-slate-50/90 p-3 space-y-2">
                       <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Modalidad</p>
@@ -2259,7 +1961,7 @@ function DashboardSummaryPageContent() {
                 })}
                         </div>}
                     </div>
-                  </div>} footer={hasAdminRights && !isBautizos ? <button type="button" className="w-full py-2 rounded-xl text-[11px] font-black uppercase tracking-wide bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-colors" onClick={e => {
+                  </div>} footer={hasAdminRights ? <button type="button" className="w-full py-2 rounded-xl text-[11px] font-black uppercase tracking-wide bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-colors" onClick={e => {
             e.stopPropagation();
             openPricingModal();
           }}>
@@ -3190,86 +2892,6 @@ function DashboardSummaryPageContent() {
             </div>}
         </div>
 
-        {false && <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-8">
-            {viewPrefs.chartBautizosCompanionSplit !== false && <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between mb-2">
-                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                    <UserPlus className="text-teal-500" size={20} /> Registros activos vs acompañantes
-                  </h3>
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    {renderSummaryDashScopeSlot('chartBautizosCompanionSplit')}
-                    <button type="button" onClick={() => toggleSummaryPieLocChart()} className="px-2 py-1 bg-slate-50 text-slate-500 hover:bg-slate-100 rounded-md text-[10px] font-bold transition-colors border border-slate-200">
-                      {showLocChartValues ? 'Ver %' : 'Ver #'}
-                    </button>
-                  </div>
-                </div>
-                <p className="text-xs text-slate-400 mb-6">
-                  {getBautizosDashboardScopeChartHint(bautizosDashScope, 'companionSplit')}
-                </p>
-                <div className="flex flex-col items-center justify-center gap-6">
-                  <div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={bautizosCompSplitPieStyle} />
-                  <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <div className="w-2.5 h-2.5 rounded-full bg-indigo-500 shrink-0" />
-                        <span className="font-semibold text-slate-600 truncate">Registros activos</span>
-                      </div>
-                      <span className="font-bold text-slate-800 tabular-nums shrink-0">
-                        {showLocChartValues ? bautizosLocChartAr : bautizosLocChartCompTotal > 0 ? `${(bautizosLocChartAr / bautizosLocChartCompTotal * 100).toFixed(1)}%` : '0%'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <div className="w-2.5 h-2.5 rounded-full bg-teal-500 shrink-0" />
-                        <span className="font-semibold text-slate-600 truncate">Acompañantes</span>
-                      </div>
-                      <span className="font-bold text-slate-800 tabular-nums shrink-0">
-                        {showLocChartValues ? bautizosLocChartCo : bautizosLocChartCompTotal > 0 ? `${(bautizosLocChartCo / bautizosLocChartCompTotal * 100).toFixed(1)}%` : '0%'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>}
-            {viewPrefs.chartBautizosTransportCar !== false && <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between mb-2">
-                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                    <Bus className="text-indigo-500" size={20} /> Transporte evento vs en carro
-                  </h3>
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    {renderSummaryDashScopeSlot('chartBautizosTransportCar')}
-                    <button type="button" onClick={() => toggleSummaryPieLocChart()} className="px-2 py-1 bg-slate-50 text-slate-500 hover:bg-slate-100 rounded-md text-[10px] font-bold transition-colors border border-slate-200">
-                      {showLocChartValues ? 'Ver %' : 'Ver #'}
-                    </button>
-                  </div>
-                </div>
-                <p className="text-xs text-slate-400 mb-6">
-                  {getBautizosDashboardScopeChartHint(bautizosDashScope, 'transportCar')}
-                </p>
-                <div className="flex flex-col items-center justify-center gap-6">
-                  <div className="w-40 h-40 rounded-full shadow-inner border-4 border-white transition-all duration-1000" style={bautizosTransportCarPieStyle} />
-                  <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <div className="w-2.5 h-2.5 rounded-full bg-indigo-600 shrink-0" />
-                        <span className="font-semibold text-slate-600 truncate">Transporte evento</span>
-                      </div>
-                      <span className="font-bold text-slate-800 tabular-nums shrink-0">
-                        {showLocChartValues ? bautizosTr : bautizosTrCarTotal > 0 ? `${(bautizosTr / bautizosTrCarTotal * 100).toFixed(1)}%` : '0%'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <div className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0" />
-                        <span className="font-semibold text-slate-600 truncate">En carro</span>
-                      </div>
-                      <span className="font-bold text-slate-800 tabular-nums shrink-0">
-                        {showLocChartValues ? bautizosCr : bautizosTrCarTotal > 0 ? `${(bautizosCr / bautizosTrCarTotal * 100).toFixed(1)}%` : '0%'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>}
-          </div>}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-8">
           {viewPrefs.chartPaymentStatus && <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
@@ -3318,6 +2940,62 @@ function DashboardSummaryPageContent() {
                 <ProgressBar label="Sin especificar" value={sChartAgeBrackets.ageBrackets.unspecified || 0} max={Math.max(sChartAgeBrackets.globalStats.all.count, 1)} colorClass="text-slate-600" bgClass="bg-slate-400" />
               </div>
             </div>}
+
+          {viewPrefs.chartAttendanceRoles !== false && (() => {
+            const cfg = eventAttendanceCfg || (currentEvent ? resolveEventAttendanceConfig(currentEvent) : null);
+            const enabled = cfg?.enabledAttendanceTypes || {};
+            const roleRows = ATTENDANCE_ROLE_MENU_ORDER
+              .filter((k) => enabled[k])
+              .map((k) => {
+                const col =
+                  k === 'servidor' ? 'roleServidor'
+                  : k === 'empleado' ? 'roleEmpleado'
+                  : k === 'bautizado' ? 'roleBautizado'
+                  : k === 'becado' ? 'roleBecado'
+                  : k === 'campero' ? 'roleCampero'
+                  : k === 'cortesia' ? 'roleCortesia'
+                  : k === 'pastor' ? 'rolePastor'
+                  : 'roleAsistente';
+                return { key: k, label: ATTENDANCE_ROLE_LABELS[k] || k, value: globalTableStats[col] || 0 };
+              });
+            const multiVal = globalTableStats.multiRole || 0;
+            const maxVal = Math.max(globalTableStats.count || 1, ...roleRows.map((r) => r.value), multiVal, 1);
+            return <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between mb-2">
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Users className="text-indigo-600" size={20} /> Tipos de asistencia</h3>
+                {renderSummaryDashScopeSlot('tableDetails')}
+              </div>
+              <p className="text-xs text-slate-400 mb-6">
+                Conteos por rol habilitado en este evento (una persona puede contar en varios). Multi-rol = más de un tipo marcado.
+              </p>
+              <div className="space-y-4 w-full mt-2">
+                {roleRows.map((r) => (
+                  <ProgressBar key={r.key} label={r.label} value={r.value} max={maxVal} colorClass="text-indigo-700" bgClass="bg-indigo-500" />
+                ))}
+                <ProgressBar label="Multi-rol" value={multiVal} max={maxVal} colorClass="text-rose-700" bgClass="bg-rose-500" />
+                {roleRows.length === 0 && <p className="text-xs text-slate-400 italic">No hay tipos de asistencia habilitados.</p>}
+              </div>
+            </div>;
+          })()}
+
+          {viewPrefs.chartScholarship !== false && eventAttendanceCfg?.enabledAttendanceTypes?.becado && (() => {
+            const becados = globalTableStats.roleBecado || totalScholarship || 0;
+            const total = Math.max(globalTableStats.count || totalRegs || 1, 1);
+            const noBecados = Math.max(0, total - becados);
+            return <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between mb-2">
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><GraduationCap className="text-purple-600" size={20} /> Becas</h3>
+                {renderSummaryDashScopeSlot('dashScholarship')}
+              </div>
+              <p className="text-xs text-slate-400 mb-6">
+                Personas con rol becado vs el resto de inscritos activos. Detalle parcial/total: {becaParcial} parcial · {becaTotal} total.
+              </p>
+              <div className="space-y-5 w-full mt-2">
+                <ProgressBar label="Becados" value={becados} max={total} colorClass="text-purple-700" bgClass="bg-purple-500" />
+                <ProgressBar label="Sin beca" value={noBecados} max={total} colorClass="text-slate-600" bgClass="bg-slate-400" />
+              </div>
+            </div>;
+          })()}
 
           {isCampa && <>
               {viewPrefs.chartBloodType && <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
@@ -3439,25 +3117,6 @@ function DashboardSummaryPageContent() {
                   </div>;
           })()}
 
-              {viewPrefs.chartAttendanceSpecial && (() => {
-            const attEmp = sChartAttendanceSpecial.totalAttendanceEmpleado;
-            const attCor = sChartAttendanceSpecial.totalAttendanceCortesia;
-            const attSum = attEmp + attCor;
-            const attMax = Math.max(attSum, 1);
-            return <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between mb-2">
-                      <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Briefcase className="text-teal-600" size={20} /> Empleado y cortesía</h3>
-                      {renderSummaryDashScopeSlot('chartAttendanceSpecial')}
-                    </div>
-                    <p className="text-xs text-slate-400 mb-6">
-                      Solo asistencia especial sin cobro. Las barras comparan entre sí (la más alta = más inscritos en esa categoría).
-                    </p>
-                    <div className="space-y-5 w-full mt-2">
-                      <ProgressBar label="Empleado" value={attEmp} max={attMax} colorClass="text-teal-700" bgClass="bg-teal-500" />
-                      <ProgressBar label="Cortesía" value={attCor} max={attMax} colorClass="text-fuchsia-700" bgClass="bg-fuchsia-500" />
-                    </div>
-                  </div>;
-          })()}
             </>}
 
           {isGeneral && currentEvent.customFields && viewPrefs.chartCustom && currentEvent.customFields.map((field, idx) => {
@@ -3563,7 +3222,6 @@ function DashboardSummaryPageContent() {
         </div>
 
       </div>
-      {renderBautizosDashboardFixedScopeBar()}
       </>;
 }
 export default React.memo(DashboardSummaryPageContent);

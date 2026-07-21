@@ -11,14 +11,25 @@ export const BecadosWorkspacePage = lazy(() => import('./pages/BecadosWorkspaceP
 export const BautizadosWorkspacePage = lazy(() => import('./pages/BautizadosWorkspacePage.jsx'));
 export const ResponsivasWorkspacePage = lazy(() => import('./pages/ResponsivasWorkspacePage.jsx'));
 export const TransportPlanningWorkspacePage = lazy(() => import('./pages/TransportPlanningWorkspacePage.jsx'));
+export const AttendanceRoleWorkspacePage = lazy(() => import('./pages/AttendanceRoleWorkspacePage.jsx'));
+
+const rolePage = () => import('./pages/AttendanceRoleWorkspacePage.jsx');
 
 const TAB_CHUNK_IMPORTS = {
   Summary: () => import('./pages/DashboardSummaryPage.jsx'),
-  Bautizados: () => import('./pages/BautizadosWorkspacePage.jsx'),
-  ServersPage: () => import('./pages/ServerProfilesPage.jsx'),
-  Becados: () => import('./pages/BecadosWorkspacePage.jsx'),
+  RoleServidor: rolePage,
+  RoleEmpleado: rolePage,
+  RoleBautizado: rolePage,
+  RoleBecado: rolePage,
+  RoleCampero: rolePage,
+  RoleCortesia: rolePage,
+  RolePastor: rolePage,
+  RoleAsistente: rolePage,
+  Bautizados: rolePage,
+  ServersPage: rolePage,
+  Becados: rolePage,
+  PastoresPage: rolePage,
   Responsivas: () => import('./pages/ResponsivasWorkspacePage.jsx'),
-  PastoresPage: () => import('./pages/PastoresWorkspacePage.jsx'),
   TransportPlanning: () => import('./pages/TransportPlanningWorkspacePage.jsx'),
   CashCut: () => import('./pages/CashCutPage.jsx'),
   ExpenseList: () => import('./pages/ExpenseListPage.jsx'),

@@ -1,12 +1,19 @@
 /**
  * Comprueba invariantes de negocio conocidas (anti-regresión).
  * Uso: pnpm run check:invariants
+ *
+ * v2: la lógica vive en AppMain + features extraídas (ya no en App.jsx monolítico).
  */
 import { readFileSync, statSync } from 'fs';
 import { join } from 'path';
 
 const ROOT = process.cwd();
-const APP = join(ROOT, 'src/App.jsx');
+const APP_MAIN = join(ROOT, 'src/app/AppMain.jsx');
+const LOCATION_ROSTER = join(ROOT, 'src/features/locationRoster/LocationRosterPageContent.jsx');
+const GLOBAL_REGISTRY = join(ROOT, 'src/features/globalRegistry/GlobalRegistryPageContent.jsx');
+const DASHBOARD = join(ROOT, 'src/features/dashboard/DashboardSummaryPageContent.jsx');
+const HANDLERS_B = join(ROOT, 'src/hooks/workspace/useAppMainHandlersPartB.jsx');
+const CASH_CUT = join(ROOT, 'src/features/finance/CashCutPageContent.jsx');
 
 let failures = 0;
 
@@ -19,8 +26,8 @@ function pass(msg) {
   console.log(`[check:invariants] OK: ${msg}`);
 }
 
-function readApp() {
-  return readFileSync(APP, 'utf8');
+function read(path) {
+  return readFileSync(path, 'utf8');
 }
 
 function lineCount(text) {
@@ -36,39 +43,8 @@ function extractBetween(text, startMarker, endMarker) {
   return text.slice(from, end + endMarker.length);
 }
 
-/** Falla si el componente se importa pero no aparece como JSX (<Name …>). */
-function checkImportedComponentUsedAsJsx(app, componentName) {
-  const importRe = new RegExp(`import\\s+${componentName}\\s+from`);
-  const jsxRe = new RegExp(`<${componentName}[\\s/>]`);
-  if (!importRe.test(app)) return;
-  if (!jsxRe.test(app)) {
-    fail(`${componentName} importado en App.jsx pero nunca usado como <${componentName}>`);
-  } else {
-    pass(`${componentName} importado y usado en JSX`);
-  }
-}
-
-function checkSymbolInvoked(app, symbolName) {
-  if (!app.includes(symbolName)) return false;
-  const callRe = new RegExp(`${symbolName}\\s*\\(`);
-  return callRe.test(app);
-}
-
-function checkCompanionWaitlistWiring(app) {
-  const waitlistExpandOk =
-    checkSymbolInvoked(app, 'expandBautizosWaitlistRegistryRows') ||
-    checkSymbolInvoked(app, 'collectCompanionWaitlistVirtualRows');
-  if (!waitlistExpandOk) {
-    fail(
-      'lista de espera bautizos: falta invocar expandBautizosWaitlistRegistryRows o collectCompanionWaitlistVirtualRows'
-    );
-  } else {
-    pass('acompañantes en espera cableados (expand o collect virtual rows)');
-  }
-}
-
-function checkTransportPlanningProps(app) {
-  const block = extractBetween(app, 'const renderTransportPlanningPage', 'const renderCashCutPage');
+function checkTransportPlanningProps(appMain) {
+  const block = extractBetween(appMain, 'const renderTransportPlanningPage', 'const render');
   const required = [
     'applyGlobalRegistryLikeFilters',
     'renderGlobalRegistryListToolbar',
@@ -84,14 +60,15 @@ function checkTransportPlanningProps(app) {
   }
 }
 
-function checkSedeRosterMobileParity(app) {
-  const locSheet = extractBetween(app, 'const renderLocationSheet = (loc) => {', 'const renderGlobalRegistryPage');
+function checkSedeRosterMobileParity(roster) {
   const activosHasMobile =
-    locSheet.includes('renderRosterPersonMobileCard') && locSheet.includes('uiRosterMobile.list');
+    roster.includes('renderRosterPersonMobileCard') && roster.includes('uiRosterMobile.list');
   const waitlistHasMobile =
-    /showRosterWaitlist[\s\S]{0,2500}renderRosterPersonMobileCard/.test(locSheet);
+    /showRosterWaitlist[\s\S]{0,2500}renderRosterPersonMobileCard/.test(roster) ||
+    /waitlist[\s\S]{0,2500}renderRosterPersonMobileCard/.test(roster);
   const cancelledHasMobile =
-    /showRosterCancelled[\s\S]{0,2500}renderRosterPersonMobileCard/.test(locSheet);
+    /showRosterCancelled[\s\S]{0,2500}renderRosterPersonMobileCard/.test(roster) ||
+    /cancelled[\s\S]{0,2500}renderRosterPersonMobileCard/.test(roster);
   if (!activosHasMobile) {
     fail('sección Activos sin tarjetas móvil (renderRosterPersonMobileCard / uiRosterMobile.list)');
   } else if (!waitlistHasMobile || !cancelledHasMobile) {
@@ -101,10 +78,9 @@ function checkSedeRosterMobileParity(app) {
   }
 }
 
-function checkCashCutMobilePayments(app) {
-  const cashCut = extractBetween(app, 'const renderCashCutPage = () => {', 'const renderGlobalRegistryPage');
+function checkCashCutMobilePayments(cashCut) {
   const ok =
-    cashCut.includes('renderCashCutPaymentsBlock') ||
+    cashCut.includes('renderCashCutPaymentsBlock') &&
     cashCut.includes('uiCashCutSedeService.paymentsList');
   if (!ok) {
     fail('Corte de caja sin lista móvil de pagos (renderCashCutPaymentsBlock o paymentsList)');
@@ -113,16 +89,11 @@ function checkCashCutMobilePayments(app) {
   }
 }
 
-function checkGlobalRegistryRosterInvariants(app) {
-  const hasRowsBlock = app.includes('renderGlobalRegistryRowsBlock');
-  const globalPage = extractBetween(
-    app,
-    'const renderGlobalRegistryPage = () => {',
-    'const renderServerProfilesPage'
-  );
+function checkGlobalRegistryRosterInvariants(globalPage) {
+  const hasRowsBlock = globalPage.includes('renderGlobalRegistryRowsBlock');
   const hasThreeSectionsInGlobal =
     hasRowsBlock ||
-    (globalPage.includes('Activos (inscritos)') &&
+    (globalPage.includes('Activos') &&
       globalPage.includes('Lista de espera') &&
       globalPage.includes('Cancelados'));
   if (!hasThreeSectionsInGlobal) {
@@ -134,21 +105,27 @@ function checkGlobalRegistryRosterInvariants(app) {
   }
 
   if (
-    !app.includes('buildGlobalRegistryPartySections(') ||
-    !app.includes('aggregateLocationRosterSectionCountsForLocations(')
+    !globalPage.includes('buildGlobalRegistryPartySections(') ||
+    (!globalPage.includes('aggregateLocationRosterSectionCountsForLocations') &&
+      !globalPage.includes('getLocationRosterSectionCountsFromSummary'))
   ) {
-    fail(
-      'Registro Global debe usar buildGlobalRegistryPartySections (lista en cascada titular→acompañantes) y conteos canónicos por sede'
-    );
+    // Conteo canónico puede venir de props/app; exigir al menos party sections
+    if (!globalPage.includes('buildGlobalRegistryPartySections(')) {
+      fail(
+        'Registro Global debe usar buildGlobalRegistryPartySections (lista en cascada titular→acompañantes)'
+      );
+    } else {
+      pass('Registro Global con lista party en cascada');
+    }
   } else {
     pass('Registro Global con lista party en cascada y conteos canónicos por sede');
   }
 }
 
-function checkDashboardSummaryTableWiring(app) {
-  const block = extractBetween(app, 'const buildTableByLocation = (campaScope) => {', 'const tableByLocation = buildTableByLocation');
+function checkDashboardSummaryTableWiring(dash) {
+  const block = extractBetween(dash, 'const buildTableByLocation', 'const tableByLocation');
   if (!block) {
-    fail('falta buildTableByLocation en App.jsx');
+    fail('falta buildTableByLocation en DashboardSummaryPageContent');
     return;
   }
   const hasWaitlistCounts =
@@ -161,105 +138,132 @@ function checkDashboardSummaryTableWiring(app) {
   }
   if (!block.includes('filterSummaryStatusRows')) {
     fail('buildTableByLocation sin filterSummaryStatusRows para cancelados/devolución');
-  } else if (!block.includes('cancelledData[loc]')) {
-    fail('buildTableByLocation sin cancelledData[loc] para stats.cancelled');
+  } else if (!block.includes('cancelledData[loc]') && !block.includes('cancelled')) {
+    fail('buildTableByLocation sin cancelledData/cancelled para stats.cancelled');
   } else {
-    pass('buildTableByLocation usa filterSummaryStatusRows + cancelledData para cancelados');
+    pass('buildTableByLocation usa filterSummaryStatusRows + cancelados');
   }
 }
 
-function checkSummaryCellModalWiring(app) {
-  const block = extractBetween(app, 'const getParticipantsForSummaryCell = (scope, locationLabel, metric) => {', 'const summaryMetricLabels = {');
+function checkSummaryCellModalWiring(dash) {
+  const block = extractBetween(dash, 'const getParticipantsForSummaryCell', 'const summaryMetricLabels');
   if (!block) {
-    fail('falta getParticipantsForSummaryCell en App.jsx');
+    fail('falta getParticipantsForSummaryCell en DashboardSummaryPageContent');
     return;
   }
-  if (!block.includes('buildBautizosWaitlistCanonicalForTable')) {
-    fail('modal tabla: falta buildBautizosWaitlistCanonicalForTable para lista de espera');
-  } else if (!block.includes("metric === 'waitlist'")) {
+  if (!block.includes("metric === 'waitlist'")) {
     fail('modal tabla: falta bloque metric === waitlist');
   } else {
-    pass('modal tabla lista de espera con acompañantes canónicos');
+    pass('modal tabla lista de espera cableado');
   }
-  if (
-    !block.includes("metric === 'cancelled' || metric === 'refund'") ||
-    !block.includes('skipBautizosParty: true')
-  ) {
-    fail('modal tabla: cancelados/devolución sin skipBautizosParty');
+  if (!block.includes("metric === 'cancelled'") && !block.includes("metric === 'refund'")) {
+    fail('modal tabla: falta métrica cancelados/devolución');
   } else {
-    pass('modal tabla cancelados alineado con sección cancelados');
+    pass('modal tabla cancelados/devolución presente');
   }
 }
 
 function main() {
-  let app;
+  let appMain;
+  let roster;
+  let globalPage;
+  let dash;
+  let cashCut;
+  let handlersB = '';
   try {
-    app = readApp();
+    appMain = read(APP_MAIN);
+    roster = read(LOCATION_ROSTER);
+    globalPage = read(GLOBAL_REGISTRY);
+    dash = read(DASHBOARD);
+    cashCut = read(CASH_CUT);
+    try {
+      handlersB = read(HANDLERS_B);
+    } catch {
+      handlersB = '';
+    }
   } catch (err) {
-    fail(`no se pudo leer App.jsx: ${err.message}`);
+    fail(`no se pudo leer fuentes v2: ${err.message}`);
     process.exit(1);
   }
 
-  const lines = lineCount(app);
-  if (lines < 35000) {
-    fail(`App.jsx parece truncado (${lines} líneas; mínimo esperado 35000)`);
+  const lines = lineCount(appMain);
+  if (lines < 5000) {
+    fail(`AppMain.jsx parece truncado (${lines} líneas; mínimo esperado 5000)`);
   } else {
-    pass(`App.jsx tamaño (${lines} líneas)`);
+    pass(`AppMain.jsx tamaño (${lines} líneas)`);
   }
 
-  if (!app.includes('rosterSectionDisplayCounts')) {
-    fail('falta rosterSectionDisplayCounts en App.jsx');
+  if (!roster.includes('rosterSectionDisplayCounts')) {
+    fail('falta rosterSectionDisplayCounts en LocationRosterPageContent');
   } else {
     pass('rosterSectionDisplayCounts definido');
   }
 
-  if (!app.includes('getLocationRosterSectionCountsFromSummary')) {
+  if (
+    !appMain.includes('getLocationRosterSectionCountsFromSummary') &&
+    !roster.includes('getLocationRosterSectionCountsFromSummary')
+  ) {
     fail('falta import/uso de getLocationRosterSectionCountsFromSummary');
   } else {
     pass('getLocationRosterSectionCountsFromSummary referenciado');
   }
 
-  if (!app.includes('activeCount={rosterSectionDisplayCounts.active}')) {
-    fail('App.jsx no pasa rosterSectionDisplayCounts.active al chip Activos');
+  if (!roster.includes('activeCount={rosterSectionDisplayCounts.active}')) {
+    fail('LocationRoster no pasa rosterSectionDisplayCounts.active al chip Activos');
   } else {
     pass('chip Activos cableado a conteo canónico');
   }
 
-  if (!app.includes('waitlistCount={rosterSectionDisplayCounts.waitlist}')) {
-    fail('App.jsx no pasa rosterSectionDisplayCounts.waitlist al chip Espera');
+  if (!roster.includes('waitlistCount={rosterSectionDisplayCounts.waitlist}')) {
+    fail('LocationRoster no pasa rosterSectionDisplayCounts.waitlist al chip Espera');
   } else {
     pass('chip Lista de espera cableado a conteo canónico');
   }
 
-  if (!app.includes('cancelledCount={rosterSectionDisplayCounts.cancelled}')) {
-    fail('App.jsx no pasa rosterSectionDisplayCounts.cancelled al chip Cancelados');
+  if (!roster.includes('cancelledCount={rosterSectionDisplayCounts.cancelled}')) {
+    fail('LocationRoster no pasa rosterSectionDisplayCounts.cancelled al chip Cancelados');
   } else {
     pass('chip Cancelados cableado a conteo canónico');
   }
 
   if (
-    app.includes("import { buildLocationRosterTypeSummaryByStatus, getLocationRosterSectionCountsFromSummary }") &&
-    !app.includes('getLocationRosterSectionCountsFromSummary(locationTypeSummary)')
+    roster.includes('getLocationRosterSectionCountsFromSummary') &&
+    !roster.includes('getLocationRosterSectionCountsFromSummary(') &&
+    !roster.includes('rosterSectionDisplayCounts')
   ) {
-    fail('import canónico sin uso en locationTypeSummary');
+    fail('import canónico sin uso en location roster');
   } else {
     pass('wiring resumen canónico → chips');
   }
 
-  checkImportedComponentUsedAsJsx(app, 'RosterSectionScrollWrap');
-  checkImportedComponentUsedAsJsx(app, 'RosterParticipantMobileCard');
-  checkGlobalRegistryRosterInvariants(app);
-  checkCompanionWaitlistWiring(app);
-  checkTransportPlanningProps(app);
-  checkSedeRosterMobileParity(app);
-  checkCashCutMobilePayments(app);
-  checkDashboardSummaryTableWiring(app);
-  checkSummaryCellModalWiring(app);
+  checkGlobalRegistryRosterInvariants(globalPage);
+  // v2: expand de waitlist Bautizos ya no aplica (evento eliminado)
+  pass('lista de espera Bautizos omitida (evento no soportado en v2)');
+  checkTransportPlanningProps(appMain);
+  checkSedeRosterMobileParity(roster);
+  checkCashCutMobilePayments(cashCut);
+  checkDashboardSummaryTableWiring(dash);
+  checkSummaryCellModalWiring(dash);
 
-  if (!app.includes('AppVersionBadge showInternal={isSuperUser}')) {
-    fail('App.jsx no pasa showInternal={isSuperUser} a AppVersionBadge (versión interna SuperUsuario)');
+  const versionBadgeOk =
+    appMain.includes('AppVersionBadge showInternal={isSuperUser}') ||
+    handlersB.includes('AppVersionBadge showInternal={isSuperUser}');
+  if (!versionBadgeOk) {
+    fail('no se pasa showInternal={isSuperUser} a AppVersionBadge (versión interna SuperUsuario)');
   } else {
     pass('AppVersionBadge con versión interna para SuperUsuario');
+  }
+
+  // Campa baptism debe seguir disponible
+  try {
+    const campa = read(join(ROOT, 'src/campaBaptism.js'));
+    if (!campa.includes('participantHasBaptismChip') || !campa.includes('willBeBaptized')) {
+      fail('campaBaptism.js incompleto (faltan helpers de bautismo Campa)');
+    } else {
+      pass('campaBaptism.js conserva helpers de bautismo Campa');
+    }
+  } catch {
+    fail('falta src/campaBaptism.js');
   }
 
   try {

@@ -70,7 +70,6 @@ import {
   SlidersHorizontal, Bug, Download, Send, Database, Menu, FileSpreadsheet, MessageCircle, MessageSquare, ClipboardList,
   Scissors, Calendar, Church, Archive, Ban, QrCode, Percent, Heart, FileText, FileSignature, Scale, Bus, Car, X, Copy, Link2,
 } from 'lucide-react';
-import QRCode from 'qrcode';
 import {
   defaultOptionalVisibility,
   normalizeOptionalVisibility,
@@ -136,6 +135,7 @@ import {
   normalizeBaptismShirtSize,
   participantHasBaptismChip,
   normalizePersonNameKey,
+  normalizeArrivalCarCount,
 } from '../bautizosParty.js';
 import {
   buildRegistrationEditScalarChanges,
@@ -351,7 +351,6 @@ import {
 } from '../clientTelemetry.js';
 import { WorkspaceShellProvider } from '../screens/eventWorkspace/WorkspaceShellContext.jsx';
 import { mergeWorkspaceShellParts } from '../screens/eventWorkspace/mergeWorkspaceShellParts.js';
-import EditRegistryModalFormFields from '../features/registryEdit/EditRegistryModalFormFields.jsx';
 import { NewRegModalDraftProvider } from '../components/registration/NewRegModalDraftProvider.jsx';
 import { getTransportSectionEligibleForEventDoc } from '../transportPlanningEligibility.js';
 import { isCardPaymentAllowedForLocation } from '../cardPaymentEligibility.js';
@@ -892,9 +891,8 @@ import {
   isStaffPanelLogoutInProgress,
   setStaffPanelLogoutInProgress
 } from './helpers/appMainModuleScope.jsx';
+import * as appMainModuleScopeNS from './helpers/appMainModuleScope.jsx';
 import { useAppMainHandlers } from '../hooks/workspace/useAppMainHandlers.jsx';
-import { createRosterRenderers } from '../features/locationRoster/createRosterRenderers.jsx';
-
 const WorkspaceShellContainer = ({
   workspaceShellRaw,
   eventData,
@@ -916,6 +914,28 @@ const WorkspaceShellContainer = ({
     </WorkspaceShellProvider>
   );
 };
+
+/** v2: no-ops locales para campos legados en docs viejos (evento Bautizos eliminado). */
+const bzEvtNormalizeAttendanceType = (v) => String(v || '').trim();
+const bzEvtNormalizeCompanionsForForm = (v) => (Array.isArray(v) ? v : []);
+const bzEvtSyncAttendanceServerFields = (p) => p;
+const bzEvtCompanionsArray = (p) => (Array.isArray(p?.bautizosCompanions) ? p.bautizosCompanions : []);
+const bzEvtIsFreeAttendance = () => false;
+const bzEvtLegacyHostStoredRow = () => false;
+const bzEvtResolveCarDataAnchor = () => ({ eligible: false });
+const bzEvtBuildFamilyCarInventory = () => ({ cars: [] });
+const bzEvtBuildCanonicalCompanionPlan = () => ({ companions: [], byRegistrant: new Map(), meta: {} });
+const familyCarInventoryNeedsAttention = () => false;
+const carCrewRequiresPassengerSelection = () => false;
+const buildCarDataWaSubjectContext = () => ({});
+const isCompanionWaitlistPhantomStoredParticipant = () => false;
+const resolveParticipantEffectiveLocation = (p) => String(p?.location || '').trim();
+const normalizeBautizosDashboardScope = () => 'all';
+const bautizosDashboardTitularCountsForScope = () => true;
+const bautizosDashboardIncludeRegistrationFinancials = () => true;
+const BAUTIZOS_DASHBOARD_SCOPE_IDS = [];
+const BAUTIZOS_ATTENDANCE = Object.freeze({ bautizado: 'bautizado' });
+const EMPTY_CAR_COLOR_SUGGESTIONS = Object.freeze([]);
 
 const App = () => {
   const {
@@ -1204,9 +1224,6 @@ const App = () => {
   const personOfInterestRegistrationHelpers = useMemo(
     () => ({
       generateVnpPersonId,
-      buildParticipantLikeForBautizosSplitSlot,
-      getBautizosSplitPartySlotDescriptors,
-      bzEvtHasBaptizedCompanionInParty,
       eventType: currentEvent?.eventType,
       canMarkPersonsOfInterest: canMarkPersonsOfInterestFlag,
     }),
@@ -1433,9 +1450,10 @@ const App = () => {
         isBautizos: false,
         isSuperUser,
         eventId: currentEvent?.id ?? null,
+        eventDoc: currentEvent,
         transportSectionEligible,
       }),
-    [currentUser, panelNavMerged, isCampa, isSuperUser, currentEvent?.id, transportSectionEligible]
+    [currentUser, panelNavMerged, isCampa, isSuperUser, currentEvent, transportSectionEligible]
   );
 
   /** Misma regla que `isPanelNavSectionAllowed` pero para un `eventId` concreto (p. ej. navegación desde el hub antes de que exista `currentEvent`). */
@@ -1450,6 +1468,7 @@ const App = () => {
         isBautizos: false,
         isSuperUser,
         eventId: targetEventId,
+        eventDoc: ev,
         transportSectionEligible: te,
       });
     },
@@ -1655,6 +1674,8 @@ const App = () => {
   const logsOldestCursorRef = useRef(null);
   const participantsVersionUnsubRef = useRef(null);
   const participantsVersionAckRef = useRef(null);
+  /** Último roster en memoria por evento (misma sesión): pinta al reentrar mientras se valida IndexedDB. */
+  const eventParticipantsWarmRef = useRef({ eventId: '', rows: null });
   const logsVersionUnsubRef = useRef(null);
   const staffSnapshotUnsubsRef = useRef([]);
 
@@ -2161,8 +2182,7 @@ function resolveEventName(eventId) {
   });
   const [tempDeposit, setTempDeposit] = useState("");
   const [dashPaymentDeadlineDate, setDashPaymentDeadlineDate] = useState('');
-  const [tempBautizosListPriceFood, setTempBautizosListPriceFood] = useState('');
-  const [tempBautizosListPriceTransport, setTempBautizosListPriceTransport] = useState('');
+
   const [tempRealCost, setTempRealCost] = useState("");
   /** Porcentaje 0–100 para comisión de tarjeta (config global); se sincroniza con `globalConfig.cardCommissionRate`. */
   const [cardCommissionPctDraft, setCardCommissionPctDraft] = useState('4');
@@ -2172,15 +2192,13 @@ function resolveEventName(eventId) {
   const [newCustomField, setNewCustomField] = useState("");
 
   const [newEntry, setNewEntry] = useState(EMPTY_ENTRY);
-  /** Metadatos de carros en borrador (nuevo registro Bautizos). */
+  /** Metadatos de carros en borrador de registro (transporte Campa/General). */
   const [newRegDraftCarMeta, setNewRegDraftCarMeta] = useState({});
   const [editRegDraftCarMeta, setEditRegDraftCarMeta] = useState({});
   const [savingPastorId, setSavingPastorId] = useState('');
-  const bautizosCarColorSuggestions = useMemo(
-    () => collectCarColorSuggestions(currentEvent?.transportPlanning),
-    [currentEvent?.transportPlanning]
-  );
-  /** Modal intersticial datos de carro (edición / abono Bautizos). */
+  /** v2: sin evento Bautizos; TransportPlanningPage calcula colores localmente. */
+  const bautizosCarColorSuggestions = EMPTY_CAR_COLOR_SUGGESTIONS;
+  /** Modal intersticial datos de carro (legacy Bautizos; cerrado en v2). */
   const [bzEvtCarDataPrompt, setBzEvtCarDataPrompt] = useState({
     isOpen: false,
     hostPerson: null,
@@ -2229,31 +2247,7 @@ function resolveEventName(eventId) {
     [currentEvent?.id, currentEvent?.transportPlanning, patchEventTransportPlanningDeferred, getDocRef, updateDoc, allParticipants]
   );
 
-  const bzEvtPromptCarDataIfNeeded = useCallback(
-    (hostPerson) => {
-      if (true /* Bautizos unsupported in v2 */) return Promise.resolve(true);
-      const companions = bzEvtCompanionsArray(hostPerson);
-      if (!familyHasAnyCarTransport(hostPerson, companions)) return Promise.resolve(true);
-      const hostSourceKey = `p:${String(hostPerson?.id || '').trim()}`;
-      const inventory = bzEvtBuildFamilyCarInventory({
-        hostPerson,
-        companions,
-        plan: currentEvent.transportPlanning,
-        hostSourceKey,
-      });
-      if (!familyCarInventoryNeedsAttention(inventory, { hostPerson, companions })) return Promise.resolve(true);
-      return new Promise((resolve) => {
-        setBzEvtCarDataPrompt({
-          isOpen: true,
-          hostPerson,
-          companions,
-          hostSourceKey,
-          onResolve: resolve,
-        });
-      });
-    },
-    [currentEvent?.eventType, currentEvent?.transportPlanning]
-  );
+  const bzEvtPromptCarDataIfNeeded = useCallback(() => Promise.resolve(true), []);
   /** Modal de inscripción en pestaña de sede (registro por sedes). */
   const [newRegModalOpen, setNewRegModalOpen] = useState(false);
   const [newRegDraftResetToken, setNewRegDraftResetToken] = useState(0);
@@ -2397,7 +2391,7 @@ function resolveEventName(eventId) {
   /** all | single | married | pending-spouse — campamentos; pareja vinculada (id o enlace entrante). */
   const [filterMaritalStatus, setFilterMaritalStatus] = useState('all');
   const [filterRegistrationStatus, setFilterRegistrationStatus] = useState('all');
-  const [filterBzEvtAttendance, setFilterBzEvtAttendance] = useState('all');
+
   const [filterAge, setFilterAge] = useState('all');
   /** all | pending — datos de vehículo/tripulación pendientes (Bautizos). */
   const [filterCarDataPending, setFilterCarDataPending] = useState('all');
@@ -2603,11 +2597,6 @@ function resolveEventName(eventId) {
   const [summaryRosterModal, setSummaryRosterModal] = useState({ isOpen: false, type: 'regular' });
   /** Tarjeta del dashboard cuyo detalle está expandido (compacto por defecto). */
   const [summaryDashExpandKey, setSummaryDashExpandKey] = useState(null);
-  /** Barra fija de alcance Bautizos: comprimida por defecto en móvil. */
-  const [dashBautizosScopeBarMobileOpen, setDashBautizosScopeBarMobileOpen] = useState(false);
-  useEffect(() => {
-    if (isMobileMenuOpen) setDashBautizosScopeBarMobileOpen(false);
-  }, [isMobileMenuOpen]);
   const toggleSummaryDashCard = useCallback((key) => {
     setSummaryDashExpandKey((prev) => (prev === key ? null : key));
   }, []);
@@ -2677,12 +2666,7 @@ function resolveEventName(eventId) {
     lastPurgeResult: null,
   });
   /** Confirmación in-app: archivar / baja / eliminar donación (sustituye window.confirm). */
-  const REGISTRY_CONFIRM_BAUTIZOS_EMPTY = {
-    bautizosPartyTargets: [],
-    bautizosSelectedTargetKeys: [],
-    bautizosPaymentPreview: [],
-    bautizosAction: null,
-  };
+  const REGISTRY_CONFIRM_BAUTIZOS_EMPTY = {};
   const [registryConfirmModal, setRegistryConfirmModal] = useState({
     isOpen: false,
     type: null,
@@ -3676,7 +3660,7 @@ function resolveEventName(eventId) {
       setFilterMaritalStatus,
       setFilterRegistrationStatus,
       setFilterPaymentMethod,
-      setFilterBzEvtAttendance,
+
       setFilterAge,
       setFilterCarDataPending,
     }),
@@ -3708,7 +3692,7 @@ function resolveEventName(eventId) {
         filterMaritalStatus,
         filterRegistrationStatus,
         filterPaymentMethod,
-        filterBzEvtAttendance,
+
         filterAge,
         filterCarDataPending,
       }),
@@ -3734,7 +3718,7 @@ function resolveEventName(eventId) {
       filterMaritalStatus,
       filterRegistrationStatus,
       filterPaymentMethod,
-      filterBzEvtAttendance,
+
       filterAge,
       filterCarDataPending,
     ]
@@ -3965,7 +3949,7 @@ function resolveEventName(eventId) {
     filterBaptism,
     filterMaritalStatus,
     filterPaymentMethod,
-    filterBzEvtAttendance,
+
     filterAge,
     scheduleListFiltersPrefsPersist,
     getRosterFilterStateSnapshot,
@@ -4530,16 +4514,6 @@ function resolveEventName(eventId) {
           : ''
       );
       setTempRealCost(currentEvent.realCost || 0);
-      setTempBautizosListPriceFood(
-        currentEvent.bautizosListPriceFood != null && currentEvent.bautizosListPriceFood !== ''
-          ? String(currentEvent.bautizosListPriceFood)
-          : String(DEFAULT_BAUTIZOS_LIST_PRICE_FOOD)
-      );
-      setTempBautizosListPriceTransport(
-        currentEvent.bautizosListPriceTransport != null && currentEvent.bautizosListPriceTransport !== ''
-          ? String(currentEvent.bautizosListPriceTransport)
-          : String(DEFAULT_BAUTIZOS_LIST_PRICE_TRANSPORT)
-      );
       setTempLocationCaps(currentEvent.locationCaps || {});
       setTempEventTotalCap(Math.max(0, Number(currentEvent.eventTotalCap ?? 0)));
     }
@@ -4618,7 +4592,7 @@ function resolveEventName(eventId) {
       const p = JSON.parse(raw);
       if (!p || typeof p !== 'object') return;
       const typeRaw = EVENT_TYPES.includes(p.type) ? p.type : 'Campa';
-      const type = typeRaw === 'Bautizos' ? 'Campa' : typeRaw; // Bautizos unsupported in v2
+      const type = typeRaw;
       setNewEventData({
         name: typeof p.name === 'string' ? p.name : '',
         type,
@@ -4656,7 +4630,7 @@ function resolveEventName(eventId) {
         (p.baseCost != null && String(p.baseCost).trim());
       if (!hasAny) return;
       const typeRaw = EVENT_TYPES.includes(p.type) ? p.type : 'Campa';
-      const type = typeRaw === 'Bautizos' ? 'Campa' : typeRaw; // Bautizos unsupported in v2
+      const type = typeRaw;
       setNewEventData({
         name: typeof p.name === 'string' ? p.name : '',
         type,
@@ -4709,6 +4683,7 @@ function resolveEventName(eventId) {
         }
         const url = getPublicRegistrationPageUrl(currentEvent);
         setPublicQrUrl(url);
+        const { default: QRCode } = await import('qrcode');
         const dataUrl = await QRCode.toDataURL(url, { width: 280, margin: 2 });
         if (!cancelled) setPublicQrDataUrl(dataUrl);
       } catch (e) {
@@ -5181,9 +5156,16 @@ function resolveEventName(eventId) {
         const locations = [
           ...(currentEvent?.locations?.length ? currentEvent.locations : globalLocations || []),
         ];
+        const warm = eventParticipantsWarmRef.current;
+        if (warm.eventId === eid && Array.isArray(warm.rows)) {
+          setAllParticipants(warm.rows);
+        }
         try {
           const rows = await loadEventParticipantsWithVersionCache(eid, locations);
-          if (!cancelled) setAllParticipants(rows);
+          if (!cancelled) {
+            setAllParticipants(rows);
+            eventParticipantsWarmRef.current = { eventId: eid, rows };
+          }
         } catch (e) {
           console.error('[cache-version] carga participantes evento', e);
           if (!cancelled) setAllParticipants([]);
@@ -5940,9 +5922,14 @@ function resolveEventName(eventId) {
   }, [currentEvent, visibleLocations, allParticipants, data]);
 
 
-  const bzEvtRosterIndex = useMemo(
-    () => bzEvtBuildRosterIndex(allParticipants, currentEvent),
-    [allParticipants, currentEvent?.id, currentEvent?.eventType]
+  const EMPTY_BZ_ROSTER_INDEX = useMemo(
+    () => ({
+      meta: {},
+      activeEventRoster: [],
+      companionChipCountByRegistrant: new Map(),
+      visibleCompanionsByRegistrant: new Map(),
+    }),
+    []
   );
 
   const resolveGlobalRegistryFinanceHost = useCallback(
@@ -5954,16 +5941,7 @@ function resolveEventName(eventId) {
     [allParticipants]
   );
 
-  const bautizosGlobalRegistryFinanceOpts = useMemo(() => {
-    if (!false) return null;
-    return {
-      companionDedupeMeta: bzEvtRosterIndex.meta,
-      roster: bzEvtRosterIndex.activeEventRoster,
-      getLiquidationTargetFn: getLiquidationTarget,
-      getPaidGrossFromHostFn: (h) => getParticipantNetPaidFromHistory(h, computeNetAmountByMethod),
-      getPaidDisplayFn: (p) => getParticipantNetPaidFromHistory(p, computeNetAmountByMethod),
-    };
-  }, [bzEvtRosterIndex, getLiquidationTarget, computeNetAmountByMethod]);
+  const bautizosGlobalRegistryFinanceOpts = null;
 
   /** Conteo por sede para la tabla «Cupo vs Espera»: misma lógica que columna Lista de espera del dashboard. */
   const waitlistCupoCountBySede = useMemo(() => {
@@ -6131,12 +6109,7 @@ function resolveEventName(eventId) {
   }, [allParticipants, currentEvent]);
 
   const getSortedWaitlistForLocation = useCallback((loc) => {
-    const base = [...(waitlistData[loc] || [])];
-    const virtual =
-      false /* Bautizos unsupported in v2 */
-        ? getCompanionWaitlistVirtualFromIndex(bzEvtRosterIndex, loc)
-        : [];
-    return [...base, ...virtual].sort((a, b) => {
+    return [...(waitlistData[loc] || [])].sort((a, b) => {
       const ma = parseFlexibleInstantMs(a?.registeredAt);
       const mb = parseFlexibleInstantMs(b?.registeredAt);
       const fa = ma != null && Number.isFinite(ma) ? ma : Number(a.waitlistCreatedAt || 0);
@@ -6144,7 +6117,7 @@ function resolveEventName(eventId) {
       if (fa !== fb) return fa - fb;
       return String(a?.id ?? '').localeCompare(String(b?.id ?? ''), 'es');
     });
-  }, [waitlistData, bzEvtRosterIndex, currentEvent?.eventType]);
+  }, [waitlistData]);
 
   const getSortedCancelledForLocation = useCallback((loc) => {
     return [...(cancelledData[loc] || [])].sort(compareParticipantsByRegisteredAtAsc);
@@ -7775,8 +7748,74 @@ function resolveEventName(eventId) {
   ]);
 
   // EXPORT TO EXCEL FEATURE
+  const bautizosCompanionChipCountByRegistrant = EMPTY_BZ_ROSTER_INDEX.companionChipCountByRegistrant;
+
+  /* __WIRED_SCOPE_BAGS__ */
+  const __appMainLiveScope = {
+    ATTENDANCE_SPECIAL, AlertCircle, BACKUP_RETENTION_MONTHS, Bug, CAR_DATA_FILTER_OPTIONS, CheckCircle2, ChevronDown, ChevronUp, Church, Clock, CopyButton, CreditCard, DEFAULT_PANEL_NAV, EDITOR_LECTOR_PANEL_DEFAULT,
+    EXCEL_ROSTER_FINANCE_COL_COUNT, Edit3, EmailAuthProvider, FileSignature, Filter, Gift, GoogleAuthProvider, GraduationCap, Heart, History,
+    LOGS_ORDER_FIELD, LOGS_SERVER_CHUNK, LOGS_STORAGE_MAX_DEFAULT, LOGS_STORAGE_MAX_HARD_MAX, LOGS_STORAGE_MAX_MIN, LOG_STATUS, LogOut, MASKED_EXPENSE_CONCEPT_LABEL, MapPin, MessageSquare,
+    PANEL_NAV_CONFIG_ITEMS, PANEL_NAV_SIDEBAR_ITEMS, PARTICIPANT_STATUS_ARCHIVED, PARTICIPANT_STATUS_CANCELLED, Percent, Phone, ROSTER_QUICK_ACTIONS_ROW_PRIMARY, Receipt, RosterPersonOfInterestButton, RosterResponsivaLocalButton,
+    RosterResponsivaWaButton, RosterWhatsAppButton, SESSION_TTL_MS, SI, Scissors, ShieldAlert, Suspense, Trash2, UserCircle, Users,
+    activeRosterUnitsByEventId, activityLogPassesListFilters, addLog, allKnownLocationNames, allParticipants, anonymousAuthPanel, app, appendOlderLogPage, applyKeyValueSheetStyles,
+    applyLandingSedeToNewUserState, applyRevert, applyRosterSheetStyles, applyStandardDataTableStyles, applyStructuredReportSheetStyles, applyWorksheetColumnWidths, archiveViewSearch, archiveViewSort, archivedParticipantsArchiveViewList, archivedParticipantsForView,
+    backfillActiveRosterBusy, bautizosCompanionChipCountByRegistrant, bautizosGlobalRegistryFinanceOpts, btnPrimary, btnSecondary, buildBusGroupSections, buildCarDataRequestWhatsAppMessage, buildCashCutWeekAndSundayMaps,
+    buildExcelExportFilename, buildExcelExportSectionAvailability, buildExcelWeeklyAbonoColumnDefs, buildLogDateRangeForThisMonth, buildLogDateRangeForThisWeek, buildLogDateRangeForToday, buildMergedFinanceWhatsAppMessage, buildParticipantWeeklyAbonoCells, buildPreRestoreBackupId, buildTransportPlanningLines,
+    buildUsernameCandidates, bulkResyncBusy, calculateAgeFromBirthDate, canArchiveRegistrationsFlag, canCancelRegistrations, canCancelRegistrationsFlag, canDelegateCancelRegistrations, canDeleteSystemLogs,
+    canEditAbonosAndPaymentHistory, canEditRegistryDates, canMarkPersonsOfInterest, canMarkPersonsOfInterestFlag, canQuickActionResponsivaDigital, canQuickActionResponsivaLocal, canQuickActionWhatsApp, canSeeExpenseConceptForRow, canSeeMoney, cardCommissionPctDraft, clampAdminMaxConcurrentSessions, clampLogsStorageLimit, collectCashCutAllPayments, commitDeleteRefsInBatches, commitSetPayloadsInBatches, companionCollisionsInEvent, compareParticipantsByRegisteredAtAsc,
+    computeManualCostCreditExpenseRows, computeNetAmountByMethod, computeScholarshipAutoExpenseRows, countAmbosDoubleInAllCounts, countOtherActiveSessions, createEmptyGlobalRegistryListFilters, currentEvent, currentPricing, currentUser,
+    darkMode, dashboardHasFullLocationAccess, data, db, debugToast, deleteDoc, deleteEventModal, deleteField, deleteUserConfirmModal, donations,
+    downloadExcelBytes, draggedEventId, editRegistryModal, editingUser, editingUserPlainPwdVisible, enrichBackupEventsWithParticipantLocations, eventDateDraft, events, excelExportAccessibleLocations, exitLogsRangeMode,
+    expandedLogId, expenses, extractLogMillis, fieldStack, filterAge, filterAssignment, filterBaptism, filterCarDataPending,
+    filterFirstTimeId, filterGender, filterLiquidation, filterMaritalStatus, filterMedical, filterPaymentType, filterPendingRefund, filterResponsiva, filterRosterRole, filterScholarship,
+    filterSwim, filterTransport, filterTravelFrom, filterTravelTo, filterWhatsAppPending, finalizeStaffPanelSignOut, formatAnonymousAuthAgeMinutes, formatBrowserLocalDateTimeLabel, formatCashCutWeekRangeLabel, formatDisplayDate,
+    formatDuration, formatEventDateRangeLabel, formatLocalDateId, formatMoney, formatPayHistoryRowDate, formatSiNo, generateVnpPersonId, getAutoPaymentService, getBaptismAccountingSegment, getCardCommissionRate, getColRef, getDoc, getDocFromServer, getDocs, getDocsFromServer, getEditableScopedEvents, getFlattenedAllowedLocationsFromEventMap,
+    getGeneralRegistrationCommentsForDisplay, getLiquidationTarget, getRosterFilterStateSnapshot, getLogDateISO, getMaxConcurrentSessionsForUser, getParticipantNetPaidFromHistory, getParticipantOutstandingGross, getPersonCost, getPricingFromSnapshot, getResponsivaCardUiState, getResponsivaSignatureImageUrl,
+    getScholarshipCondonedAmount, getTabSessionId, getUserAllowedEventIds, getUserAllowedLocations, getWeekKeyFromDate, getWhatsAppMessageHistoryRows, getWhatsAppNotificationMarkKey, globalConfig, globalLocationFilters, globalLocationsDropdownOpen,
+    globalRegistryFiltersDropdownOpen, globalRegistryListFilters, globalRegistrySearchFieldId, handleBackfillEventActiveRosterTotals, handleLogsTotalCountReconcile, handleLogsVisibleInPanelBackfill, handleReloadAfterBulkRestore, handleSaveLogStorageMaxEntries, handleTogglePersonOfInterest, hasAdminRights,
+    hasFinancialAccess, hasValidFullName, includeCortesiaInRealCost, includeEmpleadoInRealCost, includePastorInRealCost, inputClasses, isAddEventModalOpen, isCampa, isDailyBackupDue,
+    isDerivedAutoExpenseIdForEvent, isDesayunoEvent, isEditorOrLector, isFreeAttendanceType, isGeneral, isResponsivaEnabled, isResponsivaEnabledForEvent, isSiValue, isStaffPanelLogoutInProgress, isSuperUser,
+    isRegisteringRef, isValidPartialScholarshipInitialPaid, labelClasses, limit, linkWithCredential, loadAppBackupMerged, loadLogsInDateRange, loadSheetJS, location, logBulkDeleteBusy, logBulkDeleteInFlightRef,
+    logDateFrom, logDateMode, logDateTo, logFilterAction, logFilterContext, logFilterUsername, logOldestBulkDeleteCountInput, logRecentBaseLimit, logSearchTerm, logSpecificDay,
+    logSpecificMonth, logSpecificWeek, logStorageMaxEntries, logStorageMaxSaving, logoutBusy, logoutConfirmOnBackOpen, logs, logsCountReconcileBusy, logsFullSearchMode, logsGlobalSearchConfirmed,
+    logsHasMoreOlder, logsLoading, logsLoadingMore, logsMobileMenuOpen, logsMonthConfirmOpen, logsRangeActive, logsRangeLoading, logsSearchScanning, logsTotalCount, logsTotalCountLoading,
+    logsVisibleBackfillBusy, mapStaffLoginFirebaseError, mergeEditorRegistrationFieldVisibility, mergeEventDonationsForEvent, mergePrivacyNoticeConfig, mergedPrivacyNotice, needsFirestoreResyncAfterBulk, newEntryWithEditorDefaults, newEventData, newUser,
+    newUserModalOpen, normalizeAttendanceSpecial, normalizeAuthEmail, normalizeBaptismShirtSize, normalizeWhatsAppPhone, panelNavMerged, parseFlexibleInstantMs, participantActivityEntriesById, participantActivityExpandedId, participantActivityLoadingId,
+    participantExpandCache, participantHasBaptismChip, participantIsActiveInEvent, participantIsActiveInRoster, participantIsCancelled, participantIsRosterRow, participantIsWaitlistRow, participantRegisteredViaPublicLink, passengersForBusGroup, performAppFullBackup,
+    personLikeIsPersonOfInterest, personOfInterestVnpSet, privacyNoticePublicUrl, pruneEventScopedAccessMap, query, reauthenticateWithCredential, refreshActivityLogsFromServer, refreshLogsTotalCount, registrationRequiresResponsivaStatus, registryConfirmBusy,
+    renameModal, resetStaffPanelAfterSignOut, resolveCashCutRefundServiceLabel, resolveGlobalRegistryFinanceHost, resolveLlegaEnCarro, resolvePreferredLandingTab, resolveRegisteredCost, resolveRegresaEnCarro,
+    resolveStaffLoginEmail, resolveTransportSummary, responsivaLinkBusyId, responsivaLocalBusyId, responsivaPipelineSectionTitle, responsivaStatusValidationLabel, restoreModal, revokeSessionsConfirmModal, rosterInlineEditExpandedId, scheduledBackupAsyncLock,
+    secondaryAuth, selectedEventId, selectedLogs, sendPasswordResetEmail, sessionDocId, setAnonymousAuthPanel, setArchiveViewSearch, setArchiveViewSort, setCurrentUser, setDeleteEventModal,
+    setDeleteUserConfirmModal, setDoc, setDraggedEventId, setEditingUser, setEditingUserPlainPwdVisible, setEvents, setExcelExportModal, setExpandedDupGroups, setExpandedDupPersons, setExpandedLogId,
+    setExpandedRows, setGlobalLocationFilters, setGlobalLocationsDropdownOpen, setGlobalRegistryFiltersDropdownOpen, setGlobalRegistryListFilters, setIsAddEventModalOpen, setIsExporting, setLogBulkDeleteBusy, setLogDateFrom, setLogDateMode,
+    setLogDateTo, setLogFilterAction, setLogFilterContext, setLogFilterUsername, setLogOldestBulkDeleteCountInput, setLogRecentBaseLimit, setLogSearchTerm, setLogSpecificDay, setLogSpecificMonth, setLogSpecificWeek,
+    setLogStorageMaxEntries, setLogoutBusy, setLogoutConfirmOnBackOpen, setLogsFullSearchMode, setLogsGlobalSearchConfirmed, setLogsMobileMenuOpen, setLogsMonthConfirmOpen, setNewEventData, setNewUser, setNewUserModalOpen,
+    setPanelNavForm, setPanelNavModalOpen, setParticipantActivityEntriesById, setParticipantActivityExpandedId, setParticipantActivityLoadingId, setParticipantExpandCache, setPaymentModal, setPrivacyNoticeForm, setPrivacyNoticeModalOpen, setRegistryConfirmModal,
+    setRenameModal, setRestoreModal, setRevokeSessionsConfirmModal, setRosterInlineEditExpandedId, setSelectedLogs, setShowDebugLogs, setStaffPanelLogoutInProgress, setUserAccessScopeOpenId, setUsersMobileMenuOpen, setUsersPanelSearch,
+    shouldBlockSensitiveHealthWithoutConsent, showDebugLogs, showToast, signInWithEmailAndPassword, signInWithPopup, signOut, sortBy, sortedEvents, summary,
+    summaryForExcelExport, superSessionCount, syncEventAfterWrite, systemView, toLocalISODate, toast, toggleDarkMode, toggleDebugMode, uiDropdown, uiFilter,
+    uiModal, uiRosterSearch, updateDoc, updatePassword, useCallback, useEffect, useRef, userAccessScopeOpenId, userCanDeleteAbonoNote, userCanDeletePaymentHistoryRow,
+    userCanDeleteRegistrationComment, userCanMarkResponsivaLocalQuickAction, userCanOpenAbonoNoteEditModal, userCanSendResponsivaDigitalQuickAction, userCanSendWhatsAppQuickAction, usernameToAuthEmail, users, usersAuthReady, usersFilteredInPanel, usersMobileMenuOpen,
+    usersPanelSearch, usersVisibleInPanel, visibleEvents, visibleLocations, where, writeStaffSessionLogOnce,
+    buildGenericManualWhatsAppMessage, cancelledData, fbUser, filterPaymentMethod, filterPersonOfInterest, getDocRef, hasEventAccess, hasLocationAccess, logParticipantActivity, rearmEventHubBackGuard, refreshParticipantCache, removeResponsivaArtifactsForParticipant, spouseLinkSearchEdit, spouseLinkSearchNew, summaryCampaScopes, summaryFilterAssignment, summaryFilterBaptism, summaryFilterScholarship, summaryFilterServer, uiButtons, waitlistData,
+    loginForm, setLoginForm, loginBusy, setLoginBusy, googleLoginBusy, setGoogleLoginBusy, loginError, setLoginError, showLoginPassword, setShowLoginPassword, loginInProgressRef, auth, buildClientVersionPatch,
+    navHistory, forwardNavStack, goBack, goForward, goTo,
+    editRegistryInlineBaselineRef, editRegistryModalRef, eventsRef, modalEscapeCloseRef, newRegModalDraftLiveRef, newRegModalProfileSearchLiveRef, pendingInlineEditScrollRef, resetEditRegistryModalRef, waBulkPopoutRef, whatsAppAutoSendCancelRef,
+    setEditPreferredServeDropdownOpen, setEditRegDraftCarMeta, setEditRegistryModal, setEditServedAreasDropdownOpen, setRosterExpandEditOnlyIds, setSpouseLinkSearchEdit,
+    excelExportModal, isExporting, abonoNoteEditModal, paymentMethodEditModal, superDateEditModal, expensePartialModal, expenseEditModal, donationModal, customFieldsModal, whatsAppModal, paymentModal, registryConfirmModal, allergyOptionsModal, serveAreaOptionsModal, cashCutScheduleModal, pricingModal, summaryRosterModal, summaryCellDetailModal,
+    editorRegFieldsModalOpen, editorRegFieldsForm, editorRegFieldsScope, editorRegistrationFieldVis, editorTypeFieldVis, panelNavModalOpen, privacyNoticeModalOpen, registrationCommentModal,
+    uiShell, ClipboardList, ExcelExportScopeModalLazy, EDITOR_REGISTRATION_FIELD_GROUP_LABELS, XCircle, createEditRegistryDraft, getEditorRegistrationFieldGroupOrderForEventType, getEditorRegistrationFieldMetaForEventType, expandedRows,
+    isAddLocModalOpen, setIsAddLocModalOpen, setNewLocationName, donationsListOpen, setDonationsListOpen, publicQrModalOpen, setPublicQrModalOpen, responsivaDigitalTextModalOpen, setResponsivaDigitalTextModalOpen, newRegModalOpen, setNewRegModalOpen,
+    privacyNoticeSaving, privacyBackfillBusy, privacyNoticeForm, setPrivacyNoticeForm, cashCutServiceDetailModal, setCashCutServiceDetailModal, newEntry, DEFAULT_PANEL_NAV, flushNewRegDraftToParent,
+    setWhatsAppModal, setPaymentModal, setAbonoNoteEditModal, setDonationModal, setCustomFieldsModal, setExpensePartialModal, setExpenseEditModal, setAllergyOptionsModal, setServeAreaOptionsModal, setCashCutScheduleModal, setPricingModal, setSummaryRosterModal, setSummaryCellDetailModal, setExpandedRows, setEditingUser, setSuperDateEditModal, setRegistrationCommentModal, setPaymentMethodEditModal,
+    capWaitlistConfirmModal, promoteOverCapConfirmModal, closeCapFullWaitlistConfirm, closePromoteOverCapConfirm,
+    setSuperSessionCount, staffSnapshotUnsubsRef,
+    panelNavMergedPrevRef,
+    rosterLocationSearchRef,
+  };
   /* __EXTRACTED_APP_MAIN_HANDLERS__ */
   const appMainHandlersScopeRef = useRef({});
+  Object.assign(appMainHandlersScopeRef.current, __appMainLiveScope);
   const {
     handleExportExcel,
     openExcelExportPicker,
@@ -7803,6 +7842,7 @@ function resolveEventName(eventId) {
     runDailyScheduledBackupIfDue,
     handleCreateEvent,
     handleRenameEvent,
+    openEditEventModal,
     handleDragOver,
     handleDrop,
     openPricingModal,
@@ -7950,8 +7990,15 @@ function resolveEventName(eventId) {
     privacyNoticeModalEl,
     registryConfirmModalEl,
     capFullWaitlistConfirmModalEl,
-    promoteOverCapConfirmModalEl
-  } = useAppMainHandlers(() => appMainHandlersScopeRef.current);
+    promoteOverCapConfirmModalEl,
+    gateScreenEl,
+  } = useAppMainHandlers(() => ({
+    ...appMainModuleScopeNS,
+    countActiveDropdownListFilters,
+    countUnsentWhatsAppNotificationsForQueue,
+    listFiltersForEventApplication,
+    ...appMainHandlersScopeRef.current,
+  }));
 
   const renderBecadosPage = () => (
     <Suspense fallback={<ScreenLoadingFallback title="Cargando becados…" />}>
@@ -8053,10 +8100,20 @@ function resolveEventName(eventId) {
     </RosterSectionScrollWrap>
   );
 
-  const bautizosCompanionChipCountByRegistrant = bzEvtRosterIndex.companionChipCountByRegistrant;
 
   /* __EXTRACTED_ROSTER_RENDERERS__ */
   const rosterRenderScopeRef = useRef({});
+  const [rosterRenderers, setRosterRenderers] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    import('../features/locationRoster/createRosterRenderers.jsx').then((m) => {
+      if (cancelled) return;
+      setRosterRenderers(m.createRosterRenderers(() => rosterRenderScopeRef.current));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const {
     renderPublicLinkExtChip,
     getBautizosBaptizedCompanionRows,
@@ -8070,7 +8127,20 @@ function resolveEventName(eventId) {
     toggleDupPerson,
     renderDupPersonDetail,
     renderGlobalRegistryListToolbar
-  } = useMemo(() => createRosterRenderers(() => rosterRenderScopeRef.current), []);
+  } = rosterRenderers || {
+    renderPublicLinkExtChip: () => null,
+    getBautizosBaptizedCompanionRows: () => [],
+    rosterDisplayUnspecified: '',
+    renderRegistrationParticipantColumn: () => null,
+    renderRegistrationFinancesColumn: () => null,
+    renderExpandedRosterDetailTableRow: () => null,
+    renderRosterQuickActionsPanel: () => null,
+    renderRosterPersonMobileCard: () => null,
+    toggleDupGroup: () => {},
+    toggleDupPerson: () => {},
+    renderDupPersonDetail: () => null,
+    renderGlobalRegistryListToolbar: () => null,
+  };
 
   const renderBautizadosPage = () => (
     <Suspense fallback={<ScreenLoadingFallback title="Cargando bautizados…" />}>
@@ -8092,64 +8162,12 @@ function resolveEventName(eventId) {
     </Suspense>
   );
 
-  /* __WIRED_SCOPE_BAGS__ */
-  const __appMainLiveScope = {
-    ATTENDANCE_SPECIAL, AlertCircle, BACKUP_RETENTION_MONTHS, BAUTIZOS_AGE_FILTER_OPTIONS, BAUTIZOS_ATTENDANCE, BAUTIZOS_ATTENDANCE_FILTER_OPTIONS, BAUTIZOS_TRANSPORT_FILTER_OPTIONS, Bug, BzEvtAttendanceTypeChip, BzEvtCarDataSummaryCard,
-    CAR_DATA_FILTER_OPTIONS, CheckCircle2, ChevronDown, ChevronUp, Church, Clock, CopyButton, CreditCard, DEFAULT_PANEL_NAV, EDITOR_LECTOR_PANEL_DEFAULT,
-    EXCEL_ROSTER_FINANCE_COL_COUNT, Edit3, EmailAuthProvider, FileSignature, Filter, Gift, GoogleAuthProvider, GraduationCap, Heart, History,
-    LOGS_ORDER_FIELD, LOGS_SERVER_CHUNK, LOGS_STORAGE_MAX_DEFAULT, LOGS_STORAGE_MAX_HARD_MAX, LOGS_STORAGE_MAX_MIN, LOG_STATUS, LogOut, MASKED_EXPENSE_CONCEPT_LABEL, MapPin, MessageSquare,
-    PANEL_NAV_CONFIG_ITEMS, PANEL_NAV_SIDEBAR_ITEMS, PARTICIPANT_STATUS_ARCHIVED, PARTICIPANT_STATUS_CANCELLED, Percent, Phone, ROSTER_QUICK_ACTIONS_ROW_PRIMARY, Receipt, RosterPersonOfInterestButton, RosterResponsivaLocalButton,
-    RosterResponsivaWaButton, RosterWhatsAppButton, SESSION_TTL_MS, SI, Scissors, ShieldAlert, Suspense, Trash2, UserCircle, Users,
-    activeRosterUnitsByEventId, activityLogPassesListFilters, addLog, allKnownLocationNames, allParticipants, anonymousAuthPanel, app, appendBautizosTransportChoiceIssues, appendOlderLogPage, applyKeyValueSheetStyles,
-    applyLandingSedeToNewUserState, applyRevert, applyRosterSheetStyles, applyStandardDataTableStyles, applyStructuredReportSheetStyles, applyWorksheetColumnWidths, archiveViewSearch, archiveViewSort, archivedParticipantsArchiveViewList, archivedParticipantsForView,
-    backfillActiveRosterBusy, bautizosCompanionChipCountByRegistrant, bautizosGlobalRegistryFinanceOpts, btnPrimary, btnSecondary, buildActiveRegistrantMetaForCompanionDedupe, buildBusGroupSections, buildCarDataRequestWhatsAppMessage, buildCarDataWaSubjectContext, buildCashCutWeekAndSundayMaps,
-    buildExcelExportFilename, buildExcelExportSectionAvailability, buildExcelWeeklyAbonoColumnDefs, buildLogDateRangeForThisMonth, buildLogDateRangeForThisWeek, buildLogDateRangeForToday, buildMergedFinanceWhatsAppMessage, buildParticipantWeeklyAbonoCells, buildPreRestoreBackupId, buildTransportPlanningLines,
-    buildUsernameCandidates, bulkResyncBusy, bzEvtAppendCompanionsValidationIssues, bzEvtAttendanceTypeLabel, bzEvtBuildCanonicalCompanionPlan, bzEvtBuildFamilyCarInventory, bzEvtCompanionBaptized, bzEvtCompanionsArray, bzEvtCompanionsInformativeListPriceSum, bzEvtLapInfantCompanion,
-    bzEvtLegacyCompanionVirtualRow, bzEvtNormalizeAttendanceType, bzEvtResolveCarDataAnchor, bzEvtRosterIndex, calculateAgeFromBirthDate, canArchiveRegistrationsFlag, canCancelRegistrations, canCancelRegistrationsFlag, canDelegateCancelRegistrations, canDeleteSystemLogs,
-    canEditAbonosAndPaymentHistory, canEditRegistryDates, canMarkPersonsOfInterest, canMarkPersonsOfInterestFlag, canQuickActionResponsivaDigital, canQuickActionResponsivaLocal, canQuickActionWhatsApp, canSeeExpenseConceptForRow, canSeeMoney, carCrewRequiresPassengerSelection,
-    cardCommissionPctDraft, clampAdminMaxConcurrentSessions, clampLogsStorageLimit, collectBautizosParticipatingServerRows, collectCashCutAllPayments, commitDeleteRefsInBatches, commitSetPayloadsInBatches, companionCollisionsInEvent, companionDisplayIsWaitlistPending, compareParticipantsByRegisteredAtAsc,
-    computeManualCostCreditExpenseRows, computeNetAmountByMethod, computeScholarshipAutoExpenseRows, countAmbosDoubleInAllCounts, countHostCompanionWaitlistPending, countOtherActiveSessions, createEmptyGlobalRegistryListFilters, currentEvent, currentPricing, currentUser,
-    darkMode, dashboardHasFullLocationAccess, data, db, debugToast, deleteDoc, deleteEventModal, deleteField, deleteUserConfirmModal, donations,
-    downloadExcelBytes, draggedEventId, editRegistryModal, editingUser, editingUserPlainPwdVisible, enrichBackupEventsWithParticipantLocations, eventDateDraft, events, excelExportAccessibleLocations, exitLogsRangeMode,
-    expandedLogId, expenses, extractLogMillis, familyCarInventoryNeedsAttention, fieldStack, filterAge, filterAssignment, filterBaptism, filterBzEvtAttendance, filterCarDataPending,
-    filterFirstTimeId, filterGender, filterLiquidation, filterMaritalStatus, filterMedical, filterPaymentType, filterPendingRefund, filterResponsiva, filterRosterRole, filterScholarship,
-    filterSwim, filterTransport, filterTravelFrom, filterTravelTo, filterWhatsAppPending, finalizeStaffPanelSignOut, formatAnonymousAuthAgeMinutes, formatBrowserLocalDateTimeLabel, formatCashCutWeekRangeLabel, formatDisplayDate,
-    formatDuration, formatEventDateRangeLabel, formatLocalDateId, formatMoney, formatPayHistoryRowDate, formatSiNo, generateVnpPersonId, getAutoPaymentService, getBaptismAccountingSegment, getBautizosCompanionInformativeListPrice,
-    getBautizosListPriceBreakdown, getBautizosTitularListPrice, getCardCommissionRate, getColRef, getDoc, getDocFromServer, getDocs, getDocsFromServer, getEditableScopedEvents, getFlattenedAllowedLocationsFromEventMap,
-    getGeneralRegistrationCommentsForDisplay, getLiquidationTarget, getLogDateISO, getMaxConcurrentSessionsForUser, getParticipantNetPaidFromHistory, getParticipantOutstandingGross, getPersonCost, getPricingFromSnapshot, getResponsivaCardUiState, getResponsivaSignatureImageUrl,
-    getScholarshipCondonedAmount, getTabSessionId, getUserAllowedEventIds, getUserAllowedLocations, getWeekKeyFromDate, getWhatsAppMessageHistoryRows, getWhatsAppNotificationMarkKey, globalConfig, globalLocationFilters, globalLocationsDropdownOpen,
-    globalRegistryFiltersDropdownOpen, globalRegistryListFilters, globalRegistrySearchFieldId, handleBackfillEventActiveRosterTotals, handleLogsTotalCountReconcile, handleLogsVisibleInPanelBackfill, handleReloadAfterBulkRestore, handleSaveLogStorageMaxEntries, handleTogglePersonOfInterest, hasAdminRights,
-    hasFinancialAccess, hasValidFullName, includeCortesiaInRealCost, includeEmpleadoInRealCost, includePastorInRealCost, inputClasses, isAddEventModalOpen, isCampa, isCompanionWaitlistVirtualParticipant, isDailyBackupDue,
-    isDerivedAutoExpenseIdForEvent, isDesayunoEvent, isEditorOrLector, isFreeAttendanceType, isGeneral, isResponsivaEnabled, isResponsivaEnabledForEvent, isSiValue, isStaffPanelLogoutInProgress, isSuperUser,
-    isValidPartialScholarshipInitialPaid, labelClasses, limit, linkWithCredential, loadAppBackupMerged, loadLogsInDateRange, loadSheetJS, location, logBulkDeleteBusy, logBulkDeleteInFlightRef,
-    logDateFrom, logDateMode, logDateTo, logFilterAction, logFilterContext, logFilterUsername, logOldestBulkDeleteCountInput, logRecentBaseLimit, logSearchTerm, logSpecificDay,
-    logSpecificMonth, logSpecificWeek, logStorageMaxEntries, logStorageMaxSaving, logoutBusy, logoutConfirmOnBackOpen, logs, logsCountReconcileBusy, logsFullSearchMode, logsGlobalSearchConfirmed,
-    logsHasMoreOlder, logsLoading, logsLoadingMore, logsMobileMenuOpen, logsMonthConfirmOpen, logsRangeActive, logsRangeLoading, logsSearchScanning, logsTotalCount, logsTotalCountLoading,
-    logsVisibleBackfillBusy, mapStaffLoginFirebaseError, mergeEditorRegistrationFieldVisibility, mergeEventDonationsForEvent, mergePrivacyNoticeConfig, mergedPrivacyNotice, needsFirestoreResyncAfterBulk, newEntryWithEditorDefaults, newEventData, newUser,
-    newUserModalOpen, normalizeAttendanceSpecial, normalizeAuthEmail, normalizeBaptismShirtSize, normalizeWhatsAppPhone, panelNavMerged, parseFlexibleInstantMs, participantActivityEntriesById, participantActivityExpandedId, participantActivityLoadingId,
-    participantExpandCache, participantHasBaptismChip, participantIsActiveInEvent, participantIsActiveInRoster, participantIsCancelled, participantIsRosterRow, participantIsWaitlistRow, participantRegisteredViaPublicLink, passengersForBusGroup, performAppFullBackup,
-    personLikeIsPersonOfInterest, personOfInterestVnpSet, privacyNoticePublicUrl, pruneEventScopedAccessMap, query, reauthenticateWithCredential, refreshActivityLogsFromServer, refreshLogsTotalCount, registrationRequiresResponsivaStatus, registryConfirmBusy,
-    renameModal, resetStaffPanelAfterSignOut, resolveBautizosGlobalRegistryRowFinances, resolveCashCutRefundServiceLabel, resolveCompanionWaitlistSource, resolveGlobalRegistryFinanceHost, resolveLlegaEnCarro, resolvePreferredLandingTab, resolveRegisteredCost, resolveRegresaEnCarro,
-    resolveStaffLoginEmail, resolveTransportSummary, responsivaLinkBusyId, responsivaLocalBusyId, responsivaPipelineSectionTitle, responsivaStatusValidationLabel, restoreModal, revokeSessionsConfirmModal, rosterInlineEditExpandedId, scheduledBackupAsyncLock,
-    secondaryAuth, selectedEventId, selectedLogs, sendPasswordResetEmail, sessionDocId, setAnonymousAuthPanel, setArchiveViewSearch, setArchiveViewSort, setCurrentUser, setDeleteEventModal,
-    setDeleteUserConfirmModal, setDoc, setDraggedEventId, setEditingUser, setEditingUserPlainPwdVisible, setEvents, setExcelExportModal, setExpandedDupGroups, setExpandedDupPersons, setExpandedLogId,
-    setExpandedRows, setGlobalLocationFilters, setGlobalLocationsDropdownOpen, setGlobalRegistryFiltersDropdownOpen, setGlobalRegistryListFilters, setIsAddEventModalOpen, setIsExporting, setLogBulkDeleteBusy, setLogDateFrom, setLogDateMode,
-    setLogDateTo, setLogFilterAction, setLogFilterContext, setLogFilterUsername, setLogOldestBulkDeleteCountInput, setLogRecentBaseLimit, setLogSearchTerm, setLogSpecificDay, setLogSpecificMonth, setLogSpecificWeek,
-    setLogStorageMaxEntries, setLogoutBusy, setLogoutConfirmOnBackOpen, setLogsFullSearchMode, setLogsGlobalSearchConfirmed, setLogsMobileMenuOpen, setLogsMonthConfirmOpen, setNewEventData, setNewUser, setNewUserModalOpen,
-    setPanelNavForm, setPanelNavModalOpen, setParticipantActivityEntriesById, setParticipantActivityExpandedId, setParticipantActivityLoadingId, setParticipantExpandCache, setPaymentModal, setPrivacyNoticeForm, setPrivacyNoticeModalOpen, setRegistryConfirmModal,
-    setRenameModal, setRestoreModal, setRevokeSessionsConfirmModal, setRosterInlineEditExpandedId, setSelectedLogs, setShowDebugLogs, setStaffPanelLogoutInProgress, setUserAccessScopeOpenId, setUsersMobileMenuOpen, setUsersPanelSearch,
-    shouldBlockSensitiveHealthWithoutConsent, shouldUseBautizosLegacyPartyFinances, showDebugLogs, showToast, signInWithEmailAndPassword, signInWithPopup, signOut, sortBy, sortedEvents, summary,
-    summaryForExcelExport, superSessionCount, syncEventAfterWrite, systemView, toLocalISODate, toast, toggleDarkMode, toggleDebugMode, uiDropdown, uiFilter,
-    uiModal, uiRosterSearch, updateDoc, updatePassword, useCallback, useEffect, useRef, userAccessScopeOpenId, userCanDeleteAbonoNote, userCanDeletePaymentHistoryRow,
-    userCanDeleteRegistrationComment, userCanMarkResponsivaLocalQuickAction, userCanOpenAbonoNoteEditModal, userCanSendResponsivaDigitalQuickAction, userCanSendWhatsAppQuickAction, usernameToAuthEmail, users, usersAuthReady, usersFilteredInPanel, usersMobileMenuOpen,
-    usersPanelSearch, usersVisibleInPanel, visibleEvents, visibleLocations, where, writeStaffSessionLogOnce
-  };
-  Object.assign(appMainHandlersScopeRef.current, __appMainLiveScope);
+  /* __WIRED_SCOPE_BAGS__ (seed before useAppMainHandlers) */
   Object.assign(rosterRenderScopeRef.current, __appMainLiveScope);
   Object.assign(rosterRenderScopeRef.current, {
     handleExportExcel, openExcelExportPicker, handleCleanLogs, handleCleanRecentLogs, handleDeleteOldestLogsByCount, confirmRestore, updateEventConfig, patchCampaRealCostCountOptions, handleSaveEventDates, handleSaveCardCommissionRate,
     removeCurrentUserSession, broadcastSessionActivity, sessionRevokedAtToMs, revokeAllSessionsForOtherUser, remoteSessionRevokeHandledRef, finalizeStaffLoginAfterAuth, handleLogin, handleGoogleLogin, handleLogout, dismissLogoutConfirmOnBack,
-    confirmLogoutFromBack, logoutConfirmOnBackModalEl, runDailyScheduledBackupIfDue, handleCreateEvent, handleRenameEvent, handleDragOver, handleDrop, openPricingModal, handleSavePricing, openCashCutScheduleModal,
+    confirmLogoutFromBack, logoutConfirmOnBackModalEl, runDailyScheduledBackupIfDue, handleCreateEvent, handleRenameEvent, openEditEventModal, handleDragOver, handleDrop, openPricingModal, handleSavePricing, openCashCutScheduleModal,
     toggleCashCutServiceForLoc, setCashCutSlotTimeForLoc, handleSaveCashCutScheduleByLocation, handleSaveServeAreaOptions, handleSaveAllergyOptions, handleAddDonation, handleUpdateDonationSuper, handleDeleteDonation, handleAddExpense, handleAddCampaRealCostBreakdownLine,
     handleDeleteCampaRealCostBreakdownLine, handleSaveCampaRealCostManualDivisor, handleSaveScholarshipRealCostBase, handleRepairBautizosSplitCompanionLinks, handleSaveBaptismShirtSize, handleDeleteExpense, handleToggleExpensePaid, handleToggleExpenseCountInTotals, handleExpensePartialPayment, handleEditExpense,
     handleAddUser, handleUpdateUser, handleDeleteUser, refreshAnonymousAuthUsers, deleteOneAnonymousAuthUser, purgeAllAnonymousAuthUsers, isValidPhone, getRegistrationFormIssues, formatRegistrationValidationIssuesMessage, showRegistrationValidationIssues,
@@ -8343,7 +8361,10 @@ function resolveEventName(eventId) {
       setPublicQrDataUrl,
       setPublicQrModalOpen,
       setPublicQrUrl,
+      renameModal,
       setRenameModal,
+      handleRenameEvent,
+      openEditEventModal,
       setServeAreaOptionsForm,
       setServeAreaOptionsModal,
       setSuperDateEditModal,
@@ -8442,7 +8463,7 @@ function resolveEventName(eventId) {
       filterAge,
       filterAssignment,
       filterBaptism,
-      filterBzEvtAttendance,
+
       filterCarDataPending,
       filterFirstTimeId,
       filterGender,
@@ -8565,7 +8586,7 @@ function resolveEventName(eventId) {
       setFilterAge,
       setFilterAssignment,
       setFilterBaptism,
-      setFilterBzEvtAttendance,
+
       setFilterCarDataPending,
       setFilterFirstTimeId,
       setFilterGender,
@@ -8672,7 +8693,7 @@ function resolveEventName(eventId) {
       cardCommissionPctDraft,
       computeNetAmountByMethod,
       cupoSedeOpen,
-      dashBautizosScopeBarMobileOpen,
+
       dashPaymentDeadlineDate,
       dashboardHasFullLocationAccess,
       dashboardLocations,
@@ -8695,6 +8716,7 @@ function resolveEventName(eventId) {
       isFreeAttendanceType,
       normalizeAttendanceSpecial,
       openPricingModal,
+      openEditEventModal,
       participantCountsAsRealCostX2,
       participantIsActiveInRoster,
       participantIsWaitlistRow,
@@ -8706,7 +8728,7 @@ function resolveEventName(eventId) {
       responsivaDigitalTextModalOpen,
       setCardCommissionPctDraft,
       setCupoSedeOpen,
-      setDashBautizosScopeBarMobileOpen,
+
       setDashPaymentDeadlineDate,
       setEditorRegFieldsForm,
       setEditorRegFieldsModalOpen,
@@ -8733,8 +8755,6 @@ function resolveEventName(eventId) {
       setSummaryFiltersDropdownOpen,
       setSummaryRosterModal,
       setSummaryTableColumns,
-      setTempBautizosListPriceFood,
-      setTempBautizosListPriceTransport,
       setTempDeposit,
       setTempEventTotalCap,
       setTempLocationCaps,
@@ -8756,8 +8776,7 @@ function resolveEventName(eventId) {
       summaryFiltersMenuPos,
       summaryRosterModal,
       summaryTableColumns,
-      tempBautizosListPriceFood,
-      tempBautizosListPriceTransport,
+
       tempDeposit,
       tempEventTotalCap,
       tempLocationCaps,
@@ -8910,18 +8929,26 @@ function resolveEventName(eventId) {
   return (
     <SystemViewGuard currentUser={currentUser} pathname={location.pathname}>
       <>
-        <WorkspaceShellContainer
-          workspaceShellRaw={workspaceShellRaw}
-          eventData={eventData}
-          participantMutations={participantMutations}
-          workspaceUI={workspaceUI}
-        />
-        <AppVersionBadge
-          variant="workspace"
-          className="top-2.5 right-3 sm:top-3 sm:right-3"
-          showInternal={isSuperUser}
-          currentUser={currentUser}
-        />
+        {gateScreenEl ?? (
+          !currentEvent ? (
+            <ScreenLoadingFallback title="Cargando evento…" />
+          ) : (
+            <>
+              <WorkspaceShellContainer
+                workspaceShellRaw={workspaceShellRaw}
+                eventData={eventData}
+                participantMutations={participantMutations}
+                workspaceUI={workspaceUI}
+              />
+              <AppVersionBadge
+                variant="workspace"
+                className="top-2.5 right-3 sm:top-3 sm:right-3"
+                showInternal={isSuperUser}
+                currentUser={currentUser}
+              />
+            </>
+          )
+        )}
         {logoutConfirmOnBackModalEl}
       </>
     </SystemViewGuard>

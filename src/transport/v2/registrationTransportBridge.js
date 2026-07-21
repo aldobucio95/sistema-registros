@@ -19,6 +19,10 @@ export function scheduleRegistrationTransportSave({
   onError,
 }) {
   if (event?.eventType !== 'Bautizos') return { scheduled: false };
+  // v3: carros son unidades del plan; el registro solo marca elegibilidad (llegaEnCarro).
+  if (Number(event?.transportPlanning?.transportVersion) >= 3) {
+    return { scheduled: false, reason: 'v3_car_units' };
+  }
   if (!familyHasAnyCarTransport(personData, personData?.bautizosCompanions)) {
     return { scheduled: false };
   }

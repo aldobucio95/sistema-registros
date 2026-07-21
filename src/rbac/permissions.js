@@ -1,18 +1,40 @@
 import { normalizeRole, isAdminOrSuper } from './roles.js';
 import { getTransportSectionEligibleForEventDoc, eventTypeIsDesayuno } from '../transportPlanningEligibility.js';
+import {
+  ATTENDANCE_ROLE_PANEL_KEY,
+  attendanceRolePanelKeysInOrder,
+} from '../attendanceRoles.js';
+import { isAttendanceTypeEnabled, resolveEventAttendanceConfig } from '../eventTypePresets.js';
 
+/** Orden: dashboard → roles → registro global → sedes → responsivas → transporte → corte → gastos */
 export const PANEL_NAV_KEYS = [
   'dashboard',
+  ...attendanceRolePanelKeysInOrder(),
+  'registroGlobal',
+  'locations',
+  'responsivas',
+  'transporte',
+  'cashCut',
+  'expenseList',
+  // Alias legado (redirigen a role*): se mantienen para datos de usuario antiguos
   'bautizados',
   'serversPage',
   'becados',
-  'cashCut',
-  'expenseList',
-  'responsivas',
-  'registroGlobal',
-  'transporte',
-  'locations',
 ];
+
+export const LEGACY_PANEL_TO_ROLE = {
+  bautizados: 'roleBautizado',
+  serversPage: 'roleServidor',
+  becados: 'roleBecado',
+};
+
+export function resolveCanonicalPanelKey(key) {
+  return LEGACY_PANEL_TO_ROLE[key] || key;
+}
+
+function blankRolePanelDefaults(value) {
+  return Object.fromEntries(attendanceRolePanelKeysInOrder().map((k) => [k, value]));
+}
 
 /** Eventos permitidos: lista explícita o legado `restrictedEventId`. */
 export function getUserAllowedEventIds(user) {
@@ -80,6 +102,7 @@ export function defaultPanelSectionsByRole(role) {
   if (r === 'Administrador') {
     return {
       dashboard: true,
+      ...blankRolePanelDefaults(true),
       bautizados: true,
       serversPage: true,
       becados: true,
@@ -91,9 +114,9 @@ export function defaultPanelSectionsByRole(role) {
       locations: true,
     };
   }
-  // Editor / Lector: por defecto solo sedes en menú; el dashboard y el resto se habilitan por evento / menú global.
   return {
     dashboard: false,
+    ...blankRolePanelDefaults(false),
     bautizados: false,
     serversPage: false,
     becados: false,
@@ -213,12 +236,16 @@ export function userCanAccessExpenseList(user, sessionIsSuperUser) {
 }
 
 export function isPanelNavKeyAllowed(user, key, ctx) {
-  const { globalPanelNav = {}, isCampa = false, isSuperUser: sessionIsSuperUser = false, eventId = null } = ctx || {};
+  const {
+    globalPanelNav = {},
+    isCampa = false,
+    isSuperUser: sessionIsSuperUser = false,
+    eventId = null,
+    eventDoc = null,
+  } = ctx || {};
   if (!user) return false;
   if (key === 'transporte' && ctx?.transportSectionEligible === false) return false;
-  if (normalizeRole(user.role) === 'SuperUsuario') return true;
 
-  /** Lista de gastos: solo `canViewExpenses` (+ tope global Editor/Lector); no se configura en «menú lateral» por usuario. */
   if (key === 'expenseList') {
     if (!userCanAccessExpenseList(user, sessionIsSuperUser)) return false;
     const r = normalizeRole(user.role);
@@ -229,14 +256,38 @@ export function isPanelNavKeyAllowed(user, key, ctx) {
     return true;
   }
 
+  const canonical = resolveCanonicalPanelKey(key);
+
+  // Roles: ocultar si el evento no los tiene habilitados
+  const roleEntry = Object.entries(ATTENDANCE_ROLE_PANEL_KEY).find(([, pk]) => pk === canonical);
+  if (roleEntry && eventDoc && !isAttendanceTypeEnabled(eventDoc, roleEntry[0])) {
+    return false;
+  }
+
+  if (key === 'responsivas' || canonical === 'responsivas') {
+    if (eventDoc) {
+      const cfg = resolveEventAttendanceConfig(eventDoc);
+      if (!cfg.responsivaEnabled) return false;
+    } else if (!isCampa) {
+      return false;
+    }
+  }
+
+  if (normalizeRole(user.role) === 'SuperUsuario') return true;
+
   const merged = getUserAllowedPanelSectionsForEvent(user, eventId, globalPanelNav);
+  if (merged[canonical] === false) return false;
   if (merged[key] === false) return false;
-
-  if (key === 'responsivas' && !isCampa) return false;
-  if (key === 'serversPage' && !isCampa) return false;
-  if (key === 'bautizados' && !isCampa) return false;
-
   return true;
+}
+
+/**
+ * Permiso para ajustar el costo de un registro de forma manual.
+ */
+export function canAdjustRegistrationCost(user) {
+  if (!user) return false;
+  if (isAdminOrSuper(user.role)) return true;
+  return user.canAdjustRegistrationCost === true;
 }
 
 /**

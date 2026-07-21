@@ -141,27 +141,14 @@ export function personLikeIsPersonOfInterest(personLike, interestSet, opts = {})
   return false;
 }
 
-export function resolveVnpIdsForRegistrationInterestCheck(entry, eventType, helpers = {}) {
-  const { generateVnpPersonId, buildParticipantLikeForBautizosSplitSlot, getBautizosSplitPartySlotDescriptors, hasBautizosBaptizedCompanionInParty } =
-    helpers;
+export function resolveVnpIdsForRegistrationInterestCheck(entry, _eventType, helpers = {}) {
+  const { generateVnpPersonId } = helpers;
   const ids = [];
   const pushId = (pl) => {
     const id = flagDocId(pl?.vnpPersonId) || (typeof generateVnpPersonId === 'function' ? flagDocId(generateVnpPersonId(pl)) : '');
     if (id) ids.push(id);
   };
   pushId(entry);
-  if (
-    eventType === 'Bautizos' &&
-    typeof hasBautizosBaptizedCompanionInParty === 'function' &&
-    hasBautizosBaptizedCompanionInParty(entry) &&
-    typeof getBautizosSplitPartySlotDescriptors === 'function' &&
-    typeof buildParticipantLikeForBautizosSplitSlot === 'function'
-  ) {
-    for (const d of getBautizosSplitPartySlotDescriptors(entry) || []) {
-      if (d.slotKey === 'host') continue;
-      pushId(buildParticipantLikeForBautizosSplitSlot(entry, '', d));
-    }
-  }
   return [...new Set(ids)];
 }
 

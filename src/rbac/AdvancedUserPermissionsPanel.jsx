@@ -100,6 +100,14 @@ export default function AdvancedUserPermissionsPanel({
             onChange={(v) => patch('canViewExpenses', v)}
           />
           <PermissionRow
+            checkboxClass="accent-violet-600"
+            label="Ajustar costo de registro"
+            hint="Permite editar el costo manual (override) de un registro."
+            checked={!!value.canAdjustRegistrationCost}
+            disabled={fieldsDisabled}
+            onChange={(v) => patch('canAdjustRegistrationCost', v)}
+          />
+          <PermissionRow
             checkboxClass="accent-slate-500"
             label="Privacidad de gastos"
             hint="Ocultar conceptos de egreso propios para otros gestores."

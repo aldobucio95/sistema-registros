@@ -185,8 +185,23 @@ export function defaultTransportPlanningState() {
     defaultBusCap: 40,
     defaultVanCap: 15,
     bautizosCarCapacity: 5,
+    defaultCarCap: 5,
     unitsByLocation: {},
     busAssign: {},
+    /**
+     * Unidades de carro independientes (v3), análogas a unitsByLocation de camiones.
+     * { id, label, capacity, locationKey? }
+     */
+    carUnits: [],
+    /** sourceKey → vehicleId (unidad de carro). */
+    carAssign: {},
+    /**
+     * Resumen liviano por unidad para UI colapsada (sin leer subcolección).
+     * Clave: vehicleId (`cu-…`).
+     */
+    carUnitSummaryById: {},
+    /** >= 3: carros como unidades; >= 2: subcolección transport_vehicles. */
+    transportVersion: 0,
     carGroups: [],
     familyCarOverride: {},
     /** Bautizos: titular manual por grupo/familia (`groupId` -> `hostId`). */
@@ -195,7 +210,7 @@ export function defaultTransportPlanningState() {
     carMetaBySource: {},
     /**
      * Resumen liviano por titular para UI colapsada (sin leer subcolección transport_car_meta).
-     * Clave: `p:<hostId>`.
+     * Clave: `p:<hostId>`. Legacy v1/v2.
      */
     bautizosCarMetaSummaryByTitular: {},
     /** >= 1 cuando carMeta vive en subcolección `transport_car_meta`. */
@@ -313,11 +328,16 @@ export function transportPlanningDirtySignature(plan, context = {}) {
   }
 }
 
-/** Firma del plan sin `carMetaBySource` (meta vive en subcolección). */
+/** Firma del plan sin `carMetaBySource` ni resumenes volátiles de carro (meta/resumen viven aparte). */
 export function transportPlanningStructureSignature(plan, context = {}) {
   try {
     const normalized = applyTransportPlanningAutoNormalization(plan, context);
-    const { carMetaBySource: _omit, ...structure } = normalizeTransportPlanning(normalized);
+    const {
+      carMetaBySource: _omit,
+      carUnitSummaryById: _omitSummary,
+      bautizosCarMetaSummaryByTitular: _omitTitularSummary,
+      ...structure
+    } = normalizeTransportPlanning(normalized);
     return JSON.stringify(structure);
   } catch {
     return '';
@@ -364,14 +384,52 @@ export function normalizeTransportPlanning(raw) {
           ])
         )
       : {};
+  const defaultCarCap = Math.max(
+    1,
+    parseInt(raw.defaultCarCap, 10) || parseInt(raw.bautizosCarCapacity, 10) || base.defaultCarCap
+  );
+  const carUnits = Array.isArray(raw.carUnits)
+    ? raw.carUnits
+        .map((u, i) => {
+          const id = String(u?.id || '').trim();
+          if (!id) return null;
+          return {
+            id,
+            label: String(u?.label || '').trim() || `Carro ${i + 1}`,
+            capacity: Math.max(1, parseInt(u?.capacity, 10) || defaultCarCap),
+            ...(String(u?.locationKey || '').trim()
+              ? { locationKey: String(u.locationKey).trim() }
+              : {}),
+          };
+        })
+        .filter(Boolean)
+    : [];
+  const carAssign =
+    raw.carAssign && typeof raw.carAssign === 'object'
+      ? Object.fromEntries(
+          Object.entries(raw.carAssign)
+            .map(([k, v]) => [String(k).trim(), String(v || '').trim()])
+            .filter(([k, v]) => k && v)
+        )
+      : {};
+  const carUnitSummaryById =
+    raw.carUnitSummaryById && typeof raw.carUnitSummaryById === 'object'
+      ? { ...raw.carUnitSummaryById }
+      : {};
+  const transportVersion = Math.max(0, parseInt(raw.transportVersion, 10) || 0);
   return {
     ...base,
     ...raw,
     defaultBusCap: Math.max(1, parseInt(raw.defaultBusCap, 10) || base.defaultBusCap),
     defaultVanCap: Math.max(1, parseInt(raw.defaultVanCap, 10) || base.defaultVanCap),
     bautizosCarCapacity: Math.max(1, parseInt(raw.bautizosCarCapacity, 10) || base.bautizosCarCapacity),
+    defaultCarCap,
     unitsByLocation,
     busAssign,
+    carUnits,
+    carAssign,
+    carUnitSummaryById,
+    transportVersion,
     carGroups,
     familyCarOverride,
     bautizosGroupTitularByGroupId,
@@ -581,6 +639,80 @@ export function countAssignedToUnit(plan, unitId) {
     if (String(v) === id) n += 1;
   }
   return n;
+}
+
+/** Unidades de carro del plan (v3). */
+export function getCarUnits(plan) {
+  return Array.isArray(plan?.carUnits) ? plan.carUnits : [];
+}
+
+export function getCarUnitById(plan, unitId) {
+  const id = String(unitId || '').trim();
+  if (!id) return null;
+  return getCarUnits(plan).find((u) => String(u?.id || '').trim() === id) || null;
+}
+
+export function countAssignedToCarUnit(plan, unitId) {
+  const id = String(unitId || '').trim();
+  if (!id) return 0;
+  let n = 0;
+  for (const v of Object.values(plan?.carAssign || {})) {
+    if (String(v) === id) n += 1;
+  }
+  return n;
+}
+
+export function getCarAssignUnitId(plan, sourceKey) {
+  const sk = String(sourceKey || '').trim();
+  if (!sk) return '';
+  return String(plan?.carAssign?.[sk] || '').trim();
+}
+
+/** Personas en carLines sin asignación a carro. */
+export function getUnassignedCarLines(carLines, plan) {
+  const assign = plan?.carAssign && typeof plan.carAssign === 'object' ? plan.carAssign : {};
+  return (carLines || []).filter((line) => {
+    const sk = String(line?.sourceKey || '').trim();
+    if (!sk) return false;
+    return !String(assign[sk] || '').trim();
+  });
+}
+
+/** Líneas asignadas a una unidad. */
+export function getCarLinesForUnit(carLines, plan, unitId) {
+  const id = String(unitId || '').trim();
+  if (!id) return [];
+  const assign = plan?.carAssign && typeof plan.carAssign === 'object' ? plan.carAssign : {};
+  return (carLines || []).filter((line) => {
+    const sk = String(line?.sourceKey || '').trim();
+    return sk && String(assign[sk] || '').trim() === id;
+  });
+}
+
+/**
+ * Asigna sourceKey a unitId (o '' para liberar). Quita de otras unidades.
+ * No escribe Firestore; solo muta el objeto plan.
+ */
+export function assignPersonToCarUnit(plan, sourceKey, unitId) {
+  const next = normalizeTransportPlanning(plan);
+  const sk = String(sourceKey || '').trim();
+  if (!sk) return next;
+  const uid = String(unitId || '').trim();
+  const carAssign = { ...(next.carAssign || {}) };
+  if (!uid) {
+    delete carAssign[sk];
+  } else {
+    carAssign[sk] = uid;
+  }
+  return { ...next, carAssign };
+}
+
+/** Capacidad default de carro (v3) con fallback a bautizosCarCapacity. */
+export function getDefaultCarCapacity(plan) {
+  return Math.max(
+    1,
+    parseInt(plan?.defaultCarCap, 10) || parseInt(plan?.bautizosCarCapacity, 10) || 5
+  );
 }
 
 /**
@@ -987,6 +1119,19 @@ export function effectiveCarsForCarLine(line, plan, keyToGroup, isBautizos, fami
 }
 
 export function totalCarsCount(carLines, plan, isBautizos, roster = []) {
+  const normalized = normalizeTransportPlanning(plan);
+  if (Number(normalized.transportVersion) >= 3 || (normalized.carUnits || []).length > 0) {
+    const units = getCarUnits(normalized);
+    if (units.length > 0) {
+      return units.filter((u) => {
+        const summary = normalized.carUnitSummaryById?.[u.id];
+        return summary?.maybeAbsent !== true;
+      }).length;
+    }
+    // Plan v3 sin unidades aún: 0 (el pool sin asignar no cuenta como carro)
+    if (Number(normalized.transportVersion) >= 3) return 0;
+  }
+
   const keyToGroup = buildCarGroupKeyToGroup(plan);
 
   const addTitularConfirmed = (titularSk, rawCount) => {

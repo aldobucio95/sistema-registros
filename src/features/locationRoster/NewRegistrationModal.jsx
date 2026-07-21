@@ -1,5 +1,5 @@
 import React from 'react';
-import { discountCampaignAppliesToLabel, discountCampaignHasDateRange, getValidDiscountCampaignsForPerson } from '../../app/helpers/discountCampaignHelpers.js';
+import { campaignMatchesPersonProfile, discountCampaignAppliesToLabel, discountCampaignHasDateRange, getValidDiscountCampaignsForPerson } from '../../app/helpers/discountCampaignHelpers.js';
 import { SI_LABEL } from '../../appConstants.js';
 import { CAR_DATA_FILTER_OPTIONS } from '../../carDataWhatsApp.js';
 import { isCardPaymentAllowedForLocation } from '../../cardPaymentEligibility.js';
@@ -26,6 +26,11 @@ import { buildLocationRosterTypeSummaryByStatus, getLocationRosterSectionCountsF
 import LocationRosterTypeSummary from '../../LocationRosterTypeSummary.jsx';
 import { nameTokensSubsetMatch } from '../../personNameMatch.js';
 import { attendanceSpecialChoiceButtonClass, getPersonCost } from '../../publicRegistrationLogic.js';
+import AttendanceRolesPicker from '../../components/attendance/AttendanceRolesPicker.jsx';
+import {
+  attendanceRolesFromLegacyPerson,
+  legacyFieldsFromAttendanceRoles,
+} from '../../attendanceRoles.js';
 import { canAddRegistrations } from '../../rbac/permissions.js';
 import { applyEditorRegistrationDefaults, canShowPastorAttendance } from '../../registrationFormEditorConfig.js';
 import { BLOOD_TYPES_SELECT_OPTIONS } from '../../registrationFormShared.js';
@@ -59,6 +64,7 @@ export default function NewRegistrationModal({ loc }) {
     buildProfileImportMatchesForModal,
     calculateAgeFromBirthDate,
     canMarkPersonsOfInterestFlag,
+    cancelledData,
     capFullWaitlistConfirmModalEl,
     companionCollisionsActionable,
     currentEvent,
@@ -97,6 +103,7 @@ export default function NewRegistrationModal({ loc }) {
     isValidPhone,
     labelClasses,
     mergedPrivacyNotice,
+    missingInitialPaid,
     newEntry,
     newRegDraftCarMeta,
     newRegDraftResetToken,
@@ -141,15 +148,31 @@ export default function NewRegistrationModal({ loc }) {
     setServeAreaOptionsForm,
     setServeAreaOptionsModal,
     setSpouseLinkSearchNew,
+    showToast,
     spouseLinkPickResultsNew,
     spouseLinkSearchNew,
-    summary
+    summary,
+    waitlistData,
   } = useWorkspaceShell();
 
     const restrictEditorForm = currentUser?.role === 'Editor';
     const blockAdminInputs = currentUser?.role === 'Administrador';
     const fv = (key) => !restrictEditorForm || editorRegistrationFieldVis[key] !== false;
     const fieldBlocked = (key) => blockAdminInputs && editorRegistrationFieldVis[key] === false;
+
+  const locFieldSuggestions = React.useMemo(
+    () =>
+      collectLocationSuggestionsFromRosterSources({
+        eventId: currentEvent?.id,
+        location: loc,
+        active: data[loc] || [],
+        waitlist: waitlistData[loc] || [],
+        cancelled: cancelledData[loc] || [],
+      }),
+    [currentEvent?.id, loc, data, waitlistData, cancelledData]
+  );
+  const locSugList = (field) => `new-sug-${locationPrefsKey(loc).replace(/%/g, '')}-${field}`;
+  const cardAllowedNewReg = isCardPaymentAllowedForLocation(currentEvent, loc);
 
   if (!newRegModalOpen || !canAddRegistrations(currentUser)) return null;
 
@@ -794,7 +817,16 @@ export default function NewRegistrationModal({ loc }) {
                     </button>
                   )}
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <AttendanceRolesPicker
+                    eventDoc={currentEvent}
+                    roles={draft.attendanceRoles || attendanceRolesFromLegacyPerson(draft)}
+                    onChange={(nextRoles, err) => {
+                      if (err) showToast?.(err);
+                      const legacy = legacyFieldsFromAttendanceRoles(nextRoles);
+                      setDraft({ ...draft, ...legacy });
+                    }}
+                  />
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
                   {fv('scholarship') && (
                   <fieldset disabled={fieldBlocked('scholarship')} className={`space-y-2 min-w-0 ${fieldBlocked('scholarship') ? 'opacity-70' : ''}`}>
                     <div className={fieldStack}>
@@ -1298,6 +1330,11 @@ export default function NewRegistrationModal({ loc }) {
                         Regresa en carro
                       </label>
                     </div>
+                    {(draft.llegaEnCarro || draft.regresaEnCarro) ? (
+                      <p className="text-[10px] text-slate-500 font-semibold sm:col-span-2">
+                        Carro propio: al guardar se sincroniza con la flota de Transporte (misma lógica de conductor/pasajeros).
+                      </p>
+                    ) : null}
                     <p className="text-[10px] text-slate-500">Si no marcas ninguno: llega en camión y regresa en camión.</p>
                   </fieldset>
                   )}

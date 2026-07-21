@@ -10,6 +10,10 @@ import RosterSortDropdown from '../../components/RosterSortDropdown.jsx';
 import { buildSedeCapChipViewModel } from '../../cupoVsWaitlistDisplay.js';
 import { collectLocationSuggestionsFromRosterSources } from '../../locationFieldSuggestions.js';
 import LocationRosterTypeSummary from '../../LocationRosterTypeSummary.jsx';
+import {
+  buildLocationRosterTypeSummaryByStatus,
+  getLocationRosterSectionCountsFromSummary,
+} from '../../locationRosterTypeSummary.js';
 import { canAddRegistrations } from '../../rbac/permissions.js';
 import { ROSTER_SORT_OPTIONS } from '../../rosterSortOptions.js';
 import { LocationRosterActivosChip, LocationRosterCancelledChip, LocationRosterWaitlistChip } from '../../screens/locationRoster/LocationRosterSectionChips.jsx';
@@ -22,6 +26,20 @@ import { useWorkspaceShell } from '../../screens/eventWorkspace/WorkspaceShellCo
 import VirtualizedTableBody from '../../components/roster/VirtualizedTableBody.jsx';
 import VirtualizedRosterMobileList from '../../components/roster/VirtualizedRosterMobileList.jsx';
 import ExpandedRosterDetailRowLazy from '../../components/roster/ExpandedRosterDetailRowLazy.jsx';
+
+function rosterQuickActionsWrapClass(isExpanded) {
+  return `roster-quick-actions-wrap flex flex-col gap-1.5 items-center justify-center w-full min-w-0 max-w-full mx-auto transition-opacity duration-200 ${
+    isExpanded ? 'opacity-100' : 'opacity-100 lg:opacity-[0.38] dark:lg:opacity-100 group-hover:opacity-100'
+  }`;
+}
+
+/** Placeholder de acciones durante scroll (menos DOM/React); CSS ya oculta la columna. */
+function RosterQuickActionsBody({ isScrolling, isExpanded, children }) {
+  if (isScrolling) {
+    return <div className="min-h-[92px]" aria-hidden="true" />;
+  }
+  return <div className={rosterQuickActionsWrapClass(isExpanded)}>{children}</div>;
+}
 
 export default function LocationRosterPageContent({ loc }) {
   const {
@@ -167,6 +185,8 @@ export default function LocationRosterPageContent({ loc }) {
     whatsAppAutoSendJob
   } = useWorkspaceShell();
 
+  const rosterActionsTdClass = `${ROSTER_TD_ACTIONS} [content-visibility:auto] [contain:paint]`;
+
   const [locationSearchApplied, setLocationSearchApplied] = useState(() => rosterSearchHydrateTerm ?? '');
   const deferredLocationSearch = useDeferredValue(locationSearchApplied);
   const prefsPersistTimerRef = useRef(null);
@@ -249,12 +269,12 @@ export default function LocationRosterPageContent({ loc }) {
       const showRosterActivos = rosterSearchActive ? visibleParticipants.length > 0 : rosterSectionExpanded.activos;
       const showRosterWaitlist = rosterSearchActive ? waitlistFilteredForLoc.length > 0 : rosterSectionExpanded.waitlist;
       const showRosterCancelled = rosterSearchActive ? cancelledFilteredForLoc.length > 0 : rosterSectionExpanded.cancelled;
-      const locationTypeSummary = null;
-      const rosterSectionDisplayCounts = {
-            active: rawActiveCountForLoc,
-            waitlist: (waitlistData[loc] || []).length,
-            cancelled: (cancelledData[loc] || []).length,
-          };
+      const locationTypeSummary = buildLocationRosterTypeSummaryByStatus({
+        activeTitularParticipants: data[loc] || [],
+        waitlistParticipants: waitlistData[loc] || [],
+        cancelledParticipants: cancelledData[loc] || [],
+      });
+      const rosterSectionDisplayCounts = getLocationRosterSectionCountsFromSummary(locationTypeSummary);
       const rosterLocSlug = String(loc).replace(/[^a-zA-Z0-9_-]/g, '_');
       const flattenedActiveRowsForLoc = visibleParticipants.map((person) => ({ kind: 'main', person }));
 
@@ -751,6 +771,7 @@ export default function LocationRosterPageContent({ loc }) {
           ) : (
             <VirtualizedRosterMobileList
               items={flattenedActiveRowsForLoc}
+              enabled={true}
               isItemExpanded={(rowItem) => rowItem.kind === 'main' && expandedRows.has(rowItem.person?.id)}
               renderItem={(rowItem, index) => {
               const rowDisplayIndex = index + 1;
@@ -797,7 +818,7 @@ export default function LocationRosterPageContent({ loc }) {
                 <th className={ROSTER_TH_ACTIONS}>Acciones rápidas</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-50">
+            <tbody className="divide-y divide-slate-50 roster-heavy-tbody">
               {visibleParticipants.length === 0 ? (() => {
                   const emptyMsg =
                     filterWhatsAppPending === 'pending'
@@ -807,9 +828,11 @@ export default function LocationRosterPageContent({ loc }) {
                 })() : (
                 <VirtualizedTableBody
                   items={flattenedActiveRowsForLoc}
+                  enabled={true}
                   colSpan={3}
+                  heavyRows
                   isItemExpanded={(rowItem) => rowItem.kind === 'main' && expandedRows.has(rowItem.person?.id)}
-                  renderItem={(rowItem, index) => {
+                  renderItem={(rowItem, index, { isScrolling = false } = {}) => {
                   const rowDisplayIndex = index + 1;
                   if (rowItem.kind === 'branch') {
                     const bp = rowItem.branchPerson;
@@ -853,12 +876,8 @@ export default function LocationRosterPageContent({ loc }) {
                         <td className={ROSTER_TD_FINANCES}>
                           {renderRegistrationFinancesColumn(person)}
                         </td>
-                        <td className={ROSTER_TD_ACTIONS}>
-                          <div
-                            className={`flex flex-col gap-1.5 items-center justify-center w-full min-w-0 max-w-full mx-auto transition-opacity duration-200 ${
-                              isExpanded ? 'opacity-100' : 'opacity-100 lg:opacity-[0.38] dark:lg:opacity-100 group-hover:opacity-100'
-                            }`}
-                          >
+                        <td className={rosterActionsTdClass}>
+                          <RosterQuickActionsBody isScrolling={isScrolling} isExpanded={isExpanded}>
                             {/* Fila 1 · Información y edición del registro */}
                             <div className={ROSTER_QUICK_ACTIONS_ROW_PRIMARY}>
                               {currentUser?.role !== 'Lector' && !participantIsCancelled(person) && (
@@ -913,7 +932,7 @@ export default function LocationRosterPageContent({ loc }) {
                             </div>
                             {/* Fila 2 · Comunicación con el participante */}
                             {currentUser?.role !== 'Lector' && (canQuickActionResponsivaDigital || canQuickActionResponsivaLocal || canQuickActionWhatsApp) && (
-                              <div className="flex flex-wrap items-center justify-center gap-1.5">
+                              <div className="roster-actions-secondary flex flex-wrap items-center justify-center gap-1.5">
                                 {canQuickActionResponsivaDigital && (
                                 <RosterResponsivaWaButton
                                   person={person}
@@ -938,7 +957,7 @@ export default function LocationRosterPageContent({ loc }) {
                             )}
                             {/* Fila 3 · Estado del registro */}
                             {currentUser?.role !== 'Lector' && (
-                              <div className="flex flex-wrap items-center justify-center gap-1.5">
+                              <div className="roster-actions-secondary flex flex-wrap items-center justify-center gap-1.5">
                                 {!participantIsCancelled(person) && (
                                   <button
                                     type="button"
@@ -967,7 +986,7 @@ export default function LocationRosterPageContent({ loc }) {
                              ) : null}
                               </div>
                             )}
-                          </div>
+                          </RosterQuickActionsBody>
                         </td>
                       </tr>
                       {isExpanded && <ExpandedRosterDetailRowLazy person={person} loc={loc} displayIndex={rowDisplayIndex} />}
@@ -1033,6 +1052,7 @@ export default function LocationRosterPageContent({ loc }) {
           ) : (
             <VirtualizedRosterMobileList
               items={waitlistFilteredForLoc}
+              enabled={true}
               isItemExpanded={(person) => expandedRows.has(person.id)}
               renderItem={(person, index) => {
               const isExpanded = expandedRows.has(person.id);
@@ -1056,7 +1076,7 @@ export default function LocationRosterPageContent({ loc }) {
                 <th className={ROSTER_TH_ACTIONS}>Acciones rápidas</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-50">
+            <tbody className="divide-y divide-slate-50 roster-heavy-tbody">
               {sortedWaitlistForLoc.length === 0 ? (
                 <tr><td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">Sin personas en lista de espera en {loc}.</td></tr>
               ) : waitlistFilteredForLoc.length === 0 ? (
@@ -1070,9 +1090,11 @@ export default function LocationRosterPageContent({ loc }) {
                   ) : (
                 <VirtualizedTableBody
                   items={waitlistFilteredForLoc}
+                  enabled={true}
                   colSpan={3}
+                  heavyRows
                   isItemExpanded={(person) => expandedRows.has(person.id)}
-                  renderItem={(person, index) => {
+                  renderItem={(person, index, { isScrolling = false } = {}) => {
                     const isExpanded = expandedRows.has(person.id);
                     const isBecado = isCampa && isSiValue(person.isScholarship);
                     const liquidationTarget = getLiquidationTarget(person);
@@ -1094,12 +1116,8 @@ export default function LocationRosterPageContent({ loc }) {
                         <td className={ROSTER_TD_FINANCES}>
                           {renderRegistrationFinancesColumn(person)}
                         </td>
-                        <td className={ROSTER_TD_ACTIONS}>
-                          <div
-                            className={`flex flex-col gap-1.5 items-center justify-center w-full min-w-0 max-w-full mx-auto transition-opacity duration-200 ${
-                              isExpanded ? 'opacity-100' : 'opacity-100 lg:opacity-[0.38] dark:lg:opacity-100 group-hover:opacity-100'
-                            }`}
-                          >
+                        <td className={rosterActionsTdClass}>
+                          <RosterQuickActionsBody isScrolling={isScrolling} isExpanded={isExpanded}>
                             {/* Fila 1 · Información y edición del registro */}
                             <div className={ROSTER_QUICK_ACTIONS_ROW_PRIMARY}>
                               {currentUser?.role !== 'Lector' && (
@@ -1154,7 +1172,7 @@ export default function LocationRosterPageContent({ loc }) {
                             </div>
                             {/* Fila 2 · Comunicación con el participante */}
                             {currentUser?.role !== 'Lector' && (canQuickActionResponsivaDigital || canQuickActionResponsivaLocal || canQuickActionWhatsApp) && (
-                              <div className="flex flex-wrap items-center justify-center gap-1.5">
+                              <div className="roster-actions-secondary flex flex-wrap items-center justify-center gap-1.5">
                                 {canQuickActionResponsivaDigital && (
                                 <RosterResponsivaWaButton
                                   person={person}
@@ -1179,7 +1197,7 @@ export default function LocationRosterPageContent({ loc }) {
                             )}
                             {/* Fila 3 · Estado del registro */}
                             {currentUser?.role !== 'Lector' && (
-                              <div className="flex flex-wrap items-center justify-center gap-1.5">
+                              <div className="roster-actions-secondary flex flex-wrap items-center justify-center gap-1.5">
                                 <button type="button" onClick={() => promoteFromWaitlistSection(loc, person)} className={`${ROSTER_QUICK_ACTION_BTN_BASE} border border-cyan-700 bg-cyan-600 text-white hover:bg-cyan-700`} title="Promover a inscritos"><CheckCircle2 {...ROSTER_QUICK_ACTION_ICON_PROPS} />Promover</button>
                                 {canMarkPersonsOfInterestFlag ? (
                                   <RosterPersonOfInterestButton
@@ -1196,7 +1214,7 @@ export default function LocationRosterPageContent({ loc }) {
                                 ) : null}
                               </div>
                             )}
-                          </div>
+                          </RosterQuickActionsBody>
                         </td>
                       </tr>
                       {isExpanded && <ExpandedRosterDetailRowLazy person={person} loc={loc} displayIndex={rowDisplayIndex} />}
@@ -1246,6 +1264,7 @@ export default function LocationRosterPageContent({ loc }) {
           ) : (
             <VirtualizedRosterMobileList
               items={cancelledFilteredForLoc}
+              enabled={true}
               isItemExpanded={(person) => expandedRows.has(person.id)}
               renderItem={(person, index) => {
               const isExpanded = expandedRows.has(person.id);
@@ -1269,7 +1288,7 @@ export default function LocationRosterPageContent({ loc }) {
                 <th className={ROSTER_TH_ACTIONS}>Acciones</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-50">
+            <tbody className="divide-y divide-slate-50 roster-heavy-tbody">
               {(cancelledData[loc] || []).length === 0 ? (
                 <tr>
                   <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic font-medium">
@@ -1287,9 +1306,11 @@ export default function LocationRosterPageContent({ loc }) {
               ) : (
                 <VirtualizedTableBody
                   items={cancelledFilteredForLoc}
+                  enabled={true}
                   colSpan={3}
+                  heavyRows
                   isItemExpanded={(person) => expandedRows.has(person.id)}
-                  renderItem={(person, index) => {
+                  renderItem={(person, index, { isScrolling = false } = {}) => {
                   const isExpanded = expandedRows.has(person.id);
                   const rowDisplayIndex = index + 1;
                   return (
@@ -1305,12 +1326,8 @@ export default function LocationRosterPageContent({ loc }) {
                       >
                         <td className="px-4 py-3 align-top">{renderRegistrationParticipantColumn(person, { displayIndex: rowDisplayIndex, rosterLocation: loc })}</td>
                         <td className={ROSTER_TD_FINANCES}>{renderRegistrationFinancesColumn(person)}</td>
-                        <td className={`${ROSTER_TD_ACTIONS} py-3`}>
-                          <div
-                            className={`flex flex-col gap-1.5 items-center justify-center w-full min-w-0 max-w-full mx-auto transition-opacity duration-200 ${
-                              isExpanded ? 'opacity-100' : 'opacity-100 lg:opacity-[0.38] dark:lg:opacity-100 group-hover:opacity-100'
-                            }`}
-                          >
+                        <td className={`${rosterActionsTdClass} py-3`}>
+                          <RosterQuickActionsBody isScrolling={isScrolling} isExpanded={isExpanded}>
                             {/* Fila 1 · Información y edición del registro */}
                             <div className={ROSTER_QUICK_ACTIONS_ROW_PRIMARY}>
                               {currentUser?.role !== 'Lector' && (
@@ -1337,7 +1354,7 @@ export default function LocationRosterPageContent({ loc }) {
                           </div>
                           {/* Fila 2 · Comunicación con el participante */}
                           {currentUser?.role !== 'Lector' && (canQuickActionResponsivaDigital || canQuickActionResponsivaLocal || canQuickActionWhatsApp) && (
-                            <div className="flex flex-wrap items-center justify-center gap-1.5">
+                            <div className="roster-actions-secondary flex flex-wrap items-center justify-center gap-1.5">
                               {canQuickActionResponsivaDigital && (
                               <RosterResponsivaWaButton
                                 person={person}
@@ -1362,7 +1379,7 @@ export default function LocationRosterPageContent({ loc }) {
                           )}
                           {/* Fila 3 · Estado del registro */}
                           {currentUser?.role !== 'Lector' && (
-                            <div className="flex flex-wrap items-center justify-center gap-1.5">
+                            <div className="roster-actions-secondary flex flex-wrap items-center justify-center gap-1.5">
                               {canMarkPersonsOfInterestFlag ? (
                                 <RosterPersonOfInterestButton
                                   person={person}
@@ -1392,7 +1409,7 @@ export default function LocationRosterPageContent({ loc }) {
                               )}
                             </div>
                           )}
-                        </div>
+                        </RosterQuickActionsBody>
                       </td>
                     </tr>
                     {isExpanded && <ExpandedRosterDetailRowLazy person={person} loc={loc} displayIndex={rowDisplayIndex} />}

@@ -217,6 +217,9 @@ import {
   isEventSingleDay,
 } from '../../eventDateHelpers.js';
 import { eventFirestoreDocIdFromHumanName, buildFirestoreDocId, sanitizeFirestoreDocId } from '../../firestoreDocId.js';
+
+export { eventFirestoreDocIdFromHumanName, buildFirestoreDocId, sanitizeFirestoreDocId };
+
 import {
   buildFinanceWhatsAppMessage,
   buildMergedFinanceWhatsAppMessage,
@@ -335,12 +338,23 @@ import {
   EXCEL_ROSTER_FINANCE_COL_COUNT,
 } from '../../excelExportRosterHelpers.js';
 import { buildClientVersionPatch } from '../../appVersion.js';
+
+export { buildClientVersionPatch };
+
 import {
   buildPreRestoreBackupId,
   formatLocalDateId,
   isDailyBackupDue,
   msUntilNextLocalMidnight,
 } from '../../appBackupSchedule.js';
+
+export {
+  buildPreRestoreBackupId,
+  formatLocalDateId,
+  isDailyBackupDue,
+  msUntilNextLocalMidnight,
+};
+
 import {
   getClientDeviceSnapshot,
   getClientRuntimeDisplayInfo,
@@ -349,9 +363,17 @@ import {
   isClientPwaRuntime,
   writeStaffSessionLogOnce,
 } from '../../clientTelemetry.js';
+
+export {
+  getClientDeviceSnapshot,
+  getClientRuntimeDisplayInfo,
+  getInstallPromptBrowserNameEs,
+  getSessionLogClientSuffix,
+  isClientPwaRuntime,
+  writeStaffSessionLogOnce,
+};
 import { WorkspaceShellProvider } from '../../screens/eventWorkspace/WorkspaceShellContext.jsx';
 import { mergeWorkspaceShellParts } from '../../screens/eventWorkspace/mergeWorkspaceShellParts.js';
-import EditRegistryModalFormFields from '../../features/registryEdit/EditRegistryModalFormFields.jsx';
 import { NewRegModalDraftProvider } from '../../components/registration/NewRegModalDraftProvider.jsx';
 import { getTransportSectionEligibleForEventDoc } from '../../transportPlanningEligibility.js';
 import { isCardPaymentAllowedForLocation } from '../../cardPaymentEligibility.js';
@@ -634,142 +656,14 @@ import {
   countActiveDropdownListFilters,
 } from '../../userListFiltersPrefs.js';
 
+export {
+  listFiltersForEventApplication,
+  countActiveDropdownListFilters,
+};
 
 /* __EXTRACTED_APP_MAIN_MODULE_SCOPE__ */
 
 export const secondaryAuth = getAuth(secondaryApp);
-
-/* __EXTRACTED_BAUTIZOS_STUBS__ */
-import {
-  BAUTIZOS_ATTENDANCE,
-  BAUTIZOS_DASHBOARD_SCOPE_IDS,
-  BAUTIZOS_DASHBOARD_SCOPE_OPTIONS,
-  BAUTIZOS_UNDER_3_POLICY_NOTE,
-  BAUTIZOS_ATTENDANCE_FILTER_OPTIONS,
-  BAUTIZOS_TRANSPORT_FILTER_OPTIONS,
-  BAUTIZOS_AGE_FILTER_OPTIONS,
-  DEFAULT_BAUTIZOS_LIST_PRICE_FOOD,
-  DEFAULT_BAUTIZOS_LIST_PRICE_TRANSPORT,
-  normalizeArrivalCarCount,
-  bzEvtNormalizeAttendanceType,
-  bzEvtNormalizeCompanionsForPersist,
-  bzEvtNormalizeCompanionsForForm,
-  bzEvtCompanionsArray,
-  getBautizosLineListPrice,
-  bzEvtIsFreeAttendance,
-  bautizosLineGoesByCar,
-  bzEvtCompanionBaptized,
-  bautizosCompanionIsAlsoBautizadoRegistrant,
-  bzEvtBuildCanonicalCompanionPlan,
-  buildBautizadoMetaForCanonical,
-  buildActiveRegistrantMetaForCompanionDedupe,
-  getBautizosBaptizedCompanionSubmitBlockingError,
-  bzEvtHasBaptizedCompanionInParty,
-  getBautizosSplitPartySlotDescriptors,
-  buildParticipantLikeForBautizosSplitSlot,
-  buildSplitPartyCompanionsForSlot,
-  collectBautizosSplitDerivedCompanionLinkRepairs,
-  planBautizosSplitPartyMirrorSync,
-  bzEvtSplitPartyHostPerson,
-  bzEvtSplitPartyGroupMember,
-  getBautizosSplitPartySubmitBlockingError,
-  bzEvtLapInfantCompanion,
-  bzEvtUnder3YearsAtEvent,
-  bzEvtSyncAttendanceServerFields,
-  bautizosShowsServerParticipation,
-  bautizosParticipatesAsServer,
-  bautizosShowsServerProfileFields,
-  collectBautizosServidoresYEmpleadosRows,
-  countBautizosServidoresYEmpleadosPeople,
-  bautizosCompanionParticipatesAsServer,
-  countBautizosServersDeduped,
-  collectBautizosParticipatingServerRows,
-  bzEvtAttendanceTypeLabel,
-  bzEvtAttendanceChipKind,
-  bzEvtCompanionsVisibleForRegistrant,
-  buildBautizosExistingCompanionOptions,
-  bautizosAttendanceUsesParticipantPackage,
-  bzEvtWillBeBaptizedFromAttendance,
-  bautizosAttendanceDashboardScopeMatches,
-  bautizosDashboardTitularCountsForScope,
-  bautizosDashboardCompanionCountsForScope,
-  bautizosDashboardFilterTitularRows,
-  bautizosDashboardFilterCanonicalCompanions,
-  countBautizosDashboardPeople,
-  bautizosDashboardIncludeRegistrationFinancials,
-  bautizosDashboardScopeUsesSplitPayments,
-  participantMatchesBautizosDashboardScope,
-  resolveBautizosDashboardScopeForSection,
-  resolveBautizosDashboardGlobalScope,
-  normalizeBautizosDashboardScope,
-  getBautizosDashboardScopeChartHint,
-  getBautizosDashboardScopeLabel,
-  bzEvtAppendCompanionsValidationIssues,
-  appendBautizosTransportChoiceIssues,
-  applyCompanionWaitlistCapOnEdit,
-  buildCompanionWaitlistVirtualParticipant,
-  clearCompanionWaitlistFlags,
-  collectCompanionWaitlistVirtualRows,
-  companionDisplayIsWaitlistPending,
-  computeAdditionalCompanionCapUnits,
-  countHostCompanionWaitlistPending,
-  isCompanionWaitlistPending,
-  isCompanionWaitlistVirtualParticipant,
-  isCompanionWaitlistPhantomStoredParticipant,
-  parseCompanionWaitlistVirtualId,
-  resolveCompanionWaitlistSource,
-  resolveCompanionWaitlistVirtualLocation,
-  resolveParticipantEffectiveLocation,
-  bzEvtBuildRosterIndex,
-  getCompanionWaitlistVirtualFromIndex,
-  bzEvtLegacyCompanionVirtualRow,
-  bzEvtLegacyHostStoredRow,
-  shouldUseBautizosLegacyPartyFinances,
-  computeBautizosRosterStatusCountsForLocation,
-  countBautizosWaitlistExpandedPeople,
-  bautizosPartyCancelModalApplies,
-  getBautizosPartyCancelTargetMeta,
-  listBautizosPartyCancelTargets,
-  planBautizosPartyCancelArchive,
-  prepareBautizosRowsForRosterFilter,
-  applyTitularOnlyBautizosRosterFilters,
-  participantMatchesBautizosTransportFilter,
-  bzEvtBuildFamilyCarInventory,
-  buildCarDataSummaryForRosterPerson,
-  buildCarDataWaSubjectContext,
-  buildCarMetaPatchesAfterSave,
-  buildMergedFamilyCarInventory,
-  carCrewRequiresPassengerSelection,
-  collectCarColorSuggestions,
-  familyCarInventoryNeedsAttention,
-  familyHasAnyCarTransport,
-  getFamilyCarInventoryValidationIssues,
-  bzEvtResolveCarDataAnchor,
-  resolveLinkedCompanionCarInheritance,
-  getBautizosSplitPartyHostListPrice,
-  getBautizosListPriceBreakdown,
-  getBautizosTitularListPrice,
-  bzEvtCompanionsInformativeListPriceSum,
-  getBautizosCompanionInformativeListPrice,
-  allocateBautizosDashboardPayments,
-  buildBautizosDashboardLiquidationUnits,
-  countBautizosFifoLiquidationUnits,
-  getBautizosPartyLiquidationSplit,
-  getBautizosGlobalRegistryRowOutstandingGross,
-  resolveBautizosGlobalRegistryRowFinances,
-  describeNewRegistrationCompanions,
-  buildPromoteCompanionWaitlistWhatsAppMessage,
-  uiBautizosAttendanceChip,
-  BzEvtAttendanceTypeField,
-  BzEvtCompanionsField,
-  BautizosServerParticipationFields,
-  BzEvtCarDataSection,
-  BzEvtCarDataPromptModal,
-  BzEvtCarDataSummaryCard,
-  BzEvtAttendanceTypeChip
-} from './bautizosEventStubs.js';
-
-
 
 /** Evita errores `permission-denied` en consola mientras se desconectan listeners al cerrar sesión. */
 export const staffPanelLogoutState = { inProgress: false };
@@ -1461,6 +1355,14 @@ export function clearNewEventFormDraft(userId) {
 /** Menú lateral del evento: SuperUsuario define qué ven Editor y Lector. Administrador y SuperUsuario no se limitan. */
 export const DEFAULT_PANEL_NAV = {
   dashboard: true,
+  roleServidor: true,
+  roleEmpleado: true,
+  roleBautizado: true,
+  roleBecado: true,
+  roleCampero: true,
+  roleCortesia: true,
+  rolePastor: true,
+  roleAsistente: true,
   bautizados: true,
   serversPage: true,
   becados: true,
@@ -1474,48 +1376,59 @@ export const DEFAULT_PANEL_NAV = {
 
 export const PANEL_NAV_TAB_KEYS = {
   Summary: 'dashboard',
-  Bautizados: 'bautizados',
-  ServersPage: 'serversPage',
+  RoleServidor: 'roleServidor',
+  RoleEmpleado: 'roleEmpleado',
+  RoleBautizado: 'roleBautizado',
+  RoleBecado: 'roleBecado',
+  RoleCampero: 'roleCampero',
+  RoleCortesia: 'roleCortesia',
+  RolePastor: 'rolePastor',
+  RoleAsistente: 'roleAsistente',
+  Bautizados: 'roleBautizado',
+  ServersPage: 'roleServidor',
   ExpenseList: 'expenseList',
   CashCut: 'cashCut',
-  Becados: 'becados',
+  Becados: 'roleBecado',
   Responsivas: 'responsivas',
   RegistroGlobal: 'registroGlobal',
+  PastoresPage: 'rolePastor',
   TransportPlanning: 'transporte',
 };
 
 export const PANEL_NAV_CONFIG_ITEMS = [
-  { key: 'dashboard', label: 'Dashboard', hint: 'Resumen del evento; desactivado por defecto en Editor/Lector hasta que se permita aquí o por evento.' },
-  {
-    key: 'bautizados',
-    label: 'Bautizados',
-    hint: 'Listado de bautizados con talla de playera; visible en eventos Campa.',
-  },
-  {
-    key: 'serversPage',
-    label: 'Página Servidores',
-    hint: 'Campa: servidores con Teens/Jóvenes/Ambos.',
-  },
-  {
-    key: 'becados',
-    label: 'Becados',
-    hint: 'En campamentos: vista Becados. Por defecto desactivado en Editor/Lector; el Superusuario puede habilitarlo por usuario o por evento.',
-  },
-  { key: 'cashCut', label: 'Corte de caja', hint: 'Igual: respeta rol de administrador.' },
-  { key: 'expenseList', label: 'Lista de gastos', hint: 'Además debe tener permiso de gastos en su usuario.' },
-  { key: 'responsivas', label: 'Responsivas', hint: 'Visible cuando la responsiva esté habilitada para el evento.' },
-  { key: 'registroGlobal', label: 'Registro global', hint: 'Tabla consolidada del evento.' },
+  { key: 'dashboard', group: 'Resumen', label: 'Dashboard', hint: 'Resumen del evento; desactivado por defecto en Editor/Lector hasta que se permita aquí o por evento.' },
+  { key: 'roleServidor', group: 'Tipos de asistencia', label: 'Servidor', hint: 'Vista filtrada del padrón por tipo Servidor.' },
+  { key: 'roleEmpleado', group: 'Tipos de asistencia', label: 'Empleado', hint: 'Vista filtrada por Empleado.' },
+  { key: 'roleBautizado', group: 'Tipos de asistencia', label: 'Bautizado', hint: 'Vista filtrada por Bautizado.' },
+  { key: 'roleBecado', group: 'Tipos de asistencia', label: 'Becado', hint: 'Vista filtrada por Becado.' },
+  { key: 'roleCampero', group: 'Tipos de asistencia', label: 'Campero', hint: 'Vista filtrada por Campero.' },
+  { key: 'roleCortesia', group: 'Tipos de asistencia', label: 'Cortesía', hint: 'Vista filtrada por Cortesía.' },
+  { key: 'rolePastor', group: 'Tipos de asistencia', label: 'Pastor', hint: 'Vista filtrada por Pastor.' },
+  { key: 'roleAsistente', group: 'Tipos de asistencia', label: 'Asistente', hint: 'Vista filtrada por Asistente.' },
+  { key: 'registroGlobal', group: 'Registros', label: 'Registro global', hint: 'Tabla consolidada del evento.' },
+  { key: 'locations', group: 'Registros', label: 'Sedes en el menú', hint: 'Accesos directos a cada sede en el lateral.' },
+  { key: 'responsivas', group: 'Operación', label: 'Responsivas', hint: 'Visible cuando la responsiva esté habilitada para el evento.' },
   {
     key: 'transporte',
+    group: 'Operación',
     label: 'Transporte',
     hint: 'Camiones/camionetas por sede y conteo de carros; solo si el evento tiene campos de transporte activos. Editor/Lector: desactivado por defecto.',
   },
-  { key: 'locations', label: 'Sedes en el menú', hint: 'Accesos directos a cada sede en el lateral.' }
+  { key: 'cashCut', group: 'Finanzas', label: 'Corte de caja', hint: 'Igual: respeta rol de administrador.' },
+  { key: 'expenseList', group: 'Finanzas', label: 'Lista de gastos', hint: 'Además debe tener permiso de gastos en su usuario.' },
 ];
 
 /** Editor/Lector recién creados: sedes en menú; dashboard y el resto se habilitan explícitamente por evento o menú global. */
 export const EDITOR_LECTOR_PANEL_DEFAULT = {
   dashboard: false,
+  roleServidor: false,
+  roleEmpleado: false,
+  roleBautizado: false,
+  roleBecado: false,
+  roleCampero: false,
+  roleCortesia: false,
+  rolePastor: false,
+  roleAsistente: false,
   bautizados: false,
   serversPage: false,
   becados: false,

@@ -2,6 +2,13 @@ import { participantHasBaptismChip } from './campaBaptism.js';
 import { computeWaitlistCountsForEvent } from './waitlistDashboardCounts.js';
 import { isPastorParticipant } from './pastorAttendance.js';
 import { isSiValue } from './publicRegistrationLogic.js';
+import {
+  ATTENDANCE_ROLE_KEYS,
+  ATTENDANCE_ROLE_LABELS,
+  ATTENDANCE_ROLE_MENU_ORDER,
+  attendanceRolesFromLegacyPerson,
+} from './attendanceRoles.js';
+import { resolveEventAttendanceConfig } from './eventTypePresets.js';
 
 const PARTICIPANT_STATUS_ARCHIVED = 'archived';
 const PARTICIPANT_STATUS_CANCELLED = 'cancelled';
@@ -20,6 +27,16 @@ export const EMPTY_WORKSPACE_SIDEBAR_BADGES = Object.freeze({
   servidores: 0,
   acompanantes: 0,
   pastores: 0,
+  roleCounts: Object.freeze({
+    servidor: 0,
+    empleado: 0,
+    bautizado: 0,
+    becado: 0,
+    campero: 0,
+    cortesia: 0,
+    pastor: 0,
+    asistente: 0,
+  }),
   sedeCounts: {},
   attendanceLines: [],
   waitlistLines: [],
@@ -115,11 +132,31 @@ export function computeWorkspaceSidebarBadges({ ev, visibleLocations, allPartici
       scopeSet.has(String(p.cancelledFromLocation || p.location || '').trim())
   ).length;
 
+  const roleCounts = Object.fromEntries(ATTENDANCE_ROLE_KEYS.map((k) => [k, 0]));
+  for (const p of rosterInScope) {
+    const roles = attendanceRolesFromLegacyPerson(p);
+    for (const k of ATTENDANCE_ROLE_KEYS) {
+      if (roles[k]) roleCounts[k] += 1;
+    }
+  }
+
+  const cfg = resolveEventAttendanceConfig(ev);
+  attendanceLines = ATTENDANCE_ROLE_MENU_ORDER.filter((k) => cfg.enabledAttendanceTypes[k]).map((k) => ({
+    label: ATTENDANCE_ROLE_LABELS[k],
+    count: roleCounts[k] || 0,
+  }));
+  if (attendanceLines.length === 0) {
+    attendanceLines = [{ label: 'Inscritos', count: totalDeduped || rosterInScope.length }];
+  }
+  activeTotalDeduped = rosterInScope.length;
+  totalDeduped = rosterInScope.length;
+
   return {
-    bautizados,
-    servidores,
+    bautizados: roleCounts.bautizado || bautizados,
+    servidores: roleCounts.servidor || servidores,
     acompanantes,
-    pastores,
+    pastores: roleCounts.pastor || pastores,
+    roleCounts,
     sedeCounts,
     attendanceLines,
     waitlistLines,

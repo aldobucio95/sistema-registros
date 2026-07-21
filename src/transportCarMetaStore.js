@@ -61,6 +61,11 @@ export function transportPlanningForEventDoc(plan) {
     carMetaBySource: {},
     transportCarMetaStorageVersion: TRANSPORT_CAR_META_STORAGE_VERSION,
     bautizosCarMetaSummaryByTitular: normalized.bautizosCarMetaSummaryByTitular || {},
+    carUnits: normalized.carUnits || [],
+    carAssign: normalized.carAssign || {},
+    carUnitSummaryById: normalized.carUnitSummaryById || {},
+    transportVersion: Number(normalized.transportVersion) || 0,
+    defaultCarCap: normalized.defaultCarCap,
   };
 }
 

@@ -12,6 +12,7 @@ const VIEW_PREF_LABELS = {
   chartPaymentStatus: 'Gráfica: estado de pagos',
   chartGender: 'Gráfica: género',
   chartAgeBrackets: 'Gráfica: rangos de edad',
+  chartAttendanceRoles: 'Gráfica: tipos de asistencia',
   chartBloodType: 'Gráfica: tipo de sangre',
   chartScholarship: 'Gráfica: becas',
   chartSwimming: 'Gráfica: nado',
@@ -19,7 +20,6 @@ const VIEW_PREF_LABELS = {
   chartServers: 'Gráfica: servidores',
   chartAges: 'Gráfica: asistencia',
   chartBaptism: 'Gráfica: bautizos',
-  chartAttendanceSpecial: 'Gráfica: empleado / cortesía',
   chartCustom: 'Gráfica: campos extra',
   tableDetails: 'Tabla de desglose general',
 };
@@ -57,38 +57,30 @@ const BAPTISM_COUNT_FILTER_LABELS = {
 
 const TABLE_COL_LABELS = {
   count: 'Inscritos',
-  bautizados: 'Bautizados',
-  companions: 'Acompañantes',
-  asistentesBautizos: 'Asistentes',
-  bautizosTransport: 'Transp. evento',
-  bautizosCarro: 'Llevan carro',
-  empleadosBautizos: 'Empleados',
-  scholarship: 'Becados',
-  serveYes: 'Servidores',
-  serveNo: 'Camperos',
-  bautizos: 'Bautizos',
+  roleServidor: 'Servidor',
+  roleEmpleado: 'Empleado',
+  roleBautizado: 'Bautizado',
+  roleBecado: 'Becado',
+  roleCampero: 'Campero',
+  roleCortesia: 'Cortesía',
+  rolePastor: 'Pastor',
+  roleAsistente: 'Asistente',
+  multiRole: 'Multi-rol',
   teens: 'Teens',
   jovenes: 'Jóvenes',
   cancelled: 'Cancelados',
+  waitlist: 'Lista de espera',
   refund: 'Con devolución',
   paid: 'Recaudado',
   donations: 'Donaciones',
   paidEfectivo: 'Efectivo',
   paidTarjeta: 'Tarjeta',
   pending: 'Pendiente',
-  cortesia: 'Cortesías',
   expected: 'Total esperado',
 };
 
 const SCOPE_KEY_LABELS = {
-  dashBautizosScope: 'Alcance del dashboard (Bautizos)',
-  dashBautizosParty: 'Vista Bautizados / Acompañantes',
   dashRegs: 'Tarjeta registros',
-  dashBautizosTransport: 'Transporte (Bautizos)',
-  dashBautizosCars: 'Carros (Bautizos)',
-  dashBautizosServidores: 'Servidores (Bautizos)',
-  dashBautizosCortesia: 'Cortesía (Bautizos)',
-  dashBautizosEmpleado: 'Empleado (Bautizos)',
   dashScholarship: 'Becados (resumen)',
   dashServers: 'Servidores (resumen)',
   dashRealCostX2: 'Costo real ×2',
@@ -98,8 +90,7 @@ const SCOPE_KEY_LABELS = {
   dashPendiente: 'Pendiente',
   dashDonations: 'Donaciones',
   dashEventDates: 'Fechas del evento',
-  dashPricing: 'Precios (Bautizos)',
-  dashBautizosListPrices: 'Precios comida/transporte',
+  dashPricing: 'Precios',
   dashMinDeposit: 'Apartado mín.',
   dashRealCost: 'Costo real',
   dashBalance: 'Balance',
@@ -109,13 +100,14 @@ const SCOPE_KEY_LABELS = {
   chartPaymentStatus: 'Alcance gráfica pagos',
   chartGender: 'Alcance gráfica género',
   chartAgeBrackets: 'Alcance gráfica edades',
+  chartAttendanceRoles: 'Alcance tipos de asistencia',
   chartBloodType: 'Alcance gráfica sangre',
+  chartScholarship: 'Alcance gráfica becas',
   chartSwimming: 'Alcance gráfica nado',
   chartMedical: 'Alcance gráfica salud',
   chartServers: 'Alcance gráfica servidores',
   chartAges: 'Alcance gráfica asistencia',
   chartBaptism: 'Alcance gráfica bautizos',
-  chartAttendanceSpecial: 'Alcance empleado/cortesía',
   sectionTravelDepart: 'Alcance salida / viaje',
 };
 
@@ -126,20 +118,8 @@ const campaSegmentLabel = (v) => {
   return String(v);
 };
 
-const bautizosPartyLabel = (v) => {
-  if (v === 'all' || v == null || v === '') return 'Todos';
-  if (v === 'baptized') return 'Bautizados';
-  if (v === 'companions') return 'Acompañantes';
-  if (v === 'asistente') return 'Asistentes';
-  if (v === 'servidor') return 'Servidores';
-  if (v === 'empleado') return 'Empleados';
-  if (v === 'cortesia') return 'Cortesías';
-  return String(v);
-};
-
 const labelScopeValue = (key, val) => {
   if (val === 'all' || val == null || val === '') return 'Todas las sedes / todos';
-  if (key === 'dashBautizosScope' || key === 'dashBautizosParty') return bautizosPartyLabel(val);
   if (
     key === 'tableDetails' ||
     key === 'chartLocations' ||
@@ -250,3 +230,4 @@ export function describeDashboardConfigDelta(prev, next) {
   if (joined.length <= MAX) return joined;
   return `${joined.slice(0, MAX - 20)}… (y más)`;
 }
+

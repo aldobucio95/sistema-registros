@@ -4,6 +4,8 @@ import { uiRosterSectionScroll } from '../ui/uiFormatClasses.js';
 
 const visibilityBySection = new Map();
 const visibilityListeners = new Set();
+const prevShowControlsBySection = new Map();
+let prevActiveSectionId = null;
 
 function subscribeSectionVisibility(onStoreChange) {
   visibilityListeners.add(onStoreChange);
@@ -19,6 +21,12 @@ function getActiveSectionSnapshot() {
       bestId = id;
     }
   }
+  // #region agent log
+  if (prevActiveSectionId !== bestId) {
+    prevActiveSectionId = bestId;
+    fetch('http://127.0.0.1:7409/ingest/332642dd-c03e-4db9-85e6-913026f5ed31',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'bdd59f'},body:JSON.stringify({sessionId:'bdd59f',runId:'pre-fix',hypothesisId:'H1-H2-H5',location:'RosterSectionScrollWrap.jsx:getActiveSectionSnapshot',message:'active section changed',data:{bestId,bestRatio:best,entries:Object.fromEntries(visibilityBySection),threshold:0.02},timestamp:Date.now()})}).catch(()=>{});
+  }
+  // #endregion
   return bestId;
 }
 
@@ -49,6 +57,13 @@ function scrollAnchorIntoSection(anchorEl, { block = 'start', behavior = 'smooth
   const offset =
     typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches ? 56 : 72;
   const scrollParent = findScrollableParent(anchorEl);
+  const workspaceScroll =
+    typeof document !== 'undefined'
+      ? document.querySelector('[data-vnpm-workspace-scroll]')
+      : null;
+  // #region agent log
+  fetch('http://127.0.0.1:7409/ingest/332642dd-c03e-4db9-85e6-913026f5ed31',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'bdd59f'},body:JSON.stringify({sessionId:'bdd59f',runId:'pre-fix',hypothesisId:'H3-H4',location:'RosterSectionScrollWrap.jsx:scrollAnchorIntoSection',message:'scroll request',data:{block,hasAnchor:!!anchorEl,anchorId:anchorEl?.id||null,offset,foundParentTag:scrollParent?.tagName||null,foundParentDataAttr:scrollParent?.getAttribute?.('data-vnpm-workspace-scroll')??null,parentIsWorkspace:!!(scrollParent&&workspaceScroll&&scrollParent===workspaceScroll),parentScrollTop:scrollParent?.scrollTop??null,parentClientH:scrollParent?.clientHeight??null,parentScrollH:scrollParent?.scrollHeight??null,aTop:anchorEl.getBoundingClientRect().top,aBottom:anchorEl.getBoundingClientRect().bottom,pTop:scrollParent?.getBoundingClientRect?.()?.top??null,pBottom:scrollParent?.getBoundingClientRect?.()?.bottom??null,topDelta:scrollParent?(block==='end'?anchorEl.getBoundingClientRect().bottom-scrollParent.getBoundingClientRect().bottom+16:anchorEl.getBoundingClientRect().top-scrollParent.getBoundingClientRect().top-offset):null,targetScrollTop:scrollParent?(scrollParent.scrollTop+(block==='end'?anchorEl.getBoundingClientRect().bottom-scrollParent.getBoundingClientRect().bottom+16:anchorEl.getBoundingClientRect().top-scrollParent.getBoundingClientRect().top-offset)):null},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
   if (scrollParent) {
     const aRect = anchorEl.getBoundingClientRect();
     const pRect = scrollParent.getBoundingClientRect();
@@ -62,6 +77,9 @@ function scrollAnchorIntoSection(anchorEl, { block = 'start', behavior = 'smooth
     });
     return;
   }
+  // #region agent log
+  fetch('http://127.0.0.1:7409/ingest/332642dd-c03e-4db9-85e6-913026f5ed31',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'bdd59f'},body:JSON.stringify({sessionId:'bdd59f',runId:'pre-fix',hypothesisId:'H3',location:'RosterSectionScrollWrap.jsx:scrollAnchorIntoSection:fallback',message:'no scroll parent; using scrollIntoView',data:{block,anchorId:anchorEl?.id||null},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
   anchorEl.scrollIntoView({ behavior, block: block === 'end' ? 'end' : 'start' });
 }
 
@@ -112,8 +130,19 @@ export default function RosterSectionScrollWrap({
     scrollAnchorIntoSection(bottomRef.current, { block: 'end' });
   }, []);
 
+  const sectionRatio = visibilityBySection.get(sectionId) || 0;
   const showControls =
-    controlsEnabled && activeSectionId === sectionId && (visibilityBySection.get(sectionId) || 0) > 0.02;
+    controlsEnabled && activeSectionId === sectionId && sectionRatio > 0.02;
+
+  // #region agent log
+  {
+    const prevShow = prevShowControlsBySection.get(sectionId);
+    if (prevShow !== showControls) {
+      prevShowControlsBySection.set(sectionId, showControls);
+      fetch('http://127.0.0.1:7409/ingest/332642dd-c03e-4db9-85e6-913026f5ed31',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'bdd59f'},body:JSON.stringify({sessionId:'bdd59f',runId:'pre-fix',hypothesisId:'H1-H2-H5',location:'RosterSectionScrollWrap.jsx:showControls',message:'controls visibility toggled',data:{sectionId,showControls,activeSectionId,sectionRatio,controlsEnabled},timestamp:Date.now()})}).catch(()=>{});
+    }
+  }
+  // #endregion
 
   return (
     <>

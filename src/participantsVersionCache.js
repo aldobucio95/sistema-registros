@@ -88,17 +88,20 @@ async function loadEventParticipantsQueryFromStore(eventId) {
 
 /**
  * ¿Usar slice local en IndexedDB al abrir evento?
- * Si no hay doc remoto de versión (v=0), siempre refrescar: la caché local no tiene señal de invalidación.
+ * Alineado con `participantCacheVersionsCompatible`: la caché sembrada (v≥1) sigue válida
+ * mientras no exista doc remoto (v=0) o mientras la versión remota coincida.
+ * Una sede vacía (`data: []`) es un hit válido (no debe forzar refetch del evento entero).
  */
 export function isParticipantSliceHit(local, remoteV) {
-  if (!local?.data || !Array.isArray(local.data) || local.data.length === 0) return false;
-  if (normalizeCacheVersion(remoteV) === 0) return false;
+  if (!local || !Array.isArray(local.data)) return false;
+  if (normalizeCacheVersion(local.version) < 1) return false;
   return participantCacheVersionsCompatible(local.version, remoteV);
 }
 
 /**
- * Carga participantes del evento. Al abrir la app siempre lee Firestore (servidor primero)
- * y actualiza la caché local; los listeners por sede mantienen datos frescos en sesión.
+ * Carga participantes del evento.
+ * Si todas las sedes tienen hit en IndexedDB (versión compatible), no relee `app_participants`.
+ * Los listeners por sede mantienen datos frescos en sesión.
  */
 export async function loadEventParticipantsWithVersionCache(eventId, locations) {
   const eid = String(eventId || '').trim();

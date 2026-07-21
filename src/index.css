@@ -505,5 +505,25 @@
     text-align: left;
     text-align-last: left;
   }
+
+  /* Roster por sede: saltar paint/layout de acciones al scrollear (content-visibility). */
+  .roster-heavy-tbody tr[data-index] {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 145px;
+  }
+
+  tbody[data-roster-scrolling] .roster-quick-actions-wrap {
+    content-visibility: hidden;
+    contain: strict;
+    transition: none !important;
+  }
+
+  tbody[data-roster-scrolling] .roster-actions-secondary {
+    pointer-events: none;
+  }
+
+  tbody[data-roster-scrolling] tr[data-index] {
+    contain: layout style;
+  }
 }
 

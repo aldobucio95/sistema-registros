@@ -32,6 +32,8 @@ import AppVersionBadge from '../AppVersionBadge.jsx';
 import { EditRegistryModalFormFieldsLazy } from '../features/registryEdit/EditRegistryModalFormFieldsLazy.jsx';
 import { isCardPaymentAllowedForLocation } from '../cardPaymentEligibility.js';
 import { isResponsivaEventSectionVisible } from '../responsivaSignLogic.js';
+import { ATTENDANCE_ROLE_SIDEBAR_ITEMS } from '../panelNavAttendanceRoles.js';
+import EditEventModal from '../components/events/EditEventModal.jsx';
 import {
   sidebarNavButtonClassNavDesktop,
   sidebarSedeNavButtonClassNavDesktop,
@@ -397,6 +399,10 @@ export default function EventWorkspaceScreen() {
     return () => el.removeEventListener('scroll', onScroll);
   }, [shell.currentUser?.id, scrollEntryKey]);
 
+  if (!shell.currentEvent) {
+    return <ScreenLoadingFallback title="Cargando evento…" />;
+  }
+
   return (
     <div className="h-dvh max-h-dvh min-h-0 bg-slate-50 font-sans text-slate-900 flex overflow-hidden relative dark:bg-slate-950 dark:text-slate-100">
       {shell.toast && (
@@ -445,9 +451,9 @@ export default function EventWorkspaceScreen() {
                   </h2>
                   {shell.hasAdminRights && (
                     <button
-                      onClick={() => shell.setRenameModal({ isOpen: true, id: shell.currentEvent.id, name: shell.currentEvent.name })}
+                      onClick={() => shell.openEditEventModal(shell.currentEvent)}
                       className="text-slate-400 hover:text-indigo-300 mt-1 flex-shrink-0 transition-colors"
-                      title="Renombrar Evento"
+                      title="Editar evento"
                     >
                       <Edit3 size={16} />
                     </button>
@@ -458,7 +464,7 @@ export default function EventWorkspaceScreen() {
             <div className="flex items-center justify-between gap-2 mt-4 pl-1">
               <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Registros Vida Nueva</p>
               <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-500/30 uppercase font-bold shrink-0">
-                {shell.currentEvent.eventType}
+                {shell.currentEvent?.eventType}
               </span>
             </div>
           </div>
@@ -478,172 +484,331 @@ export default function EventWorkspaceScreen() {
             />
           </div>
           <nav className="px-2 pb-2 space-y-0.5 lg:space-y-0 shrink-0">
-          <div className={`pt-1 pb-1.5 px-3 lg:pt-2 lg:pb-2 ${uiSidebar.sectionLabelNavDesktop}`}>Principal</div>
-          {shell.isPanelNavSectionAllowed('dashboard') && (
-          <button {...workspaceTabPreloadProps('Summary')} onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, "Summary")} className={workspaceSidebarNavClassDesktop(shell.activeTab === 'Summary')}><div className={uiSidebar.navItemInnerNavDesktop}><BarChart3 size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'Summary' ? 'text-indigo-400' : '')} /><span className="font-bold">Dashboard</span></div>{shell.activeTab === 'Summary' && <div className={`${uiSidebar.activeDot} bg-indigo-400`} />}</button>
-          )}
-          {shell.isCampa && shell.isPanelNavSectionAllowed('bautizados') && (
-            <button
-              type="button"
-              {...workspaceTabPreloadProps('Bautizados')}
-              onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'Bautizados')}
-              className={workspaceSidebarNavClassDesktop(shell.activeTab === 'Bautizados')}
-            >
-              <div className={uiSidebar.navItemInnerNavDesktop}>
-                <Church size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'Bautizados' ? 'text-sky-400' : '')} />
-                <span className="font-bold truncate">Bautizados</span>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <div
-                  className={sidebarSedeStyleCountBadge(shell.activeTab === 'Bautizados', true)}
-                  title="Coincidencias visibles (misma regla que la página Bautizados)"
-                >
-                  {shell.workspaceSidebarBadges?.bautizados ?? 0}
+          {(() => {
+            const showDashboard = shell.isPanelNavSectionAllowed('dashboard');
+            const visibleRoleItems = ATTENDANCE_ROLE_SIDEBAR_ITEMS.filter(({ panelKey }) =>
+              shell.isPanelNavSectionAllowed(panelKey)
+            );
+            const showRegistroGlobal = shell.isPanelNavSectionAllowed('registroGlobal');
+            const showLocations = shell.isPanelNavSectionAllowed('locations');
+            const showResponsivas =
+              shell.hasAdminRights &&
+              shell.isPanelNavSectionAllowed('responsivas') &&
+              isResponsivaEventSectionVisible(shell.currentEvent);
+            const showTransporte = shell.isPanelNavSectionAllowed('transporte');
+            const showCashCut = shell.isPanelNavSectionAllowed('cashCut');
+            const showExpenses =
+              shell.canAccessExpenses && shell.isPanelNavSectionAllowed('expenseList');
+
+            const sectionIds = [];
+            if (showDashboard) sectionIds.push('resumen');
+            if (visibleRoleItems.length > 0) sectionIds.push('asistencias');
+            if (showRegistroGlobal || showLocations) sectionIds.push('registros');
+            if (showResponsivas || showTransporte) sectionIds.push('operacion');
+            if (showCashCut || showExpenses) sectionIds.push('finanzas');
+            const sectionDivider = (id) => sectionIds.indexOf(id) > 0;
+
+            const sectionLabel = (id, title, trailing = null) =>
+              sectionDivider(id) ? (
+                <div className={uiSidebar.sectionWrapNavDesktop}>
+                  <span className={uiSidebar.sectionLabelNavDesktop}>{title}</span>
+                  {trailing}
                 </div>
-                {shell.activeTab === 'Bautizados' && <div className={`${uiSidebar.activeDot} bg-sky-400`} />}
-              </div>
-            </button>
-          )}
-          {shell.isCampa && shell.isPanelNavSectionAllowed('serversPage') && (
-            <button
-              type="button"
-              {...workspaceTabPreloadProps('ServersPage')}
-              onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'ServersPage')}
-              className={workspaceSidebarNavClassDesktop(shell.activeTab === 'ServersPage')}
-            >
-              <div className={uiSidebar.navItemInnerNavDesktop}>
-                <Users size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'ServersPage' ? 'text-amber-400' : '')} />
-                <span className="font-bold truncate">Página Servidores</span>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <div
-                  className={sidebarSedeStyleCountBadge(shell.activeTab === 'ServersPage', true)}
-                  title="Servidores activos en sedes visibles para tu usuario"
-                >
-                  {shell.workspaceSidebarBadges?.servidores ?? 0}
+              ) : (
+                <div className={`pt-1 pb-1.5 px-3 lg:pt-2 lg:pb-2 flex items-center justify-between gap-2`}>
+                  <span className={uiSidebar.sectionLabelNavDesktop}>{title}</span>
+                  {trailing}
                 </div>
-                {shell.activeTab === 'ServersPage' && <div className={`${uiSidebar.activeDot} bg-amber-400`} />}
-              </div>
-            </button>
-          )}
-          {shell.isPanelNavSectionAllowed('becados') && (
-            <button
-              {...workspaceTabPreloadProps('Becados')}
-              onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'Becados')}
-              className={workspaceSidebarNavClassDesktop(shell.activeTab === 'Becados')}
-            >
-              <div className={uiSidebar.navItemInnerNavDesktop}>
-                <GraduationCap size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'Becados' ? 'text-purple-400' : '')} />
-                <span className="font-bold">Becados</span>
-              </div>
-              {shell.activeTab === 'Becados' && <div className={`${uiSidebar.activeDot} bg-purple-400`} />}
-            </button>
-          )}
-          {shell.hasAdminRights && shell.isPanelNavSectionAllowed('responsivas') && isResponsivaEventSectionVisible(shell.currentEvent) && (
-            <button
-              {...workspaceTabPreloadProps('Responsivas')}
-              onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'Responsivas')}
-              className={workspaceSidebarNavClassDesktop(shell.activeTab === 'Responsivas')}
-            >
-              <div className={uiSidebar.navItemInnerNavDesktop}>
-                <FileSignature size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'Responsivas' ? 'text-emerald-400' : '')} />
-                <span className="font-bold">Responsivas</span>
-              </div>
-              {shell.activeTab === 'Responsivas' && <div className={`${uiSidebar.activeDot} bg-emerald-400`} />}
-            </button>
-          )}
-          {shell.hasAdminRights && (
-            <button
-              type="button"
-              {...workspaceTabPreloadProps('PastoresPage')}
-              onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'PastoresPage')}
-              className={workspaceSidebarNavClassDesktop(shell.activeTab === 'PastoresPage')}
-            >
-              <div className={uiSidebar.navItemInnerNavDesktop}>
-                <Church size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'PastoresPage' ? 'text-violet-400' : '')} />
-                <span className="font-bold">Pastores</span>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                {typeof shell.workspaceSidebarBadges?.pastores === 'number' ? (
-                  <div
-                    className={sidebarSedeStyleCountBadge(shell.activeTab === 'PastoresPage', true)}
-                    title="Pastores registrados en sedes visibles"
-                  >
-                    {shell.workspaceSidebarBadges.pastores}
-                  </div>
+              );
+
+            return (
+              <>
+                {showDashboard ? (
+                  <>
+                    {sectionLabel('resumen', 'Resumen')}
+                    <button
+                      {...workspaceTabPreloadProps('Summary')}
+                      onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'Summary')}
+                      className={workspaceSidebarNavClassDesktop(shell.activeTab === 'Summary')}
+                    >
+                      <div className={uiSidebar.navItemInnerNavDesktop}>
+                        <BarChart3
+                          size={SIDEBAR_NAV_ICON_SIZE}
+                          className={sidebarNavIconClass(
+                            shell.activeTab === 'Summary' ? 'text-indigo-400' : ''
+                          )}
+                        />
+                        <span className="font-bold">Dashboard</span>
+                      </div>
+                      {shell.activeTab === 'Summary' && (
+                        <div className={`${uiSidebar.activeDot} bg-indigo-400`} />
+                      )}
+                    </button>
+                  </>
                 ) : null}
-                {shell.activeTab === 'PastoresPage' && <div className={`${uiSidebar.activeDot} bg-violet-400`} />}
-              </div>
-            </button>
-          )}
-          {shell.isPanelNavSectionAllowed('transporte') && (
-            <button
-              type="button"
-              {...workspaceTabPreloadProps('TransportPlanning')}
-              onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'TransportPlanning')}
-              className={workspaceSidebarNavClassDesktop(shell.activeTab === 'TransportPlanning')}
-            >
-              <div className={uiSidebar.navItemInnerNavDesktop}>
-                <Bus size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'TransportPlanning' ? 'text-cyan-400' : '')} />
-                <span className="font-bold">Transporte</span>
-              </div>
-              {shell.activeTab === 'TransportPlanning' && <div className={`${uiSidebar.activeDot} bg-cyan-400`} />}
-            </button>
-          )}
-          {shell.isPanelNavSectionAllowed('cashCut') && (
-            <button {...workspaceTabPreloadProps('CashCut')} onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, "CashCut")} className={workspaceSidebarNavClassDesktop(shell.activeTab === 'CashCut')}><div className={uiSidebar.navItemInnerNavDesktop}><Scissors size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'CashCut' ? 'text-green-400' : '')} /><span className="font-bold">Corte de Caja</span></div>{shell.activeTab === 'CashCut' && <div className={`${uiSidebar.activeDot} bg-green-400`} />}</button>
-          )}
-          {shell.canAccessExpenses && shell.isPanelNavSectionAllowed('expenseList') && (
-            <button {...workspaceTabPreloadProps('ExpenseList')} onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, "ExpenseList")} className={workspaceSidebarNavClassDesktop(shell.activeTab === 'ExpenseList')}><div className={uiSidebar.navItemInnerNavDesktop}><Receipt size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'ExpenseList' ? 'text-emerald-400' : '')} /><span className="font-bold">Lista de Gastos</span></div>{shell.activeTab === 'ExpenseList' && <div className={`${uiSidebar.activeDot} bg-emerald-400`} />}</button>
-          )}
-          
-          {shell.isPanelNavSectionAllowed('locations') && (
-          <>
-          <div className={`${uiSidebar.sectionWrapNavDesktop} px-2`}>
-            <span className={uiSidebar.sectionLabelNavDesktop}>Sedes Disponibles</span>
-            {shell.hasAdminRights && <button onClick={() => shell.setIsAddLocModalOpen(true)} className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 p-0.5 lg:p-1 rounded transition-colors" title="Añadir Sede"><Plus size={12} className="lg:w-[14px] lg:h-[14px]" /></button>}
-          </div>
-          {shell.visibleLocations.map(loc => (
-            <div key={loc} className="flex flex-col mb-1">
-              <button {...workspaceLocationTabPreloadProps()} onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, loc)} className={workspaceSidebarSedeClassDesktop(shell.activeTab === loc)}>
-                <div className={uiSidebar.navItemInnerNavDesktop}>
-                  <MapPin size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === loc ? 'text-white' : 'text-slate-700 group-hover:text-slate-500')} />
-                  <span className="font-bold truncate">{loc}</span>
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {!shell.isLocOpen(loc) && <span className="text-[7px] lg:text-[7px] bg-red-500/20 text-red-400 px-1 py-px rounded uppercase font-bold border border-red-500/30">Cerrada</span>}
-                  <div
-                    className={sidebarSedeStyleCountBadge(shell.activeTab === loc, true)}
-                    title="Inscritos activos en esta sede (total en base de datos, sin filtros de lista)"
-                  >
-                    {shell.workspaceSidebarBadges?.sedeCounts?.[loc] ?? (shell.data[loc] || []).length}
-                  </div>
-                  {shell.hasAdminRights && <div onClick={(e) => { e.stopPropagation(); shell.handleDeleteLocation(loc); }} className={`p-1 lg:p-1 rounded-md transition-colors ${shell.activeTab === loc ? 'hover:bg-indigo-500 text-indigo-200 hover:text-white' : 'text-slate-600 hover:bg-slate-800 hover:text-red-400'}`} title="Eliminar Sede"><Trash2 size={12} className="lg:w-[14px] lg:h-[14px]" /></div>}
-                </div>
-              </button>
-              {shell.locError === loc && <span className="text-[10px] text-red-400 font-bold px-4 pt-1 animate-in slide-in-from-top-1 text-left">Sede con registros.</span>}
-            </div>
-          ))}
-          </>
-          )}
-          {shell.isPanelNavSectionAllowed('registroGlobal') && (
-          <>
-          <div className={`${uiSidebar.sectionWrapNavDesktop} mt-2`}>
-            <span className={uiSidebar.sectionLabelNavDesktop}>Consolidado</span>
-          </div>
-          <button
-            {...workspaceTabPreloadProps('RegistroGlobal')}
-            onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, 'RegistroGlobal')}
-            className={workspaceSidebarNavClassDesktop(shell.activeTab === 'RegistroGlobal')}
-          >
-            <div className={uiSidebar.navItemInnerNavDesktop}>
-              <TableProperties size={SIDEBAR_NAV_ICON_SIZE} className={sidebarNavIconClass(shell.activeTab === 'RegistroGlobal' ? 'text-indigo-400' : '')} />
-              <span className="font-bold">Registro Global</span>
-            </div>
-            {shell.activeTab === 'RegistroGlobal' && <div className={`${uiSidebar.activeDot} bg-indigo-400`} />}
-          </button>
-          </>
-          )}
+
+                {visibleRoleItems.length > 0 ? (
+                  <>
+                    {sectionLabel('asistencias', 'Tipos de asistencia')}
+                    {visibleRoleItems.map(({ roleKey, panelKey, tab, label }) => {
+                      const active = shell.activeTab === tab;
+                      const count = shell.workspaceSidebarBadges?.roleCounts?.[roleKey];
+                      return (
+                        <button
+                          key={panelKey}
+                          type="button"
+                          {...workspaceTabPreloadProps(tab)}
+                          onClick={() => shell.goTo(shell.systemView, shell.selectedEventId, tab)}
+                          className={workspaceSidebarNavClassDesktop(active)}
+                        >
+                          <div className={uiSidebar.navItemInnerNavDesktop}>
+                            <Users
+                              size={SIDEBAR_NAV_ICON_SIZE}
+                              className={sidebarNavIconClass(active ? 'text-indigo-400' : '')}
+                            />
+                            <span className="font-bold truncate">{label}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {typeof count === 'number' ? (
+                              <div
+                                className={sidebarSedeStyleCountBadge(active, true)}
+                                title={`Registros con tipo ${label}`}
+                              >
+                                {count}
+                              </div>
+                            ) : null}
+                            {active ? (
+                              <div className={`${uiSidebar.activeDot} bg-indigo-400`} />
+                            ) : null}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </>
+                ) : null}
+
+                {showRegistroGlobal || showLocations ? (
+                  <>
+                    {sectionLabel(
+                      'registros',
+                      'Registros',
+                      showLocations && shell.hasAdminRights ? (
+                        <button
+                          type="button"
+                          onClick={() => shell.setIsAddLocModalOpen(true)}
+                          className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 p-0.5 lg:p-1 rounded transition-colors"
+                          title="Añadir sede"
+                        >
+                          <Plus size={12} className="lg:w-[14px] lg:h-[14px]" />
+                        </button>
+                      ) : null
+                    )}
+                    {showRegistroGlobal ? (
+                      <button
+                        {...workspaceTabPreloadProps('RegistroGlobal')}
+                        onClick={() =>
+                          shell.goTo(shell.systemView, shell.selectedEventId, 'RegistroGlobal')
+                        }
+                        className={workspaceSidebarNavClassDesktop(
+                          shell.activeTab === 'RegistroGlobal'
+                        )}
+                      >
+                        <div className={uiSidebar.navItemInnerNavDesktop}>
+                          <TableProperties
+                            size={SIDEBAR_NAV_ICON_SIZE}
+                            className={sidebarNavIconClass(
+                              shell.activeTab === 'RegistroGlobal' ? 'text-indigo-400' : ''
+                            )}
+                          />
+                          <span className="font-bold">Registro global</span>
+                        </div>
+                        {shell.activeTab === 'RegistroGlobal' && (
+                          <div className={`${uiSidebar.activeDot} bg-indigo-400`} />
+                        )}
+                      </button>
+                    ) : null}
+                    {showLocations ? (
+                      <>
+                        {showRegistroGlobal ? (
+                          <p className="px-3 pt-1.5 pb-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-600">
+                            Por sede
+                          </p>
+                        ) : null}
+                        {shell.visibleLocations.map((loc) => (
+                          <div key={loc} className="flex flex-col mb-1">
+                            <button
+                              {...workspaceLocationTabPreloadProps()}
+                              onClick={() =>
+                                shell.goTo(shell.systemView, shell.selectedEventId, loc)
+                              }
+                              className={workspaceSidebarSedeClassDesktop(shell.activeTab === loc)}
+                            >
+                              <div className={uiSidebar.navItemInnerNavDesktop}>
+                                <MapPin
+                                  size={SIDEBAR_NAV_ICON_SIZE}
+                                  className={sidebarNavIconClass(
+                                    shell.activeTab === loc
+                                      ? 'text-white'
+                                      : 'text-slate-700 group-hover:text-slate-500'
+                                  )}
+                                />
+                                <span className="font-bold truncate">{loc}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {!shell.isLocOpen(loc) && (
+                                  <span className="text-[7px] lg:text-[7px] bg-red-500/20 text-red-400 px-1 py-px rounded uppercase font-bold border border-red-500/30">
+                                    Cerrada
+                                  </span>
+                                )}
+                                <div
+                                  className={sidebarSedeStyleCountBadge(
+                                    shell.activeTab === loc,
+                                    true
+                                  )}
+                                  title="Inscritos activos en esta sede (total en base de datos, sin filtros de lista)"
+                                >
+                                  {shell.workspaceSidebarBadges?.sedeCounts?.[loc] ??
+                                    (shell.data[loc] || []).length}
+                                </div>
+                                {shell.hasAdminRights && (
+                                  <div
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      shell.handleDeleteLocation(loc);
+                                    }}
+                                    className={`p-1 lg:p-1 rounded-md transition-colors ${
+                                      shell.activeTab === loc
+                                        ? 'hover:bg-indigo-500 text-indigo-200 hover:text-white'
+                                        : 'text-slate-600 hover:bg-slate-800 hover:text-red-400'
+                                    }`}
+                                    title="Eliminar sede"
+                                  >
+                                    <Trash2 size={12} className="lg:w-[14px] lg:h-[14px]" />
+                                  </div>
+                                )}
+                              </div>
+                            </button>
+                            {shell.locError === loc && (
+                              <span className="text-[10px] text-red-400 font-bold px-4 pt-1 animate-in slide-in-from-top-1 text-left">
+                                Sede con registros.
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </>
+                    ) : null}
+                  </>
+                ) : null}
+
+                {showResponsivas || showTransporte ? (
+                  <>
+                    {sectionLabel('operacion', 'Operación')}
+                    {showResponsivas ? (
+                      <button
+                        {...workspaceTabPreloadProps('Responsivas')}
+                        onClick={() =>
+                          shell.goTo(shell.systemView, shell.selectedEventId, 'Responsivas')
+                        }
+                        className={workspaceSidebarNavClassDesktop(
+                          shell.activeTab === 'Responsivas'
+                        )}
+                      >
+                        <div className={uiSidebar.navItemInnerNavDesktop}>
+                          <FileSignature
+                            size={SIDEBAR_NAV_ICON_SIZE}
+                            className={sidebarNavIconClass(
+                              shell.activeTab === 'Responsivas' ? 'text-emerald-400' : ''
+                            )}
+                          />
+                          <span className="font-bold">Responsivas</span>
+                        </div>
+                        {shell.activeTab === 'Responsivas' && (
+                          <div className={`${uiSidebar.activeDot} bg-emerald-400`} />
+                        )}
+                      </button>
+                    ) : null}
+                    {showTransporte ? (
+                      <button
+                        type="button"
+                        {...workspaceTabPreloadProps('TransportPlanning')}
+                        onClick={() =>
+                          shell.goTo(shell.systemView, shell.selectedEventId, 'TransportPlanning')
+                        }
+                        className={workspaceSidebarNavClassDesktop(
+                          shell.activeTab === 'TransportPlanning'
+                        )}
+                      >
+                        <div className={uiSidebar.navItemInnerNavDesktop}>
+                          <Bus
+                            size={SIDEBAR_NAV_ICON_SIZE}
+                            className={sidebarNavIconClass(
+                              shell.activeTab === 'TransportPlanning' ? 'text-cyan-400' : ''
+                            )}
+                          />
+                          <span className="font-bold">Transporte</span>
+                        </div>
+                        {shell.activeTab === 'TransportPlanning' && (
+                          <div className={`${uiSidebar.activeDot} bg-cyan-400`} />
+                        )}
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+
+                {showCashCut || showExpenses ? (
+                  <>
+                    {sectionLabel('finanzas', 'Finanzas')}
+                    {showCashCut ? (
+                      <button
+                        {...workspaceTabPreloadProps('CashCut')}
+                        onClick={() =>
+                          shell.goTo(shell.systemView, shell.selectedEventId, 'CashCut')
+                        }
+                        className={workspaceSidebarNavClassDesktop(shell.activeTab === 'CashCut')}
+                      >
+                        <div className={uiSidebar.navItemInnerNavDesktop}>
+                          <Scissors
+                            size={SIDEBAR_NAV_ICON_SIZE}
+                            className={sidebarNavIconClass(
+                              shell.activeTab === 'CashCut' ? 'text-green-400' : ''
+                            )}
+                          />
+                          <span className="font-bold">Corte de caja</span>
+                        </div>
+                        {shell.activeTab === 'CashCut' && (
+                          <div className={`${uiSidebar.activeDot} bg-green-400`} />
+                        )}
+                      </button>
+                    ) : null}
+                    {showExpenses ? (
+                      <button
+                        {...workspaceTabPreloadProps('ExpenseList')}
+                        onClick={() =>
+                          shell.goTo(shell.systemView, shell.selectedEventId, 'ExpenseList')
+                        }
+                        className={workspaceSidebarNavClassDesktop(
+                          shell.activeTab === 'ExpenseList'
+                        )}
+                      >
+                        <div className={uiSidebar.navItemInnerNavDesktop}>
+                          <Receipt
+                            size={SIDEBAR_NAV_ICON_SIZE}
+                            className={sidebarNavIconClass(
+                              shell.activeTab === 'ExpenseList' ? 'text-emerald-400' : ''
+                            )}
+                          />
+                          <span className="font-bold">Lista de gastos</span>
+                        </div>
+                        {shell.activeTab === 'ExpenseList' && (
+                          <div className={`${uiSidebar.activeDot} bg-emerald-400`} />
+                        )}
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+              </>
+            );
+          })()}
           </nav>
           <div className="shrink-0 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-3 border-t border-slate-800/60">
             <p className="text-[9px] font-black text-slate-500 uppercase tracking-wider mb-1.5 px-1">Apariencia</p>
@@ -2207,6 +2372,15 @@ export default function EventWorkspaceScreen() {
       {shell.excelExportModalEl}
       {shell.panelNavModalEl}
       {shell.privacyNoticeModalEl}
+
+      <EditEventModal
+        renameModal={shell.renameModal}
+        setRenameModal={shell.setRenameModal}
+        onSubmit={shell.handleRenameEvent}
+        btnPrimary={shell.btnPrimary}
+        btnSecondary={shell.btnSecondary}
+        inputClasses={shell.inputClasses}
+      />
 
     </div>
   );
