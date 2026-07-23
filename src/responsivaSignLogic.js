@@ -409,27 +409,33 @@ export async function createResponsivaSignTokenDoc({ participantId, eventId, per
     throw new Error('createResponsivaSignTokenDoc: participantId y eventId son obligatorios.');
   }
 
-  const existingSnap = await getDocs(
-    query(
-      getColRef(RESPONSIVA_SIGN_TOKEN_COLLECTION),
-      where('participantId', '==', participantIdStr),
-      where('eventId', '==', eventIdStr),
-      limit(1)
-    )
-  );
-  if (!existingSnap.empty) {
-    const existingDoc = existingSnap.docs[0];
-    const existing = existingDoc.data() || {};
-    const urlLabel = String(existing.urlLabel || '').trim();
-    const secret = String(existing.secret || '').trim();
-    return {
-      docId: existingDoc.id,
-      token: existingDoc.id,
-      urlLabel,
-      secret,
-      signUrl: urlLabel && secret ? getResponsivaSignPageUrl({ urlLabel, secret }) : getResponsivaSignPageUrl(existingDoc.id),
-      expiresAt: existing.expiresAt ?? null,
-    };
+  try {
+    const existingSnap = await getDocs(
+      query(
+        getColRef(RESPONSIVA_SIGN_TOKEN_COLLECTION),
+        where('participantId', '==', participantIdStr),
+        where('eventId', '==', eventIdStr),
+        limit(1)
+      )
+    );
+    if (!existingSnap.empty) {
+      const existingDoc = existingSnap.docs[0];
+      const existing = existingDoc.data() || {};
+      const urlLabel = String(existing.urlLabel || '').trim();
+      const secret = String(existing.secret || '').trim();
+      return {
+        docId: existingDoc.id,
+        token: existingDoc.id,
+        urlLabel,
+        secret,
+        signUrl: urlLabel && secret ? getResponsivaSignPageUrl({ urlLabel, secret }) : getResponsivaSignPageUrl(existingDoc.id),
+        expiresAt: existing.expiresAt ?? null,
+      };
+    }
+  } catch (e) {
+    if (e?.code !== 'permission-denied') throw e;
+    // Public anonymous users can create a fresh token but cannot list existing tokens.
+    console.warn('responsiva token lookup skipped by rules', e);
   }
 
   let urlLabel = buildResponsivaUrlLabel(person || {});
