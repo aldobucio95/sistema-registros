@@ -13,6 +13,7 @@ const {
   listAnonymousAuthUsers,
   deleteAnonymousAuthUserByUid,
 } = require('./purgeAnonymousAuth.cjs');
+const { assertCallerCanMutateTargetStaff } = require('./staffAuthGuards.cjs');
 const admin = require('firebase-admin');
 const { getFirestore } = require('firebase-admin/firestore');
 const { getAuth } = require('firebase-admin/auth');
@@ -261,7 +262,16 @@ exports.updateUserAuthEmail = onCall(async (request) => {
   if (!targetSnap.exists) {
     throw new HttpsError('not-found', 'Usuario no encontrado.');
   }
-  const authUid = targetSnap.data().authUid;
+  const target = targetSnap.data() || {};
+  const targetGuard = assertCallerCanMutateTargetStaff(
+    callerRole,
+    target.role,
+    'cambiar el correo de acceso de'
+  );
+  if (!targetGuard.ok) {
+    throw new HttpsError(targetGuard.code, targetGuard.message);
+  }
+  const authUid = target.authUid;
   if (!authUid) {
     throw new HttpsError('failed-precondition', 'El perfil no tiene cuenta de acceso vinculada.');
   }
@@ -318,9 +328,9 @@ exports.deleteUserAccount = onCall(async (request) => {
     throw new HttpsError('not-found', 'Usuario no encontrado.');
   }
   const target = targetSnap.data() || {};
-  const targetRole = String(target.role || '');
-  if (targetRole === 'SuperUsuario' && callerRole !== 'SuperUsuario') {
-    throw new HttpsError('permission-denied', 'Solo un SuperUsuario puede eliminar a otro SuperUsuario.');
+  const targetGuard = assertCallerCanMutateTargetStaff(callerRole, target.role, 'eliminar');
+  if (!targetGuard.ok) {
+    throw new HttpsError(targetGuard.code, targetGuard.message);
   }
 
   const authUid = String(target.authUid || '').trim();

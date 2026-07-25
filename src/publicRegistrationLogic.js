@@ -1,5 +1,8 @@
 import { setDoc, getDoc, getDocs, query, where, limit, updateDoc } from 'firebase/firestore';
 import { getDocRef, getColRef } from './firebaseRefs.js';
+import { existingRegistrationBlocksDueToPendingRefund } from './registrationWriteGateGuards.js';
+
+export { existingRegistrationBlocksDueToPendingRefund } from './registrationWriteGateGuards.js';
 import { buildLogId, writeSnapshotDoc } from './activityLogCore.js';
 import { withLogVisibleInPanel, buildLogEntityFields } from './activityLogsMeta.js';
 import { buildFinanceWhatsAppMessage, buildScholarshipPendingWhatsAppMessage } from './whatsappFinanceMessages.js';
@@ -399,8 +402,9 @@ function firestoreExistingBlocksSameEventRegistration(existing, eventId) {
 }
 
 /**
- * Antes de crear/sobrescribir un participante: bloquea solo si ya existe doc con el mismo id,
- * mismo evento y estado activo o lista de espera (no cancelado/archivado).
+ * Antes de crear/sobrescribir un participante: bloquea si ya existe doc con el mismo id,
+ * mismo evento y estado activo o lista de espera; también si hay devolución pendiente
+ * (cancelado/archivado) para no perder contabilidad al reutilizar el folio.
  */
 export async function loadParticipantRegistrationWriteGate(participantDocId, eventId) {
   const ref = getDocRef('app_participants', participantDocId);
@@ -411,6 +415,13 @@ export async function loadParticipantRegistrationWriteGate(participantDocId, eve
     return {
       ok: false,
       error: buildPublicRegistrationWriteGateBlockedMessage(ex, participantDocId),
+      snap,
+    };
+  }
+  if (existingRegistrationBlocksDueToPendingRefund(ex, eventId)) {
+    return {
+      ok: false,
+      error: buildPendingRefundWriteGateBlockedMessage(ex, participantDocId),
       snap,
     };
   }
@@ -607,6 +618,22 @@ function buildPublicRegistrationWriteGateBlockedMessage(existing, participantDoc
     '',
     'Si completaste el registro anteriormente, no vuelvas a enviar. Si aparece por error, contacta a la organización.'
   );
+  return lines.join('\n');
+}
+
+function buildPendingRefundWriteGateBlockedMessage(existing, participantDocId) {
+  const name = String(existing?.name || '').trim();
+  const vnp = String(existing?.vnpPersonId || '').trim();
+  const pending = Number(existing?.refundPendingAmount) || 0;
+  const lines = [
+    'Motivo: ya existe un registro previo en este evento con una devolución pendiente de dinero.',
+    'Para no perder ese pendiente contable, no se puede reutilizar el mismo folio hasta que la organización liquide o cancele la devolución.',
+    '',
+    name ? `Registro previo: ${name}` : `Id. de documento: ${participantDocId}`,
+    `Monto pendiente de devolución: $${pending.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`,
+  ];
+  if (vnp) lines.push(`VNPM: ${vnp}`);
+  lines.push('', 'Contacta a la organización para reactivar o reinscribir este folio.');
   return lines.join('\n');
 }
 
