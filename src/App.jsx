@@ -89,6 +89,7 @@ import {
   tierHasServerPricesInCamperTier,
   isPhoneShareFamilyAllowed,
   resolveParticipantDocumentIdForWrite,
+  resolveParticipantDocumentIdForPromotionWrite,
   loadParticipantRegistrationWriteGate,
   participantRegisteredViaPublicLink,
 } from './publicRegistrationLogic.js';
@@ -21398,10 +21399,24 @@ function resolveEventName(eventId) {
       batchOps += 1;
     }
 
+    const promotionReservedDocIds = new Set(
+      (plan.cancelDocIds || []).map((id) => String(id || '').trim()).filter(Boolean)
+    );
     for (const prom of plan.promotions || []) {
       const candVnp =
         canonicalizeVnpPersonId(prom.payload?.vnpPersonId || '') || generateVnpPersonId(prom.payload || {});
-      const docId = await resolveParticipantDocumentIdForWrite(candVnp, currentEvent?.id);
+      const promoIdResult = await resolveParticipantDocumentIdForPromotionWrite(
+        candVnp,
+        currentEvent?.id,
+        promotionReservedDocIds
+      );
+      if (!promoIdResult.ok) {
+        throw new Error(
+          promoIdResult.error ||
+            'No se pudo promover al acompañante: el folio VNPM ya pertenece a otro inscrito del evento.'
+        );
+      }
+      const docId = promoIdResult.docId;
       const regIso = new Date(now).toISOString();
       const personData = {
         ...prom.payload,
@@ -22102,7 +22117,12 @@ function resolveEventName(eventId) {
       else if (m.type === 'move_to_waitlist' && m.personId) await performMoveActiveEntryToWaitlist(m.loc, m.personId);
     } catch (e) {
       console.error(e);
-      showToast('No se pudo completar la acción. Revisa conexión o permisos.');
+      const msg = String(e?.message || '').trim();
+      showToast(
+        msg && msg.length < 280
+          ? msg
+          : 'No se pudo completar la acción. Revisa conexión o permisos.'
+      );
     } finally {
       setRegistryConfirmBusy(false);
     }

@@ -391,6 +391,80 @@ export async function resolveParticipantDocumentIdForWrite(vnpRaw, eventId) {
   }
 }
 
+/**
+ * Id para promover acompañantes a registro propio tras baja/archivo de grupo.
+ * A diferencia de `resolveParticipantDocumentIdForWrite`, **nunca** reutiliza un doc
+ * ya existente del mismo evento (activo, espera, cancelado o archivado): un `set` a
+ * ese id borraba al titular/inscrito previo cuando el VNPM colisionaba (p. ej. mismas
+ * iniciales+fecha+género, o varios «Sin especificar»).
+ *
+ * @param {string} vnpRaw
+ * @param {string} eventId
+ * @param {Set<string>} [reservedIds] ids ya tomados en el mismo batch (cancelados del plan + otras promociones)
+ * @returns {Promise<{ ok: true, docId: string } | { ok: false, error: string, docId?: string }>}
+ */
+export async function resolveParticipantDocumentIdForPromotionWrite(
+  vnpRaw,
+  eventId,
+  reservedIds = new Set()
+) {
+  const preferred = await resolveParticipantDocumentIdForWrite(vnpRaw, eventId);
+  const ev = String(eventId || '').trim();
+  const reserved = reservedIds instanceof Set ? reservedIds : new Set();
+
+  const isFreeOnServer = async (docId) => {
+    const id = String(docId || '').trim();
+    if (!id) return false;
+    try {
+      const snap = await getDoc(getDocRef('app_participants', id));
+      return !snap.exists();
+    } catch {
+      return false;
+    }
+  };
+
+  const allocateSibling = async () => {
+    const base =
+      participantDocumentIdFromVnpPersonId(vnpRaw) ||
+      (String(preferred).startsWith('id_') ? String(preferred) : `id_${String(preferred || 'promo')}`);
+    for (let n = 1; n <= 80; n += 1) {
+      const candidate = `${base}__promo_${n}`;
+      if (reserved.has(candidate)) continue;
+      if (!(await isFreeOnServer(candidate))) continue;
+      reserved.add(candidate);
+      return { ok: true, docId: candidate };
+    }
+    const fallback = `${base}__promo_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    reserved.add(fallback);
+    return { ok: true, docId: fallback };
+  };
+
+  // Id ya reservado en este plan (titular/integrantes a dar de baja, u otra promoción): nunca reutilizar.
+  if (reserved.has(preferred)) {
+    return allocateSibling();
+  }
+
+  if (await isFreeOnServer(preferred)) {
+    reserved.add(preferred);
+    return { ok: true, docId: preferred };
+  }
+
+  // Doc existente: no sobrescribir. Si está activo/espera y no es del plan, abortar.
+  const gatePreferred = await loadParticipantRegistrationWriteGate(preferred, ev);
+  if (!gatePreferred.ok) {
+    return {
+      ok: false,
+      error:
+        gatePreferred.error ||
+        'Ya existe un inscrito o en lista de espera con este folio VNPM. No se puede sobrescribir al promover.',
+      docId: preferred,
+    };
+  }
+
+  // Cancelado/archivado (u otro estado no bloqueante): id hermano libre.
+  return allocateSibling();
+}
+
 function firestoreExistingBlocksSameEventRegistration(existing, eventId) {
   if (String(existing?.eventId || '') !== String(eventId || '')) return false;
   if (participantIsArchived(existing) || participantIsCancelled(existing)) return false;
