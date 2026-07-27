@@ -50,6 +50,19 @@ export function isLikelyRetriableNetworkFailure(err) {
   return false;
 }
 
+/**
+ * Rechazos de negocio temporales: no deben borrar la cola local (el usuario ya creyó que quedó encolado).
+ * P. ej. sede cerrada por el staff — al reabrir, el flush debe reintentar.
+ * Duplicados / validación de datos se consideran definitivos y sí se descartan.
+ */
+export function isRetriablePublicRegistrationBusinessRejection(errorText) {
+  const msg = String(errorText || '').toLowerCase();
+  if (!msg) return false;
+  if (/cerró las inscripciones|cerro las inscripciones/.test(msg)) return true;
+  if (/inscripciones.*cerrad|sede.*cerrad.*inscrip/.test(msg)) return true;
+  return false;
+}
+
 function fingerprintForQueueItem(form, loc) {
   const vnp = canonicalizeVnpPersonId(form?.vnpPersonId || '');
   const locS = String(loc || '').trim();
@@ -122,6 +135,8 @@ async function processPublicRegistrationOfflineQueueBody(authInstance) {
   let failedRetriable = 0;
   let dropped = 0;
   let businessRejected = 0;
+  /** Rechazos temporales (p. ej. sede cerrada): se conservan para el próximo flush. */
+  const keepForRetry = [];
 
   const pending = [...bag.items].sort((a, b) => (a.enqueuedAt || 0) - (b.enqueuedAt || 0));
 
@@ -142,7 +157,7 @@ async function processPublicRegistrationOfflineQueueBody(authInstance) {
       const snap = await fetchPublicRegistrationLinkSnapshot(item.linkKey);
       if (!snap.exists()) {
         item.attempts = (item.attempts || 0) + 1;
-        saveBag({ v: QUEUE_VERSION, items: [item, ...pending] });
+        saveBag({ v: QUEUE_VERSION, items: [...keepForRetry, item, ...pending] });
         failedRetriable++;
         return { processed, failedRetriable, dropped, businessRejected };
       }
@@ -171,10 +186,34 @@ async function processPublicRegistrationOfflineQueueBody(authInstance) {
       if (result.ok) {
         processed++;
         registerPublicRegistrationSuccess(authInstance, item.linkKey);
+        // Quitar de storage al instante para no reenviar si el flush se interrumpe después.
+        saveBag({ v: QUEUE_VERSION, items: [...keepForRetry, ...pending] });
         continue;
       }
       businessRejected++;
       const head = String(result.error || '').split(/[.\n]/)[0].trim().slice(0, 120);
+      if (isRetriablePublicRegistrationBusinessRejection(result.error)) {
+        item.attempts = (item.attempts || 0) + 1;
+        if ((item.attempts || 0) >= MAX_ATTEMPTS) {
+          dropped++;
+          emitGlobalSystemAlert(
+            head
+              ? `Cola: descartado tras reintentos (${head})`
+              : 'Cola offline: rechazo temporal agotó reintentos; elemento descartado.',
+            { tone: 'danger', ms: 9000 }
+          );
+        } else {
+          keepForRetry.push(item);
+          failedRetriable++;
+          emitGlobalSystemAlert(
+            head
+              ? `Cola: pendiente conservado — ${head}. Se reintentará al reconectar.`
+              : 'Cola: rechazo temporal; el registro pendiente se conservó para reintentar.',
+            { tone: 'warn', ms: 9000 }
+          );
+        }
+        continue;
+      }
       emitGlobalSystemAlert(
         head ? `Cola: no se pudo enviar (${head})` : 'Cola: Firestore rechazó un registro pendiente.',
         { tone: 'warn', ms: 9000 }
@@ -182,7 +221,7 @@ async function processPublicRegistrationOfflineQueueBody(authInstance) {
     } catch (err) {
       if (isLikelyRetriableNetworkFailure(err)) {
         item.attempts = (item.attempts || 0) + 1;
-        saveBag({ v: QUEUE_VERSION, items: [item, ...pending] });
+        saveBag({ v: QUEUE_VERSION, items: [...keepForRetry, item, ...pending] });
         failedRetriable++;
         return { processed, failedRetriable, dropped, businessRejected };
       }
@@ -191,13 +230,13 @@ async function processPublicRegistrationOfflineQueueBody(authInstance) {
         dropped++;
         emitGlobalSystemAlert('Cola offline: error no de red; elemento descartado.', { tone: 'danger', ms: 7000 });
       } else {
-        saveBag({ v: QUEUE_VERSION, items: [item, ...pending] });
+        saveBag({ v: QUEUE_VERSION, items: [...keepForRetry, item, ...pending] });
         failedRetriable++;
         return { processed, failedRetriable, dropped, businessRejected };
       }
     }
   }
 
-  saveBag({ v: QUEUE_VERSION, items: [] });
+  saveBag({ v: QUEUE_VERSION, items: keepForRetry });
   return { processed, failedRetriable, dropped, businessRejected };
 }
