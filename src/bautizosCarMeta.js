@@ -802,17 +802,47 @@ export function familyHasAnyCarTransport(hostPerson, companions) {
   return comps.some((c) => companionGoesByCar(c));
 }
 
-/** Aplica parches de carMeta al plan del evento y persiste en Firestore. */
+/**
+ * Aplica parches de carMeta al plan del evento y persiste en Firestore.
+ *
+ * Siempre relee `transportPlanning` del evento en servidor cuando se pasa `getDoc`.
+ * El enlace QR público NO incluye `transportPlanning` en `eventSnapshot`; mezclar
+ * sobre `undefined` normaliza a plan vacío y borra buses/asignaciones del evento.
+ */
 export async function persistEventCarMetaPatches({
   eventId,
   patches,
   currentPlan,
   getDocRef,
   updateDoc,
+  getDoc,
 }) {
   const eid = String(eventId || '').trim();
   if (!eid || !patches?.length) return normalizeTransportPlanning(currentPlan);
-  const mergedPlan = mergeCarMetaPatchesIntoPlan(currentPlan, patches);
+
+  let basePlan = currentPlan;
+  let readLivePlan = false;
+  if (typeof getDoc === 'function') {
+    try {
+      const snap = await getDoc(getDocRef('app_events', eid));
+      const exists = typeof snap?.exists === 'function' ? snap.exists() : !!snap?.exists;
+      if (exists) {
+        basePlan = snap.data()?.transportPlanning;
+        readLivePlan = true;
+      }
+    } catch {
+      /* Si no hay plan del caller, no inventar uno vacío que pise Firestore. */
+      if (currentPlan == null) {
+        return normalizeTransportPlanning(currentPlan);
+      }
+    }
+  }
+
+  if (!readLivePlan && currentPlan == null) {
+    return normalizeTransportPlanning(currentPlan);
+  }
+
+  const mergedPlan = mergeCarMetaPatchesIntoPlan(basePlan, patches);
   const nextPlan = applyCarMetaPassengerInheritance(mergedPlan);
   await updateDoc(getDocRef('app_events', eid), { transportPlanning: nextPlan });
   return nextPlan;

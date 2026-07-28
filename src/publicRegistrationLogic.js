@@ -2043,6 +2043,7 @@ async function submitPublicBautizosSplitRegistration({
         currentPlan: eventSnapshot.transportPlanning,
         getDocRef,
         updateDoc,
+        getDoc,
       });
     }
   }
@@ -2490,6 +2491,7 @@ export async function submitPublicRegistration({
         currentPlan: eventSnapshot.transportPlanning,
         getDocRef,
         updateDoc,
+        getDoc,
       });
     }
   }
@@ -2825,6 +2827,7 @@ async function submitWaitlist({
         currentPlan: eventSnapshot.transportPlanning,
         getDocRef,
         updateDoc,
+        getDoc,
       });
     }
   }
