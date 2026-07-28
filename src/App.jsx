@@ -4972,6 +4972,7 @@ function resolveEventName(eventId) {
         currentPlan: normalizeTransportPlanning(currentEvent.transportPlanning),
         getDocRef,
         updateDoc,
+        getDoc,
       });
       patchEventTransportPlanning(nextPlan);
       return nextPlan;
