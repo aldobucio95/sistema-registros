@@ -370,10 +370,33 @@ function sanitizeEventIdForParticipantDocSuffix(eventId) {
 }
 
 /**
+ * Elige el id de documento participante para un alta (VNPM + evento).
+ *
+ * - Si el doc canónico `id_VNPM…` ya existe **para el mismo** `eventId`, se reutiliza.
+ * - Si existe **con otro** `eventId`, o **no existe**, se usa `id_VNPM…__e_<eventId>`.
+ *
+ * Importante: cuando el canónico aún no existe no se reclama el id bare. Dos altas
+ * concurrentes del mismo VNPM en eventos distintos no pueden ambas tomar `id_VNPM…`
+ * (TOCTOU de last-write-wins que borraba la inscripción del otro evento).
+ */
+export function chooseParticipantDocumentIdForWrite({
+  base,
+  eventId,
+  baseSnapExists,
+  baseEventId,
+}) {
+  if (!base) return null;
+  const ev = String(eventId || '').trim();
+  if (!ev) return base;
+  const suffixed = `${base}__e_${sanitizeEventIdForParticipantDocSuffix(ev)}`;
+  if (!baseSnapExists) return suffixed;
+  if (String(baseEventId || '') === ev) return base;
+  return suffixed;
+}
+
+/**
  * Mismo `vnpPersonId` puede inscribirse en varios eventos: un documento por combinación (VNPM + evento).
- * - Primer uso del VNPM: id estable `id_VNPM…` (misma regla que `participantDocumentIdFromVnpPersonId`).
- * - Si ese doc ya existe **con otro** `eventId`, el alta en el nuevo evento usa `id_VNPM…__e_<eventId>`.
- * Así no se sobrescribe la participación en el evento anterior.
+ * Ver `chooseParticipantDocumentIdForWrite` para la regla anti-TOCTOU entre eventos.
  */
 export async function resolveParticipantDocumentIdForWrite(vnpRaw, eventId) {
   const base = participantDocumentIdFromVnpPersonId(vnpRaw);
@@ -382,12 +405,22 @@ export async function resolveParticipantDocumentIdForWrite(vnpRaw, eventId) {
   if (!ev) return base;
   try {
     const snap = await getDoc(getDocRef('app_participants', base));
-    if (!snap.exists()) return base;
-    const ex = snap.data();
-    if (String(ex?.eventId || '') === ev) return base;
-    return `${base}__e_${sanitizeEventIdForParticipantDocSuffix(ev)}`;
+    const chosen = chooseParticipantDocumentIdForWrite({
+      base,
+      eventId: ev,
+      baseSnapExists: snap.exists(),
+      baseEventId: snap.exists() ? snap.data()?.eventId : undefined,
+    });
+    return chosen || String(Date.now());
   } catch {
-    return `${base}__e_${sanitizeEventIdForParticipantDocSuffix(ev)}`;
+    return (
+      chooseParticipantDocumentIdForWrite({
+        base,
+        eventId: ev,
+        baseSnapExists: false,
+        baseEventId: undefined,
+      }) || String(Date.now())
+    );
   }
 }
 
