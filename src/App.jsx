@@ -194,12 +194,12 @@ import {
 import {
   applyCompanionWaitlistCapOnEdit,
   buildCompanionWaitlistVirtualParticipant,
-  clearCompanionWaitlistFlags,
   collectCompanionWaitlistVirtualRows,
   computeAdditionalCompanionCapUnits,
   isCompanionWaitlistPending,
   isCompanionWaitlistVirtualParticipant,
   parseCompanionWaitlistVirtualId,
+  planPromoteCompanionWaitlistEntry,
 } from './bautizosCompanionWaitlist.js';
 import {
   computeWaitlistCountsForEvent,
@@ -525,7 +525,7 @@ import {
   reauthenticateWithCredential,
   updatePassword,
 } from 'firebase/auth';
-import { collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, limit, orderBy, startAfter, documentId, getDocs, getDocsFromCache, writeBatch, getDocFromServer, getDocsFromServer, getCountFromServer, arrayUnion, increment } from 'firebase/firestore';
+import { collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, limit, orderBy, startAfter, documentId, getDocs, getDocsFromCache, writeBatch, getDocFromServer, getDocsFromServer, getCountFromServer, arrayUnion, increment, runTransaction } from 'firebase/firestore';
 import { ref as storageRef, uploadString, getBytes, deleteObject } from 'firebase/storage';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { validateSpouseParticipantChoice, syncSpouseParticipantLinks } from './spouseLink.js';
@@ -2823,8 +2823,9 @@ const buildArchivedProfileSnapshot = (person) => {
  * fusionan en un solo doc; la información más actual es la del **último** registro enviado al archivo (`archivedAt` mayor).
  * Sin VNPM válido: respaldo por teléfono o por id de participante.
  *
- * En `app_participants`, el mismo VNPM puede participar en **varios eventos** a la vez: id canónico `id_VNPM…`
- * para el primer evento; altas adicionales en otro evento usan `id_VNPM…__e_<eventId>` (ver `resolveParticipantDocumentIdForWrite`).
+ * En `app_participants`, el mismo VNPM puede participar en **varios eventos** a la vez: si el id canónico
+ * `id_VNPM…` ya pertenece a este evento se reutiliza; si falta o pertenece a otro evento se usa
+ * `id_VNPM…__e_<eventId>` (ver `resolveParticipantDocumentIdForWrite` / `chooseParticipantDocumentIdForWrite`).
  */
 const ARCHIVE_PROFILES_COLLECTION = 'app_archived_profiles';
 
@@ -22779,27 +22780,36 @@ function resolveEventName(eventId) {
     }
     const parsed = parseCompanionWaitlistVirtualId(virtualId);
     if (!parsed?.hostId || !parsed?.companionId) return;
-    const host = allParticipants.find(
+    const cachedHost = allParticipants.find(
       (p) =>
         String(p?.id) === parsed.hostId &&
         String(p?.eventId) === String(currentEvent?.id || '')
     );
-    if (!host || (host.status || 'active') !== 'active') {
+    if (!cachedHost || (cachedHost.status || 'active') !== 'active') {
       showToast('No se encontró el titular activo de este acompañante.');
       return;
     }
-    const companions = getBautizosCompanionsArray(host);
-    const idx = companions.findIndex((c) => String(c?.id || '') === parsed.companionId);
-    if (idx < 0) {
-      showToast('No se encontró el acompañante en el titular.');
+    const cachedPlan = planPromoteCompanionWaitlistEntry(
+      cachedHost,
+      parsed.companionId,
+      currentEvent?.id
+    );
+    if (!cachedPlan.ok) {
+      if (cachedPlan.error === 'COMPANION_MISSING') {
+        showToast('No se encontró el acompañante en el titular.');
+      } else if (cachedPlan.error === 'COMPANION_NOT_PENDING') {
+        showToast('Este acompañante ya no está en lista de espera.');
+      } else {
+        showToast('No se encontró el titular activo de este acompañante.');
+      }
       return;
     }
-    const companion = companions[idx];
-    if (!isCompanionWaitlistPending(companion)) {
-      showToast('Este acompañante ya no está en lista de espera.');
-      return;
-    }
-    const delta = computeAdditionalCompanionCapUnits(host, companion, allParticipants, currentEvent);
+    const delta = computeAdditionalCompanionCapUnits(
+      cachedHost,
+      cachedPlan.companion,
+      allParticipants,
+      currentEvent
+    );
     const gCapPromote = getEventTotalCap();
     if (gCapPromote > 0) {
       if (getEventCapUsedUnits() + delta > gCapPromote) {
@@ -22813,34 +22823,69 @@ function resolveEventName(eventId) {
         return;
       }
     }
-    const nextCompanions = companions.map((c, i) =>
-      i === idx ? clearCompanionWaitlistFlags(c) : c
-    );
-    const mergedHost = { ...host, bautizosCompanions: nextCompanions };
-    const payload = { bautizosCompanions: nextCompanions };
-    if (!host.registeredCostManual) {
-      payload.registeredCost = getPersonCost(mergedHost, currentPricing, currentEvent);
+    const participantRef = getDocRef('app_participants', String(parsed.hostId));
+    let liveHost = null;
+    let companion = null;
+    let payload = null;
+    try {
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(participantRef);
+        if (!snap.exists()) {
+          throw new Error('HOST_MISSING');
+        }
+        const host = { id: snap.id, ...snap.data() };
+        const plan = planPromoteCompanionWaitlistEntry(host, parsed.companionId, currentEvent?.id);
+        if (!plan.ok) {
+          throw new Error(plan.error);
+        }
+        const nextCompanions = plan.nextCompanions;
+        const mergedHost = { ...host, bautizosCompanions: nextCompanions };
+        const nextPayload = { bautizosCompanions: nextCompanions };
+        if (!host.registeredCostManual) {
+          nextPayload.registeredCost = getPersonCost(mergedHost, currentPricing, currentEvent);
+        }
+        tx.update(
+          participantRef,
+          participantPatchForFirestoreWrite(host, nextPayload, deleteField)
+        );
+        liveHost = host;
+        companion = plan.companion;
+        payload = nextPayload;
+      });
+    } catch (err) {
+      const code = String(err?.message || err || '');
+      if (code === 'HOST_MISSING' || code === 'HOST_WRONG_EVENT' || code === 'HOST_NOT_ACTIVE') {
+        showToast('No se encontró el titular activo de este acompañante.');
+        return;
+      }
+      if (code === 'COMPANION_MISSING') {
+        showToast('No se encontró el acompañante en el titular.');
+        return;
+      }
+      if (code === 'COMPANION_NOT_PENDING') {
+        showToast('Este acompañante ya no está en lista de espera.');
+        return;
+      }
+      console.error('promoteCompanionWaitlistEntry', err);
+      showToast('No se pudo promover al acompañante. Intenta de nuevo.');
+      return;
     }
-    const participantRef = getDocRef('app_participants', String(host.id));
-    await updateDoc(
-      participantRef,
-      participantPatchForFirestoreWrite(host, payload, deleteField)
-    );
-    refreshParticipantCache(host, 'Promover acompañante de lista de espera', {
-      personId: host.id,
+    if (!liveHost || !companion || !payload) return;
+    refreshParticipantCache(liveHost, 'Promover acompañante de lista de espera', {
+      personId: liveHost.id,
       patch: payload,
     });
     const compName = String(companion?.name || '').trim() || 'Acompañante';
-    const hostName = String(host?.name || '').trim() || 'titular';
+    const hostName = String(liveHost?.name || '').trim() || 'titular';
     const _promCompLog = `Promovió a ${compName} (acompañante en espera) a activo en el registro de ${hostName} (${loc}).`;
     addLog(
       'Lista de Espera',
       _promCompLog,
       null,
       null,
-      { collectionName: 'app_participants', docId: String(host.id), action: 'update', previousData: host }
+      { collectionName: 'app_participants', docId: String(liveHost.id), action: 'update', previousData: liveHost }
     );
-    logParticipantActivity(String(host.id), 'promocion', _promCompLog);
+    logParticipantActivity(String(liveHost.id), 'promocion', _promCompLog);
     if (isBautizosCompanionBaptized(companion)) {
       showToast(
         `${compName} promovido a activo. Si debe tener registro propio por bautizo, completa el grupo desde editar el titular.`

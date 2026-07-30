@@ -247,6 +247,41 @@ export function clearCompanionWaitlistFlags(companionRow) {
   return next;
 }
 
+/**
+ * Planifica la promoción de un acompañante en espera a partir del host **vivo**
+ * (p. ej. re-leído en transacción). No escribe Firestore.
+ *
+ * Evita last-write-wins sobre `bautizosCompanions` completo desde un snapshot
+ * de React stale: el llamador debe aplicar `nextCompanions` sobre el host fresco.
+ *
+ * @returns {{ ok: true, companion: object, nextCompanions: object[] } | { ok: false, error: string }}
+ */
+export function planPromoteCompanionWaitlistEntry(hostLike, companionId, eventId) {
+  if (!hostLike || typeof hostLike !== 'object') {
+    return { ok: false, error: 'HOST_MISSING' };
+  }
+  const eid = String(eventId || '').trim();
+  if (eid && String(hostLike.eventId || '') !== eid) {
+    return { ok: false, error: 'HOST_WRONG_EVENT' };
+  }
+  if ((hostLike.status || 'active') !== 'active') {
+    return { ok: false, error: 'HOST_NOT_ACTIVE' };
+  }
+  const wantId = String(companionId || '').trim();
+  if (!wantId) return { ok: false, error: 'COMPANION_MISSING' };
+  const companions = getBautizosCompanionsArray(hostLike);
+  const idx = companions.findIndex((c) => String(c?.id || '') === wantId);
+  if (idx < 0) return { ok: false, error: 'COMPANION_MISSING' };
+  const companion = companions[idx];
+  if (!isCompanionWaitlistPending(companion)) {
+    return { ok: false, error: 'COMPANION_NOT_PENDING' };
+  }
+  const nextCompanions = companions.map((c, i) =>
+    i === idx ? clearCompanionWaitlistFlags(c) : c
+  );
+  return { ok: true, companion, nextCompanions };
+}
+
 /** Suma de precio de lista solo de acompañantes activos (no en espera). */
 export function getBautizosCompanionsActiveListPriceSum(personLike, eventLike) {
   const { food, transport } = getBautizosListPriceBreakdown(eventLike);
