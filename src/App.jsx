@@ -483,6 +483,7 @@ import {
 import { auth, db, storage, getColRef, getDocRef } from "./firebaseRefs.js";
 import { sanitizeJsonForFirestore, patchForLocalParticipantCache } from './firestorePayloadSanitize.js';
 import { withLogVisibleInPanel, slimRevertInfoForLog, buildLogEntityFields } from './activityLogsMeta.js';
+import { planRevertUpdateWrite } from './revertApply.js';
 import {
   buildLogId,
   writeSnapshotDoc,
@@ -7179,16 +7180,33 @@ function resolveEventName(eventId) {
         await deleteDoc(getDocRef(collectionName, docId));
       } else if (action === 'update' || action === 'delete') {
         if (previousData) {
-          if (collectionName === 'app_events') {
-            const snap = await getDoc(getDocRef(collectionName, docId));
-            const payload = mergeAppEventDocForRevert(
+          const ref = getDocRef(collectionName, docId);
+          if (action === 'delete') {
+            // Restore a deleted document: previousData must be a full snapshot.
+            await setDoc(ref, previousData);
+          } else if (collectionName === 'app_events') {
+            const snap = await getDoc(ref);
+            const plan = planRevertUpdateWrite(
               previousData,
+              collectionName,
               snap.exists() ? snap.data() : {},
-              docId
+              docId,
+              mergeAppEventDocForRevert
             );
-            await setDoc(getDocRef(collectionName, docId), payload);
+            if (plan.mode === 'merge') {
+              // Field-level patches (e.g. transportPlanning only) must not wipe the event.
+              await setDoc(ref, plan.payload, { merge: true });
+            } else {
+              await setDoc(ref, plan.payload);
+            }
           } else {
-            await setDoc(getDocRef(collectionName, docId), previousData);
+            const plan = planRevertUpdateWrite(previousData, collectionName, null, docId);
+            if (plan.mode === 'merge') {
+              // Field-level patches (e.g. baptismShirtSize only) must not wipe the participant.
+              await setDoc(ref, plan.payload, { merge: true });
+            } else {
+              await setDoc(ref, plan.payload);
+            }
           }
         }
       }
@@ -14176,7 +14194,8 @@ function resolveEventName(eventId) {
             collectionName: 'app_participants',
             docId: id,
             action: 'update',
-            previousData: { baptismShirtSize: p.baptismShirtSize },
+            // Full pre-update snapshot: applyRevert uses setDoc replace for complete docs.
+            previousData: { ...p },
           }
         );
         logParticipantActivity(id, 'datos', _shirtLog);
