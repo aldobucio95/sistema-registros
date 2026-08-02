@@ -559,6 +559,10 @@ import {
   syncEventAfterWrite,
 } from './firestoreLiveSync.js';
 import {
+  linkedDonationsQueryForParticipant,
+  resolvePersonForArchiveIndexCleanup,
+} from './permanentArchiveDelete.js';
+import {
   resolveStaffUserProfileFromAuth,
   staffUserIsAdminProfile,
   findPendingStaffProfileForAuthEmail,
@@ -21981,59 +21985,74 @@ function resolveEventName(eventId) {
 
 		console.log(`[PermanentDelete] Deleting ${participantIdsToDelete.length} underlying docs for merged record ${personId}:`, participantIdsToDelete);
 
+		const deletedDonationIds = [];
+
 		// 3. Delete all underlying app_participants documents and their linked donations
 		for (const pid of participantIdsToDelete) {
-		  // Find the actual participant in allParticipants (raw, unmerged)
 		  const rawParticipant = allParticipants.find((p) => String(p.id) === String(pid));
-
-		  if (rawParticipant) {
-			await removeResponsivaArtifactsForParticipant({
-			  eventId: rawParticipant.eventId,
-			  participantId: pid,
-			  responsivaDigital: rawParticipant.responsivaDigital,
-			});
-			// Delete linked donations for this participant
-			const donationsRef = collection(db, 'app_donations');
-			const donationsQuery = query(donationsRef, where('participantId', '==', pid));
-			const donationsSnap = await getDocs(donationsQuery);
-
-			if (!donationsSnap.empty) {
-			  console.log(`[PermanentDelete] Deleting ${donationsSnap.size} donations linked to participant ${pid}`);
-			  for (const donDoc of donationsSnap.docs) {
-				await deleteDoc(doc(db, 'app_donations', donDoc.id));
-			  }
-			}
-
-			// Delete the app_participants document
-			await deleteDoc(doc(db, 'app_participants', pid));
-			console.log(`[PermanentDelete] Deleted app_participants/${pid}`);
-		  } else {
-			// Participant not found in local state — try deleting from Firestore directly
+		  let firestoreData = null;
+		  if (!rawParticipant) {
 			console.warn(`[PermanentDelete] Participant ${pid} not found in allParticipants, attempting direct Firestore delete`);
 			try {
 			  const pSnap = await getDoc(doc(db, 'app_participants', pid));
-			  if (pSnap.exists()) {
-				const pd = pSnap.data();
-				await removeResponsivaArtifactsForParticipant({
-				  eventId: pd.eventId,
-				  participantId: pid,
-				  responsivaDigital: pd.responsivaDigital,
-				});
-			  }
-			  await deleteDoc(doc(db, 'app_participants', pid));
-			} catch (directDeleteErr) {
-			  console.warn(`[PermanentDelete] Direct delete of ${pid} failed:`, directDeleteErr);
+			  if (pSnap.exists()) firestoreData = pSnap.data() || {};
+			} catch (readErr) {
+			  console.warn(`[PermanentDelete] Read of ${pid} failed:`, readErr);
 			}
+		  }
+
+		  const personForCleanup = resolvePersonForArchiveIndexCleanup({
+			rawParticipant,
+			firestoreData,
+			pid,
+		  });
+
+		  if (personForCleanup) {
+			await removeResponsivaArtifactsForParticipant({
+			  eventId: personForCleanup.eventId,
+			  participantId: pid,
+			  responsivaDigital: personForCleanup.responsivaDigital,
+			});
+		  }
+
+		  // Archive/cancel credit rows use sourceParticipantId (not participantId).
+		  const donationLink = linkedDonationsQueryForParticipant(pid);
+		  if (donationLink) {
+			try {
+			  const donationsRef = collection(db, 'app_donations');
+			  const donationsQuery = query(
+				donationsRef,
+				where(donationLink.field, '==', donationLink.value)
+			  );
+			  const donationsSnap = await getDocs(donationsQuery);
+			  if (!donationsSnap.empty) {
+				console.log(`[PermanentDelete] Deleting ${donationsSnap.size} donations linked to participant ${pid}`);
+				for (const donDoc of donationsSnap.docs) {
+				  await deleteDoc(doc(db, 'app_donations', donDoc.id));
+				  deletedDonationIds.push(donDoc.id);
+				}
+			  }
+			} catch (donErr) {
+			  console.warn(`[PermanentDelete] Donation cleanup for ${pid} failed:`, donErr);
+			}
+		  }
+
+		  try {
+			await deleteDoc(doc(db, 'app_participants', pid));
+			console.log(`[PermanentDelete] Deleted app_participants/${pid}`);
+		  } catch (directDeleteErr) {
+			console.warn(`[PermanentDelete] Delete of ${pid} failed:`, directDeleteErr);
+		  }
+
+		  // Must pass a person object (id/eventId/vnp/phone) — bare VNPM/phone strings skip cleanup.
+		  if (personForCleanup) {
+			const indexResult = await removeArchiveProfileIndexEntryIfMatches(personForCleanup);
+			console.log(`[PermanentDelete] Archive index cleanup for ${pid}:`, indexResult);
 		  }
 		}
 
-		// 4. Remove the archive profile index entry (use the merged record's primary identifiers)
-		const vnpId = mergedRecord?.vnpPersonId || null;
-		const phone = mergedRecord?.phone || null;
-
-		if (vnpId || phone) {
-		  await removeArchiveProfileIndexEntryIfMatches(vnpId, phone);
-		  console.log(`[PermanentDelete] Removed archive index entry for vnpPersonId=${vnpId}, phone=${phone}`);
+		for (const donId of deletedDonationIds) {
+		  syncDonationAfterWrite(setDonations, donId, null, { remove: true });
 		}
 
 		const deletedIdSet = new Set(participantIdsToDelete.map((pid) => String(pid)));
@@ -22051,8 +22070,8 @@ function resolveEventName(eventId) {
 		  }
 		}
 
-		// 5. Close modal and show success
-		setRegistryConfirmModal(null);
+		// Keep object shape — null crashes renderRegistryConfirmModal (registryConfirmModal.isOpen).
+		closeRegistryConfirmModal();
 		showToast('Registro eliminado permanentemente');
 
 	  } catch (err) {
