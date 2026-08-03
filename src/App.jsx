@@ -525,7 +525,12 @@ import {
   reauthenticateWithCredential,
   updatePassword,
 } from 'firebase/auth';
-import { collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, limit, orderBy, startAfter, documentId, getDocs, getDocsFromCache, writeBatch, getDocFromServer, getDocsFromServer, getCountFromServer, arrayUnion, increment } from 'firebase/firestore';
+import { collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, limit, orderBy, startAfter, documentId, getDocs, getDocsFromCache, writeBatch, getDocFromServer, getDocsFromServer, getCountFromServer, arrayUnion, increment, runTransaction } from 'firebase/firestore';
+import {
+  commitMarkCancelledRefundAsDonation,
+  commitDisburseCancelledRefund,
+  refundTerminalFailureMessage,
+} from './cancelledRefundTerminal.js';
 import { ref as storageRef, uploadString, getBytes, deleteObject } from 'firebase/storage';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { validateSpouseParticipantChoice, syncSpouseParticipantLinks } from './spouseLink.js';
@@ -22312,58 +22317,46 @@ function resolveEventName(eventId) {
     if (!canManageCancelledRefunds) return;
     const person = allParticipants.find((p) => String(p.id) === String(personId));
     if (!person || !participantIsCancelled(person)) return;
-    if (person.refundAsDonation) {
-      showToast('Este saldo ya estaba marcado como donación.');
+    const pid = String(personId);
+    let result;
+    try {
+      result = await commitMarkCancelledRefundAsDonation({
+        runTransaction,
+        db,
+        participantRef: getDocRef('app_participants', pid),
+        donationRefForId: (donationId) => getDocRef('app_donations', donationId),
+        livePersonFromSnap: (snap) => ({ id: snap.id || pid, ...snap.data() }),
+        eventId: currentEvent?.id,
+        createdBy: currentUser?.username || 'Desconocido',
+        markedAt: Date.now(),
+        debugPatch: globalConfig?.isDebugMode
+          ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId }
+          : null,
+      });
+    } catch (e) {
+      console.error(e);
+      showToast('No se pudo marcar el saldo como donación. Revisa conexión o permisos.');
       return;
     }
-    if (participantHasRefundDisbursement(person)) {
-      showToast('Este saldo ya fue devuelto; no se puede marcar como donación.');
+    if (!result?.ok) {
+      showToast(refundTerminalFailureMessage(result?.reason, { forDonation: true }));
       return;
     }
-    const pendingAmount = getCancelledRefundPendingAmount(person);
-    if (pendingAmount <= 0) {
-      showToast('No hay saldo pendiente de devolución para marcar como donación.');
-      return;
-    }
-    const sede = String(person.cancelledFromLocation || person.location || '').trim() || '?';
-    const markedAt = Date.now();
-    const refundDonationPatch = {
-      refundAsDonation: true,
-      refundMarkedAsDonationAt: markedAt,
-      refundMarkedAsDonationAmount: pendingAmount,
-      refundPendingAmount: 0,
-      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
-    };
-    await updateDoc(getDocRef('app_participants', String(personId)), refundDonationPatch);
-    refreshParticipantCache(person, 'Saldo de baja como donación', {
-      personId,
-      patch: refundDonationPatch,
+    const { participantPatch, donationId, donationRow, sede, pendingAmount, livePerson } = result;
+    refreshParticipantCache(livePerson || person, 'Saldo de baja como donación', {
+      personId: pid,
+      patch: participantPatch,
     });
-    const donationId = buildFirestoreDocId(['don', 'refund', personId, markedAt], {
-      fallback: `don-refund-${markedAt}`,
-    });
-    const donationRow = {
-      id: donationId,
-      eventId: currentEvent?.id,
-      amount: pendingAmount,
-      donorName: (person.name || '').trim() || 'Participante (baja)',
-      location: sede,
-      fromCancelledRefundDonation: true,
-      sourceParticipantId: String(personId),
-      createdAt: new Date(markedAt).toISOString(),
-      createdBy: currentUser?.username || 'Desconocido',
-    };
-    await setDoc(getDocRef('app_donations', donationId), donationRow);
     syncDonationAfterWrite(setDonations, donationId, donationRow);
-    const _donBajaLog = `Donación por saldo de baja: ${formatMoney(pendingAmount)} — ${person.name || 'Participante'} (sede ${sede}). Doc app_donations/${donationId}.`;
+    const _donBajaLog = `Donación por saldo de baja: ${formatMoney(pendingAmount)} — ${(livePerson || person).name || 'Participante'} (sede ${sede}). Doc app_donations/${donationId}.`;
     await addLog(
       'Donación',
       _donBajaLog,
       null,
       null,
-      { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person }
+      { collectionName: 'app_participants', docId: pid, action: 'update', previousData: livePerson || person }
     );
-    logParticipantActivity(String(personId), 'finanzas', _donBajaLog);
+    logParticipantActivity(pid, 'finanzas', _donBajaLog);
     showToast('Saldo marcado como donación. Aparece en la lista de donaciones y en el balance por sede.');
   };
 
@@ -22371,63 +22364,53 @@ function resolveEventName(eventId) {
     if (!canManageCancelledRefunds) return;
     const person = allParticipants.find((p) => String(p.id) === String(personId));
     if (!person || !participantIsCancelled(person)) return;
-    if (person.refundAsDonation) {
-      showToast('Este saldo ya fue marcado como donación.');
-      return;
-    }
-    if (participantHasRefundDisbursement(person)) {
-      showToast('Este saldo ya fue devuelto.');
-      return;
-    }
-    const pendingAmount = getCancelledRefundPendingAmount(person);
-    if (pendingAmount <= 0) {
-      showToast('No hay saldo pendiente de devolución.');
-      return;
-    }
-    const sede = resolveCancelledRefundSede(person) || '?';
-    if (!hasLocationAccess(sede)) {
+    const clientSede = resolveCancelledRefundSede(person) || '?';
+    if (!hasLocationAccess(clientSede)) {
       showToast('No tienes permiso para registrar devoluciones en esta sede.');
       return;
     }
-    const atMs = Number(disbursedAtMs);
-    if (!Number.isFinite(atMs) || atMs <= 0) {
-      showToast('Fecha u hora de devolución no válida.');
+    const pid = String(personId);
+    let result;
+    try {
+      result = await commitDisburseCancelledRefund({
+        runTransaction,
+        db,
+        participantRef: getDocRef('app_participants', pid),
+        livePersonFromSnap: (snap) => ({ id: snap.id || pid, ...snap.data() }),
+        method,
+        disbursedAtMs,
+        registeredBy: currentUser?.username || 'Desconocido',
+        computeNetAmountByMethod,
+        getAutoPaymentService,
+        canAccessSede: (sede) => hasLocationAccess(sede),
+        debugPatch: globalConfig?.isDebugMode
+          ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId }
+          : null,
+      });
+    } catch (e) {
+      console.error(e);
+      showToast('No se pudo registrar la devolución. Revisa conexión o permisos.');
       return;
     }
-    const refundMethod = method === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-    const refundHistoryRow = buildRefundDisbursementPaymentHistoryRow({
-      personId,
-      grossAmount: pendingAmount,
-      method: refundMethod,
-      atMs,
-      registeredBy: currentUser?.username || 'Desconocido',
-      computeNetAmountByMethod,
-      service: getAutoPaymentService(new Date(atMs), sede !== '?' ? sede : undefined),
+    if (!result?.ok) {
+      showToast(refundTerminalFailureMessage(result?.reason));
+      return;
+    }
+    const { participantPatch, pendingAmount, atMs, refundMethod, sede, livePerson } = result;
+    refreshParticipantCache(livePerson || person, 'Devolución de saldo por baja', {
+      personId: pid,
+      patch: participantPatch,
     });
-    const payload = {
-      refundPendingAmount: 0,
-      refundDisbursedAt: atMs,
-      refundDisbursedAmount: pendingAmount,
-      refundDisbursedBy: currentUser?.username || 'Desconocido',
-      refundDisbursedMethod: refundMethod,
-      refundDisbursedLocation: sede,
-      ...(refundHistoryRow
-        ? { paymentHistory: [...(person.paymentHistory || []), refundHistoryRow] }
-        : {}),
-      ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
-    };
-    await updateDoc(getDocRef('app_participants', String(personId)), payload);
-    refreshParticipantCache(person, 'Devolución de saldo por baja', { personId, patch: payload });
     const whenLabel = new Date(atMs).toLocaleString('es-MX');
-    const _refLog = `Devolución de saldo por baja: ${formatMoney(pendingAmount)} — ${person.name || 'Participante'} (sede ${sede}, ${refundMethod}). Fecha corte: ${whenLabel}.`;
+    const _refLog = `Devolución de saldo por baja: ${formatMoney(pendingAmount)} — ${(livePerson || person).name || 'Participante'} (sede ${sede}, ${refundMethod}). Fecha corte: ${whenLabel}.`;
     addLog(
       'Corte de caja',
       _refLog,
       null,
       null,
-      { collectionName: 'app_participants', docId: String(personId), action: 'update', previousData: person }
+      { collectionName: 'app_participants', docId: pid, action: 'update', previousData: livePerson || person }
     );
-    logParticipantActivity(String(personId), 'finanzas', _refLog);
+    logParticipantActivity(pid, 'finanzas', _refLog);
     showToast('Devolución registrada. Aparece como egreso en el corte de caja y en el historial de pagos.');
   };
 
