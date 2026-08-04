@@ -1,5 +1,6 @@
-import { setDoc, getDoc, getDocs, query, where, limit, updateDoc } from 'firebase/firestore';
-import { getDocRef, getColRef } from './firebaseRefs.js';
+import { setDoc, getDoc, getDocs, query, where, limit, updateDoc, writeBatch } from 'firebase/firestore';
+import { db, getDocRef, getColRef } from './firebaseRefs.js';
+import { commitBautizosSplitPartyParticipantDocs } from './bautizosSplitPartyPersist.js';
 import { buildLogId, writeSnapshotDoc } from './activityLogCore.js';
 import { withLogVisibleInPanel, buildLogEntityFields } from './activityLogsMeta.js';
 import { buildFinanceWhatsAppMessage, buildScholarshipPendingWhatsAppMessage } from './whatsappFinanceMessages.js';
@@ -1836,6 +1837,7 @@ async function submitPublicBautizosSplitRegistration({
       : [];
 
   let hostPersonDataForWa = null;
+  const splitPartyWrites = [];
 
   for (let i = 0; i < splitDesc.length; i++) {
     const d = splitDesc[i];
@@ -1934,29 +1936,8 @@ async function submitPublicBautizosSplitRegistration({
           },
         ];
       }
-      await setDoc(
-        getDocRef('app_participants', docIdW),
-        sanitizeParticipantConsentForFirestoreWrite(personDataH)
-      );
+      splitPartyWrites.push({ docId: docIdW, data: personDataH });
       hostPersonDataForWa = personDataH;
-
-      await appendPublicRegistrationActivityLog({
-        eventSnapshot,
-        loc,
-        personName: personDataH.name,
-        participantId: docIdW,
-        waitlist: mode === 'waitlist',
-        initialPaidGross: mode === 'active' ? initialPaidGross : 0,
-        paymentMethod,
-        paymentService: paymentServiceBase,
-        isLiquidado:
-          mode === 'active'
-            ? personDataH.isScholarship === 'No' &&
-              initialPaidGross >= (Number(getLiquidationTarget(personDataH, currentPricing, eventSnapshot)) || 0)
-            : false,
-        scholarshipPending: false,
-        participantData: { id: docIdW, ...personDataH },
-      });
     } else {
       const { selectedDiscountCampaignId: _sat, ...coreSat } = pl;
       const personDataS = {
@@ -2014,11 +1995,37 @@ async function submitPublicBautizosSplitRegistration({
       personDataS.baptismSegment = '';
       personDataS.baptismShirtSize = normalizeBaptismShirtSize(entry.baptismShirtSize);
       applyParticipantNameFormattingForSave(personDataS);
-      await setDoc(
-        getDocRef('app_participants', docIdW),
-        sanitizeParticipantConsentForFirestoreWrite(personDataS)
-      );
+      splitPartyWrites.push({ docId: docIdW, data: personDataS });
     }
+  }
+
+  await commitBautizosSplitPartyParticipantDocs({
+    writes: splitPartyWrites,
+    db,
+    writeBatch,
+    getDocRef,
+    sanitizeParticipantConsentForFirestoreWrite,
+  });
+
+  if (hostPersonDataForWa) {
+    await appendPublicRegistrationActivityLog({
+      eventSnapshot,
+      loc,
+      personName: hostPersonDataForWa.name,
+      participantId: hostDocId,
+      waitlist: mode === 'waitlist',
+      initialPaidGross: mode === 'active' ? initialPaidGross : 0,
+      paymentMethod,
+      paymentService: paymentServiceBase,
+      isLiquidado:
+        mode === 'active'
+          ? hostPersonDataForWa.isScholarship === 'No' &&
+            initialPaidGross >=
+              (Number(getLiquidationTarget(hostPersonDataForWa, currentPricing, eventSnapshot)) || 0)
+          : false,
+      scholarshipPending: false,
+      participantData: { id: hostDocId, ...hostPersonDataForWa },
+    });
   }
 
   if (familyHasAnyCarTransport(entry, entry.bautizosCompanions)) {
