@@ -130,6 +130,7 @@ import {
   cleanParticipantPayloadForEventType,
 } from './participantEventFieldScope.js';
 import { applyParticipantNameFormattingForSave } from './participantNameFormat.js';
+import { commitBautizosSplitPartyParticipantDocs } from './bautizosSplitPartyPersist.js';
 import {
   appendBautizosCompanionsValidationIssues,
   appendBautizosTransportChoiceIssues,
@@ -17422,6 +17423,8 @@ function resolveEventName(eventId) {
           : [];
       const baseRegisteredCostSp = getPersonCost(entryPayload, currentPricing, currentEvent);
       const { selectedDiscountCampaignId: _spCamp, ...newEntryCoreSp } = entryPayload;
+      const splitPartyWritesSp = [];
+      const splitPartyLogJobsSp = [];
 
       for (let si = 0; si < splitDesc.length; si++) {
         const d = splitDesc[si];
@@ -17550,24 +17553,15 @@ function resolveEventName(eventId) {
             },
           ];
           applyParticipantNameFormattingForSave(personDataH);
-          await setDoc(
-            getDocRef('app_participants', docIdS),
-            sanitizeParticipantConsentForFirestoreWrite(personDataH)
-          );
-          const _splitHostLog = `${prevS ? 'Actualizó registro de' : 'Inscribió a'} ${entryPayload.name} en la sede ${loc} (grupo partido: titular).`;
-          addLog(
-            'Nuevo Registro',
-            _splitHostLog,
-            null,
-            null,
-            {
-              collectionName: 'app_participants',
-              docId: docIdS,
-              action: prevS ? 'update' : 'create',
-              previousData: prevS || null,
-            }
-          );
-          logParticipantActivity(docIdS, 'registro', _splitHostLog);
+          splitPartyWritesSp.push({ docId: docIdS, data: personDataH });
+          splitPartyLogJobsSp.push({
+            docId: docIdS,
+            kind: 'registro',
+            logCategory: 'Nuevo Registro',
+            action: prevS ? 'update' : 'create',
+            previousData: prevS || null,
+            message: `${prevS ? 'Actualizó registro de' : 'Inscribió a'} ${entryPayload.name} en la sede ${loc} (grupo partido: titular).`,
+          });
         } else {
           const { selectedDiscountCampaignId: _sat, ...coreSat } = plS;
           const personDataSat = {
@@ -17622,25 +17616,45 @@ function resolveEventName(eventId) {
           personDataSat.baptismSegment = '';
           personDataSat.baptismShirtSize = normalizeBaptismShirtSize(entryPayload.baptismShirtSize);
           applyParticipantNameFormattingForSave(personDataSat);
-          await setDoc(
-            getDocRef('app_participants', docIdS),
-            sanitizeParticipantConsentForFirestoreWrite(personDataSat)
-          );
-          const _splitSatLog = `${prevS ? 'Actualizó registro de' : 'Inscribió a'} ${plS.name} en la sede ${loc} (grupo partido: bautizado vinculado).`;
-          addLog(
-            'Nuevo Registro',
-            _splitSatLog,
-            null,
-            null,
-            {
-              collectionName: 'app_participants',
-              docId: docIdS,
-              action: prevS ? 'update' : 'create',
-              previousData: prevS || null,
-            }
-          );
-          logParticipantActivity(docIdS, 'registro', _splitSatLog);
+          splitPartyWritesSp.push({ docId: docIdS, data: personDataSat });
+          splitPartyLogJobsSp.push({
+            docId: docIdS,
+            kind: 'registro',
+            logCategory: 'Nuevo Registro',
+            action: prevS ? 'update' : 'create',
+            previousData: prevS || null,
+            message: `${prevS ? 'Actualizó registro de' : 'Inscribió a'} ${plS.name} en la sede ${loc} (grupo partido: bautizado vinculado).`,
+          });
         }
+      }
+
+      try {
+        await commitBautizosSplitPartyParticipantDocs({
+          writes: splitPartyWritesSp,
+          db,
+          writeBatch,
+          getDocRef,
+          sanitizeParticipantConsentForFirestoreWrite,
+        });
+      } catch (e) {
+        console.error(e);
+        showToast('No se pudo guardar el grupo de registros. Intenta de nuevo.');
+        return;
+      }
+      for (const job of splitPartyLogJobsSp) {
+        addLog(
+          job.logCategory,
+          job.message,
+          null,
+          null,
+          {
+            collectionName: 'app_participants',
+            docId: job.docId,
+            action: job.action,
+            previousData: job.previousData,
+          }
+        );
+        logParticipantActivity(job.docId, job.kind, job.message);
       }
 
       persistLastSuccessfulRegistrationSnapshot(currentUser?.id, currentEvent?.id, entryPayload);
@@ -18192,6 +18206,8 @@ function resolveEventName(eventId) {
       const baseRegisteredCostWlSp = getPersonCost(entryPayload, currentPricing, currentEvent);
       const { selectedDiscountCampaignId: _wlSpCamp, ...newEntryCoreWlSp } = entryPayload;
       const hostDocWlSp = docIdBySlotKeyWl.host;
+      const splitPartyWritesWl = [];
+      const splitPartyLogJobsWl = [];
 
       for (let wi = 0; wi < splitDescWl.length; wi++) {
         const d = splitDescWl[wi];
@@ -18290,24 +18306,15 @@ function resolveEventName(eventId) {
             })
           );
           applyParticipantNameFormattingForSave(personDataWlH);
-          await setDoc(
-            getDocRef('app_participants', docIdWl),
-            sanitizeParticipantConsentForFirestoreWrite(personDataWlH)
-          );
-          const _wlSplitHostLog = `${prevWlS ? 'Actualizó lista de espera de' : 'Añadió a'} ${entryPayload.name} a la lista de espera en la sede ${loc} (grupo partido: titular).`;
-          addLog(
-            'Lista de Espera',
-            _wlSplitHostLog,
-            null,
-            null,
-            {
-              collectionName: 'app_participants',
-              docId: docIdWl,
-              action: prevWlS ? 'update' : 'create',
-              previousData: prevWlS || null,
-            }
-          );
-          logParticipantActivity(docIdWl, 'lista_espera', _wlSplitHostLog);
+          splitPartyWritesWl.push({ docId: docIdWl, data: personDataWlH });
+          splitPartyLogJobsWl.push({
+            docId: docIdWl,
+            kind: 'lista_espera',
+            logCategory: 'Lista de Espera',
+            action: prevWlS ? 'update' : 'create',
+            previousData: prevWlS || null,
+            message: `${prevWlS ? 'Actualizó lista de espera de' : 'Añadió a'} ${entryPayload.name} a la lista de espera en la sede ${loc} (grupo partido: titular).`,
+          });
         } else {
           const { selectedDiscountCampaignId: _satWl, ...coreWlSat } = plWl;
           const personDataWlSat = {
@@ -18363,25 +18370,45 @@ function resolveEventName(eventId) {
           personDataWlSat.baptismSegment = '';
           personDataWlSat.baptismShirtSize = normalizeBaptismShirtSize(entryPayload.baptismShirtSize);
           applyParticipantNameFormattingForSave(personDataWlSat);
-          await setDoc(
-            getDocRef('app_participants', docIdWl),
-            sanitizeParticipantConsentForFirestoreWrite(personDataWlSat)
-          );
-          const _wlSplitSatLog = `${prevWlS ? 'Actualizó lista de espera de' : 'Añadió a'} ${plWl.name} a la lista de espera en la sede ${loc} (grupo partido: bautizado vinculado).`;
-          addLog(
-            'Lista de Espera',
-            _wlSplitSatLog,
-            null,
-            null,
-            {
-              collectionName: 'app_participants',
-              docId: docIdWl,
-              action: prevWlS ? 'update' : 'create',
-              previousData: prevWlS || null,
-            }
-          );
-          logParticipantActivity(docIdWl, 'lista_espera', _wlSplitSatLog);
+          splitPartyWritesWl.push({ docId: docIdWl, data: personDataWlSat });
+          splitPartyLogJobsWl.push({
+            docId: docIdWl,
+            kind: 'lista_espera',
+            logCategory: 'Lista de Espera',
+            action: prevWlS ? 'update' : 'create',
+            previousData: prevWlS || null,
+            message: `${prevWlS ? 'Actualizó lista de espera de' : 'Añadió a'} ${plWl.name} a la lista de espera en la sede ${loc} (grupo partido: bautizado vinculado).`,
+          });
         }
+      }
+
+      try {
+        await commitBautizosSplitPartyParticipantDocs({
+          writes: splitPartyWritesWl,
+          db,
+          writeBatch,
+          getDocRef,
+          sanitizeParticipantConsentForFirestoreWrite,
+        });
+      } catch (e) {
+        console.error(e);
+        showToast('No se pudo guardar el grupo en lista de espera. Intenta de nuevo.');
+        return;
+      }
+      for (const job of splitPartyLogJobsWl) {
+        addLog(
+          job.logCategory,
+          job.message,
+          null,
+          null,
+          {
+            collectionName: 'app_participants',
+            docId: job.docId,
+            action: job.action,
+            previousData: job.previousData,
+          }
+        );
+        logParticipantActivity(job.docId, job.kind, job.message);
       }
 
       if (familyHasAnyCarTransport(entryPayload, entryPayload.bautizosCompanions)) {
