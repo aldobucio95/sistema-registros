@@ -317,6 +317,13 @@ import {
 } from './registrationFormShared.js';
 import { donationAddsToRecaudacionBalance } from './donationHelpers.js';
 import {
+  isDerivedAutoExpenseIdForEvent,
+  isScholarshipAutoExpenseIdForEvent,
+  scholarshipAutoExpenseMutationBlocked,
+  mergeDerivedExpenseRows,
+  orphanDerivedExpenseDocs,
+} from './expenseDerivedRows.js';
+import {
   buildRefundDisbursementPaymentHistoryRow,
   buildParticipantPaidFieldsFromHistory,
   collectCashCutRefundDisbursements,
@@ -830,18 +837,7 @@ const isRosterRowInteractiveClickTarget = (target) => {
   );
 };
 
-/** Ids de filas derivadas (beca / saldo a favor) generadas en cliente para la lista de gastos. */
-function isScholarshipAutoExpenseIdForEvent(id, eventId) {
-  if (!eventId || !id) return false;
-  return id === `sch-auto-approved-${eventId}` || id === `sch-auto-pending-${eventId}`;
-}
-function isManualCreditVirtualExpenseIdForEvent(id, eventId) {
-  if (!eventId || !id || typeof id !== 'string') return false;
-  return id.startsWith('manual-credit-') && id.endsWith(`-${eventId}`);
-}
-function isDerivedAutoExpenseIdForEvent(id, eventId) {
-  return isScholarshipAutoExpenseIdForEvent(id, eventId) || isManualCreditVirtualExpenseIdForEvent(id, eventId);
-}
+/** Ids de filas derivadas (beca / saldo a favor) — ver `expenseDerivedRows.js`. */
 
 /** Subcolección de trozos (legado `formatVersion: 2`); ya no se escribe en copias nuevas. */
 const getBackupChunksColRef = (backupId) =>
@@ -4372,18 +4368,32 @@ const App = () => {
     [users, currentUser?.id, isSuperUser]
   );
 
-  /** Editar / eliminar / marcar pago: filas automáticas (beca/saldo) solo Administrador/SuperUsuario con acceso a gastos; resto igual que antes. */
+  /** Editar / eliminar / marcar pago: filas de beca automática no se materializan en FS (congelarían totales). Saldo a favor virtual: solo Admin/SuperUsuario. */
   const canMutateExpenseRecord = useCallback(
     (exp) => {
       if (!exp) return false;
-      if (exp._autoScholarshipExpense || exp._manualCostCreditExpense) {
+      if (exp._autoScholarshipExpense || isScholarshipAutoExpenseIdForEvent(exp.id, currentEvent?.id)) {
+        return false;
+      }
+      if (exp._manualCostCreditExpense) {
         return hasAdminRights && canAccessExpenses;
       }
       if (isSuperUser) return true;
       if (!canAccessExpenses) return false;
       return canSeeExpenseConceptForRow(exp);
     },
-    [canAccessExpenses, hasAdminRights, isSuperUser, canSeeExpenseConceptForRow]
+    [canAccessExpenses, hasAdminRights, isSuperUser, canSeeExpenseConceptForRow, currentEvent?.id]
+  );
+
+  const canSuppressDerivedExpense = useCallback(
+    (exp) => {
+      if (!exp || !canAccessExpenses) return false;
+      if (!(exp._autoScholarshipExpense || isScholarshipAutoExpenseIdForEvent(exp.id, currentEvent?.id))) {
+        return false;
+      }
+      return hasAdminRights || isSuperUser;
+    },
+    [canAccessExpenses, hasAdminRights, isSuperUser, currentEvent?.id]
   );
 
   const currentPricing = useMemo(() => getPricingFromSnapshot(currentEvent), [currentEvent]);
@@ -5613,12 +5623,17 @@ function resolveEventName(eventId) {
     (expenseId) => {
       const evId = currentEvent?.id;
       if (!expenseId || !evId) return null;
+      // Becas automáticas: siempre la fila calculada (nunca el snapshot FS).
+      if (isScholarshipAutoExpenseIdForEvent(expenseId, evId)) {
+        return (
+          computeScholarshipAutoExpenseRows(evId).find((r) => r.id === expenseId) || null
+        );
+      }
       const fromFs = expenses.find((e) => e.id === expenseId && String(e.eventId) === String(evId));
       if (fromFs) return fromFs;
       if (!isDerivedAutoExpenseIdForEvent(expenseId, evId)) return null;
-      const sch = computeScholarshipAutoExpenseRows(evId);
       const mc = computeManualCostCreditExpenseRows(evId);
-      return [...sch, ...mc].find((r) => r.id === expenseId) || null;
+      return mc.find((r) => r.id === expenseId) || null;
     },
     [currentEvent?.id, expenses, computeScholarshipAutoExpenseRows, computeManualCostCreditExpenseRows]
   );
@@ -11971,27 +11986,27 @@ function resolveEventName(eventId) {
         );
         const schComputed = computeScholarshipAutoExpenseRows(eventId);
         const manualComputed = computeManualCostCreditExpenseRows(eventId);
-        const mergeDerivedRows = (computedList) =>
-          computedList
-            .map((c) => {
-              const p = expenses.find((e) => e.id === c.id && String(e.eventId) === String(eventId));
-              if (p) return p;
-              if (suppressed.has(c.id)) return null;
-              return c;
-            })
-            .filter(Boolean);
-        const scholarshipAutoExpenses = mergeDerivedRows(schComputed);
-        const manualCostCreditAutoExpenses = mergeDerivedRows(manualComputed);
+        const scholarshipAutoExpenses = mergeDerivedExpenseRows({
+          computedList: schComputed,
+          expensesList: expenses,
+          eventId,
+          suppressedIds: suppressed,
+        });
+        const manualCostCreditAutoExpenses = mergeDerivedExpenseRows({
+          computedList: manualComputed,
+          expensesList: expenses,
+          eventId,
+          suppressedIds: suppressed,
+        });
         const mergedDerivedIds = new Set([
           ...scholarshipAutoExpenses.map((e) => e.id),
           ...manualCostCreditAutoExpenses.map((e) => e.id),
         ]);
-        const orphanDerivedExpenses = expenses.filter(
-          (e) =>
-            e.eventId === eventId &&
-            isDerivedAutoExpenseIdForEvent(e.id, eventId) &&
-            !mergedDerivedIds.has(e.id)
-        );
+        const orphanDerivedExpenses = orphanDerivedExpenseDocs({
+          expensesList: expenses,
+          eventId,
+          mergedDerivedIds,
+        });
         const eventExpenses = [
           ...plainExpenses,
           ...scholarshipAutoExpenses,
@@ -14202,10 +14217,25 @@ function resolveEventName(eventId) {
   const handleDeleteExpense = async (expenseId) => {
     if (!canAccessExpenses) return;
     const exp = getExpenseForActions(expenseId);
-    if (!exp || !canMutateExpenseRecord(exp)) return;
+    if (!exp) return;
+    if (!canMutateExpenseRecord(exp) && !canSuppressDerivedExpense(exp)) return;
     try {
       const inFs = expenses.some((e) => e.id === expenseId);
-      if (inFs) {
+      const isScholarshipAuto =
+        !!currentEvent?.id && isScholarshipAutoExpenseIdForEvent(expenseId, currentEvent.id);
+      if (isScholarshipAuto) {
+        // Quitar snapshot FS stale (si existe) y ocultar la fila calculada.
+        if (inFs) {
+          await deleteDoc(getDocRef('app_expenses', expenseId));
+          syncExpenseAfterWrite(setExpenses, expenseId, null, { remove: true });
+        }
+        await updateDoc(getDocRef('app_events', currentEvent.id), {
+          expenseListSuppressedIds: arrayUnion(expenseId),
+          ...(globalConfig?.isDebugMode
+            ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId }
+            : {}),
+        });
+      } else if (inFs) {
         await deleteDoc(getDocRef('app_expenses', expenseId));
         syncExpenseAfterWrite(setExpenses, expenseId, null, { remove: true });
       } else if (currentEvent?.id && isDerivedAutoExpenseIdForEvent(expenseId, currentEvent.id)) {
@@ -14240,6 +14270,12 @@ function resolveEventName(eventId) {
     if (!canAccessExpenses) return;
     const exp = getExpenseForActions(expenseId);
     if (!exp || !canMutateExpenseRecord(exp)) return;
+    if (scholarshipAutoExpenseMutationBlocked(expenseId, currentEvent?.id)) {
+      showToast(
+        'El costo de beca se calcula automáticamente. No se puede marcar pagado aquí (evita congelar el total). Usa Eliminar para ocultarlo.'
+      );
+      return;
+    }
     const newPaid = !exp.paid;
     const patch = {
       paid: newPaid,
@@ -14271,6 +14307,12 @@ function resolveEventName(eventId) {
     if (!canAccessExpenses) return;
     const exp = getExpenseForActions(expenseId);
     if (!exp || !canMutateExpenseRecord(exp)) return;
+    if (scholarshipAutoExpenseMutationBlocked(expenseId, currentEvent?.id)) {
+      showToast(
+        'El costo de beca se calcula automáticamente. No se puede cambiar «contar en totales» aquí (evita congelar el total). Usa Eliminar para ocultarlo.'
+      );
+      return;
+    }
     const newCountInTotals = !(exp.countInTotals ?? true);
     const patch = {
       countInTotals: newCountInTotals,
@@ -14304,6 +14346,12 @@ function resolveEventName(eventId) {
     if (amount <= 0) { showToast('Ingresa una cantidad válida.'); return; }
     const exp = getExpenseForActions(expensePartialModal.expenseId);
     if (!exp || !canMutateExpenseRecord(exp)) return;
+    if (scholarshipAutoExpenseMutationBlocked(expensePartialModal.expenseId, currentEvent?.id)) {
+      showToast(
+        'El costo de beca se calcula automáticamente. No se registran abonos sobre esta fila (evita congelar el total).'
+      );
+      return;
+    }
     const newPaidAmount = Math.min((exp.paidAmount || 0) + amount, exp.totalPrice);
     const patch = {
       paidAmount: newPaidAmount,
@@ -14349,6 +14397,12 @@ function resolveEventName(eventId) {
     if (!name || qty <= 0 || price <= 0) { showToast('Completa nombre, cantidad y precio.'); return; }
     const exp = getExpenseForActions(expenseEditModal.id);
     if (!exp || !canMutateExpenseRecord(exp)) return;
+    if (scholarshipAutoExpenseMutationBlocked(expenseEditModal.id, currentEvent?.id)) {
+      showToast(
+        'El costo de beca se calcula automáticamente. No se puede editar esta fila (evita congelar el total). Usa Eliminar para ocultarlo.'
+      );
+      return;
+    }
     const newTotal = qty * price;
     const newPaidAmount = Math.min(exp.paidAmount || 0, newTotal);
     const patch = {
@@ -28228,29 +28282,33 @@ function resolveEventName(eventId) {
         );
     const schComputed = eventId ? computeScholarshipAutoExpenseRows(eventId) : [];
     const manualComputed = eventId ? computeManualCostCreditExpenseRows(eventId) : [];
-    const mergeDerivedRows = (computedList) =>
-      computedList
-        .map((c) => {
-          const p = expenses.find((e) => e.id === c.id && String(e.eventId) === String(eventId));
-          if (p) return p;
-          if (suppressed.has(c.id)) return null;
-          return c;
+    const scholarshipAutoExpenses = eventId
+      ? mergeDerivedExpenseRows({
+          computedList: schComputed,
+          expensesList: expenses,
+          eventId,
+          suppressedIds: suppressed,
         })
-        .filter(Boolean);
-    const scholarshipAutoExpenses = mergeDerivedRows(schComputed);
-    const manualCostCreditAutoExpenses = mergeDerivedRows(manualComputed);
+      : [];
+    const manualCostCreditAutoExpenses = eventId
+      ? mergeDerivedExpenseRows({
+          computedList: manualComputed,
+          expensesList: expenses,
+          eventId,
+          suppressedIds: suppressed,
+        })
+      : [];
     const mergedDerivedIds = new Set([
       ...scholarshipAutoExpenses.map((e) => e.id),
       ...manualCostCreditAutoExpenses.map((e) => e.id),
     ]);
     const orphanDerivedExpenses = !eventId
       ? []
-      : expenses.filter(
-          (e) =>
-            e.eventId === eventId &&
-            isDerivedAutoExpenseIdForEvent(e.id, eventId) &&
-            !mergedDerivedIds.has(e.id)
-        );
+      : orphanDerivedExpenseDocs({
+          expensesList: expenses,
+          eventId,
+          mergedDerivedIds,
+        });
     const eventExpenses = [
       ...plainExpenses,
       ...scholarshipAutoExpenses,
@@ -28463,8 +28521,11 @@ function resolveEventName(eventId) {
                   const isManualCredit = !!exp._manualCostCreditExpense;
                   const rowConceptVisible = canSeeExpenseConceptForRow(exp);
                   const canMutate = canMutateExpenseRecord(exp);
+                  const canSuppressAuto = canSuppressDerivedExpense(exp);
                   const autoDerived = !!(exp._autoScholarshipExpense || exp._manualCostCreditExpense);
-                  const expenseActionDisabledTitle = autoDerived
+                  const expenseActionDisabledTitle = exp._autoScholarshipExpense
+                    ? 'Fila automática de beca: el total se recalcula solo. Usa Eliminar para ocultarla.'
+                    : autoDerived
                     ? 'Solo Administrador o SuperUsuario pueden modificar este gasto automático'
                     : 'No disponible: concepto oculto por el usuario que lo registró';
                   const ownerLabel =
@@ -28513,7 +28574,18 @@ function resolveEventName(eventId) {
                       <td className={`px-4 py-3 text-sm font-bold text-right ${pending > 0 ? 'text-amber-600' : 'text-slate-400'}`}>${pending.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
                       <td className="px-4 py-3 text-center">
                         {isAutoScholarship && !canMutate ? (
-                          <span className="text-[10px] font-bold text-slate-400">Auto</span>
+                          canSuppressAuto ? (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteExpense(exp.id)}
+                              className="p-1.5 rounded-lg transition-colors text-red-400 hover:bg-red-50 hover:text-red-600"
+                              title="Ocultar fila automática de beca"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          ) : (
+                            <span className="text-[10px] font-bold text-slate-400">Auto</span>
+                          )
                         ) : (
                           <div className="flex items-center justify-center gap-1">
                             <button
