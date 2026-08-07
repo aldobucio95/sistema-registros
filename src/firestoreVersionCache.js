@@ -3,7 +3,15 @@
  * Índice de versión en localStorage; blobs de datos en IndexedDB (`versionCacheStore.js`).
  * Si la versión remota coincide con la local, se evita releer colecciones grandes.
  */
-import { getDoc, getDocFromCache, onSnapshot, updateDoc, setDoc, increment } from 'firebase/firestore';
+import {
+  getDoc,
+  getDocFromCache,
+  getDocFromServer,
+  onSnapshot,
+  updateDoc,
+  setDoc,
+  increment,
+} from 'firebase/firestore';
 import { getDocRef } from './firebaseRefs.js';
 import { sanitizeFirestoreDocId } from './firestoreDocId.js';
 import { idbGetRecord, idbPutRecord, idbDeleteRecord } from './versionCacheStore.js';
@@ -234,6 +242,13 @@ export function logCacheDecision(scope, detail) {
 export async function fetchRemoteCacheVersion(scope) {
   const ref = getDocRef('app_cache_versions', scope);
   try {
+    try {
+      const snap = await getDocFromServer(ref);
+      if (!snap.exists()) return 0;
+      return normalizeCacheVersion(snap.data()?.v);
+    } catch {
+      /* offline / sin red: caer a caché local de Firestore o getDoc */
+    }
     try {
       const cached = await getDocFromCache(ref);
       if (cached.exists()) return normalizeCacheVersion(cached.data()?.v);
