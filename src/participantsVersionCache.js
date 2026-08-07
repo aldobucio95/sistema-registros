@@ -1,4 +1,4 @@
-import { getDocs, getDocsFromCache, getDocsFromServer, onSnapshot, query, where } from 'firebase/firestore';
+import { getDocs, getDocsFromServer, onSnapshot, query, where } from 'firebase/firestore';
 import { getColRef, getDocRef } from './firebaseRefs.js';
 import {
   scopeParticipantsLocation,
@@ -12,6 +12,11 @@ import {
   normalizeCacheVersion,
   resolveVersionForStore,
 } from './firestoreVersionCache.js';
+
+/** Si el snapshot no es del servidor, no sellar IndexedDB con remoteV (evita hit falso). */
+export function shouldPersistVersionedParticipantSlice(fromServer) {
+  return fromServer === true;
+}
 
 /**
  * Aplica un parche a un participante en un arreglo en memoria (p. ej. `allParticipants`).
@@ -45,19 +50,33 @@ function normalizeLocKey(location) {
   return String(location || '').trim();
 }
 
-/** Prefer IndexedDB (lecturas gratis); solo va al servidor si no hay caché persistente. */
-async function loadEventParticipantsQueryFromStore(eventId) {
+/**
+ * Tras un miss de versión, los datos DEBEN venir del servidor.
+ * Usar `getDocsFromCache` aquí envenenaba IndexedDB: se guardaba el roster viejo
+ * con el `remoteV` nuevo y el listener dejaba de refetch (hit falso permanente).
+ */
+async function loadEventParticipantsQueryFromServer(eventId) {
   const q = query(getColRef('app_participants'), where('eventId', '==', eventId));
   try {
-    const cached = await getDocsFromCache(q);
-    if (!cached.empty) {
-      logCacheDecision(`pe_event_${eventId}`, { event: 'participants-from-idb-cache', rows: cached.size });
-      return cached;
-    }
-  } catch {
-    /* sin caché local */
+    const snap = await getDocsFromServer(q);
+    logCacheDecision(`pe_event_${eventId}`, {
+      event: 'participants-from-server',
+      rows: snap.size,
+      fromCache: false,
+    });
+    return { snap, fromServer: true };
+  } catch (e) {
+    /* offline / sin red: última opción; el caller no debe sellar esta data con remoteV */
+    const snap = await getDocs(q);
+    const fromServer = !(snap?.metadata?.fromCache);
+    logCacheDecision(`pe_event_${eventId}`, {
+      event: fromServer ? 'participants-from-getDocs' : 'participants-from-cache-offline',
+      rows: snap.size,
+      fromCache: !fromServer,
+      error: String(e?.code || e?.message || e || ''),
+    });
+    return { snap, fromServer };
   }
-  return getDocs(q);
 }
 
 function isParticipantSliceHit(local, remoteV) {
@@ -74,7 +93,7 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
 
   const locs = [...new Set((locations || []).map(normalizeLocKey).filter(Boolean))];
   if (locs.length === 0) {
-    const snap = await loadEventParticipantsQueryFromStore(eid);
+    const { snap } = await loadEventParticipantsQueryFromServer(eid);
     return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   }
 
@@ -112,19 +131,30 @@ export async function loadEventParticipantsWithVersionCache(eventId, locations) 
     return [...byId.values()];
   }
 
-  const snap = await loadEventParticipantsQueryFromStore(eid);
+  const { snap, fromServer } = await loadEventParticipantsQueryFromServer(eid);
   const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const persistOk = shouldPersistVersionedParticipantSlice(fromServer);
 
   for (const loc of locs) {
     const { scope, remoteV } = versionByLoc.get(loc);
     const slice = all.filter((p) => normalizeLocKey(p.location) === loc);
+    if (!persistOk) {
+      logCacheDecision(scope, {
+        event: 'miss-skip-stamp-offline',
+        remoteVersion: remoteV,
+        rows: slice.length,
+        source: 'cache-offline',
+        sede: loc,
+      });
+      continue;
+    }
     const vToStore = await resolveVersionForStore(scope, remoteV);
     await writeLocalVersionCache(scope, vToStore, slice, { eventId: eid, location: loc });
     logCacheDecision(scope, {
       event: anyMiss && !isHit(loc) ? 'miss-refetch' : 'refresh-cache',
       version: vToStore,
       rows: slice.length,
-      source: 'firestore',
+      source: 'firestore-server',
       sede: loc,
     });
   }
@@ -141,27 +171,44 @@ export async function refetchParticipantsForLocation(eventId, location) {
   const remoteV = await fetchRemoteCacheVersion(scope);
 
   let slice;
+  let fromServer = false;
   const runQuery = async (q) => {
     try {
-      return await getDocsFromServer(q);
+      const snap = await getDocsFromServer(q);
+      return { snap, fromServer: true };
     } catch {
-      return getDocs(q);
+      const snap = await getDocs(q);
+      return { snap, fromServer: !(snap?.metadata?.fromCache) };
     }
   };
   try {
-    const snap = await runQuery(
+    const { snap, fromServer: ok } = await runQuery(
       query(
         getColRef('app_participants'),
         where('eventId', '==', eid),
         where('location', '==', loc)
       )
     );
+    fromServer = ok;
     slice = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   } catch {
-    const snap = await runQuery(query(getColRef('app_participants'), where('eventId', '==', eid)));
+    const { snap, fromServer: ok } = await runQuery(
+      query(getColRef('app_participants'), where('eventId', '==', eid))
+    );
+    fromServer = ok;
     slice = snap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
       .filter((p) => normalizeLocKey(p.location) === loc);
+  }
+
+  if (!shouldPersistVersionedParticipantSlice(fromServer)) {
+    logCacheDecision(scope, {
+      event: 'refetch-skip-stamp-offline',
+      remoteVersion: remoteV,
+      rows: slice.length,
+      sede: loc,
+    });
+    return slice;
   }
 
   const vToStore = await resolveVersionForStore(scope, remoteV);
@@ -225,17 +272,32 @@ export async function loadArchivedParticipantsWithVersionCache() {
   }
 
   const PARTICIPANT_STATUS_ARCHIVED = 'archived';
-  const snap = await getDocs(
-    query(getColRef('app_participants'), where('status', '==', PARTICIPANT_STATUS_ARCHIVED))
-  );
+  const q = query(getColRef('app_participants'), where('status', '==', PARTICIPANT_STATUS_ARCHIVED));
+  let snap;
+  let fromServer = true;
+  try {
+    snap = await getDocsFromServer(q);
+  } catch {
+    snap = await getDocs(q);
+    fromServer = !(snap?.metadata?.fromCache);
+  }
   const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  if (!shouldPersistVersionedParticipantSlice(fromServer)) {
+    logCacheDecision(scope, {
+      event: 'miss-skip-stamp-offline',
+      remoteVersion: remoteV,
+      rows: all.length,
+      source: 'cache-offline',
+    });
+    return all;
+  }
   const vToStore = await resolveVersionForStore(scope, remoteV);
   await writeLocalVersionCache(scope, vToStore, all, { kind: 'archive' });
   logCacheDecision(scope, {
     event: 'miss-refetch',
     version: vToStore,
     rows: all.length,
-    source: 'firestore',
+    source: 'firestore-server',
   });
   return all;
 }
