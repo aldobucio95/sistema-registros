@@ -1,5 +1,5 @@
 import { addDoc, collection, getDocs, limit, orderBy, query } from 'firebase/firestore';
-import { db } from './firebaseRefs.js';
+import { db, publicDb } from './firebaseRefs.js';
 
 /** Subcolección bajo `app_participants/{participantId}/…` (append-only). */
 export const PARTICIPANT_ACTIVITY_SUBCOLLECTION = 'participant_activity';
@@ -8,10 +8,12 @@ export const PARTICIPANT_ACTIVITY_FETCH_LIMIT = 100;
 
 /**
  * @param {string} participantId
+ * @param {{ usePublic?: boolean }} [opts]
  * @returns {import('firebase/firestore').CollectionReference}
  */
-export function getParticipantActivityCollectionRef(participantId) {
-  return collection(db, 'app_participants', String(participantId), PARTICIPANT_ACTIVITY_SUBCOLLECTION);
+export function getParticipantActivityCollectionRef(participantId, { usePublic = false } = {}) {
+  const database = usePublic ? publicDb : db;
+  return collection(database, 'app_participants', String(participantId), PARTICIPANT_ACTIVITY_SUBCOLLECTION);
 }
 
 /**
@@ -23,6 +25,7 @@ export function getParticipantActivityCollectionRef(participantId) {
  * @param {string} [opts.actorUserId]
  * @param {string} [opts.kind]
  * @param {string} opts.message
+ * @param {boolean} [opts.usePublic] — registro público / responsiva (`publicDb` + `publicAuth`)
  */
 export async function appendParticipantActivityEntry({
   participantId,
@@ -31,9 +34,10 @@ export async function appendParticipantActivityEntry({
   actorUserId = '',
   kind = 'other',
   message,
+  usePublic = false,
 }) {
   if (!participantId || !message) return;
-  const col = getParticipantActivityCollectionRef(participantId);
+  const col = getParticipantActivityCollectionRef(participantId, { usePublic });
   await addDoc(col, {
     eventId: eventId != null ? String(eventId) : '',
     at: Date.now(),

@@ -2,6 +2,8 @@ import { signInAnonymously, setPersistence, browserLocalPersistence, signOut } f
 
 /**
  * El envío público necesita sesión Firebase (reglas de participantes / escritura).
+ * Debe usarse solo con `publicAuth` (app `PublicLinks`), nunca con el Auth del panel:
+ * un `signOut` / `signInAnonymously` sobre el Auth principal destruiría la sesión de staff.
  */
 export async function ensurePublicSubmitAuth(authInstance) {
   try {
@@ -16,6 +18,8 @@ export async function ensurePublicSubmitAuth(authInstance) {
     try {
       await u.getIdToken(true);
     } catch {
+      // Nunca cerrar sesión de staff/u otro proveedor desde el flujo público.
+      if (!u.isAnonymous) return;
       await signOut(authInstance);
     }
   };
@@ -40,7 +44,13 @@ export async function ensurePublicSubmitAuth(authInstance) {
   if (typeof authInstance.authStateReady === 'function') {
     await authInstance.authStateReady();
   }
-  if (authInstance.currentUser) {
-    await authInstance.currentUser.getIdToken();
+  const readyUser = authInstance.currentUser;
+  if (readyUser) {
+    try {
+      await readyUser.getIdToken();
+    } catch (e) {
+      // Si quedó un usuario no anónimo con token roto, no forzar signOut aquí.
+      if (readyUser.isAnonymous) throw e;
+    }
   }
 }

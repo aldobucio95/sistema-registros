@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { registerGlobalSystemAlertSink } from './globalSystemAlertsBridge.js';
 import { shortFirebaseClientMessage } from './shortSystemMessages.js';
-import { auth } from './firebaseRefs.js';
+import { publicAuth } from './firebaseRefs.js';
 import { processPublicRegistrationOfflineQueue } from './publicRegistrationOfflineQueue.js';
 
 const DEFAULT_MS = 5200;
@@ -79,7 +79,7 @@ export default function GlobalSystemAlertsHost() {
       } else {
         setBanner(null);
       }
-      void processPublicRegistrationOfflineQueue(auth).then((r) => {
+      void processPublicRegistrationOfflineQueue(publicAuth).then((r) => {
         if (r.processed > 0) {
           show({ text: `Cola: ${r.processed} registro(s) enviado(s) a Firestore.`, tone: 'ok', ms: 5200 });
         }
@@ -142,7 +142,7 @@ export default function GlobalSystemAlertsHost() {
   /** Pendientes guardados con la app cerrada o en otra ruta: enviar al cargar si ya hay red. */
   useEffect(() => {
     if (typeof navigator === 'undefined' || !navigator.onLine) return;
-    void processPublicRegistrationOfflineQueue(auth).then((r) => {
+    void processPublicRegistrationOfflineQueue(publicAuth).then((r) => {
       if (r.processed > 0) {
         show({ text: `Cola: ${r.processed} registro(s) enviado(s) a Firestore.`, tone: 'ok', ms: 5200 });
       }

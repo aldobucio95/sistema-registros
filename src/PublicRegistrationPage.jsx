@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { auth } from './firebaseRefs.js';
+import { publicAuth } from './firebaseRefs.js';
 import {
   ATTENDANCE_SPECIAL,
   PUBLIC_OPTIONAL_KEYS,
@@ -228,10 +228,10 @@ export default function PublicRegistrationPage({ linkId }) {
   useEffect(() => {
     if (phase !== 'ready' || !resolvedLinkId) return undefined;
     if (isPublicBrowseSessionExpired(resolvedLinkId)) {
-      void expirePublicBrowseSessionNow(auth, resolvedLinkId, handleBrowseSessionExpired);
+      void expirePublicBrowseSessionNow(publicAuth, resolvedLinkId, handleBrowseSessionExpired);
       return undefined;
     }
-    return startPublicBrowseSessionWatch(auth, resolvedLinkId, handleBrowseSessionExpired);
+    return startPublicBrowseSessionWatch(publicAuth, resolvedLinkId, handleBrowseSessionExpired);
   }, [phase, resolvedLinkId, handleBrowseSessionExpired]);
 
   useEffect(() => {
@@ -496,7 +496,7 @@ export default function PublicRegistrationPage({ linkId }) {
     let cancelled = false;
     (async () => {
       try {
-        await ensurePublicSubmitAuth(auth);
+        await ensurePublicSubmitAuth(publicAuth);
         const fresh = await fetchParticipantsForEvent(eventSnapshot.id);
         if (!cancelled) setCurrentEventParticipants(fresh);
       } catch (e) {
@@ -526,7 +526,7 @@ export default function PublicRegistrationPage({ linkId }) {
     vnpLookupTimerRef.current = setTimeout(async () => {
       setVnpLookupLoading(true);
       try {
-        await ensurePublicSubmitAuth(auth);
+        await ensurePublicSubmitAuth(publicAuth);
         const rows = await fetchParticipantsByVnpPersonId(canon);
         const filtered = filterPublicVnpLookupRows(rows, eventSnapshot.id, currentEventParticipants);
         setVnpLookupMatches(filtered);
@@ -555,7 +555,7 @@ export default function PublicRegistrationPage({ linkId }) {
       setLoadError('');
       try {
         try {
-          await ensurePublicSubmitAuth(auth);
+          await ensurePublicSubmitAuth(publicAuth);
         } catch (authErr) {
           console.warn(
             'Registro público: sesión anónima no disponible antes de cargar el enlace; se intenta lectura igual (reglas permiten lectura pública del enlace).',
@@ -722,7 +722,7 @@ export default function PublicRegistrationPage({ linkId }) {
     let cancelled = false;
     (async () => {
       if (typeof navigator !== 'undefined' && !navigator.onLine) return;
-      const r = await processPublicRegistrationOfflineQueue(auth);
+      const r = await processPublicRegistrationOfflineQueue(publicAuth);
       if (cancelled || !r.processed) return;
       emitGlobalSystemAlert(`${r.processed} registro(s) en cola enviado(s) a Firestore.`, { tone: 'ok', ms: 5500 });
     })();
@@ -767,7 +767,7 @@ export default function PublicRegistrationPage({ linkId }) {
     }
 
     try {
-      await ensurePublicSubmitAuth(auth);
+      await ensurePublicSubmitAuth(publicAuth);
       const fresh = await fetchParticipantsForEvent(eventSnapshot.id);
       const result = await submitPublicRegistration({
         rawEntry: form,
@@ -790,7 +790,7 @@ export default function PublicRegistrationPage({ linkId }) {
       setSuccessId(result.participantId);
       setSuccessResponsivaSignUrl(String(result.responsivaSignUrl || '').trim());
       clearPublicRegDraft(resolvedLinkId, eventSnapshot.id);
-      registerPublicRegistrationSuccess(auth, resolvedLinkId);
+      registerPublicRegistrationSuccess(publicAuth, resolvedLinkId);
       setPhase('done');
     } catch (err) {
       console.error(err);
