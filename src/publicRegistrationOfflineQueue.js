@@ -1,6 +1,8 @@
 import { emitGlobalSystemAlert } from './globalSystemAlertsBridge.js';
 import { fetchPublicRegistrationLinkSnapshot } from './publicRegistrationLinkFetch.js';
 import { ensurePublicSubmitAuth } from './publicRegistrationAuth.js';
+/** @typedef {import('firebase/auth').Auth} Auth */
+/** Callers must pass `publicAuth` (PublicLinks), never panel `auth`. */
 import { buildOptionalVisibilityFromPublicLinkDoc } from './publicLinkDocHelpers.js';
 import {
   submitPublicRegistration,

@@ -1,5 +1,5 @@
 import { setDoc, getDoc, getDocs, query, where, limit, updateDoc } from 'firebase/firestore';
-import { getDocRef, getColRef } from './firebaseRefs.js';
+import { getPublicDocRef as getDocRef, getPublicColRef as getColRef } from './firebaseRefs.js';
 import { buildLogId, writeSnapshotDoc } from './activityLogCore.js';
 import { withLogVisibleInPanel, buildLogEntityFields } from './activityLogsMeta.js';
 import { buildFinanceWhatsAppMessage, buildScholarshipPendingWhatsAppMessage } from './whatsappFinanceMessages.js';
@@ -1686,6 +1686,7 @@ async function appendPublicRegistrationActivityLog({
         entityType: 'participant',
         entityId: String(participantId),
         createdAt,
+        usePublic: true,
         snapshot: {
           kind: waitlist ? 'registro_publico_lista_espera' : 'registro_publico',
           eventId: ev.id || '',
@@ -1726,6 +1727,7 @@ async function appendPublicRegistrationActivityLog({
       actorUserId: '',
       kind: waitlist ? 'lista_espera' : 'registro_publico',
       message: details,
+      usePublic: true,
     });
   } catch (e) {
     console.error('appendPublicRegistrationActivityLog', e);
@@ -2503,6 +2505,7 @@ export async function submitPublicRegistration({
       !!personData.privacyNoticeAcceptedAt,
       personData.sensitiveDataConsent
     ),
+    usePublic: true,
   });
 
   await appendPublicRegistrationActivityLog({

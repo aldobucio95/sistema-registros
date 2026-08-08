@@ -1,5 +1,5 @@
 import { getDoc, getDocs, query, where, limit } from 'firebase/firestore';
-import { getDocRef, getColRef } from './firebaseRefs.js';
+import { getPublicDocRef as getDocRef, getPublicColRef as getColRef } from './firebaseRefs.js';
 import { slugify } from './appRoutes.js';
 
 /** Lectura del documento de enlace público (id directo o `urlSlug`). */
