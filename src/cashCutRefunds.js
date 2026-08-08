@@ -218,6 +218,14 @@ export function buildCashCutRefundDisbursementRow(person, computeNetAmountByMeth
   };
 }
 
+/** Cancelados, o archivados que conservan marca de devolución ya entregada. */
+export function participantIncludedInCashCutRefundDisbursements(person) {
+  if (participantIsCancelledForRefund(person)) return true;
+  const st = String(person?.status || 'active').trim();
+  if (st === 'archived' && participantHasRefundDisbursement(person)) return true;
+  return false;
+}
+
 export function collectCashCutRefundDisbursements(
   allParticipants,
   currentEvent,
@@ -230,8 +238,8 @@ export function collectCashCutRefundDisbursements(
   const out = [];
   (allParticipants || []).forEach((p) => {
     if (p.eventId !== currentEvent.id) return;
-    if (!participantIsCancelledForRefund(p)) return;
-    const loc = resolveCancelledRefundSede(p);
+    if (!participantIncludedInCashCutRefundDisbursements(p)) return;
+    const loc = resolveCancelledRefundSede(p) || String(p?.archivedFromLocation || p?.location || '').trim();
     if (allowedLocations && typeof locationInScopeFn === 'function' && !locationInScopeFn(loc, allowedLocations)) {
       return;
     }

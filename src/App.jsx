@@ -317,6 +317,10 @@ import {
 } from './registrationFormShared.js';
 import { donationAddsToRecaudacionBalance } from './donationHelpers.js';
 import {
+  findArchiveBlockedByPendingRefund,
+  getArchiveBlockedByPendingRefundMessage,
+} from './archiveParticipantFinanceGuard.js';
+import {
   buildRefundDisbursementPaymentHistoryRow,
   buildParticipantPaidFieldsFromHistory,
   collectCashCutRefundDisbursements,
@@ -15516,7 +15520,12 @@ function resolveEventName(eventId) {
 
   const archiveParticipantToFirestore = useCallback(
     async (person, loc, { sourceKind, eventDisplayName }) => {
-      if (participantIsArchived(person)) return;
+      if (participantIsArchived(person)) return { ok: true, skipped: true };
+      const archiveBlockMsg = getArchiveBlockedByPendingRefundMessage(person);
+      if (archiveBlockMsg) {
+        showToast(archiveBlockMsg);
+        return { ok: false, error: archiveBlockMsg };
+      }
       const bajaAt = Date.now();
       await removeResponsivaArtifactsForParticipant({
         eventId: person.eventId,
@@ -15612,6 +15621,7 @@ function resolveEventName(eventId) {
       }
       const personForIndex = { ...person, responsivaStatus: '', responsivaDigital: null };
       await upsertMergedArchiveProfile(personForIndex, bajaAt, loc, sourceKind, eventDisplayName);
+      return { ok: true };
     },
     [
       addLog,
@@ -15626,6 +15636,7 @@ function resolveEventName(eventId) {
       upsertMergedArchiveProfile,
       removeResponsivaArtifactsForParticipant,
       refreshParticipantCache,
+      showToast,
     ]
   );
 
@@ -15638,16 +15649,25 @@ function resolveEventName(eventId) {
     const toArchive = partSnap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
       .filter((p) => !participantIsArchived(p));
+    const pendingRefundBlock = findArchiveBlockedByPendingRefund(toArchive);
+    if (pendingRefundBlock.message) {
+      showToast(pendingRefundBlock.message);
+      return;
+    }
     try {
       for (let i = 0; i < toArchive.length; i += 1) {
         const person = toArchive[i];
         const loc = person.location || person.cancelledFromLocation || person.archivedFromLocation || '?';
         const fromWaitlist = (person.status || 'active') === 'waitlist';
-        await archiveParticipantToFirestore(person, loc, {
+        const archRes = await archiveParticipantToFirestore(person, loc, {
           fromWaitlist,
           sourceKind: fromWaitlist ? 'waitlist' : 'event_deleted',
           eventDisplayName: eventName,
         });
+        if (archRes && archRes.ok === false) {
+          showToast(archRes.error || 'No se pudo archivar un registro; el evento no se eliminó.');
+          return;
+        }
       }
       await deleteDoc(getDocRef('app_events', id));
       addLog(
@@ -21280,9 +21300,16 @@ function resolveEventName(eventId) {
   };
 
   const executeBautizosPartyCancelArchivePlan = async (plan) => {
-    if (!plan || !plan.focalDocId) return;
+    if (!plan || !plan.focalDocId) return false;
     const loc = plan.loc;
     const action = plan.action === 'archive_roster' ? 'archive_roster' : 'cancel_entry';
+    if (action === 'archive_roster') {
+      const partyArchiveBlock = findArchiveBlockedByPendingRefund(plan.cancelDocs || []);
+      if (partyArchiveBlock.message) {
+        showToast(partyArchiveBlock.message);
+        return false;
+      }
+    }
     const now = Date.now();
     const batch = writeBatch(db);
     let batchOps = 0;
@@ -21514,6 +21541,7 @@ function resolveEventName(eventId) {
       );
       logParticipantActivity(pid, action === 'archive_roster' ? 'archivo' : 'baja', _log);
     }
+    return true;
   };
 
   const performArchiveRosterEntry = async (loc, id, bautizosOpts = null) => {
@@ -21523,16 +21551,22 @@ function resolveEventName(eventId) {
     if (!person) return;
 
     if (bautizosOpts?.plan) {
-      await executeBautizosPartyCancelArchivePlan({ ...bautizosOpts.plan, action: 'archive_roster', loc });
+      const partyOk = await executeBautizosPartyCancelArchivePlan({
+        ...bautizosOpts.plan,
+        action: 'archive_roster',
+        loc,
+      });
+      if (!partyOk) return;
       showToast('Registro archivado. Puedes precargar estos datos desde la búsqueda de perfiles.');
       return;
     }
 
-    await archiveParticipantToFirestore(person, loc, {
+    const archRes = await archiveParticipantToFirestore(person, loc, {
       fromWaitlist: false,
       sourceKind: 'roster',
       eventDisplayName: currentEvent?.name ?? null,
     });
+    if (archRes && archRes.ok === false) return;
     const _archLog = `Archivó el registro de ${person.name} en la sede ${loc}. El ID VNPM y los datos personales permanecen en Firebase para precargar en otros eventos.`;
     addLog(
       'Eliminación de Registro',
@@ -21548,11 +21582,12 @@ function resolveEventName(eventId) {
   const performArchiveWaitlistEntry = async (loc, id) => {
     const person = (waitlistData[loc] || []).find((p) => String(p.id) === String(id));
     if (!person) return;
-    await archiveParticipantToFirestore(person, loc, {
+    const archRes = await archiveParticipantToFirestore(person, loc, {
       fromWaitlist: true,
       sourceKind: 'waitlist',
       eventDisplayName: currentEvent?.name ?? null,
     });
+    if (archRes && archRes.ok === false) return;
     const _archWlLog = `Archivó a ${person.name} (lista de espera, sede ${loc}). Los datos personales siguen disponibles para precargar en otros eventos.`;
     addLog(
       'Lista de Espera',
@@ -21574,11 +21609,12 @@ function resolveEventName(eventId) {
       if (!participantIsActiveOrWaitlistForDuplicateHint(person)) return;
       const loc = String(person.location || '').trim() || '?';
       const fromWaitlist = participantIsWaitlistRow(person);
-      await archiveParticipantToFirestore(person, loc, {
+      const archRes = await archiveParticipantToFirestore(person, loc, {
         fromWaitlist,
         sourceKind: fromWaitlist ? 'waitlist' : 'roster',
         eventDisplayName: currentEvent?.name ?? null,
       });
+      if (archRes && archRes.ok === false) return;
       const _archDupLog = `Archivó desde aviso de duplicado (SuperUsuario): ${person.name} (sede ${loc}).`;
       addLog(
         fromWaitlist ? 'Lista de Espera' : 'Eliminación de Registro',
@@ -22271,13 +22307,6 @@ function resolveEventName(eventId) {
         d.fromCancelledRefundDonation &&
         !d._syntheticCancelledRefund
     );
-    for (const d of linkedRefundDonations) {
-      try {
-        await deleteDoc(getDocRef('app_donations', d.id));
-      } catch (e) {
-        console.error(e);
-      }
-    }
     const paidFields = buildParticipantPaidFieldsFromHistory(person, computeNetAmountByMethod);
     const hadRefund = participantHasRefundDisbursement(person);
     const payload = {
@@ -22291,8 +22320,24 @@ function resolveEventName(eventId) {
       reactivatedAt: Date.now(),
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
     };
-    await updateDoc(getDocRef('app_participants', String(id)), payload);
+    // Reactivación + borrado de donaciones por baja en un solo batch: evita perder el doc de
+    // donación si el update del participante falla a mitad del camino.
+    const batch = writeBatch(db);
+    batch.update(getDocRef('app_participants', String(id)), payload);
+    for (const d of linkedRefundDonations) {
+      batch.delete(getDocRef('app_donations', d.id));
+    }
+    try {
+      await batch.commit();
+    } catch (e) {
+      console.error(e);
+      showToast('No se pudo reactivar el registro. Intenta de nuevo.');
+      return;
+    }
     refreshParticipantCache(person, 'Reactivación', { personId: id, patch: payload });
+    for (const d of linkedRefundDonations) {
+      syncDonationAfterWrite(setDonations, d.id, null, { remove: true });
+    }
     const refundNote = hadRefund
       ? ` Devolución histórica conservada (${formatMoney(getRefundDisbursedGrossAmount(person))}); saldo pendiente reiniciado al costo del evento.`
       : '';
