@@ -15635,6 +15635,7 @@ function resolveEventName(eventId) {
     },
     [
       addLog,
+      currentEvent?.id,
       currentPricing,
       currentUser?.username,
       events,
