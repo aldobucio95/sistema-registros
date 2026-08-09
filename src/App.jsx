@@ -528,7 +528,13 @@ import {
 import { collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, getDoc, deleteField, query, where, limit, orderBy, startAfter, documentId, getDocs, getDocsFromCache, writeBatch, getDocFromServer, getDocsFromServer, getCountFromServer, arrayUnion, increment } from 'firebase/firestore';
 import { ref as storageRef, uploadString, getBytes, deleteObject } from 'firebase/storage';
 import { getFunctions, httpsCallable } from 'firebase/functions';
-import { validateSpouseParticipantChoice, syncSpouseParticipantLinks } from './spouseLink.js';
+import {
+  validateSpouseParticipantChoice,
+  syncSpouseParticipantLinks,
+  shouldSyncSpouseLinks,
+  spouseUnlinkFields,
+  unlinkSpouseAfterParticipantExit,
+} from './spouseLink.js';
 import RegistryBirthDateField from './RegistryBirthDateField.jsx';
 import { mergeRowsByDocChanges, querySnapshotHasDocChanges } from './firestoreSnapshotMerge.js';
 import { reloadAppAfterClearingFirestorePersistence, getAckBulkGeneration } from './firestoreCacheReload.js';
@@ -15535,6 +15541,7 @@ function resolveEventName(eventId) {
           preservedManualCredit = { archivedManualCreditAmount: excess, archivedManualCreditListRef: listRef };
         }
       }
+      const previousSpouseIdArchive = String(person.spouseParticipantId || '').trim();
       const archivePayload = {
         status: PARTICIPANT_STATUS_ARCHIVED,
         archivedAt: bajaAt,
@@ -15543,6 +15550,7 @@ function resolveEventName(eventId) {
         paymentHistory: [],
         whatsAppFinanceNotifications: [],
         scholarshipPendingApproval: false,
+        ...spouseUnlinkFields(),
         paid: deleteField(),
         paidNet: deleteField(),
         registeredCost: deleteField(),
@@ -15573,6 +15581,17 @@ function resolveEventName(eventId) {
         ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
       };
       await updateDoc(getDocRef('app_participants', String(person.id)), archivePayload);
+      if (previousSpouseIdArchive) {
+        const unlink = await unlinkSpouseAfterParticipantExit({
+          eventId: person.eventId || currentEvent?.id,
+          personId: String(person.id),
+          previousSpouseId: previousSpouseIdArchive,
+          currentPersonName: String(person.name || '').trim(),
+        });
+        if (!unlink.ok) {
+          console.error(unlink.error || 'No se pudo desvincular la pareja al archivar.');
+        }
+      }
       refreshParticipantCache(person, 'Archivar participante', {
         personId: person.id,
         patch: {
@@ -15583,6 +15602,7 @@ function resolveEventName(eventId) {
           paymentHistory: [],
           whatsAppFinanceNotifications: [],
           scholarshipPendingApproval: false,
+          ...spouseUnlinkFields(),
         },
       });
       if (preservedManualCredit) {
@@ -15615,6 +15635,7 @@ function resolveEventName(eventId) {
     },
     [
       addLog,
+      currentEvent?.id,
       currentPricing,
       currentUser?.username,
       events,
@@ -18012,12 +18033,13 @@ function resolveEventName(eventId) {
         personData.sensitiveDataConsent
       )
     );
-    if (spouseCtxAdd && personData.spouseParticipantId) {
+    const nextSpouseAdd = spouseCtxAdd ? String(personData.spouseParticipantId || '').trim() : '';
+    if (shouldSyncSpouseLinks(previousSpouseIdForLink, nextSpouseAdd)) {
       const sync = await syncSpouseParticipantLinks({
         eventId: currentEvent.id,
         personId: docId,
         previousSpouseId: previousSpouseIdForLink,
-        nextSpouseId: personData.spouseParticipantId,
+        nextSpouseId: nextSpouseAdd,
         currentPersonName: String(personData.name || '').trim(),
       });
       if (!sync.ok) {
@@ -18679,12 +18701,13 @@ function resolveEventName(eventId) {
       }
     }
     setNewRegDraftCarMeta({});
-    if (spouseCtxWl && personData.spouseParticipantId) {
+    const nextSpouseWl = spouseCtxWl ? String(personData.spouseParticipantId || '').trim() : '';
+    if (shouldSyncSpouseLinks(previousSpouseIdWl, nextSpouseWl)) {
       const sync = await syncSpouseParticipantLinks({
         eventId: currentEvent.id,
         personId: docId,
         previousSpouseId: previousSpouseIdWl,
-        nextSpouseId: personData.spouseParticipantId,
+        nextSpouseId: nextSpouseWl,
         currentPersonName: String(personData.name || '').trim(),
       });
       if (!sync.ok) {
@@ -19640,7 +19663,7 @@ function resolveEventName(eventId) {
 
     const prevSpouse = String(originalPerson.spouseParticipantId || '').trim();
     const nextSpouse = spouseCtxEdit ? String(payload.spouseParticipantId || '').trim() : '';
-    if (prevSpouse || nextSpouse) {
+    if (shouldSyncSpouseLinks(prevSpouse, nextSpouse)) {
       const sync = await syncSpouseParticipantLinks({
         eventId: currentEvent.id,
         personId: String(editedPerson.id),
@@ -21318,6 +21341,7 @@ function resolveEventName(eventId) {
           paymentHistory: [],
           whatsAppFinanceNotifications: [],
           scholarshipPendingApproval: false,
+          ...spouseUnlinkFields(),
           paid: deleteField(),
           paidNet: deleteField(),
           registeredCost: deleteField(),
@@ -21386,6 +21410,7 @@ function resolveEventName(eventId) {
           refundPendingAmount,
           refundAsDonation: false,
           whatsAppFinanceNotifications: existingNotifications,
+          ...spouseUnlinkFields(),
           bautizosSplitPartyHostParticipantId: deleteField(),
           ...(pid === String(plan.focalDocId) &&
           (plan.hasPromotions || (plan.promotions || []).length > 0)
@@ -21480,6 +21505,21 @@ function resolveEventName(eventId) {
 
     if (batchOps > 0) await batch.commit();
 
+    for (const person of plan.cancelDocs || []) {
+      const previousSpouseId = String(person.spouseParticipantId || '').trim();
+      if (!previousSpouseId) continue;
+      // Si ambos del vínculo están en cancelDocs, el batch ya limpió spouse fields; el sync es no-op seguro.
+      const unlink = await unlinkSpouseAfterParticipantExit({
+        eventId: person.eventId || currentEvent?.id,
+        personId: String(person.id),
+        previousSpouseId,
+        currentPersonName: String(person.name || '').trim(),
+      });
+      if (!unlink.ok) {
+        console.error(unlink.error || 'No se pudo desvincular la pareja tras baja/archivo de grupo.');
+      }
+    }
+
     const bumpLocs = new Set([loc]);
     for (const person of plan.cancelDocs || []) {
       if (person?.location) bumpLocs.add(String(person.location).trim());
@@ -21487,8 +21527,8 @@ function resolveEventName(eventId) {
         personId: person.id,
         patch:
           action === 'archive_roster'
-            ? { status: PARTICIPANT_STATUS_ARCHIVED, archivedAt: now }
-            : { status: PARTICIPANT_STATUS_CANCELLED, cancelledAt: now },
+            ? { status: PARTICIPANT_STATUS_ARCHIVED, archivedAt: now, ...spouseUnlinkFields() }
+            : { status: PARTICIPANT_STATUS_CANCELLED, cancelledAt: now, ...spouseUnlinkFields() },
       });
     }
 
@@ -21756,6 +21796,7 @@ function resolveEventName(eventId) {
     };
     /** Siempre se agrega un aviso nuevo: antes se sobrescribía el último pendiente y se perdían registro/abono para el merge. */
     existingNotifications.push(bajaNotification);
+    const previousSpouseIdCancel = String(person.spouseParticipantId || '').trim();
     const payload = {
       status: PARTICIPANT_STATUS_CANCELLED,
       cancelledAt,
@@ -21763,9 +21804,21 @@ function resolveEventName(eventId) {
       refundPendingAmount,
       refundAsDonation: false,
       whatsAppFinanceNotifications: existingNotifications,
+      ...spouseUnlinkFields(),
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
     };
     await updateDoc(participantRef, payload);
+    if (previousSpouseIdCancel) {
+      const unlink = await unlinkSpouseAfterParticipantExit({
+        eventId: person.eventId || currentEvent?.id,
+        personId: String(id),
+        previousSpouseId: previousSpouseIdCancel,
+        currentPersonName: String(person.name || '').trim(),
+      });
+      if (!unlink.ok) {
+        showToast(unlink.error || 'Baja guardada, pero no se pudo desvincular la pareja.');
+      }
+    }
     refreshParticipantCache(person, 'Baja de registro', { personId: id, patch: payload });
     const _bajaLog = `Dio de baja a ${person.name} en ${loc}.${refundPendingAmount > 0 ? ` Pendiente de devolución: $${refundPendingAmount}.` : ''}`;
     addLog(
