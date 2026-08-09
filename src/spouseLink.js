@@ -34,6 +34,16 @@ function partnerUnlinkUpdate() {
   };
 }
 
+/** Campos para limpiar vínculo de pareja en el documento actual (baja/archivo/edición). */
+export function spouseUnlinkFields() {
+  return partnerUnlinkUpdate();
+}
+
+/** True si hay que sincronizar pareja tras guardar (vínculo nuevo, cambio o desvínculo). */
+export function shouldSyncSpouseLinks(previousSpouseId, nextSpouseId) {
+  return Boolean(String(previousSpouseId || '').trim() || String(nextSpouseId || '').trim());
+}
+
 /**
  * Valida que el id elegido pueda vincularse como pareja antes de guardar el registro actual.
  * @param {{ eventId: string, spouseParticipantId: string, excludePersonId?: string|null }} args
@@ -129,4 +139,25 @@ export async function syncSpouseParticipantLinks({
 
   await batch.commit();
   return { ok: true };
+}
+
+/**
+ * Tras baja o archivo: desvincula a la pareja que aún apunta a este registro.
+ * El documento saliente debe limpiarse aparte con `spouseUnlinkFields()`.
+ */
+export async function unlinkSpouseAfterParticipantExit({
+  eventId,
+  personId,
+  previousSpouseId,
+  currentPersonName = '',
+}) {
+  const prev = String(previousSpouseId || '').trim();
+  if (!prev) return { ok: true };
+  return syncSpouseParticipantLinks({
+    eventId,
+    personId,
+    previousSpouseId: prev,
+    nextSpouseId: '',
+    currentPersonName,
+  });
 }
