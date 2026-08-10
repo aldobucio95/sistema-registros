@@ -9,7 +9,9 @@ const {
   stripAllPersonalParticipantFields,
   getEventEffectiveEndDateFromDoc,
   isEventPastSensitiveRetention,
-  isSiValue,
+  getArchiveProfileDocId,
+  hasPrivacyNoticeAcceptance,
+  resolveRetentionPurgeAction,
 } = require('./privacyNoticeCore.cjs');
 
 const DEFAULT_RETENTION_DAYS = 90;
@@ -34,6 +36,25 @@ async function loadPrivacyConfig(db) {
   }
 }
 
+async function maybePurgeArchivedProfile(db, person, stripFn, participantId) {
+  const archId = getArchiveProfileDocId(person);
+  if (!archId) return;
+  try {
+    const archRef = db.doc(`app_archived_profiles/${archId}`);
+    const archSnap = await archRef.get();
+    if (archSnap.exists) {
+      const archPatch = stripFn(archSnap.data());
+      // Marcas / status de participante no aplican al índice de archivo.
+      delete archPatch.sensitiveDataPurgedAt;
+      delete archPatch.privacyRetentionPurgedAt;
+      delete archPatch.status;
+      await archRef.update(archPatch);
+    }
+  } catch (e) {
+    logger.warn('privacyRetention: archived profile update failed', { participantId, archId, error: e });
+  }
+}
+
 async function purgeParticipantSensitive(db, participantId, person, dryRun) {
   const patch = stripSensitiveParticipantFields(person);
   delete patch.sensitiveDataPurgedAt;
@@ -52,20 +73,7 @@ async function purgeParticipantSensitive(db, participantId, person, dryRun) {
     kind: 'privacidad',
     message: 'Purga automática de datos sensibles (90 días post-evento sin consentimiento expreso).',
   });
-  const vnpId = String(person.vnpPersonId || '').trim();
-  if (vnpId) {
-    try {
-      const archRef = db.doc(`app_archived_profiles/${vnpId}`);
-      const archSnap = await archRef.get();
-      if (archSnap.exists) {
-        const archPatch = stripSensitiveParticipantFields(archSnap.data());
-        delete archPatch.sensitiveDataPurgedAt;
-        await archRef.update(archPatch);
-      }
-    } catch (e) {
-      logger.warn('privacyRetention: archived profile update failed', { participantId, vnpId, error: e });
-    }
-  }
+  await maybePurgeArchivedProfile(db, person, stripSensitiveParticipantFields, participantId);
   return { purged: true, participantId, kind: 'sensitive' };
 }
 
@@ -82,24 +90,8 @@ async function purgeParticipantFullPersonal(db, participantId, person, dryRun) {
     kind: 'privacidad',
     message: 'Purga total de datos personales (sin aceptación del aviso de privacidad; 90 días post-evento).',
   });
-  const vnpId = String(person.vnpPersonId || '').trim();
-  if (vnpId) {
-    try {
-      const archRef = db.doc(`app_archived_profiles/${vnpId}`);
-      const archSnap = await archRef.get();
-      if (archSnap.exists) {
-        const archPatch = stripAllPersonalParticipantFields(archSnap.data());
-        await archRef.update(archPatch);
-      }
-    } catch (e) {
-      logger.warn('privacyRetention: archived profile full purge failed', { participantId, vnpId, error: e });
-    }
-  }
+  await maybePurgeArchivedProfile(db, person, stripAllPersonalParticipantFields, participantId);
   return { purged: true, participantId, kind: 'full' };
-}
-
-function hasPrivacyNoticeAcceptance(person) {
-  return !!String(person?.privacyNoticeAcceptedAt || '').trim();
 }
 
 /**
@@ -141,17 +133,14 @@ async function runSensitiveDataRetentionPurge(db, { forceAllPast = false } = {})
         if (!forceAllPast && purgedCount >= MAX_DOCS_PER_RUN) break;
         scannedCount += 1;
         const data = pDoc.data();
-        if (data.privacyRetentionPurgedAt || data.sensitiveDataPurgedAt) continue;
-        const status = String(data.status || 'active');
-        if (status === 'cancelled') continue;
+        const decision = resolveRetentionPurgeAction(data);
+        if (decision.action === 'skip') continue;
 
         let result;
-        if (!hasPrivacyNoticeAcceptance(data)) {
+        if (decision.action === 'full') {
           result = await purgeParticipantFullPersonal(db, pDoc.id, data, dryRun);
-        } else if (!isSiValue(data.sensitiveDataConsent)) {
-          result = await purgeParticipantSensitive(db, pDoc.id, data, dryRun);
         } else {
-          continue;
+          result = await purgeParticipantSensitive(db, pDoc.id, data, dryRun);
         }
 
         if (result.purged || result.dryRun) {
@@ -198,17 +187,24 @@ async function runPrivacyConsentBackfill(db) {
     const partsSnap = await db.collection('app_participants').where('eventId', '==', evDoc.id).get();
     for (const pDoc of partsSnap.docs) {
       const data = pDoc.data();
-      if (data.sensitiveDataConsent === 'Si' || data.sensitiveDataConsent === 'No') {
-        if (pastRetention && data.sensitiveDataConsent !== 'Si' && !data.sensitiveDataPurgedAt) {
-          await purgeParticipantSensitive(db, pDoc.id, data, false);
-          purged += 1;
-        }
+      if (!pastRetention) {
+        if (data.sensitiveDataConsent === 'Si' || data.sensitiveDataConsent === 'No') continue;
+        await pDoc.ref.update({
+          sensitiveDataConsent: 'No',
+          sensitiveDataConsentAt: new Date().toISOString(),
+        });
+        defaulted += 1;
         continue;
       }
-      if (pastRetention && !data.sensitiveDataPurgedAt) {
+
+      const decision = resolveRetentionPurgeAction(data);
+      if (decision.action === 'full') {
+        await purgeParticipantFullPersonal(db, pDoc.id, data, false);
+        purged += 1;
+      } else if (decision.action === 'sensitive') {
         await purgeParticipantSensitive(db, pDoc.id, data, false);
         purged += 1;
-      } else {
+      } else if (data.sensitiveDataConsent !== 'Si' && data.sensitiveDataConsent !== 'No') {
         await pDoc.ref.update({
           sensitiveDataConsent: 'No',
           sensitiveDataConsentAt: new Date().toISOString(),
@@ -233,4 +229,8 @@ async function runPrivacyConsentBackfill(db) {
 module.exports = {
   runSensitiveDataRetentionPurge,
   runPrivacyConsentBackfill,
+  // exported for tests / tooling
+  purgeParticipantSensitive,
+  purgeParticipantFullPersonal,
+  hasPrivacyNoticeAcceptance,
 };

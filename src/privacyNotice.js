@@ -322,6 +322,22 @@ export function stripSensitiveParticipantFields(person) {
   if (String(person?.responsivaStatus || '').trim()) {
     patch.responsivaStatus = 'purgada';
   }
+  // Snapshot anidado en participante / índice de archivo: misma purga médica.
+  if (person?.archivedProfileSnapshot && typeof person.archivedProfileSnapshot === 'object') {
+    const snap = { ...person.archivedProfileSnapshot };
+    for (const key of SENSITIVE_PARTICIPANT_FIELDS) {
+      if (key === 'bloodType') snap[key] = BLOOD_TYPE_UNSPECIFIED;
+      else if (key.startsWith('has')) snap[key] = 'No';
+      else snap[key] = '';
+    }
+    snap.canSwim = 'No';
+    snap.responsivaDigital = null;
+    snap.responsivaSignatureUrl = '';
+    snap.responsivaSignatureMeta = null;
+    snap.emergencyContactResponsiva = '';
+    snap.emergencyPhoneResponsiva = '';
+    patch.archivedProfileSnapshot = snap;
+  }
   return patch;
 }
 
@@ -446,6 +462,9 @@ export function stripAllPersonalParticipantFields(person) {
   }
   patch.name = 'Registro purgado (privacidad)';
   patch.phone = '';
+  patch.alias = '';
+  patch.notes = '';
+  patch.customData = {};
   patch.status = 'archived';
   patch.privacyRetentionPurgedAt = new Date().toISOString();
   patch.sensitiveDataPurgedAt = patch.privacyRetentionPurgedAt;
@@ -453,8 +472,23 @@ export function stripAllPersonalParticipantFields(person) {
     patch.bautizosCompanions = person.bautizosCompanions.map((row) => ({
       ...row,
       name: 'Acompañante purgado',
+      phone: '',
       ...clearedCompanionSensitiveFields(),
     }));
+  }
+  if (person?.archivedProfileSnapshot && typeof person.archivedProfileSnapshot === 'object') {
+    const snap = { ...(patch.archivedProfileSnapshot || person.archivedProfileSnapshot) };
+    for (const key of PERSONAL_PARTICIPANT_FIELDS) {
+      if (key === 'customFields') snap[key] = {};
+      else if (key === 'age') snap[key] = '';
+      else snap[key] = '';
+    }
+    snap.name = 'Registro purgado (privacidad)';
+    snap.phone = '';
+    snap.alias = '';
+    snap.notes = '';
+    snap.customData = {};
+    patch.archivedProfileSnapshot = snap;
   }
   return patch;
 }
