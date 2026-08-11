@@ -315,7 +315,11 @@ import {
   classifyBloodTypeForStats,
   BLOOD_TYPE_STATS_OTHER,
 } from './registrationFormShared.js';
-import { donationAddsToRecaudacionBalance } from './donationHelpers.js';
+import {
+  donationAddsToRecaudacionBalance,
+  donationIsLinkedParticipantTerminal,
+  linkedDonationDeleteBlockedMessage,
+} from './donationHelpers.js';
 import {
   buildRefundDisbursementPaymentHistoryRow,
   buildParticipantPaidFieldsFromHistory,
@@ -13904,8 +13908,7 @@ function resolveEventName(eventId) {
       return false;
     }
     if (
-      donation.fromCancelledRefundDonation ||
-      donation.fromArchivedManualCredit ||
+      donationIsLinkedParticipantTerminal(donation) ||
       donation._syntheticArchivedCredit ||
       donation._syntheticCancelledRefund
     ) {
@@ -13955,18 +13958,16 @@ function resolveEventName(eventId) {
     if (!hasAdminRights) return;
     const donation = donations.find(d => d.id === donationId);
     if (!donation) return;
+    if (donationIsLinkedParticipantTerminal(donation)) {
+      showToast(linkedDonationDeleteBlockedMessage(donation));
+      return;
+    }
     const amt = parseFloat(donation.amount) || 0;
-    const isRefundBaja = !!donation.fromCancelledRefundDonation;
-    const isArchivedManualCredit = !!donation.fromArchivedManualCredit;
     await deleteDoc(getDocRef('app_donations', donationId));
     syncDonationAfterWrite(setDonations, donationId, null, { remove: true });
     await addLog(
       'Donación',
-      isRefundBaja
-        ? `Eliminó donación por saldo de baja de $${amt.toLocaleString('es-MX', { minimumFractionDigits: 2 })}${donation.donorName ? ` (${donation.donorName})` : ''}${donation.location ? ` · sede ${donation.location}` : ''}${donation.sourceParticipantId ? ` · participante ${donation.sourceParticipantId}` : ''}.`
-        : isArchivedManualCredit
-          ? `Eliminó donación por saldo a favor de archivo de $${amt.toLocaleString('es-MX', { minimumFractionDigits: 2 })}${donation.donorName ? ` (${donation.donorName})` : ''}${donation.location ? ` · sede ${donation.location}` : ''}${donation.sourceParticipantId ? ` · participante ${donation.sourceParticipantId}` : ''}.`
-          : `Eliminó donación de $${amt.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${donation.donorName ? ` (Donador: ${donation.donorName})` : ''}`,
+      `Eliminó donación de $${amt.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${donation.donorName ? ` (Donador: ${donation.donorName})` : ''}`,
       null,
       null,
       { collectionName: 'app_donations', docId: donationId, action: 'delete', previousData: donation },
@@ -22226,16 +22227,8 @@ function resolveEventName(eventId) {
   };
 
   const openDeleteDonationConfirm = (don) => {
-    if (don._syntheticArchivedCredit) {
-      showToast(
-        'Esta donación es solo de seguimiento (saldo de archivo sin documento aparte). No se puede borrar aquí; el monto sigue ligado al registro archivado.'
-      );
-      return;
-    }
-    if (don._syntheticCancelledRefund) {
-      showToast(
-        'Esta donación es solo de seguimiento (saldo de baja sin documento aparte). No se puede borrar aquí; el monto sigue ligado al registro dado de baja.'
-      );
+    if (donationIsLinkedParticipantTerminal(don)) {
+      showToast(linkedDonationDeleteBlockedMessage(don));
       return;
     }
     setRegistryConfirmModal({

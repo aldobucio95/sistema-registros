@@ -21,7 +21,10 @@ import {
   getEventEffectiveStartDate,
   isEventSingleDay,
 } from '../eventDateHelpers.js';
-import { donationAddsToRecaudacionBalance } from '../donationHelpers.js';
+import {
+  donationAddsToRecaudacionBalance,
+  donationIsLinkedParticipantTerminal,
+} from '../donationHelpers.js';
 import { useWorkspaceShell } from './eventWorkspace/WorkspaceShellContext.jsx';
 import BautizosCarDataPromptModal from '../components/transport/BautizosCarDataPromptModal.jsx';
 import { collectCarColorSuggestions } from '../bautizosCarMeta.js';
@@ -47,8 +50,7 @@ import BulkRestoreResyncBanner from '../components/BulkRestoreResyncBanner.jsx';
 import PanelNoticeToast from '../components/PanelNoticeToast.jsx';
 
 function donationIsSuperEditable(don) {
-  if (!don || don._syntheticArchivedCredit || don._syntheticCancelledRefund) return false;
-  if (don.fromCancelledRefundDonation || don.fromArchivedManualCredit) return false;
+  if (!don || donationIsLinkedParticipantTerminal(don)) return false;
   return true;
 }
 
@@ -2061,7 +2063,7 @@ export default function EventWorkspaceScreen() {
                             <Edit3 size={16} />
                           </button>
                         ) : null}
-                        {shell.hasAdminRights && !don._syntheticArchivedCredit && !don._syntheticCancelledRefund && (
+                        {shell.hasAdminRights && !donationIsLinkedParticipantTerminal(don) && (
                           <button
                             onClick={() => shell.openDeleteDonationConfirm(don)}
                             className="text-red-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors"
