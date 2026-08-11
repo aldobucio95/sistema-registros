@@ -703,6 +703,8 @@ export async function submitResponsivaDigitalSignature({
       participantId: participant.id,
       dataUrl: sig,
       usePublic: true,
+      /** Sufijo único: Storage solo permite create anónimo (no update de firmas ajenas). */
+      uniqueToken: `${tr.token}_${now}`,
     });
     if (up) {
       signatureStoragePath = up.path;

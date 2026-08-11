@@ -17,8 +17,13 @@ service firebase.storage {
 
     match /responsiva_signatures/{eventId}/{fileName} {
       allow read: if request.auth != null;
-      /** QR / responsiva pública (anónimo) y panel: subir o actualizar firma. */
-      allow create, update: if request.auth != null;
+      /**
+       * QR / responsiva pública (anónimo) y panel: crear objeto nuevo.
+       * Update queda solo para personal del panel — evita que una sesión anónima
+       * sobrescriba la firma ya guardada de otro participante (ruta predecible).
+       */
+      allow create: if request.auth != null;
+      allow update: if isStaffAuth();
       /** Solo personal del panel puede borrar (archivar, baja, eliminar evento). */
       allow delete: if isStaffAuth();
     }

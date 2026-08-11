@@ -16,15 +16,49 @@ export function responsivaRegistryDocId(eventId, participantId) {
 }
 
 /**
+ * Ruta de Storage para la firma.
+ * Flujos públicos usan sufijo único: las reglas solo permiten `create` anónimo (no `update`),
+ * así un visitante no puede sobrescribir `…/{participantId}.jpg` de otro registro.
+ * @param {{ eventId: string, participantId: string, usePublic?: boolean, uniqueToken?: string|number|null }} p
+ */
+export function buildResponsivaSignatureStoragePath({
+  eventId,
+  participantId,
+  usePublic = false,
+  uniqueToken = null,
+}) {
+  const safeE = sanitizeFirestoreDocId(eventId, { fallback: 'event', maxChars: 120 });
+  const safeP = sanitizeFirestoreDocId(participantId, { fallback: 'participant', maxChars: 120 });
+  if (!usePublic) {
+    return `responsiva_signatures/${safeE}/${safeP}.jpg`;
+  }
+  const raw =
+    uniqueToken != null && String(uniqueToken).trim()
+      ? String(uniqueToken).trim()
+      : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const safeTok = sanitizeFirestoreDocId(raw, { fallback: 'sig', maxChars: 80, lowercase: true });
+  return `responsiva_signatures/${safeE}/${safeP}__${safeTok}.jpg`;
+}
+
+/**
  * Sube la imagen de firma a Storage (JPEG data URL). Falla silenciosamente en consola si reglas/bucket no permiten.
  * @returns {Promise<{ path: string, url: string } | null>}
  */
-export async function uploadResponsivaSignatureImage({ eventId, participantId, dataUrl, usePublic = false }) {
+export async function uploadResponsivaSignatureImage({
+  eventId,
+  participantId,
+  dataUrl,
+  usePublic = false,
+  uniqueToken = null,
+}) {
   if (!dataUrl || !String(dataUrl).startsWith('data:image/')) return null;
   const storage = getStorage(usePublic ? publicApp : app);
-  const safeE = sanitizeFirestoreDocId(eventId, { fallback: 'event', maxChars: 120 });
-  const safeP = sanitizeFirestoreDocId(participantId, { fallback: 'participant', maxChars: 120 });
-  const path = `responsiva_signatures/${safeE}/${safeP}.jpg`;
+  const path = buildResponsivaSignatureStoragePath({
+    eventId,
+    participantId,
+    usePublic,
+    uniqueToken,
+  });
   const r = ref(storage, path);
   await uploadString(r, dataUrl, 'data_url');
   const url = await getDownloadURL(r);
