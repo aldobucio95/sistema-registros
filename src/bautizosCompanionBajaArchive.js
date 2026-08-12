@@ -118,6 +118,30 @@ export function stripHostFromCompanionsArray(companions, hostId) {
   });
 }
 
+/** Quita filas de acompañante (`c:id`) marcadas para baja/archivo en el modal de grupo. */
+export function stripSelectedCompanionRows(companions, selectedTargetKeys) {
+  const selected = new Set((selectedTargetKeys || []).map((k) => String(k).trim()).filter(Boolean));
+  if (!selected.size) return getBautizosCompanionsArray({ bautizosCompanions: companions });
+  return getBautizosCompanionsArray({ bautizosCompanions: companions }).filter((c) => {
+    const cid = String(c?.id || '').trim();
+    if (cid && selected.has(`c:${cid}`)) return false;
+    return true;
+  });
+}
+
+/**
+ * Limpia el arreglo de acompañantes de un superviviente: stubs de docs cancelados
+ * y filas `c:` seleccionadas para baja (sin promoverlas).
+ */
+export function scrubSurvivorCompanionsArray(companions, { cancelDocIds = [], selectedTargetKeys = [] } = {}) {
+  let next = getBautizosCompanionsArray({ bautizosCompanions: companions });
+  for (const id of cancelDocIds) {
+    next = stripHostFromCompanionsArray(next, id);
+  }
+  next = stripSelectedCompanionRows(next, selectedTargetKeys);
+  return next;
+}
+
 export function getBautizosPartyCancelTargetMeta(target) {
   const t = target || {};
   const kind = String(t.kind || '').trim();
@@ -274,6 +298,9 @@ export function planBautizosPartyCancelArchive({ host, roster, event, selectedTa
     }
   }
 
+  /** El ancla del grupo sigue viva: los acompañantes embebidos deben quedarse ahí (no promover). */
+  const hostCancelled = Boolean(anchorId && cancelDocIds.has(anchorId));
+
   const survivors = [];
   for (const t of targets) {
     if (selected.has(t.key)) continue;
@@ -284,10 +311,13 @@ export function planBautizosPartyCancelArchive({ host, roster, event, selectedTa
       }
       continue;
     }
+    // Filas del arreglo del ancla: solo promover si el documento ancla también se da de baja/archiva.
+    // Si el ancla sobrevive, dejar embebidos (evitar duplicar persona + corromper cupo/cobros).
+    if (!hostCancelled) continue;
     if (t.kind === 'simple') {
-      survivors.push({ kind: 'promote_simple', companionRow: t.companionRow, target: t });
+      survivors.push({ kind: 'promote_simple', companionRow: t.companionRow, target: t, host: anchor, loc });
     } else if (t.kind === 'baptized_array') {
-      survivors.push({ kind: 'promote_baptized', companionRow: t.companionRow, target: t });
+      survivors.push({ kind: 'promote_baptized', companionRow: t.companionRow, target: t, host: anchor, loc });
     }
   }
 
@@ -297,55 +327,77 @@ export function planBautizosPartyCancelArchive({ host, roster, event, selectedTa
 
   const paymentPool = cancelDocs.reduce((sum, p) => sum + Math.max(0, parseFloat(p?.paid || 0) || 0), 0);
 
-  const weights = survivors.map((s) => {
+  // Redistribuir el pool de pagos SOLO a promociones (docs nuevos). Nunca sobrescribir
+  // paid/paidNet de registros existentes: eso borraba saldos reales (p.ej. titular con $500
+  // al dar de baja un derivado con $0) y desalineaba paymentHistory.
+  const promoteSurvivors = survivors.filter((s) => s.kind !== 'existing_doc');
+  const promoteWeights = promoteSurvivors.map((s) => {
     const w = survivorListPriceWeight({ ...s, host: anchor, loc }, event);
     return w > 0 ? w : 1;
   });
-  const paidShares = splitProportionalAmounts(paymentPool, weights);
+  const paidShares = splitProportionalAmounts(paymentPool, promoteWeights);
   const listShares = splitProportionalAmounts(
     cancelDocs.reduce((sum, p) => sum + Math.max(0, parseFloat(p?.registeredCost || 0) || 0), 0) ||
-      weights.reduce((a, b) => a + b, 0),
-    weights
+      promoteWeights.reduce((a, b) => a + b, 0),
+    promoteWeights
   );
 
   const promotions = [];
   const survivorPatches = [];
   const paymentPreview = [];
 
-  survivors.forEach((s, idx) => {
+  for (const s of survivors) {
+    if (s.kind !== 'existing_doc') continue;
+    const person = s.person;
+    const scrubbed = scrubSurvivorCompanionsArray(person.bautizosCompanions, {
+      cancelDocIds: [...cancelDocIds],
+      selectedTargetKeys: [...selected],
+    });
+    const meta = getBautizosPartyCancelTargetMeta(s.target);
+    const keepPaid = Math.max(0, parseFloat(person.paid || 0) || 0);
+    const registeredCost = getBautizosTitularListPrice(person, event);
+    paymentPreview.push({
+      key: meta.key,
+      name: meta.name,
+      kindLabel: meta.kindLabel,
+      listWeight: survivorListPriceWeight({ ...s, host: anchor, loc }, event) || 1,
+      paidShare: keepPaid,
+      registeredCost,
+      willPromote: false,
+    });
+
+    const patch = {
+      bautizosCompanions: scrubbed,
+    };
+    const splitHost = String(person?.bautizosSplitPartyHostParticipantId || '').trim();
+    if (hostCancelled && splitHost && cancelDocIds.has(splitHost)) {
+      // El host del split se va: el derivado queda independiente (sin tocar su ledger).
+      patch.bautizosSplitPartyHostParticipantId = null;
+      patch.registeredCost = registeredCost;
+      patch.registeredCostManual = false;
+    }
+    const companionsChanged =
+      JSON.stringify(getBautizosCompanionsArray(person)) !== JSON.stringify(scrubbed);
+    if (companionsChanged || patch.bautizosSplitPartyHostParticipantId === null) {
+      survivorPatches.push({ docId: String(person.id), patch, previousData: person });
+    }
+  }
+
+  promoteSurvivors.forEach((s, idx) => {
     const paid = paidShares[idx] || 0;
     const registeredCost =
-      s.kind === 'existing_doc'
-        ? getBautizosTitularListPrice(s.person, event)
-        : listShares[idx] || survivorListPriceWeight({ ...s, host: anchor, loc }, event);
+      listShares[idx] || survivorListPriceWeight({ ...s, host: anchor, loc }, event);
     const meta = getBautizosPartyCancelTargetMeta(s.target);
 
     paymentPreview.push({
       key: meta.key,
       name: meta.name,
       kindLabel: meta.kindLabel,
-      listWeight: weights[idx],
+      listWeight: promoteWeights[idx],
       paidShare: paid,
       registeredCost,
-      willPromote: s.kind !== 'existing_doc',
+      willPromote: true,
     });
-
-    if (s.kind === 'existing_doc') {
-      const person = s.person;
-      const patch = {
-        bautizosSplitPartyHostParticipantId: null,
-        paid,
-        paidNet: paid,
-        registeredCost,
-        registeredCostManual: false,
-        bautizosCompanions: stripHostFromCompanionsArray(person.bautizosCompanions, focalId),
-      };
-      if (anchorId && cancelDocIds.has(anchorId) && anchorId !== String(person.id)) {
-        patch.bautizosCompanions = stripHostFromCompanionsArray(patch.bautizosCompanions, anchorId);
-      }
-      survivorPatches.push({ docId: String(person.id), patch, previousData: person });
-      return;
-    }
 
     if (s.kind === 'promote_simple') {
       const row = s.companionRow || {};
@@ -424,18 +476,25 @@ export function planBautizosPartyCancelArchive({ host, roster, event, selectedTa
   });
 
   // Parchear supervivientes existentes que no están en la lista pero tienen stubs del focal
+  // o filas de acompañante seleccionadas para baja.
   for (const p of rosterArr) {
     const pid = String(p?.id || '').trim();
     if (!pid || cancelDocIds.has(pid) || !isActiveParticipant(p)) continue;
     if (survivorPatches.some((sp) => sp.docId === pid)) continue;
     const comps = getBautizosCompanionsArray(p);
-    const stripped = stripHostFromCompanionsArray(comps, focalId);
-    const stripped2 = anchorId ? stripHostFromCompanionsArray(stripped, anchorId) : stripped;
+    const scrubbed = scrubSurvivorCompanionsArray(comps, {
+      cancelDocIds: [...cancelDocIds],
+      selectedTargetKeys: [...selected],
+    });
     const splitHost = String(p?.bautizosSplitPartyHostParticipantId || '').trim();
-    const needsSplitClear = splitHost && cancelDocIds.has(splitHost);
-    if (stripped2.length !== comps.length || needsSplitClear) {
-      const patch = { bautizosCompanions: stripped2 };
-      if (needsSplitClear) patch.bautizosSplitPartyHostParticipantId = null;
+    const needsSplitClear = Boolean(splitHost && cancelDocIds.has(splitHost));
+    if (scrubbed.length !== comps.length || needsSplitClear) {
+      const patch = { bautizosCompanions: scrubbed };
+      if (needsSplitClear) {
+        patch.bautizosSplitPartyHostParticipantId = null;
+        patch.registeredCost = getBautizosTitularListPrice(p, event);
+        patch.registeredCostManual = false;
+      }
       survivorPatches.push({ docId: pid, patch, previousData: p });
     }
   }
