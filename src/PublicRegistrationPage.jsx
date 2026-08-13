@@ -30,7 +30,14 @@ import {
   getBautizosSplitPartySlotDescriptors,
   buildParticipantLikeForBautizosSplitSlot,
 } from './bautizosParty.js';
-import { fetchPublicRegistrationLinkSnapshot } from './publicRegistrationLinkFetch.js';
+import {
+  fetchLiveEventDecisionForPublicRegistration,
+  fetchPublicRegistrationLinkSnapshot,
+} from './publicRegistrationLinkFetch.js';
+import {
+  PUBLIC_REG_LIVE_EVENT_MISSING,
+  PUBLIC_REGISTRATION_MISSING_EVENT_LOAD_MESSAGE,
+} from './publicRegistrationEventGuard.js';
 import { ensurePublicSubmitAuth } from './publicRegistrationAuth.js';
 import { buildOptionalVisibilityFromPublicLinkDoc } from './publicLinkDocHelpers.js';
 import {
@@ -586,6 +593,13 @@ export default function PublicRegistrationPage({ linkId }) {
         const data = snap.data();
         if (!data?.eventSnapshot?.id) {
           setLoadError('Este enlace está incompleto. Pide a la organización que generen uno nuevo.');
+          setPhase('error');
+          return;
+        }
+        const liveDecision = await fetchLiveEventDecisionForPublicRegistration(data.eventSnapshot.id);
+        if (cancelled) return;
+        if (liveDecision === PUBLIC_REG_LIVE_EVENT_MISSING) {
+          setLoadError(PUBLIC_REGISTRATION_MISSING_EVENT_LOAD_MESSAGE);
           setPhase('error');
           return;
         }
