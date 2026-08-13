@@ -15639,6 +15639,13 @@ function resolveEventName(eventId) {
       .map((d) => ({ id: d.id, ...d.data() }))
       .filter((p) => !participantIsArchived(p));
     try {
+      try {
+        await deleteDoc(getDocRef('app_public_registration_links', String(id)));
+      } catch (linkErr) {
+        console.error(linkErr);
+        showToast('No se pudo desactivar el enlace QR público. El evento no se eliminó.');
+        return;
+      }
       for (let i = 0; i < toArchive.length; i += 1) {
         const person = toArchive[i];
         const loc = person.location || person.cancelledFromLocation || person.archivedFromLocation || '?';
@@ -15652,13 +15659,13 @@ function resolveEventName(eventId) {
       await deleteDoc(getDocRef('app_events', id));
       addLog(
         'Gestión de Eventos',
-        `Eliminó el evento: ${deleteEventModal.name}. Se archivaron ${toArchive.length} registro(s) antes de borrarlo.`,
+        `Eliminó el evento: ${deleteEventModal.name}. Se archivaron ${toArchive.length} registro(s) y se desactivó el enlace QR público.`,
         null,
         evToDelete || { name: deleteEventModal.name },
         { collectionName: 'app_events', docId: id, action: 'delete', previousData: evToDelete }
       );
       setDeleteEventModal({ isOpen: false, id: null, name: '' });
-      showToast(`Evento eliminado. ${toArchive.length} registro(s) archivados.`);
+      showToast(`Evento eliminado. ${toArchive.length} registro(s) archivados. Enlace QR desactivado.`);
     } catch (err) {
       console.error(err);
       showToast('No se pudo eliminar el evento (error al archivar o borrar). Revisa la consola.');

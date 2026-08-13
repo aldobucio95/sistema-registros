@@ -67,6 +67,12 @@ import {
   computeEventCapUsedUnitsBySede,
   computeIncomingRegistrationCapUnits,
 } from './eventCapUnits.js';
+import {
+  PUBLIC_REG_LIVE_EVENT_MISSING,
+  PUBLIC_REG_LIVE_EVENT_OK,
+  buildPublicRegistrationMissingEventError,
+  publicRegistrationLiveEventDecision,
+} from './publicRegistrationEventGuard.js';
 
 /** Orden de grupos en el modal QR (admin). */
 export const PUBLIC_OPTIONAL_GROUP_ORDER = ['general', 'salud', 'bautizos', 'viaje', 'asistencia', 'pago'];
@@ -2156,11 +2162,15 @@ export async function submitPublicRegistration({
   let eventForCaps = eventSnapshot;
   try {
     const evSnap = await getDoc(getDocRef('app_events', String(eventSnapshot.id)));
-    if (evSnap.exists()) {
+    const liveDecision = publicRegistrationLiveEventDecision(evSnap);
+    if (liveDecision === PUBLIC_REG_LIVE_EVENT_MISSING) {
+      return buildPublicRegistrationMissingEventError();
+    }
+    if (liveDecision === PUBLIC_REG_LIVE_EVENT_OK) {
       eventForCaps = { ...eventSnapshot, ...evSnap.data() };
     }
   } catch {
-    /* usar solo snapshot del enlace */
+    /* red/permiso: usar snapshot del enlace; el borrado del doc de enlace cubre el caso evento-eliminado */
   }
 
   const isCampa = evType === 'Campa';

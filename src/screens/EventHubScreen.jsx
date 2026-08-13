@@ -856,7 +856,7 @@ export default function EventHubScreen() {
               <div className="bg-red-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><ShieldAlert size={32} className="text-red-500" /></div>
               <h3 className="text-xl font-black text-slate-800 mb-2">Eliminar Evento</h3>
               <p className="text-sm text-slate-500 mb-6">
-                ¿Estás seguro de que deseas eliminar <strong>&ldquo;{deleteEventModal.name}&rdquo;</strong>? Todos los registros del evento se archivarán antes de borrarlo. Esta acción no se puede deshacer.
+                ¿Estás seguro de que deseas eliminar <strong>&ldquo;{deleteEventModal.name}&rdquo;</strong>? Todos los registros del evento se archivarán antes de borrarlo. El enlace QR de registro público se desactivará. Esta acción no se puede deshacer.
               </p>
               <div className="flex gap-3">
                 <button type="button" onClick={() => setDeleteEventModal({ isOpen: false, id: null, name: '' })} className={btnSecondary}>Cancelar</button>
