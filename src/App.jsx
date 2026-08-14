@@ -319,7 +319,8 @@ import { donationAddsToRecaudacionBalance } from './donationHelpers.js';
 import {
   buildRefundDisbursementPaymentHistoryRow,
   buildParticipantPaidFieldsFromHistory,
-  collectCashCutRefundDisbursements,
+  cashCutLocationInScope,
+  collectCashCutAllPayments,
   collectCancelledParticipantsWithPendingRefund,
   enrichPaymentHistoryWithRefundDisbursements,
   getCancelledRefundPendingAmount,
@@ -2526,100 +2527,6 @@ const participantIsRosterRow = (p) => {
   const s = p?.status || 'active';
   return s !== 'waitlist' && s !== PARTICIPANT_STATUS_ARCHIVED;
 };
-
-function cashCutLocationInScope(loc, allowedLocations) {
-  const locSet =
-    Array.isArray(allowedLocations) && allowedLocations.length > 0
-      ? new Set(allowedLocations.map((l) => String(l).trim()).filter(Boolean))
-      : null;
-  if (!locSet) return true;
-  const L = String(loc || '').trim();
-  if (!L || L === '?') return locSet.size > 0;
-  return locSet.has(L);
-}
-
-/** Pagos normalizados para corte de caja (misma base que la vista «Corte de caja»). */
-function collectCashCutAllPayments(
-  allParticipants,
-  currentEvent,
-  computeNetAmountByMethod,
-  allowedLocations = null,
-  resolveServiceLabel = null
-) {
-  if (!currentEvent?.id) return [];
-  const personFallbackMs = (person) =>
-    parseFlexibleInstantMs(person?.registeredAt) ??
-    (typeof person?.id === 'number' && Number.isFinite(person.id) ? person.id : null) ??
-    (() => {
-      const s = person?.id != null ? String(person.id).trim() : '';
-      return /^\d{10,}$/.test(s) ? Number(s) : null;
-    })();
-
-  const rosterForCashCut = allParticipants.filter(
-    (p) =>
-      p.eventId === currentEvent.id &&
-      participantIsActiveInRoster(p) &&
-      cashCutLocationInScope(p.location, allowedLocations)
-  );
-
-  const allPayments = [];
-  rosterForCashCut.forEach((person) => {
-    const loc = person.location || '';
-    const fb = personFallbackMs(person);
-    const historyRows = (person.paymentHistory || []).filter((h) => h && h.kind !== 'comment');
-    const paidGross = parseFloat(person.paid) || 0;
-
-    historyRows.forEach((h) => {
-      const ts = getPaymentHistoryTimestamp(h, fb);
-      if (ts == null || Number.isNaN(ts)) return;
-      const method = h.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
-      allPayments.push({
-        ...h,
-        netAmount: computeNetAmountByMethod(h.amount, method),
-        method,
-        _ts: ts,
-        _date: new Date(ts),
-        _personName: person.name || '',
-        _personId: person.id,
-        _loc: loc,
-      });
-    });
-
-    if (paidGross > 0 && historyRows.length === 0 && fb != null && Number.isFinite(fb)) {
-      const paymentMethod = person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-      const paidNet = computeNetAmountByMethod(paidGross, paymentMethod);
-      const svc = SERVICE_OPTIONS.includes(person.paymentService) ? person.paymentService : NO_SERVICE_LABEL;
-      allPayments.push({
-        id: `legacy-paid-${person.id}`,
-        date: new Date(fb).toLocaleString('es-MX'),
-        recordedAt: new Date(fb).toISOString(),
-        amount: paidGross,
-        netAmount: paidNet,
-        method: paymentMethod,
-        service: svc,
-        reference: (person.cardReference || '').trim(),
-        registeredBy: person.registeredBy || '?',
-        _ts: fb,
-        _date: new Date(fb),
-        _personName: person.name || '',
-        _personId: person.id,
-        _loc: loc,
-        _syntheticLegacyPaid: true,
-      });
-    }
-  });
-  allPayments.push(
-    ...collectCashCutRefundDisbursements(
-      allParticipants,
-      currentEvent,
-      allowedLocations,
-      cashCutLocationInScope,
-      computeNetAmountByMethod,
-      resolveServiceLabel
-    )
-  );
-  return allPayments;
-}
 
 /** Lunes local (00:00) de la semana calendario lun–dom que contiene `input`. */
 function getMondayLocalFromDate(input) {
@@ -27159,77 +27066,12 @@ function resolveEventName(eventId) {
       .map((l) => String(l).trim())
       .filter(Boolean)
       .filter((l) => visibleLocations.includes(l));
-    const allPayments = [];
-    const personFallbackMs = (person) =>
-      parseFlexibleInstantMs(person?.registeredAt)
-      ?? (typeof person?.id === 'number' && Number.isFinite(person.id) ? person.id : null)
-      ?? (() => {
-        const s = person?.id != null ? String(person.id).trim() : '';
-        return /^\d{10,}$/.test(s) ? Number(s) : null;
-      })();
-
-    const rosterForCashCut = allParticipants.filter(
-      (p) =>
-        p.eventId === currentEvent?.id &&
-        participantIsActiveInRoster(p) &&
-        cashCutLocationInScope(p.location, cashCutLocations)
-    );
-
-    rosterForCashCut.forEach((person) => {
-      const loc = person.location || '';
-      const fb = personFallbackMs(person);
-      const historyRows = (person.paymentHistory || []).filter((h) => h && h.kind !== 'comment');
-      const paidGross = parseFloat(person.paid) || 0;
-
-      historyRows.forEach((h) => {
-        const ts = getPaymentHistoryTimestamp(h, fb);
-        if (ts == null || Number.isNaN(ts)) return;
-        const method = h.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
-        allPayments.push({
-          ...h,
-          netAmount: computeNetAmountByMethod(h.amount, method),
-          method,
-          _ts: ts,
-          _date: new Date(ts),
-          _personName: person.name || '',
-          _personId: person.id,
-          _loc: loc,
-        });
-      });
-
-      if (paidGross > 0 && historyRows.length === 0 && fb != null && Number.isFinite(fb)) {
-        const paymentMethod = person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-        const paidNet = computeNetAmountByMethod(paidGross, paymentMethod);
-        const svc = SERVICE_OPTIONS.includes(person.paymentService) ? person.paymentService : NO_SERVICE_LABEL;
-        allPayments.push({
-          id: `legacy-paid-${person.id}`,
-          date: new Date(fb).toLocaleString('es-MX'),
-          recordedAt: new Date(fb).toISOString(),
-          amount: paidGross,
-          netAmount: paidNet,
-          method: paymentMethod,
-          service: svc,
-          reference: (person.cardReference || '').trim(),
-          registeredBy: person.registeredBy || '?',
-          _ts: fb,
-          _date: new Date(fb),
-          _personName: person.name || '',
-          _personId: person.id,
-          _loc: loc,
-          _syntheticLegacyPaid: true,
-        });
-      }
-    });
-
-    allPayments.push(
-      ...collectCashCutRefundDisbursements(
-        allParticipants,
-        currentEvent,
-        cashCutLocations,
-        cashCutLocationInScope,
-        computeNetAmountByMethod,
-        resolveCashCutRefundServiceLabel
-      )
+    const allPayments = collectCashCutAllPayments(
+      allParticipants,
+      currentEvent,
+      computeNetAmountByMethod,
+      cashCutLocations,
+      resolveCashCutRefundServiceLabel
     );
 
     const eventDonationsForCut = donations.filter(

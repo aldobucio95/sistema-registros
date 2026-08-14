@@ -82,6 +82,17 @@ function main() {
     pass('chip Cancelados cableado a conteo canónico');
   }
 
+  if (!app.includes('const allPayments = collectCashCutAllPayments(')) {
+    fail('vista Corte de caja no usa collectCashCutAllPayments (abonos de cancelados/espera)');
+  } else {
+    pass('vista Corte de caja usa collectCashCutAllPayments');
+  }
+  if (app.includes('const rosterForCashCut =')) {
+    fail('App.jsx volvió a duplicar el filtro rosterForCashCut del corte de caja');
+  } else {
+    pass('corte de caja sin filtro titular-only duplicado');
+  }
+
   if (
     app.includes("import { buildLocationRosterTypeSummaryByStatus, getLocationRosterSectionCountsFromSummary }") &&
     !app.includes('getLocationRosterSectionCountsFromSummary(locationTypeSummary)')
