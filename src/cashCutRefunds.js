@@ -1,12 +1,18 @@
 /**
  * Saldos a favor por baja/cancelación y devoluciones en corte de caja.
- * - Pendiente: no suma ni resta en el corte hasta que se marque donación o devolución.
- * - Donación: no altera totales del corte (el ingreso ya se registró en abonos).
+ * - Los abonos de activos, espera y cancelados sí entran al corte (el efectivo sigue en caja).
+ * - Pendiente de devolución: no resta hasta que se marque donación o se entregue el dinero.
+ * - Donación por baja: no altera totales (el ingreso ya se registró en abonos).
  * - Devolución: egreso negativo en el día/hora registrados, en la sede del registro cancelado.
  */
 
+import { SERVICE_OPTIONS } from './appConstants.js';
+
 export const PARTICIPANT_CANCELLED_STATUS = 'cancelled';
+export const PARTICIPANT_ARCHIVED_STATUS = 'archived';
+export const PARTICIPANT_WAITLIST_STATUS = 'waitlist';
 export const REFUND_DISBURSEMENT_PAYMENT_KIND = 'refund_disbursement';
+const CASH_CUT_NO_SERVICE_LABEL = 'Fuera de servicios dominicales';
 
 export function refundDisbursementPaymentHistoryId(personId) {
   return `refund-disb-${String(personId)}`;
@@ -336,4 +342,149 @@ export function enrichPaymentHistoryWithRefundDisbursements(person, computeNetAm
   });
   if (!row) return base;
   return [...base, row];
+}
+
+/**
+ * Corte de caja: el dinero físico sigue en caja mientras el registro no esté archivado.
+ * Activos, lista de espera y cancelados (pendiente / donación / devolución) deben aportar abonos.
+ */
+export function participantIncludedInCashCutInflows(person) {
+  const status = person?.status || 'active';
+  return status !== PARTICIPANT_ARCHIVED_STATUS;
+}
+
+export function resolveCashCutInflowSede(person) {
+  if (participantIsCancelledForRefund(person)) return resolveCancelledRefundSede(person);
+  return String(person?.location || '').trim();
+}
+
+export function isCashCutInflowHistoryRow(h, personId) {
+  if (!h || h.kind === 'comment') return false;
+  if (h.kind === REFUND_DISBURSEMENT_PAYMENT_KIND) return false;
+  if (personId != null && String(h.id) === refundDisbursementPaymentHistoryId(personId)) return false;
+  return true;
+}
+
+export function cashCutLocationInScope(loc, allowedLocations) {
+  const locSet =
+    Array.isArray(allowedLocations) && allowedLocations.length > 0
+      ? new Set(allowedLocations.map((l) => String(l).trim()).filter(Boolean))
+      : null;
+  if (!locSet) return true;
+  const L = String(loc || '').trim();
+  if (!L || L === '?') return locSet.size > 0;
+  return locSet.has(L);
+}
+
+export function parseCashCutInstantMs(raw) {
+  if (raw == null || raw === '') return null;
+  if (typeof raw?.toDate === 'function') {
+    const d = raw.toDate();
+    const t = d.getTime();
+    return Number.isNaN(t) ? null : t;
+  }
+  if (typeof raw === 'object' && typeof raw.seconds === 'number') {
+    return raw.seconds * 1000 + Math.floor((raw.nanoseconds || 0) / 1e6);
+  }
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  const d = new Date(raw);
+  const t = d.getTime();
+  return Number.isNaN(t) ? null : t;
+}
+
+export function cashCutPersonFallbackMs(person) {
+  const fromReg = parseCashCutInstantMs(person?.registeredAt);
+  if (fromReg != null) return fromReg;
+  if (typeof person?.id === 'number' && Number.isFinite(person.id)) return person.id;
+  const s = person?.id != null ? String(person.id).trim() : '';
+  return /^\d{10,}$/.test(s) ? Number(s) : null;
+}
+
+export function getCashCutPaymentHistoryTimestamp(h, fallbackMs = null) {
+  const fromRec = parseCashCutInstantMs(h?.recordedAt);
+  if (fromRec != null) return fromRec;
+  if (typeof h?.id === 'number' && Number.isFinite(h.id)) return h.id;
+  const idStr = h?.id != null ? String(h.id).trim() : '';
+  if (/^\d{10,}$/.test(idStr)) return Number(idStr);
+  if (fallbackMs != null && Number.isFinite(fallbackMs)) return fallbackMs;
+  return null;
+}
+
+/**
+ * Pagos normalizados para corte de caja (vista e Excel).
+ * Abonos de cancelados/espera entran aquí; devoluciones se añaden aparte para no duplicar.
+ */
+export function collectCashCutAllPayments(
+  allParticipants,
+  currentEvent,
+  computeNetAmountByMethod,
+  allowedLocations = null,
+  resolveServiceLabel = null
+) {
+  if (!currentEvent?.id || typeof computeNetAmountByMethod !== 'function') return [];
+
+  const allPayments = [];
+  (allParticipants || []).forEach((person) => {
+    if (person.eventId !== currentEvent.id) return;
+    if (!participantIncludedInCashCutInflows(person)) return;
+    const loc = resolveCashCutInflowSede(person);
+    if (!cashCutLocationInScope(loc, allowedLocations)) return;
+
+    const fb = cashCutPersonFallbackMs(person);
+    const historyRows = (person.paymentHistory || []).filter((h) => isCashCutInflowHistoryRow(h, person.id));
+    const paidGross = parseFloat(person.paid) || 0;
+
+    historyRows.forEach((h) => {
+      const ts = getCashCutPaymentHistoryTimestamp(h, fb);
+      if (ts == null || Number.isNaN(ts)) return;
+      const method = h.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
+      allPayments.push({
+        ...h,
+        netAmount: computeNetAmountByMethod(h.amount, method),
+        method,
+        _ts: ts,
+        _date: new Date(ts),
+        _personName: person.name || '',
+        _personId: person.id,
+        _loc: loc,
+      });
+    });
+
+    if (paidGross > 0 && historyRows.length === 0 && fb != null && Number.isFinite(fb)) {
+      const paymentMethod = person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+      const paidNet = computeNetAmountByMethod(paidGross, paymentMethod);
+      const svc = SERVICE_OPTIONS.includes(person.paymentService)
+        ? person.paymentService
+        : CASH_CUT_NO_SERVICE_LABEL;
+      allPayments.push({
+        id: `legacy-paid-${person.id}`,
+        date: new Date(fb).toLocaleString('es-MX'),
+        recordedAt: new Date(fb).toISOString(),
+        amount: paidGross,
+        netAmount: paidNet,
+        method: paymentMethod,
+        service: svc,
+        reference: (person.cardReference || '').trim(),
+        registeredBy: person.registeredBy || '?',
+        _ts: fb,
+        _date: new Date(fb),
+        _personName: person.name || '',
+        _personId: person.id,
+        _loc: loc,
+        _syntheticLegacyPaid: true,
+      });
+    }
+  });
+
+  allPayments.push(
+    ...collectCashCutRefundDisbursements(
+      allParticipants,
+      currentEvent,
+      allowedLocations,
+      cashCutLocationInScope,
+      computeNetAmountByMethod,
+      resolveServiceLabel
+    )
+  );
+  return allPayments;
 }
