@@ -342,6 +342,7 @@ import {
   refundDisbursementPaymentHistoryId,
   resolveCancelledRefundSede,
 } from './cashCutRefunds.js';
+import { applySameEventRegistrationFinanceMerge } from './registrationFinanceMerge.js';
 import { describeDashboardConfigDelta, EXPENSE_ACTIVITY_GENERIC } from './dashboardActivityLog.js';
 import { appendParticipantActivityEntry, fetchParticipantActivityEntries } from './participantActivityLog.js';
 import ScreenLoadingFallback from './screens/ScreenLoadingFallback.jsx';
@@ -17550,6 +17551,10 @@ function resolveEventName(eventId) {
             },
           ];
           applyParticipantNameFormattingForSave(personDataH);
+          Object.assign(
+            personDataH,
+            applySameEventRegistrationFinanceMerge(prevS, personDataH, computeNetAmountByMethod)
+          );
           await setDoc(
             getDocRef('app_participants', docIdS),
             sanitizeParticipantConsentForFirestoreWrite(personDataH)
@@ -17622,6 +17627,10 @@ function resolveEventName(eventId) {
           personDataSat.baptismSegment = '';
           personDataSat.baptismShirtSize = normalizeBaptismShirtSize(entryPayload.baptismShirtSize);
           applyParticipantNameFormattingForSave(personDataSat);
+          Object.assign(
+            personDataSat,
+            applySameEventRegistrationFinanceMerge(prevS, personDataSat, computeNetAmountByMethod)
+          );
           await setDoc(
             getDocRef('app_participants', docIdS),
             sanitizeParticipantConsentForFirestoreWrite(personDataSat)
@@ -17946,6 +17955,10 @@ function resolveEventName(eventId) {
     personData.whatsAppFinanceNotifications = [...prevWaNotifications, registerNotification];
 
     applyParticipantNameFormattingForSave(personData);
+    Object.assign(
+      personData,
+      applySameEventRegistrationFinanceMerge(previousParticipantData, personData, computeNetAmountByMethod)
+    );
     // Respaldo-primero: snapshot completo del formulario ANTES del write principal.
     const _regLogId = buildLogId();
     const _regSnapshot = {
@@ -18290,6 +18303,10 @@ function resolveEventName(eventId) {
             })
           );
           applyParticipantNameFormattingForSave(personDataWlH);
+          Object.assign(
+            personDataWlH,
+            applySameEventRegistrationFinanceMerge(prevWlS, personDataWlH, computeNetAmountByMethod)
+          );
           await setDoc(
             getDocRef('app_participants', docIdWl),
             sanitizeParticipantConsentForFirestoreWrite(personDataWlH)
@@ -18363,6 +18380,10 @@ function resolveEventName(eventId) {
           personDataWlSat.baptismSegment = '';
           personDataWlSat.baptismShirtSize = normalizeBaptismShirtSize(entryPayload.baptismShirtSize);
           applyParticipantNameFormattingForSave(personDataWlSat);
+          Object.assign(
+            personDataWlSat,
+            applySameEventRegistrationFinanceMerge(prevWlS, personDataWlSat, computeNetAmountByMethod)
+          );
           await setDoc(
             getDocRef('app_participants', docIdWl),
             sanitizeParticipantConsentForFirestoreWrite(personDataWlSat)
@@ -18621,6 +18642,10 @@ function resolveEventName(eventId) {
     }
 
     applyParticipantNameFormattingForSave(personData);
+    Object.assign(
+      personData,
+      applySameEventRegistrationFinanceMerge(previousWlData, personData, computeNetAmountByMethod)
+    );
     // Respaldo-primero: snapshot completo (incluye acompañantes y datos de carro) ANTES del write.
     const _wlLogId = buildLogId();
     const _wlSnapshot = {
