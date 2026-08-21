@@ -67,6 +67,7 @@ import {
   computeEventCapUsedUnitsBySede,
   computeIncomingRegistrationCapUnits,
 } from './eventCapUnits.js';
+import { applySameEventRegistrationFinanceMerge } from './registrationFinanceMerge.js';
 
 /** Orden de grupos en el modal QR (admin). */
 export const PUBLIC_OPTIONAL_GROUP_ORDER = ['general', 'salud', 'bautizos', 'viaje', 'asistencia', 'pago'];
@@ -1789,9 +1790,11 @@ async function submitPublicBautizosSplitRegistration({
     };
   }
 
+  const gateBySlot = {};
   for (const d of splitDesc) {
     const g = await loadParticipantRegistrationWriteGate(docIdBySlot[d.slotKey], eventSnapshot.id);
     if (!g.ok) return { ok: false, error: g.error };
+    gateBySlot[d.slotKey] = g;
   }
 
   const publicRegisteredBy = resolvePublicRegisteredBy(entry);
@@ -1844,6 +1847,7 @@ async function submitPublicBautizosSplitRegistration({
     if (!isHost) pl.age = calculateAgeFromBirthDate(pl.birthDate || '') || '';
     const candVnp = canonicalizeVnpPersonId(pl.vnpPersonId || '') || generateVnpPersonId(pl);
     const docIdW = docIdBySlot[d.slotKey];
+    const prevSlot = gateBySlot[d.slotKey]?.snap?.exists() ? gateBySlot[d.slotKey].snap.data() : null;
     const idExistsW = participants.some((p) => String(p.vnpPersonId || '') === String(candVnp));
     const comps = buildSplitPartyCompanionsForSlot({
       personLike: entry,
@@ -1934,6 +1938,7 @@ async function submitPublicBautizosSplitRegistration({
           },
         ];
       }
+      Object.assign(personDataH, applySameEventRegistrationFinanceMerge(prevSlot, personDataH));
       await setDoc(
         getDocRef('app_participants', docIdW),
         sanitizeParticipantConsentForFirestoreWrite(personDataH)
@@ -2014,6 +2019,7 @@ async function submitPublicBautizosSplitRegistration({
       personDataS.baptismSegment = '';
       personDataS.baptismShirtSize = normalizeBaptismShirtSize(entry.baptismShirtSize);
       applyParticipantNameFormattingForSave(personDataS);
+      Object.assign(personDataS, applySameEventRegistrationFinanceMerge(prevSlot, personDataS));
       await setDoc(
         getDocRef('app_participants', docIdW),
         sanitizeParticipantConsentForFirestoreWrite(personDataS)
@@ -2268,6 +2274,7 @@ export async function submitPublicRegistration({
   if (!gate.ok) {
     return { ok: false, error: gate.error };
   }
+  const previousPub = gate.snap?.exists() ? gate.snap.data() : null;
   const initialPaidGross = parseFloat(entry.paid) || 0;
   let paymentMethod = entry.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
   if (paymentMethod === 'Tarjeta' && !isCardPaymentAllowedForLocation(eventSnapshot, loc)) {
@@ -2471,6 +2478,7 @@ export async function submitPublicRegistration({
     ? [...personData.whatsAppFinanceNotifications]
     : [];
   personData.whatsAppFinanceNotifications = [...prevWaPub, registerNotification];
+  Object.assign(personData, applySameEventRegistrationFinanceMerge(previousPub, personData));
   await setDoc(
     getDocRef('app_participants', docId),
     sanitizeParticipantConsentForFirestoreWrite(personData)
@@ -2806,6 +2814,7 @@ async function submitWaitlist({
       },
     ];
   }
+  Object.assign(personData, applySameEventRegistrationFinanceMerge(previousWlPub, personData));
   await setDoc(
     getDocRef('app_participants', docId),
     sanitizeParticipantConsentForFirestoreWrite(personData)
