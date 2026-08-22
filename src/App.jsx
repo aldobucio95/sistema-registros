@@ -317,6 +317,12 @@ import {
 } from './registrationFormShared.js';
 import { donationAddsToRecaudacionBalance } from './donationHelpers.js';
 import {
+  buildEventDeleteArchivedCreditClearPatch,
+  deleteEventScopedFinanceDocs,
+  participantNeedsEventDeleteFinanceStrip,
+  shouldPreserveArchivedManualCreditOnArchive,
+} from './eventFinanceCleanup.js';
+import {
   buildRefundDisbursementPaymentHistoryRow,
   buildParticipantPaidFieldsFromHistory,
   collectCashCutRefundDisbursements,
@@ -15515,7 +15521,7 @@ function resolveEventName(eventId) {
   }, [currentEvent?.name]);
 
   const archiveParticipantToFirestore = useCallback(
-    async (person, loc, { sourceKind, eventDisplayName }) => {
+    async (person, loc, { sourceKind, eventDisplayName, skipFinancePreservation = false } = {}) => {
       if (participantIsArchived(person)) return;
       const bajaAt = Date.now();
       await removeResponsivaArtifactsForParticipant({
@@ -15526,7 +15532,11 @@ function resolveEventName(eventId) {
       /** Campa + costo manual: conservar excedente pagado para la fila virtual «Saldo a favor» en lista de gastos. */
       const evForPerson = events.find((e) => String(e.id) === String(person?.eventId));
       let preservedManualCredit = null;
-      if (evForPerson?.eventType === 'Campa' && person?.registeredCostManual === true) {
+      if (
+        shouldPreserveArchivedManualCreditOnArchive({ skipFinancePreservation }) &&
+        evForPerson?.eventType === 'Campa' &&
+        person?.registeredCostManual === true
+      ) {
         const liq = Number(getLiquidationTarget(person)) || 0;
         const paidG = parseFloat(person.paid || 0) || 0;
         const excess = Math.max(0, paidG - liq);
@@ -15647,12 +15657,31 @@ function resolveEventName(eventId) {
           fromWaitlist,
           sourceKind: fromWaitlist ? 'waitlist' : 'event_deleted',
           eventDisplayName: eventName,
+          skipFinancePreservation: true,
         });
       }
+      const eventPeople = partSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      for (const person of eventPeople) {
+        if (!participantNeedsEventDeleteFinanceStrip(person, id)) continue;
+        await updateDoc(
+          getDocRef('app_participants', String(person.id)),
+          buildEventDeleteArchivedCreditClearPatch(deleteField)
+        );
+      }
+      const deletedFinance = await deleteEventScopedFinanceDocs({
+        eventId: id,
+        listDocsByEventId: async (collectionName, eventId) => {
+          const snap = await getDocs(query(getColRef(collectionName), where('eventId', '==', String(eventId))));
+          return snap.docs.map((d) => ({ id: d.id, data: d.data() }));
+        },
+        deleteDocById: async (collectionName, docId) => {
+          await deleteDoc(getDocRef(collectionName, docId));
+        },
+      });
       await deleteDoc(getDocRef('app_events', id));
       addLog(
         'Gestión de Eventos',
-        `Eliminó el evento: ${deleteEventModal.name}. Se archivaron ${toArchive.length} registro(s) antes de borrarlo.`,
+        `Eliminó el evento: ${deleteEventModal.name}. Se archivaron ${toArchive.length} registro(s) antes de borrarlo. Se eliminaron ${deletedFinance.length} movimiento(s) de donaciones/gastos del evento.`,
         null,
         evToDelete || { name: deleteEventModal.name },
         { collectionName: 'app_events', docId: id, action: 'delete', previousData: evToDelete }
