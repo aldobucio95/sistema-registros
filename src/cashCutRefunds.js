@@ -191,7 +191,11 @@ export function buildCashCutRefundDisbursementRow(person, computeNetAmountByMeth
       : person.refundDisbursedMethod === 'Tarjeta'
         ? 'Tarjeta'
         : 'Efectivo';
-  const loc = resolveCancelledRefundSede(person) || person.refundDisbursedLocation || '';
+  const loc =
+    resolveCancelledRefundSede(person) ||
+    String(person?.archivedFromLocation || '').trim() ||
+    person.refundDisbursedLocation ||
+    '';
   const netPositive =
     histRow && Number.isFinite(Number(histRow.netAmount))
       ? Math.abs(Number(histRow.netAmount))
@@ -218,6 +222,20 @@ export function buildCashCutRefundDisbursementRow(person, computeNetAmountByMeth
   };
 }
 
+function participantIncludedInRefundDisbursementCut(p) {
+  if (participantIsCancelledForRefund(p)) return true;
+  if ((p?.status || 'active') !== 'archived') return false;
+  if (String(p?.archivedSourceKind || '').trim() === 'event_deleted') return false;
+  return participantHasRefundDisbursement(p);
+}
+
+function resolveRefundDisbursementCutLocation(p) {
+  if ((p?.status || 'active') === 'archived') {
+    return String(p?.archivedFromLocation || p?.cancelledFromLocation || p?.location || '').trim();
+  }
+  return resolveCancelledRefundSede(p);
+}
+
 export function collectCashCutRefundDisbursements(
   allParticipants,
   currentEvent,
@@ -230,8 +248,8 @@ export function collectCashCutRefundDisbursements(
   const out = [];
   (allParticipants || []).forEach((p) => {
     if (p.eventId !== currentEvent.id) return;
-    if (!participantIsCancelledForRefund(p)) return;
-    const loc = resolveCancelledRefundSede(p);
+    if (!participantIncludedInRefundDisbursementCut(p)) return;
+    const loc = resolveRefundDisbursementCutLocation(p);
     if (allowedLocations && typeof locationInScopeFn === 'function' && !locationInScopeFn(loc, allowedLocations)) {
       return;
     }

@@ -317,6 +317,18 @@ import {
 } from './registrationFormShared.js';
 import { donationAddsToRecaudacionBalance } from './donationHelpers.js';
 import {
+  ARCHIVE_SOURCE_EVENT_DELETED,
+  ARCHIVE_SOURCE_ROSTER,
+  ARCHIVE_SOURCE_WAITLIST,
+  ARCHIVE_FINANCE_DELETE_KEYS,
+  buildArchiveParticipantStatusPatch,
+  getLiveArchiveFinanceBlockReason,
+  participantCountsInCashCutInflows,
+  resolveArchiveCashCutLocation,
+  shouldMintArchivedManualCreditDonation,
+  shouldWipeFinanceOnArchive,
+} from './archiveParticipantLedger.js';
+import {
   buildRefundDisbursementPaymentHistoryRow,
   buildParticipantPaidFieldsFromHistory,
   collectCashCutRefundDisbursements,
@@ -2558,15 +2570,17 @@ function collectCashCutAllPayments(
   const rosterForCashCut = allParticipants.filter(
     (p) =>
       p.eventId === currentEvent.id &&
-      participantIsActiveInRoster(p) &&
-      cashCutLocationInScope(p.location, allowedLocations)
+      participantCountsInCashCutInflows(p, participantIsActiveInRoster) &&
+      cashCutLocationInScope(resolveArchiveCashCutLocation(p) || p.location, allowedLocations)
   );
 
   const allPayments = [];
   rosterForCashCut.forEach((person) => {
-    const loc = person.location || '';
+    const loc = resolveArchiveCashCutLocation(person) || person.location || '';
     const fb = personFallbackMs(person);
-    const historyRows = (person.paymentHistory || []).filter((h) => h && h.kind !== 'comment');
+    const historyRows = (person.paymentHistory || []).filter(
+      (h) => h && h.kind !== 'comment' && h.kind !== REFUND_DISBURSEMENT_PAYMENT_KIND
+    );
     const paidGross = parseFloat(person.paid) || 0;
 
     historyRows.forEach((h) => {
@@ -15515,18 +15529,29 @@ function resolveEventName(eventId) {
   }, [currentEvent?.name]);
 
   const archiveParticipantToFirestore = useCallback(
-    async (person, loc, { sourceKind, eventDisplayName }) => {
+    async (person, loc, { sourceKind: sourceKindArg, eventDisplayName }) => {
       if (participantIsArchived(person)) return;
+      const sourceKind = sourceKindArg || ARCHIVE_SOURCE_ROSTER;
+      const liveArchiveBlock = getLiveArchiveFinanceBlockReason(person, sourceKind);
+      if (liveArchiveBlock) {
+        throw new Error(liveArchiveBlock);
+      }
       const bajaAt = Date.now();
       await removeResponsivaArtifactsForParticipant({
         eventId: person.eventId,
         participantId: person.id,
         responsivaDigital: person.responsivaDigital,
       });
-      /** Campa + costo manual: conservar excedente pagado para la fila virtual «Saldo a favor» en lista de gastos. */
+      /** Campa + costo manual: solo al borrar el evento (el archivo vivo conserva el ledger). */
       const evForPerson = events.find((e) => String(e.id) === String(person?.eventId));
       let preservedManualCredit = null;
-      if (evForPerson?.eventType === 'Campa' && person?.registeredCostManual === true) {
+      const wipeFinance = shouldWipeFinanceOnArchive(sourceKind);
+      if (
+        wipeFinance &&
+        shouldMintArchivedManualCreditDonation(sourceKind) &&
+        evForPerson?.eventType === 'Campa' &&
+        person?.registeredCostManual === true
+      ) {
         const liq = Number(getLiquidationTarget(person)) || 0;
         const paidG = parseFloat(person.paid || 0) || 0;
         const excess = Math.max(0, paidG - liq);
@@ -15536,53 +15561,45 @@ function resolveEventName(eventId) {
         }
       }
       const archivePayload = {
-        status: PARTICIPANT_STATUS_ARCHIVED,
-        archivedAt: bajaAt,
-        archivedFromLocation: loc,
-        archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
-        paymentHistory: [],
-        whatsAppFinanceNotifications: [],
-        scholarshipPendingApproval: false,
-        paid: deleteField(),
-        paidNet: deleteField(),
-        registeredCost: deleteField(),
-        registeredCostManual: deleteField(),
-        discountCampaignId: deleteField(),
-        discountCampaignConcept: deleteField(),
-        discountCampaignAppliedAt: deleteField(),
-        refundPendingAmount: deleteField(),
-        refundPendingReason: deleteField(),
-        refundAsDonation: deleteField(),
-        scholarshipPartialAmount: deleteField(),
-        paymentMethod: deleteField(),
-        paymentService: deleteField(),
-        cardReference: deleteField(),
-        isPastorChild: deleteField(),
-        pastorChildWithoutPay: deleteField(),
-        pastorChildSpecialDonationFinanceId: deleteField(),
-        ...(preservedManualCredit
-          ? preservedManualCredit
-          : {
-              archivedManualCreditAmount: deleteField(),
-              archivedManualCreditListRef: deleteField(),
-            }),
+        ...buildArchiveParticipantStatusPatch({
+          loc,
+          now: bajaAt,
+          profileSnapshot: buildArchivedProfileSnapshot(person),
+          sourceKind,
+          debug: globalConfig?.isDebugMode
+            ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId }
+            : null,
+        }),
         responsivaStatus: deleteField(),
         responsivaDigital: deleteField(),
         emergencyPhoneResponsiva: deleteField(),
         emergencyContactResponsiva: deleteField(),
-        ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
       };
+      if (wipeFinance) {
+        archivePayload.paymentHistory = [];
+        archivePayload.whatsAppFinanceNotifications = [];
+        for (const key of ARCHIVE_FINANCE_DELETE_KEYS) {
+          if (preservedManualCredit && Object.prototype.hasOwnProperty.call(preservedManualCredit, key)) continue;
+          archivePayload[key] = deleteField();
+        }
+        if (preservedManualCredit) Object.assign(archivePayload, preservedManualCredit);
+      } else {
+        archivePayload.archivedManualCreditAmount = deleteField();
+        archivePayload.archivedManualCreditListRef = deleteField();
+      }
       await updateDoc(getDocRef('app_participants', String(person.id)), archivePayload);
       refreshParticipantCache(person, 'Archivar participante', {
         personId: person.id,
         patch: {
-          status: PARTICIPANT_STATUS_ARCHIVED,
-          archivedAt: bajaAt,
-          archivedFromLocation: loc,
-          archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
-          paymentHistory: [],
-          whatsAppFinanceNotifications: [],
-          scholarshipPendingApproval: false,
+          ...buildArchiveParticipantStatusPatch({
+            loc,
+            now: bajaAt,
+            profileSnapshot: buildArchivedProfileSnapshot(person),
+            sourceKind,
+          }),
+          ...(wipeFinance
+            ? { paymentHistory: [], whatsAppFinanceNotifications: [], scholarshipPendingApproval: false }
+            : {}),
         },
       });
       if (preservedManualCredit) {
@@ -15645,7 +15662,7 @@ function resolveEventName(eventId) {
         const fromWaitlist = (person.status || 'active') === 'waitlist';
         await archiveParticipantToFirestore(person, loc, {
           fromWaitlist,
-          sourceKind: fromWaitlist ? 'waitlist' : 'event_deleted',
+          sourceKind: ARCHIVE_SOURCE_EVENT_DELETED,
           eventDisplayName: eventName,
         });
       }
@@ -21283,6 +21300,15 @@ function resolveEventName(eventId) {
     if (!plan || !plan.focalDocId) return;
     const loc = plan.loc;
     const action = plan.action === 'archive_roster' ? 'archive_roster' : 'cancel_entry';
+    if (action === 'archive_roster') {
+      for (const person of plan.cancelDocs || []) {
+        const liveArchiveBlock = getLiveArchiveFinanceBlockReason(person, ARCHIVE_SOURCE_ROSTER);
+        if (liveArchiveBlock) {
+          showToast(liveArchiveBlock);
+          return;
+        }
+      }
+    }
     const now = Date.now();
     const batch = writeBatch(db);
     let batchOps = 0;
@@ -21311,30 +21337,15 @@ function resolveEventName(eventId) {
       const ref = getDocRef('app_participants', pid);
       if (action === 'archive_roster') {
         const archivePayload = {
-          status: PARTICIPANT_STATUS_ARCHIVED,
-          archivedAt: now,
-          archivedFromLocation: loc,
-          archivedProfileSnapshot: buildArchivedProfileSnapshot(person),
-          paymentHistory: [],
-          whatsAppFinanceNotifications: [],
-          scholarshipPendingApproval: false,
-          paid: deleteField(),
-          paidNet: deleteField(),
-          registeredCost: deleteField(),
-          registeredCostManual: deleteField(),
-          discountCampaignId: deleteField(),
-          discountCampaignConcept: deleteField(),
-          discountCampaignAppliedAt: deleteField(),
-          refundPendingAmount: deleteField(),
-          refundPendingReason: deleteField(),
-          refundAsDonation: deleteField(),
-          scholarshipPartialAmount: deleteField(),
-          paymentMethod: deleteField(),
-          paymentService: deleteField(),
-          cardReference: deleteField(),
-          isPastorChild: deleteField(),
-          pastorChildWithoutPay: deleteField(),
-          pastorChildSpecialDonationFinanceId: deleteField(),
+          ...buildArchiveParticipantStatusPatch({
+            loc,
+            now,
+            profileSnapshot: buildArchivedProfileSnapshot(person),
+            sourceKind: ARCHIVE_SOURCE_ROSTER,
+            debug: globalConfig?.isDebugMode
+              ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId }
+              : null,
+          }),
           archivedManualCreditAmount: deleteField(),
           archivedManualCreditListRef: deleteField(),
           responsivaStatus: deleteField(),
@@ -21342,7 +21353,6 @@ function resolveEventName(eventId) {
           emergencyPhoneResponsiva: deleteField(),
           emergencyContactResponsiva: deleteField(),
           bautizosSplitPartyHostParticipantId: deleteField(),
-          ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
         };
         batch.update(ref, omitUndefinedDeep(archivePayload));
       } else {
@@ -21521,6 +21531,11 @@ function resolveEventName(eventId) {
       (data[loc] || []).find((p) => String(p.id) === String(id)) ||
       (cancelledData[loc] || []).find((p) => String(p.id) === String(id));
     if (!person) return;
+    const liveArchiveBlock = getLiveArchiveFinanceBlockReason(person, ARCHIVE_SOURCE_ROSTER);
+    if (liveArchiveBlock) {
+      showToast(liveArchiveBlock);
+      return;
+    }
 
     if (bautizosOpts?.plan) {
       await executeBautizosPartyCancelArchivePlan({ ...bautizosOpts.plan, action: 'archive_roster', loc });
@@ -21530,7 +21545,7 @@ function resolveEventName(eventId) {
 
     await archiveParticipantToFirestore(person, loc, {
       fromWaitlist: false,
-      sourceKind: 'roster',
+      sourceKind: ARCHIVE_SOURCE_ROSTER,
       eventDisplayName: currentEvent?.name ?? null,
     });
     const _archLog = `Archivó el registro de ${person.name} en la sede ${loc}. El ID VNPM y los datos personales permanecen en Firebase para precargar en otros eventos.`;
@@ -21548,9 +21563,14 @@ function resolveEventName(eventId) {
   const performArchiveWaitlistEntry = async (loc, id) => {
     const person = (waitlistData[loc] || []).find((p) => String(p.id) === String(id));
     if (!person) return;
+    const liveArchiveBlock = getLiveArchiveFinanceBlockReason(person, ARCHIVE_SOURCE_WAITLIST);
+    if (liveArchiveBlock) {
+      showToast(liveArchiveBlock);
+      return;
+    }
     await archiveParticipantToFirestore(person, loc, {
       fromWaitlist: true,
-      sourceKind: 'waitlist',
+      sourceKind: ARCHIVE_SOURCE_WAITLIST,
       eventDisplayName: currentEvent?.name ?? null,
     });
     const _archWlLog = `Archivó a ${person.name} (lista de espera, sede ${loc}). Los datos personales siguen disponibles para precargar en otros eventos.`;
@@ -21574,9 +21594,15 @@ function resolveEventName(eventId) {
       if (!participantIsActiveOrWaitlistForDuplicateHint(person)) return;
       const loc = String(person.location || '').trim() || '?';
       const fromWaitlist = participantIsWaitlistRow(person);
+      const dupSourceKind = fromWaitlist ? ARCHIVE_SOURCE_WAITLIST : ARCHIVE_SOURCE_ROSTER;
+      const liveArchiveBlock = getLiveArchiveFinanceBlockReason(person, dupSourceKind);
+      if (liveArchiveBlock) {
+        showToast(liveArchiveBlock);
+        return;
+      }
       await archiveParticipantToFirestore(person, loc, {
         fromWaitlist,
-        sourceKind: fromWaitlist ? 'waitlist' : 'roster',
+        sourceKind: dupSourceKind,
         eventDisplayName: currentEvent?.name ?? null,
       });
       const _archDupLog = `Archivó desde aviso de duplicado (SuperUsuario): ${person.name} (sede ${loc}).`;
@@ -22102,7 +22128,12 @@ function resolveEventName(eventId) {
       else if (m.type === 'move_to_waitlist' && m.personId) await performMoveActiveEntryToWaitlist(m.loc, m.personId);
     } catch (e) {
       console.error(e);
-      showToast('No se pudo completar la acción. Revisa conexión o permisos.');
+      const msg = String(e?.message || '');
+      showToast(
+        msg.includes('pendiente de devolución')
+          ? msg
+          : 'No se pudo completar la acción. Revisa conexión o permisos.'
+      );
     } finally {
       setRegistryConfirmBusy(false);
     }
@@ -27159,77 +27190,12 @@ function resolveEventName(eventId) {
       .map((l) => String(l).trim())
       .filter(Boolean)
       .filter((l) => visibleLocations.includes(l));
-    const allPayments = [];
-    const personFallbackMs = (person) =>
-      parseFlexibleInstantMs(person?.registeredAt)
-      ?? (typeof person?.id === 'number' && Number.isFinite(person.id) ? person.id : null)
-      ?? (() => {
-        const s = person?.id != null ? String(person.id).trim() : '';
-        return /^\d{10,}$/.test(s) ? Number(s) : null;
-      })();
-
-    const rosterForCashCut = allParticipants.filter(
-      (p) =>
-        p.eventId === currentEvent?.id &&
-        participantIsActiveInRoster(p) &&
-        cashCutLocationInScope(p.location, cashCutLocations)
-    );
-
-    rosterForCashCut.forEach((person) => {
-      const loc = person.location || '';
-      const fb = personFallbackMs(person);
-      const historyRows = (person.paymentHistory || []).filter((h) => h && h.kind !== 'comment');
-      const paidGross = parseFloat(person.paid) || 0;
-
-      historyRows.forEach((h) => {
-        const ts = getPaymentHistoryTimestamp(h, fb);
-        if (ts == null || Number.isNaN(ts)) return;
-        const method = h.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
-        allPayments.push({
-          ...h,
-          netAmount: computeNetAmountByMethod(h.amount, method),
-          method,
-          _ts: ts,
-          _date: new Date(ts),
-          _personName: person.name || '',
-          _personId: person.id,
-          _loc: loc,
-        });
-      });
-
-      if (paidGross > 0 && historyRows.length === 0 && fb != null && Number.isFinite(fb)) {
-        const paymentMethod = person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-        const paidNet = computeNetAmountByMethod(paidGross, paymentMethod);
-        const svc = SERVICE_OPTIONS.includes(person.paymentService) ? person.paymentService : NO_SERVICE_LABEL;
-        allPayments.push({
-          id: `legacy-paid-${person.id}`,
-          date: new Date(fb).toLocaleString('es-MX'),
-          recordedAt: new Date(fb).toISOString(),
-          amount: paidGross,
-          netAmount: paidNet,
-          method: paymentMethod,
-          service: svc,
-          reference: (person.cardReference || '').trim(),
-          registeredBy: person.registeredBy || '?',
-          _ts: fb,
-          _date: new Date(fb),
-          _personName: person.name || '',
-          _personId: person.id,
-          _loc: loc,
-          _syntheticLegacyPaid: true,
-        });
-      }
-    });
-
-    allPayments.push(
-      ...collectCashCutRefundDisbursements(
-        allParticipants,
-        currentEvent,
-        cashCutLocations,
-        cashCutLocationInScope,
-        computeNetAmountByMethod,
-        resolveCashCutRefundServiceLabel
-      )
+    const allPayments = collectCashCutAllPayments(
+      allParticipants,
+      currentEvent,
+      computeNetAmountByMethod,
+      cashCutLocations,
+      resolveCashCutRefundServiceLabel
     );
 
     const eventDonationsForCut = donations.filter(

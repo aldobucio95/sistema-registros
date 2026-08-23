@@ -27,7 +27,8 @@ const COMMON_FIELDS = new Set([
   'bloodType',
   // Sede / metadatos
   'location', 'eventId', 'status', 'createdAt', 'updatedAt',
-  'cancelledAt', 'cancelledFromLocation', 'archivedAt',
+  'cancelledAt', 'cancelledFromLocation', 'archivedAt', 'archivedFromLocation',
+  'archivedSourceKind',
   'restoredAt', 'restoredFromArchive',
   'whatsAppFinanceNotifications',
   'whatsAppMessageHistory',
