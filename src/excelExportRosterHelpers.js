@@ -6,6 +6,7 @@ import { getEventEffectiveEndDate } from './eventDateHelpers.js';
 import {
   getRefundDisbursedGrossAmount,
   getParticipantNetPaidFromHistory,
+  currentCancelCycleHasDisbursement,
   participantHasRefundDisbursement,
   participantIsCancelledForRefund,
   parsePaymentHistoryRecordedAtMs,
@@ -190,17 +191,18 @@ export function buildParticipantExcelFinanceCells(p, {
   const isBecado = isSiValue(p.isScholarship);
   const isCancelled = participantIsCancelledForRefund(p);
   const hadRefund = participantHasRefundDisbursement(p);
+  const cycleSettled = currentCancelCycleHasDisbursement(p);
   const devolucion = hadRefund ? getRefundDisbursedGrossAmount(p) : '';
   const effectivePaid = getParticipantNetPaidFromHistory(p, computeNetAmountByMethod);
   const liq = getLiquidationTarget(p);
 
-  if (isCancelled && hadRefund) {
+  if (isCancelled && cycleSettled) {
     return [baseCost, 0, devolucion, 0, 'Devolución', '', '', '', '', ''];
   }
 
   const debt = isCancelled ? 0 : Math.max(0, liq - effectivePaid);
   const estado = isCancelled
-    ? hadRefund
+    ? cycleSettled
       ? 'Devolución'
       : resolveExcelFinancialEstado(p, { isBecado, liq, debt: 0 })
     : resolveExcelFinancialEstado(p, { isBecado, liq, debt });

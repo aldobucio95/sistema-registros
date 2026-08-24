@@ -8,8 +8,35 @@
 export const PARTICIPANT_CANCELLED_STATUS = 'cancelled';
 export const REFUND_DISBURSEMENT_PAYMENT_KIND = 'refund_disbursement';
 
-export function refundDisbursementPaymentHistoryId(personId) {
-  return `refund-disb-${String(personId)}`;
+export function refundDisbursementPaymentHistoryId(personId, atMs) {
+  const base = `refund-disb-${String(personId)}`;
+  const ts = Number(atMs);
+  if (Number.isFinite(ts) && ts > 0) return `${base}-${ts}`;
+  return base;
+}
+
+export function isRefundDisbursementHistoryRow(row, personId) {
+  if (!row) return false;
+  if (row.kind === REFUND_DISBURSEMENT_PAYMENT_KIND) return true;
+  const id = String(row.id || '');
+  const pid = String(personId ?? '').trim();
+  if (!pid) return id === 'refund-disb-' || id.startsWith('refund-disb-');
+  const prefix = `refund-disb-${pid}`;
+  return id === prefix || id.startsWith(`${prefix}-`);
+}
+
+export function listRefundPaymentHistoryRows(person) {
+  const pid = person?.id;
+  return (person?.paymentHistory || []).filter((h) => isRefundDisbursementHistoryRow(h, pid));
+}
+
+export function parseParticipantCancelledAtMs(person) {
+  const v = person?.cancelledAt;
+  if (v == null || v === '') return null;
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  const d = new Date(v);
+  const t = d.getTime();
+  return Number.isNaN(t) ? null : t;
 }
 
 export function participantIsCancelledForRefund(p) {
@@ -25,27 +52,47 @@ export function parseRefundDisbursedAtMs(person) {
   return Number.isNaN(t) ? null : t;
 }
 
-/** Monto bruto ya devuelto en efectivo/tarjeta (no pendiente ni donación). */
+function refundFlagAmountIfUncoveredByHistory(person, histRows) {
+  const amt = Number(person?.refundDisbursedAmount) || 0;
+  const flagAt = parseRefundDisbursedAtMs(person);
+  if (amt <= 0 || flagAt == null) return 0;
+  const covered = (histRows || []).some((h) => {
+    const ts = parsePaymentHistoryRecordedAtMs(h);
+    return ts != null && Math.abs(ts - flagAt) < 2000;
+  });
+  return covered ? 0 : amt;
+}
+
+/** Monto bruto ya devuelto en efectivo/tarjeta (todas las devoluciones del folio). */
 export function getRefundDisbursedGrossAmount(person) {
   if (!person) return 0;
-  const histRow = findRefundPaymentHistoryRow(person);
-  const fromHist = histRow ? Math.abs(Number(histRow.amount) || 0) : 0;
-  if (fromHist > 0) return fromHist;
-  const amt = Number(person.refundDisbursedAmount) || 0;
-  if (amt <= 0) return 0;
-  if (person.refundDisbursedAt != null && person.refundDisbursedAt !== '') return amt;
-  return 0;
+  const histRows = listRefundPaymentHistoryRows(person);
+  const fromHist = histRows.reduce((sum, h) => sum + Math.abs(Number(h.amount) || 0), 0);
+  return fromHist + refundFlagAmountIfUncoveredByHistory(person, histRows);
 }
 
 export function getRefundDisbursedNetAmount(person, computeNetAmountByMethod) {
-  const histRow = findRefundPaymentHistoryRow(person);
-  if (histRow && Number.isFinite(Number(histRow.netAmount))) {
-    return Math.abs(Number(histRow.netAmount));
+  const histRows = listRefundPaymentHistoryRows(person);
+  if (histRows.length) {
+    const fromHist = histRows.reduce((sum, h) => {
+      if (Number.isFinite(Number(h.netAmount))) return sum + Math.abs(Number(h.netAmount));
+      const gross = Math.abs(Number(h.amount) || 0);
+      const method = h.method === 'Tarjeta' || person.refundDisbursedMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+      if (typeof computeNetAmountByMethod === 'function') {
+        return sum + Math.max(0, Number(computeNetAmountByMethod(gross, method)) || 0);
+      }
+      return sum + gross;
+    }, 0);
+    const uncovered = refundFlagAmountIfUncoveredByHistory(person, histRows);
+    if (uncovered > 0 && typeof computeNetAmountByMethod === 'function') {
+      const method = person.refundDisbursedMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+      return fromHist + Math.max(0, Number(computeNetAmountByMethod(uncovered, method)) || 0);
+    }
+    return fromHist + uncovered;
   }
   const gross = getRefundDisbursedGrossAmount(person);
   if (gross <= 0) return 0;
-  const method =
-    histRow?.method === 'Tarjeta' || person.refundDisbursedMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+  const method = person.refundDisbursedMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
   if (typeof computeNetAmountByMethod === 'function') {
     return Math.max(0, Number(computeNetAmountByMethod(gross, method)) || 0);
   }
@@ -55,13 +102,34 @@ export function getRefundDisbursedNetAmount(person, computeNetAmountByMethod) {
 /**
  * Recaudado físico del registro: abonos menos devoluciones ya entregadas.
  * Pendiente de devolución y donación por baja siguen contando (el dinero sigue en caja).
+ * Si el historial ya trae filas de devolución, el neto del historial es la fuente de verdad
+ * (p. ej. tras reactivar, `paid` ya viene neto y no hay que restar de nuevo).
  */
 export function getParticipantPhysicalRecaudadoGross(person, paidGrossFallback) {
+  const hist = (person?.paymentHistory || []).filter((h) => h && h.kind !== 'comment');
+  if (hist.some((h) => isRefundDisbursementHistoryRow(h, person?.id))) {
+    return Math.max(0, hist.reduce((sum, h) => sum + (Number(h.amount) || 0), 0));
+  }
   const paid = Number(paidGrossFallback ?? person?.paid ?? 0) || 0;
   return Math.max(0, paid - getRefundDisbursedGrossAmount(person));
 }
 
 export function getParticipantPhysicalRecaudadoNet(person, paidNetFallback, computeNetAmountByMethod) {
+  const hist = (person?.paymentHistory || []).filter((h) => h && h.kind !== 'comment');
+  if (hist.some((h) => isRefundDisbursementHistoryRow(h, person?.id))) {
+    return Math.max(
+      0,
+      hist.reduce((sum, h) => {
+        if (Number.isFinite(Number(h.netAmount))) return sum + Number(h.netAmount);
+        const method = h.method === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+        const amt = Number(h.amount) || 0;
+        if (typeof computeNetAmountByMethod === 'function') {
+          return sum + (Number(computeNetAmountByMethod(amt, method)) || 0);
+        }
+        return sum + amt;
+      }, 0)
+    );
+  }
   const paidNet = Number(paidNetFallback ?? person?.paidNet ?? person?.paid ?? 0) || 0;
   return Math.max(0, paidNet - getRefundDisbursedNetAmount(person, computeNetAmountByMethod));
 }
@@ -76,7 +144,7 @@ export function sumDisbursedRefundsGrossForEvent(allParticipants, eventId) {
 /** Saldo pendiente de acción (donación o devolución) para un registro cancelado. */
 export function getCancelledRefundPendingAmount(person) {
   if (!person || !participantIsCancelledForRefund(person)) return 0;
-  if (person.refundAsDonation || participantHasRefundDisbursement(person)) return 0;
+  if (person.refundAsDonation || currentCancelCycleHasDisbursement(person)) return 0;
   return Math.max(0, Number(person.refundPendingAmount ?? person.paid ?? 0) || 0);
 }
 
@@ -85,10 +153,14 @@ export function resolveCancelledRefundSede(person) {
 }
 
 export function findRefundPaymentHistoryRow(person) {
-  const pid = refundDisbursementPaymentHistoryId(person?.id);
-  return (person?.paymentHistory || []).find(
-    (h) => h && (h.kind === REFUND_DISBURSEMENT_PAYMENT_KIND || String(h.id) === pid)
-  );
+  const rows = listRefundPaymentHistoryRows(person);
+  if (!rows.length) return null;
+  const cycleStart = parseParticipantCancelledAtMs(person);
+  const withTs = rows.map((h) => ({ h, ts: parsePaymentHistoryRecordedAtMs(h) }));
+  const inCycle = cycleStart == null ? withTs : withTs.filter((x) => x.ts == null || x.ts >= cycleStart);
+  const pool = inCycle.length ? inCycle : withTs;
+  pool.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  return pool[0].h;
 }
 
 /** Fecha/hora canónica de un movimiento en historial (prioriza `recordedAt` editado). */
@@ -107,6 +179,29 @@ export function parsePaymentHistoryRecordedAtMs(row) {
   return null;
 }
 
+/**
+ * ¿La baja actual ya tiene devolución? Un ciclo nuevo (reactivar y volver a dar de baja)
+ * no queda bloqueado por una devolución anterior a `cancelledAt`.
+ */
+export function currentCancelCycleHasDisbursement(person) {
+  if (!person) return false;
+  const cycleStart = parseParticipantCancelledAtMs(person);
+  const rows = listRefundPaymentHistoryRows(person);
+  const rowInCycle = rows.some((h) => {
+    if (Math.abs(Number(h.amount) || 0) <= 0) return false;
+    const ts = parsePaymentHistoryRecordedAtMs(h);
+    if (cycleStart == null) return ts != null || parseRefundDisbursedAtMs(person) != null;
+    if (ts == null) return false;
+    return ts >= cycleStart;
+  });
+  if (rowInCycle) return true;
+  const flagAt = parseRefundDisbursedAtMs(person);
+  const flagAmt = Number(person.refundDisbursedAmount) || 0;
+  if (flagAmt <= 0 || flagAt == null) return false;
+  if (cycleStart == null) return true;
+  return flagAt >= cycleStart;
+}
+
 /** Fecha del egreso de devolución: historial de pagos (si existe) y luego `refundDisbursedAt`. */
 export function resolveRefundDisbursementTimestampMs(person) {
   const histRow = findRefundPaymentHistoryRow(person);
@@ -116,9 +211,9 @@ export function resolveRefundDisbursementTimestampMs(person) {
 }
 
 export function participantHasRefundDisbursement(person) {
-  const histRow = findRefundPaymentHistoryRow(person);
-  if (histRow && Math.abs(Number(histRow.amount) || 0) > 0) {
-    return resolveRefundDisbursementTimestampMs(person) != null;
+  const rows = listRefundPaymentHistoryRows(person);
+  if (rows.some((h) => Math.abs(Number(h.amount) || 0) > 0 && parsePaymentHistoryRecordedAtMs(h) != null)) {
+    return true;
   }
   const amt = Number(person?.refundDisbursedAmount) || 0;
   if (amt <= 0) return false;
@@ -176,7 +271,78 @@ export function buildParticipantPaidFieldsFromHistory(person, computeNetAmountBy
   };
 }
 
+function buildCashCutMovementFromRefundHist(person, histRow, computeNetAmountByMethod, resolveServiceLabel) {
+  const gross = Math.abs(Number(histRow?.amount) || 0);
+  if (gross <= 0) return null;
+  const ts = parsePaymentHistoryRecordedAtMs(histRow) ?? parseRefundDisbursedAtMs(person);
+  if (ts == null) return null;
+  const method =
+    histRow?.method === 'Tarjeta' || histRow?.method === 'Efectivo'
+      ? histRow.method
+      : person.refundDisbursedMethod === 'Tarjeta'
+        ? 'Tarjeta'
+        : 'Efectivo';
+  const loc = resolveCancelledRefundSede(person) || person.refundDisbursedLocation || '';
+  const netPositive = Number.isFinite(Number(histRow.netAmount))
+    ? Math.abs(Number(histRow.netAmount))
+    : computeNetAmountByMethod(gross, method);
+  const service =
+    (typeof resolveServiceLabel === 'function' ? resolveServiceLabel(person, ts, loc) : null) ||
+    histRow?.service ||
+    'Devolución';
+  return {
+    id: String(histRow.id || `refund-disb-${person.id}-${ts}`),
+    amount: -gross,
+    netAmount: -netPositive,
+    method,
+    service,
+    reference: String(histRow?.reference || '').trim(),
+    registeredBy: histRow?.registeredBy || person.refundDisbursedBy || '?',
+    _ts: ts,
+    _date: new Date(ts),
+    _personName: person.name || '',
+    _personId: person.id,
+    _loc: String(loc || '').trim(),
+    _isRefundDisbursement: true,
+    kind: 'refund_disbursement',
+  };
+}
+
 export function buildCashCutRefundDisbursementRow(person, computeNetAmountByMethod, resolveServiceLabel) {
+  const histRows = listRefundPaymentHistoryRows(person);
+  if (histRows.length === 1) {
+    return buildCashCutMovementFromRefundHist(person, histRows[0], computeNetAmountByMethod, resolveServiceLabel);
+  }
+  if (histRows.length > 1) {
+    const gross = histRows.reduce((sum, h) => sum + Math.abs(Number(h.amount) || 0), 0);
+    const ts = resolveRefundDisbursementTimestampMs(person);
+    if (gross <= 0 || ts == null) return null;
+    const netPositive = histRows.reduce((sum, h) => {
+      if (Number.isFinite(Number(h.netAmount))) return sum + Math.abs(Number(h.netAmount));
+      const g = Math.abs(Number(h.amount) || 0);
+      const method = h.method === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+      return sum + (Number(computeNetAmountByMethod(g, method)) || 0);
+    }, 0);
+    const loc = resolveCancelledRefundSede(person) || person.refundDisbursedLocation || '';
+    const service =
+      (typeof resolveServiceLabel === 'function' ? resolveServiceLabel(person, ts, loc) : null) || 'Devolución';
+    return {
+      id: `refund-disb-${person.id}`,
+      amount: -gross,
+      netAmount: -netPositive,
+      method: 'Efectivo',
+      service,
+      reference: '',
+      registeredBy: person.refundDisbursedBy || '?',
+      _ts: ts,
+      _date: new Date(ts),
+      _personName: person.name || '',
+      _personId: person.id,
+      _loc: String(loc || '').trim(),
+      _isRefundDisbursement: true,
+      kind: 'refund_disbursement',
+    };
+  }
   const histRow = findRefundPaymentHistoryRow(person);
   const histGross = histRow ? Math.abs(Number(histRow.amount) || 0) : 0;
   const gross = histGross > 0 ? histGross : Math.max(0, Number(person.refundDisbursedAmount) || 0);
@@ -233,6 +399,23 @@ export function collectCashCutRefundDisbursements(
     if (!participantIsCancelledForRefund(p)) return;
     const loc = resolveCancelledRefundSede(p);
     if (allowedLocations && typeof locationInScopeFn === 'function' && !locationInScopeFn(loc, allowedLocations)) {
+      return;
+    }
+    const histRows = listRefundPaymentHistoryRows(p);
+    if (histRows.length) {
+      histRows.forEach((histRow) => {
+        const row = buildCashCutMovementFromRefundHist(p, histRow, computeNetAmountByMethod, resolveServiceLabel);
+        if (row) out.push(row);
+      });
+      const uncovered = refundFlagAmountIfUncoveredByHistory(p, histRows);
+      if (uncovered > 0) {
+        const flagRow = buildCashCutRefundDisbursementRow(
+          { ...p, paymentHistory: [] },
+          computeNetAmountByMethod,
+          resolveServiceLabel
+        );
+        if (flagRow) out.push(flagRow);
+      }
       return;
     }
     const row = buildCashCutRefundDisbursementRow(p, computeNetAmountByMethod, resolveServiceLabel);
@@ -299,7 +482,7 @@ export function buildRefundDisbursementPaymentHistoryRow({
       : gross;
   const d = new Date(at);
   return {
-    id: refundDisbursementPaymentHistoryId(personId),
+    id: refundDisbursementPaymentHistoryId(personId, at),
     kind: REFUND_DISBURSEMENT_PAYMENT_KIND,
     date: d.toLocaleString('es-MX'),
     recordedAt: d.toISOString(),
@@ -315,10 +498,7 @@ export function buildRefundDisbursementPaymentHistoryRow({
 }
 
 export function personHasRefundDisbursementPaymentHistoryRow(person) {
-  const pid = refundDisbursementPaymentHistoryId(person?.id);
-  return (person?.paymentHistory || []).some(
-    (h) => h && (h.kind === REFUND_DISBURSEMENT_PAYMENT_KIND || String(h.id) === pid)
-  );
+  return listRefundPaymentHistoryRows(person).length > 0;
 }
 
 /** Incluye devoluciones ya registradas aunque el historial aún no tuviera la fila (legado). */
