@@ -322,6 +322,8 @@ import {
   collectCashCutRefundDisbursements,
   collectCancelledParticipantsWithPendingRefund,
   enrichPaymentHistoryWithRefundDisbursements,
+  currentCancelCycleHasDisbursement,
+  findRefundPaymentHistoryRow,
   getCancelledRefundPendingAmount,
   getParticipantNetPaidFromHistory,
   getParticipantEffectivePaidNet,
@@ -339,7 +341,6 @@ import {
   parseRefundDisbursedAtMs,
   participantHasRefundDisbursement,
   REFUND_DISBURSEMENT_PAYMENT_KIND,
-  refundDisbursementPaymentHistoryId,
   resolveCancelledRefundSede,
 } from './cashCutRefunds.js';
 import { describeDashboardConfigDelta, EXPENSE_ACTIVITY_GENERIC } from './dashboardActivityLog.js';
@@ -22316,7 +22317,7 @@ function resolveEventName(eventId) {
       showToast('Este saldo ya estaba marcado como donación.');
       return;
     }
-    if (participantHasRefundDisbursement(person)) {
+    if (currentCancelCycleHasDisbursement(person)) {
       showToast('Este saldo ya fue devuelto; no se puede marcar como donación.');
       return;
     }
@@ -22375,7 +22376,7 @@ function resolveEventName(eventId) {
       showToast('Este saldo ya fue marcado como donación.');
       return;
     }
-    if (participantHasRefundDisbursement(person)) {
+    if (currentCancelCycleHasDisbursement(person)) {
       showToast('Este saldo ya fue devuelto.');
       return;
     }
@@ -22445,12 +22446,16 @@ function resolveEventName(eventId) {
     }
     const prevAt = person.refundDisbursedAt;
     const hist = [...(person.paymentHistory || [])];
-    const refundRowId = refundDisbursementPaymentHistoryId(personId);
-    const refundHistIdx = hist.findIndex(
-      (h) =>
-        h &&
-        (h.kind === REFUND_DISBURSEMENT_PAYMENT_KIND || String(h.id) === refundRowId)
-    );
+    const currentRefundRow = findRefundPaymentHistoryRow(person);
+    const refundHistIdx = currentRefundRow
+      ? hist.findIndex(
+          (h) =>
+            h &&
+            (String(h.id) === String(currentRefundRow.id) ||
+              (h.kind === REFUND_DISBURSEMENT_PAYMENT_KIND &&
+                parsePaymentHistoryRecordedAtMs(h) === parsePaymentHistoryRecordedAtMs(currentRefundRow)))
+        )
+      : -1;
     const d = new Date(atMs);
     const refundSede = resolveCancelledRefundSede(person) || person.refundDisbursedLocation || person.location || '';
     const refundService = getAutoPaymentService(d, refundSede || undefined);
@@ -23879,10 +23884,10 @@ function resolveEventName(eventId) {
     async (person) => {
       if (!person || !participantHasRefundDisbursement(person)) return -1;
       const hist = [...(person.paymentHistory || [])];
-      const rowId = refundDisbursementPaymentHistoryId(person.id);
-      let idx = hist.findIndex(
-        (h) => h && (h.kind === REFUND_DISBURSEMENT_PAYMENT_KIND || String(h.id) === rowId)
-      );
+      const currentRefundRow = findRefundPaymentHistoryRow(person);
+      let idx = currentRefundRow
+        ? hist.findIndex((h) => h && String(h.id) === String(currentRefundRow.id))
+        : -1;
       if (idx >= 0) return idx;
       const row = buildRefundDisbursementPaymentHistoryRow({
         personId: person.id,
@@ -28297,9 +28302,7 @@ function resolveEventName(eventId) {
     const cancelledRefundRows = allParticipants
       .filter((p) => p.eventId === eventId && participantIsCancelled(p))
       .map((p) => {
-        const pendingAmount = p.refundAsDonation
-          ? 0
-          : Math.max(0, Number(p.refundPendingAmount ?? p.paid ?? 0) || 0);
+        const pendingAmount = getCancelledRefundPendingAmount(p);
         return { ...p, _refundPendingAmount: pendingAmount };
       });
     const pendingRefundRows = cancelledRefundRows.filter((p) => p._refundPendingAmount > 0);
