@@ -342,6 +342,7 @@ import {
   refundDisbursementPaymentHistoryId,
   resolveCancelledRefundSede,
 } from './cashCutRefunds.js';
+import { planParticipantRevertWrite } from './participantRevertMerge.js';
 import { describeDashboardConfigDelta, EXPENSE_ACTIVITY_GENERIC } from './dashboardActivityLog.js';
 import { appendParticipantActivityEntry, fetchParticipantActivityEntries } from './participantActivityLog.js';
 import ScreenLoadingFallback from './screens/ScreenLoadingFallback.jsx';
@@ -7160,14 +7161,18 @@ function resolveEventName(eventId) {
     }
   }, [globalConfig?.debugSessionId]);
 
-  const applyRevert = async (revertInfo, logId = null) => {
-    if (!revertInfo) return;
+  const applyRevert = async (revertInfo, logId = null, logMeta = null) => {
+    if (!revertInfo) return { ok: false };
     let ri = revertInfo;
+    let logCreatedAtMs = Number(logMeta?.createdAt);
     if (!ri.previousData && logId && (ri.action === 'update' || ri.action === 'delete')) {
       try {
         const snap = await getDoc(getDocRef('app_log_reverts', String(logId)));
         if (snap.exists() && snap.data()?.previousData) {
           ri = { ...ri, previousData: snap.data().previousData };
+          if (!Number.isFinite(logCreatedAtMs) || logCreatedAtMs <= 0) {
+            logCreatedAtMs = Number(snap.data()?.createdAt);
+          }
         }
       } catch (e) {
         console.warn('No se pudo cargar snapshot de revert:', e);
@@ -7175,6 +7180,39 @@ function resolveEventName(eventId) {
     }
     const { collectionName, docId, action, previousData } = ri;
     try {
+      if (collectionName === 'app_participants') {
+        let currentData = {};
+        try {
+          const curSnap = await getDocFromServer(getDocRef(collectionName, docId));
+          currentData = curSnap.exists() ? curSnap.data() : {};
+        } catch (e) {
+          console.warn('No se pudo leer el registro actual para revertir:', e);
+          try {
+            const curSnap = await getDoc(getDocRef(collectionName, docId));
+            currentData = curSnap.exists() ? curSnap.data() : {};
+          } catch {
+            currentData = {};
+          }
+        }
+        const plan = planParticipantRevertWrite({
+          action,
+          previousData,
+          currentData,
+          logCreatedAtMs,
+        });
+        if (plan.type === 'skip_delete') {
+          return { ok: false, skipped: true, reason: plan.reason };
+        }
+        if (plan.type === 'delete') {
+          await deleteDoc(getDocRef(collectionName, docId));
+          return { ok: true };
+        }
+        if (plan.type === 'set' && plan.payload) {
+          await setDoc(getDocRef(collectionName, docId), omitUndefinedDeep(plan.payload));
+          return { ok: true };
+        }
+        return { ok: true };
+      }
       if (action === 'create') {
         await deleteDoc(getDocRef(collectionName, docId));
       } else if (action === 'update' || action === 'delete') {
@@ -7192,8 +7230,10 @@ function resolveEventName(eventId) {
           }
         }
       }
+      return { ok: true };
     } catch (err) {
       console.error("Error al revertir:", err);
+      return { ok: false, error: err };
     }
   };
 
@@ -7264,7 +7304,10 @@ function resolveEventName(eventId) {
       }
 
       for (const l of logsToRevert) {
-        await applyRevert(l.revertInfo, l.id);
+        const revertResult = await applyRevert(l.revertInfo, l.id, { createdAt: l.createdAt });
+        if (revertResult?.skipped) {
+          console.warn('Revertir depuración omitido (movimientos posteriores):', l.id, revertResult.reason);
+        }
       }
 
       debugSessionRevertLogsRef.current = [];
@@ -12409,7 +12452,14 @@ function resolveEventName(eventId) {
     };
 
     if (type === 'single') {
-      await applyRevert(log.revertInfo, log.id);
+      const revertResult = await applyRevert(log.revertInfo, log.id, { createdAt: log.createdAt });
+      if (revertResult?.skipped) {
+        showToast(
+          'No se deshizo el alta: el registro ya tiene abonos o devoluciones posteriores. Usa baja en lugar de revertir el alta.'
+        );
+        setRestoreModal({ isOpen: false, log: null, type: 'single' });
+        return;
+      }
       const revertedAt = formatRevertedLogDateTime(log);
       addLog(
         'Restauración',
@@ -12428,8 +12478,10 @@ function resolveEventName(eventId) {
       const logsToRevert = logList
         .filter((l) => extractLogMillis(l) >= anchorMs && l.revertInfo && !l.isDebug)
         .sort((a, b) => extractLogMillis(b) - extractLogMillis(a));
+      let skippedCreateReverts = 0;
       for (const l of logsToRevert) {
-        await applyRevert(l.revertInfo, l.id);
+        const revertResult = await applyRevert(l.revertInfo, l.id, { createdAt: l.createdAt });
+        if (revertResult?.skipped) skippedCreateReverts += 1;
       }
       const revertedAt = formatRevertedLogDateTime(log);
       addLog(
@@ -12438,7 +12490,11 @@ function resolveEventName(eventId) {
         null,
         { id: 'Global', name: 'Sistema' }
       );
-      showToast(`Se han revertido ${logsToRevert.length} cambios exitosamente.`);
+      showToast(
+        skippedCreateReverts > 0
+          ? `Se han revertido ${logsToRevert.length - skippedCreateReverts} cambios. ${skippedCreateReverts} alta(s) se omitieron porque ya tenían abonos posteriores.`
+          : `Se han revertido ${logsToRevert.length} cambios exitosamente.`
+      );
     } else if (type === 'cleanOld') {
       await handleCleanLogs();
     } else if (type === 'cleanRecent') {
