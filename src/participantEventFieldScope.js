@@ -59,8 +59,7 @@ const CAMPA_ONLY_FIELDS = new Set([
   'baptismSegment',
   // Asistencia especial (Empleado / Cortesía)
   'attendanceSpecialType',
-  // Datos extra del servidor
-  'isMarried', 'spouseName', 'spouseParticipantId', 'spousePhone',
+  // Datos extra del servidor (pareja: también Bautizos — ver CAMPA_AND_BAUTIZOS_FIELDS)
   'goesWithChildren', 'childrenCount',
   'servedOtherCampa', 'servedAreas', 'preferredServeArea',
   'servesInCongress', 'congressServeArea',
@@ -77,8 +76,12 @@ const BAUTIZOS_ONLY_FIELDS = new Set([
   'carrosLlegada',
 ]);
 
-/** Campos compartidos por Campa y Bautizos (salud + bautizo). */
+/** Campos compartidos por Campa y Bautizos (salud + bautizo + vínculo de pareja). */
 const CAMPA_AND_BAUTIZOS_FIELDS = new Set([
+  // Pareja de servidor: el alta/edición en Bautizos también vincula (si se dejan
+  // solo en CAMPA_ONLY, cleanParticipantPayloadForEventType revierte el payload
+  // y syncSpouseParticipantLinks deja un vínculo de un solo lado).
+  'isMarried', 'spouseName', 'spouseParticipantId', 'spousePhone',
   // Salud (no aplican a Desayuno ni General)
   'canSwim',
   'hasAllergy', 'allergyCategory', 'allergyDetails',
