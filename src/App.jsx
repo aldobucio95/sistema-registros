@@ -480,6 +480,13 @@ import {
   buildUsernameCandidates,
   normalizeAuthEmail,
 } from './firebaseConfig.js';
+import {
+  STAFF_LOGIN_MATCH_AUTH_EMAIL,
+  STAFF_LOGIN_MATCH_AUTH_UID,
+  STAFF_LOGIN_MATCH_USERNAME,
+  resolveStaffLoginProfileBind,
+  staffLoginAllowsUsernameProfileFallback,
+} from './staffLoginProfileBind.js';
 import { auth, db, storage, getColRef, getDocRef } from "./firebaseRefs.js";
 import { sanitizeJsonForFirestore, patchForLocalParticipantCache } from './firestorePayloadSanitize.js';
 import { withLogVisibleInPanel, slimRevertInfoForLog, buildLogEntityFields } from './activityLogsMeta.js';
@@ -12797,26 +12804,38 @@ function resolveEventName(eventId) {
     };
   }, [users, fbUser, currentUser, finalizeStaffPanelSignOut, resetStaffPanelAfterSignOut, removeCurrentUserSession]);
 
-  const finalizeStaffLoginAfterAuth = async (trimUser, loginEmailFallback) => {
+  const finalizeStaffLoginAfterAuth = async (trimUser, loginEmailFallback, loginOpts = {}) => {
+    const fromGoogleLogin = loginOpts?.fromGoogleLogin === true;
     const resolvedEmail = (auth.currentUser?.email || loginEmailFallback || '').trim();
     const tabSessionId = getTabSessionId();
     try {
       let docSnap = null;
+      let matchedBy = null;
       let qSnap = await getDocs(query(getColRef('app_users'), where('authUid', '==', auth.currentUser.uid)));
-      if (!qSnap.empty) docSnap = qSnap.docs[0];
-      if (!docSnap) {
-        qSnap = await getDocs(query(getColRef('app_users'), where('authEmail', '==', resolvedEmail)));
-        if (!qSnap.empty) docSnap = qSnap.docs[0];
+      if (!qSnap.empty) {
+        docSnap = qSnap.docs[0];
+        matchedBy = STAFF_LOGIN_MATCH_AUTH_UID;
       }
       if (!docSnap) {
+        qSnap = await getDocs(query(getColRef('app_users'), where('authEmail', '==', resolvedEmail)));
+        if (!qSnap.empty) {
+          docSnap = qSnap.docs[0];
+          matchedBy = STAFF_LOGIN_MATCH_AUTH_EMAIL;
+        }
+      }
+      const allowUsernameFallback = staffLoginAllowsUsernameProfileFallback({ fromGoogleLogin });
+      if (!docSnap && allowUsernameFallback) {
         const nameHint = trimUser.includes('@') ? trimUser.split('@')[0] : trimUser;
         const variants = buildUsernameCandidates(nameHint);
         if (variants.length) {
           qSnap = await getDocs(query(getColRef('app_users'), where('username', 'in', variants)));
-          if (!qSnap.empty) docSnap = qSnap.docs[0];
+          if (!qSnap.empty) {
+            docSnap = qSnap.docs[0];
+            matchedBy = STAFF_LOGIN_MATCH_USERNAME;
+          }
         }
       }
-      if (!docSnap) {
+      if (!docSnap && allowUsernameFallback) {
         const nameHint = trimUser.includes('@') ? trimUser.split('@')[0] : trimUser;
         const lower = nameHint.toLowerCase();
         const prefixSnap = await getDocs(
@@ -12829,6 +12848,7 @@ function resolveEventName(eventId) {
         );
         docSnap =
           prefixSnap.docs.find((d) => String(d.data()?.username || '').trim().toLowerCase() === lower) || null;
+        if (docSnap) matchedBy = STAFF_LOGIN_MATCH_USERNAME;
       }
       if (!docSnap) {
         const isGoogle =
@@ -12854,9 +12874,34 @@ function resolveEventName(eventId) {
       }
       let user = { id: docSnap.id, ...docSnap.data() };
       let didLinkAuthProfile = false;
-      const uidMismatch =
-        !user.authUid || String(user.authUid) !== String(auth.currentUser?.uid || '');
-      if (uidMismatch) {
+      const bindDecision = resolveStaffLoginProfileBind({
+        matchedBy,
+        profileAuthUid: user.authUid,
+        currentUid: auth.currentUser?.uid,
+      });
+      if (!bindDecision.ok) {
+        const isGoogle =
+          auth.currentUser?.providerData?.some((p) => p.providerId === 'google.com');
+        if (isGoogle) {
+          try {
+            const functions = getFunctions(app, 'us-central1');
+            const removeUnauthorizedGoogleAuthUser = httpsCallable(
+              functions,
+              'removeUnauthorizedGoogleAuthUser'
+            );
+            await removeUnauthorizedGoogleAuthUser();
+          } catch (e) {
+            console.warn(e);
+          }
+        }
+        await signOut(auth);
+        setLoginError('Tu cuenta no tiene perfil en la aplicación. Contacta al administrador.');
+        loginInProgressRef.current = false;
+        setLoginBusy(false);
+        setGoogleLoginBusy(false);
+        return;
+      }
+      if (bindDecision.bindAuth) {
         await updateDoc(getDocRef('app_users', docSnap.id), {
           authUid: auth.currentUser.uid,
           authEmail: resolvedEmail,
@@ -13032,7 +13077,7 @@ function resolveEventName(eventId) {
             return;
           }
           const trimUser = email.includes('@') ? email.split('@')[0] : email;
-          await finalizeStaffLoginAfterAuth(trimUser, email);
+          await finalizeStaffLoginAfterAuth(trimUser, email, { fromGoogleLogin: false });
           return;
         }
       }
@@ -13049,7 +13094,7 @@ function resolveEventName(eventId) {
     }
     const gmail = (auth.currentUser?.email || '').trim();
     const trimUser = gmail.includes('@') ? gmail.split('@')[0] : gmail;
-    await finalizeStaffLoginAfterAuth(trimUser, gmail);
+    await finalizeStaffLoginAfterAuth(trimUser, gmail, { fromGoogleLogin: true });
   };
 
   const handleLogout = async () => {
