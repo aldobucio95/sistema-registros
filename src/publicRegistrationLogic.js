@@ -11,6 +11,7 @@ import {
   participantAgeBracketForResponsiva,
 } from './responsivaSignLogic.js';
 import { BLOOD_TYPE_UNSPECIFIED } from './registrationFormShared.js';
+import { toMexicoCityISODate } from './mexicoCityDate.js';
 import {
   appendBautizosCompanionsValidationIssues,
   appendBautizosTransportChoiceIssues,
@@ -837,14 +838,14 @@ export const getPricingFromSnapshot = (event) => getPricingFromSnapshotForDate(e
 export const getPricingFromSnapshotForDate = (event, dateMs) => {
   if (!event) return { global: 0, server: 0, serverAmbos: 0, serverTeens: 0, serverJovenes: 0 };
   const tMs = Number(dateMs) || Date.now();
-  const isoDate = new Date(tMs).toISOString().split('T')[0];
+  const isoDate = toMexicoCityISODate(tMs);
   const global = resolveCamperGlobalForIso(event, isoDate);
   const srv = resolveServerPricingForIso(event, isoDate);
   return { global, ...srv };
 };
 
-const getActiveDiscountCampaigns = (eventLike) => {
-  const today = new Date().toISOString().split('T')[0];
+export const getActiveDiscountCampaigns = (eventLike) => {
+  const today = toMexicoCityISODate();
   const all = Array.isArray(eventLike?.discountCampaigns) ? eventLike.discountCampaigns : [];
   return all.filter((c) => {
     if (!c || c.enabled === false) return false;
