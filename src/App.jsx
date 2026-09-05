@@ -267,6 +267,7 @@ import {
   formatCampaSegmentDateLines,
   isEventSingleDay,
 } from './eventDateHelpers.js';
+import { toMexicoCityISODate } from './mexicoCityDate.js';
 import { eventFirestoreDocIdFromHumanName, buildFirestoreDocId, sanitizeFirestoreDocId } from './firestoreDocId.js';
 import {
   buildFinanceWhatsAppMessage,
@@ -4388,7 +4389,7 @@ const App = () => {
 
   const currentPricing = useMemo(() => getPricingFromSnapshot(currentEvent), [currentEvent]);
   const getActiveDiscountCampaigns = useCallback((eventLike) => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = toMexicoCityISODate();
     const all = Array.isArray(eventLike?.discountCampaigns) ? eventLike.discountCampaigns : [];
     return all.filter((c) => {
       if (!c || c.enabled === false) return false;
@@ -23986,7 +23987,7 @@ function resolveEventName(eventId) {
         // Requerimiento: al editar manualmente la fecha, el costo a pagar debe reflejar la fecha nueva,
         // considerando tanto el precio dinámico como la vigencia de campañas de descuento.
         const newAnchorMs = dNew.getTime();
-        const isoDate = new Date(newAnchorMs).toISOString().split('T')[0];
+        const isoDate = toMexicoCityISODate(newAnchorMs);
         const pricingForNewDate = getPricingFromSnapshotForDate(currentEvent, newAnchorMs);
         const baseNew = getPersonCost(person, pricingForNewDate, currentEvent);
 
@@ -24102,7 +24103,7 @@ function resolveEventName(eventId) {
           // Requerimiento: al editar manualmente la fecha del pago anclado al registro,
           // el costo a pagar debe reflejar la fecha nueva, incluyendo vigencia de campañas.
           const anchorNewMs = d.getTime();
-          const isoDate = new Date(anchorNewMs).toISOString().split('T')[0];
+          const isoDate = toMexicoCityISODate(anchorNewMs);
           const pricingForNewDate = getPricingFromSnapshotForDate(currentEvent, anchorNewMs);
           const baseNew = getPersonCost(person, pricingForNewDate, currentEvent);
 
@@ -30584,7 +30585,7 @@ function resolveEventName(eventId) {
       currentEvent?.pricingType === 'dynamic' &&
       sortedDynamicPhases.some(tierHasServerPricesInCamperTier);
     const discountCampaignsList = Array.isArray(currentEvent?.discountCampaigns) ? currentEvent.discountCampaigns : [];
-    const todayIsoPricing = new Date().toISOString().split('T')[0];
+    const todayIsoPricing = toMexicoCityISODate();
     const fmtPriceDash = (n) => (canSeeMoney ? formatMoney(Number(n) || 0) : '$***');
     const bautizosDashBreakdown = isBautizos ? getBautizosListPriceBreakdown(currentEvent) : null;
     /** Dashboard · tarjeta precios: solo Campa usa «Lista campista». */

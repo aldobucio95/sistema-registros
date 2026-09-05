@@ -2,6 +2,22 @@
  * Réplica mínima de la liquidación en `publicRegistrationLogic.js` para Cloud Functions.
  * Si cambia la lógica de costos en la app, actualizar aquí en paralelo.
  */
+
+const BUSINESS_TIME_ZONE = 'America/Mexico_City';
+
+/** YYYY-MM-DD en America/Mexico_City (no usar toISOString UTC). */
+function toMexicoCityISODate(input) {
+  const ms = input instanceof Date ? input.getTime() : Number(input);
+  const d = new Date(Number.isFinite(ms) && ms > 0 ? ms : Date.now());
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d);
+  const pick = (type) => parts.find((p) => p.type === type)?.value || '';
+  return `${pick('year')}-${pick('month')}-${pick('day')}`;
+}
 const SI = 'Si';
 const SI_LABEL = 'Sí';
 
@@ -235,7 +251,7 @@ function resolveServerPricingForIso(event, isoDate) {
 function getPricingFromSnapshotForDate(event, dateMs) {
   if (!event) return { global: 0, server: 0, serverAmbos: 0, serverTeens: 0, serverJovenes: 0 };
   const tMs = Number(dateMs) || Date.now();
-  const isoDate = new Date(tMs).toISOString().split('T')[0];
+  const isoDate = toMexicoCityISODate(tMs);
   const global = resolveCamperGlobalForIso(event, isoDate);
   const srv = resolveServerPricingForIso(event, isoDate);
   return { global, ...srv };
