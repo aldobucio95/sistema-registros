@@ -104,3 +104,28 @@ export function computePromoteFromWaitlistCapUnits(personRow, participantRows, e
   };
   return computeEventCapUnitsDelta(base, [...base, promoted], eventRow);
 }
+
+/**
+ * True if adding `incomingUnits` would exceed the active cupo.
+ * Global event cap takes precedence (same as alta / promote companion); otherwise per-sede cap.
+ * A seat remaining is not enough when the incoming party consumes more than one unit
+ * (Campa servidor Ambos ×2, Bautizos titular + companions).
+ */
+export function wouldIncomingUnitsExceedCap({
+  globalCap,
+  globalUsed,
+  locCap,
+  locUsed,
+  incomingUnits,
+}) {
+  const units = Math.max(0, Number(incomingUnits) || 0);
+  const gCap = Number(globalCap) || 0;
+  if (gCap > 0) {
+    return (Number(globalUsed) || 0) + units > gCap;
+  }
+  const lCap = Number(locCap) || 0;
+  if (lCap > 0) {
+    return (Number(locUsed) || 0) + units > lCap;
+  }
+  return false;
+}

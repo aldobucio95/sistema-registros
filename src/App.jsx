@@ -508,6 +508,7 @@ import {
   computeEventCapUsedUnitsBySede,
   computeIncomingRegistrationCapUnits,
   computePromoteFromWaitlistCapUnits,
+  wouldIncomingUnitsExceedCap,
 } from './eventCapUnits.js';
 import {
   getAuth,
@@ -22683,15 +22684,22 @@ function resolveEventName(eventId) {
     const person = (waitlistData[loc] || []).find(p => String(p.id) === String(id));
     if (!person) return;
     const gCapPromote = getEventTotalCap();
-    if (gCapPromote > 0) {
-      const promoteUnits = computePromoteFromWaitlistCapUnits(person, allParticipants, currentEvent, loc);
-      if (getEventCapUsedUnits() + promoteUnits > gCapPromote) {
-        showToast("No se puede promover: el cupo total del evento está lleno.");
-        return;
-      }
-    }
-    if (isLocationSedeCapFull(loc)) {
-      showToast("No se puede promover: el cupo de la sede está lleno.");
+    const locCapPromote = getLocationCap(loc);
+    const promoteUnits = computePromoteFromWaitlistCapUnits(person, allParticipants, currentEvent, loc);
+    if (
+      wouldIncomingUnitsExceedCap({
+        globalCap: gCapPromote,
+        globalUsed: getEventCapUsedUnits(),
+        locCap: locCapPromote,
+        locUsed: getCapUsedUnitsByLocation(loc),
+        incomingUnits: promoteUnits,
+      })
+    ) {
+      showToast(
+        gCapPromote > 0
+          ? 'No se puede promover: el cupo total del evento está lleno.'
+          : 'No se puede promover: el cupo de la sede está lleno.'
+      );
       return;
     }
     const promoteAt = Date.now();
@@ -22801,17 +22809,22 @@ function resolveEventName(eventId) {
     }
     const delta = computeAdditionalCompanionCapUnits(host, companion, allParticipants, currentEvent);
     const gCapPromote = getEventTotalCap();
-    if (gCapPromote > 0) {
-      if (getEventCapUsedUnits() + delta > gCapPromote) {
-        showToast('No se puede promover: el cupo total del evento está lleno.');
-        return;
-      }
-    } else {
-      const locCap = getLocationCap(loc);
-      if (locCap > 0 && getCapUsedUnitsByLocation(loc) + delta > locCap) {
-        showToast('No se puede promover: el cupo de la sede está lleno.');
-        return;
-      }
+    const locCapPromote = getLocationCap(loc);
+    if (
+      wouldIncomingUnitsExceedCap({
+        globalCap: gCapPromote,
+        globalUsed: getEventCapUsedUnits(),
+        locCap: locCapPromote,
+        locUsed: getCapUsedUnitsByLocation(loc),
+        incomingUnits: delta,
+      })
+    ) {
+      showToast(
+        gCapPromote > 0
+          ? 'No se puede promover: el cupo total del evento está lleno.'
+          : 'No se puede promover: el cupo de la sede está lleno.'
+      );
+      return;
     }
     const nextCompanions = companions.map((c, i) =>
       i === idx ? clearCompanionWaitlistFlags(c) : c
