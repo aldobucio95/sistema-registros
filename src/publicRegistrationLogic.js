@@ -67,6 +67,7 @@ import {
   computeEventCapUsedUnitsBySede,
   computeIncomingRegistrationCapUnits,
 } from './eventCapUnits.js';
+import { buildInitialRegistrationPaymentFields } from './registrationInitialPayment.js';
 
 /** Orden de grupos en el modal QR (admin). */
 export const PUBLIC_OPTIONAL_GROUP_ORDER = ['general', 'salud', 'bautizos', 'viaje', 'asistencia', 'pago'];
@@ -1672,6 +1673,11 @@ async function appendPublicRegistrationActivityLog({
     if (waitlist) {
       details = `Lista de espera: ${name} en sede ${loc}.`;
       if (scholarshipPending) details += ' Solicitud de beca pendiente de aprobación.';
+      const paidWl = Number(initialPaidGross) || 0;
+      if (paidWl > 0) {
+        const pm = paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
+        details += ` Pago inicial: $${paidWl} (${pm}).`;
+      }
     } else {
       const paid = Number(initialPaidGross) || 0;
       const pm = paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
@@ -1809,31 +1815,20 @@ async function submitPublicBautizosSplitRegistration({
   const baseRegisteredCost = getPersonCost(entry, currentPricing, eventSnapshot);
   const { selectedDiscountCampaignId: _sc, ...entryCore } = entry;
 
-  const initialPaidGross = mode === 'active' ? parseFloat(entry.paid) || 0 : 0;
-  let paymentMethod = mode === 'active' && entry.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo';
-  if (paymentMethod === 'Tarjeta' && !isCardPaymentAllowedForLocation(eventSnapshot, loc)) {
-    paymentMethod = 'Efectivo';
-  }
-  const commissionRate = getCardCommissionRate(globalSnapshot);
-  const commission = paymentMethod === 'Tarjeta' ? initialPaidGross * commissionRate : 0;
-  const initialPaidNet = paymentMethod === 'Tarjeta' ? initialPaidGross - commission : initialPaidGross;
-  const initialHistory =
-    mode === 'active' && initialPaidGross > 0
-      ? [
-          {
-            id: Date.now() + 1,
-            date: regInstant.toLocaleString('es-MX'),
-            recordedAt: regIso,
-            amount: initialPaidGross,
-            netAmount: initialPaidNet,
-            method: paymentMethod,
-            service: paymentServiceBase,
-            reference: paymentMethod === 'Tarjeta' ? String(entry.cardReference || '').trim() : '',
-            commission,
-            registeredBy: publicRegisteredBy,
-          },
-        ]
-      : [];
+  const waitlistPaySplit = buildInitialRegistrationPaymentFields({
+    paid: entry.paid,
+    paymentMethod: entry.paymentMethod,
+    cardReference: entry.cardReference,
+    paymentService: paymentServiceBase,
+    commissionRate: getCardCommissionRate(globalSnapshot),
+    registeredBy: publicRegisteredBy,
+    at: regInstant,
+    cardAllowed: isCardPaymentAllowedForLocation(eventSnapshot, loc),
+  });
+  const initialPaidGross = waitlistPaySplit.initialPaidGross;
+  const paymentMethod = waitlistPaySplit.paymentMethod;
+  const initialPaidNet = waitlistPaySplit.initialPaidNet;
+  const initialHistory = waitlistPaySplit.paymentHistory;
 
   let hostPersonDataForWa = null;
 
@@ -1866,15 +1861,15 @@ async function submitPublicBautizosSplitRegistration({
         travelFrom: entry.travelFrom || loc,
         travelTo: entry.travelTo || loc,
         eventId: eventSnapshot.id,
-        paymentHistory: mode === 'active' ? initialHistory : [],
+        paymentHistory: initialHistory,
         registeredCost: baseRegisteredCost,
         registeredCostManual: false,
         campAssignment: '',
-        paid: mode === 'active' ? initialPaidGross : 0,
-        paidNet: mode === 'active' ? initialPaidNet : 0,
+        paid: initialPaidGross,
+        paidNet: initialPaidNet,
         paymentMethod,
-        paymentService: paymentServiceBase,
-        cardReference: mode === 'active' && paymentMethod === 'Tarjeta' ? String(entry.cardReference || '').trim() : '',
+        paymentService: waitlistPaySplit.paymentService || paymentServiceBase,
+        cardReference: waitlistPaySplit.cardReference,
         whatsAppFinanceNotifications: [],
         responsivaStatus: resolveResponsivaStatus(entry, eventSnapshot),
         scholarshipPendingApproval: false,
@@ -1903,7 +1898,7 @@ async function submitPublicBautizosSplitRegistration({
       personDataH.baptismSegment = '';
       personDataH.baptismShirtSize = normalizeBaptismShirtSize(entry.baptismShirtSize);
       applyParticipantNameFormattingForSave(personDataH);
-      if (mode === 'active') {
+      if (initialPaidGross > 0) {
         const liqPub = Number(getLiquidationTarget(personDataH, currentPricing, eventSnapshot)) || 0;
         const isLiquidado = personDataH.isScholarship === 'No' && initialPaidGross >= liqPub;
         const registerCreatedAt = Date.now() + i;
@@ -1946,14 +1941,12 @@ async function submitPublicBautizosSplitRegistration({
         personName: personDataH.name,
         participantId: docIdW,
         waitlist: mode === 'waitlist',
-        initialPaidGross: mode === 'active' ? initialPaidGross : 0,
+        initialPaidGross,
         paymentMethod,
         paymentService: paymentServiceBase,
         isLiquidado:
-          mode === 'active'
-            ? personDataH.isScholarship === 'No' &&
-              initialPaidGross >= (Number(getLiquidationTarget(personDataH, currentPricing, eventSnapshot)) || 0)
-            : false,
+          personDataH.isScholarship === 'No' &&
+          initialPaidGross >= (Number(getLiquidationTarget(personDataH, currentPricing, eventSnapshot)) || 0),
         scholarshipPending: false,
         participantData: { id: docIdW, ...personDataH },
       });
@@ -2685,6 +2678,22 @@ async function submitWaitlist({
   }
   const { selectedDiscountCampaignId: _w, ...entryCore } = entry;
   const serviceSlots = globalSnapshot?.serviceSlots;
+  const waitlistPay = buildInitialRegistrationPaymentFields({
+    paid: entry.paid,
+    paymentMethod: entry.paymentMethod,
+    cardReference: entry.cardReference,
+    paymentService: getAutoPaymentServiceForPublic(
+      new Date(),
+      eventSnapshot,
+      loc,
+      serviceSlots,
+      globalSnapshot?.cashCutScheduleByLocation,
+    ),
+    commissionRate: getCardCommissionRate(globalSnapshot),
+    registeredBy: resolvePublicRegisteredBy(entry),
+    at: new Date(),
+    cardAllowed: isCardPaymentAllowedForLocation(eventSnapshot, loc),
+  });
 
   const personData = {
     ...entryCore,
@@ -2698,18 +2707,12 @@ async function submitWaitlist({
     travelFrom: entry.travelFrom || loc,
     travelTo: entry.travelTo || loc,
     eventId: eventSnapshot.id,
-    paymentHistory: [],
-    paid: 0,
-    paidNet: 0,
-    paymentMethod: 'Efectivo',
-    paymentService: getAutoPaymentServiceForPublic(
-      new Date(),
-      eventSnapshot,
-      loc,
-      serviceSlots,
-      globalSnapshot?.cashCutScheduleByLocation,
-    ),
-    cardReference: '',
+    paymentHistory: waitlistPay.paymentHistory,
+    paid: waitlistPay.paid,
+    paidNet: waitlistPay.paidNet,
+    paymentMethod: waitlistPay.paymentMethod,
+    paymentService: waitlistPay.paymentService,
+    cardReference: waitlistPay.cardReference,
     whatsAppFinanceNotifications: prevWlWaPubWaitlist,
     responsivaStatus: resolveResponsivaStatus(entry, eventSnapshot),
     campAssignment: initialCampAssignment,
@@ -2834,10 +2837,12 @@ async function submitWaitlist({
     personName: personData.name,
     participantId: docId,
     waitlist: true,
-    initialPaidGross: 0,
-    paymentMethod: 'Efectivo',
-    paymentService: '',
-    isLiquidado: false,
+    initialPaidGross: waitlistPay.initialPaidGross,
+    paymentMethod: waitlistPay.paymentMethod,
+    paymentService: waitlistPay.paymentService,
+    isLiquidado:
+      personData.isScholarship === 'No' &&
+      waitlistPay.initialPaidGross >= (Number(getLiquidationTarget(personData, currentPricing, eventSnapshot)) || 0),
     scholarshipPending: !!personData.scholarshipPendingApproval,
     participantData: { id: docId, ...personData },
   });

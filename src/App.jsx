@@ -342,6 +342,7 @@ import {
   refundDisbursementPaymentHistoryId,
   resolveCancelledRefundSede,
 } from './cashCutRefunds.js';
+import { buildInitialRegistrationPaymentFields } from './registrationInitialPayment.js';
 import { describeDashboardConfigDelta, EXPENSE_ACTIVITY_GENERIC } from './dashboardActivityLog.js';
 import { appendParticipantActivityEntry, fetchParticipantActivityEntries } from './participantActivityLog.js';
 import ScreenLoadingFallback from './screens/ScreenLoadingFallback.jsx';
@@ -18189,6 +18190,16 @@ function resolveEventName(eventId) {
       }
       const waitlistInstantSp = new Date();
       const waitlistIsoSp = waitlistInstantSp.toISOString();
+      const waitlistPaySp = buildInitialRegistrationPaymentFields({
+        paid: entryPayload.paid,
+        paymentMethod: entryPayload.paymentMethod,
+        cardReference: entryPayload.cardReference,
+        paymentService: getAutoPaymentService(new Date(), loc),
+        commissionRate: getCardCommissionRate(),
+        registeredBy: currentUser?.username,
+        at: waitlistInstantSp,
+        cardAllowed: isCardPaymentAllowedForLocation(currentEvent, loc),
+      });
       const baseRegisteredCostWlSp = getPersonCost(entryPayload, currentPricing, currentEvent);
       const { selectedDiscountCampaignId: _wlSpCamp, ...newEntryCoreWlSp } = entryPayload;
       const hostDocWlSp = docIdBySlotKeyWl.host;
@@ -18233,12 +18244,12 @@ function resolveEventName(eventId) {
             travelFrom: entryPayload.travelFrom || loc,
             travelTo: entryPayload.travelTo || loc,
             eventId: currentEvent.id,
-            paymentHistory: [],
-            paid: 0,
-            paidNet: 0,
-            paymentMethod: 'Efectivo',
-            paymentService: getAutoPaymentService(new Date(), loc),
-            cardReference: '',
+            paymentHistory: waitlistPaySp.paymentHistory,
+            paid: waitlistPaySp.paid,
+            paidNet: waitlistPaySp.paidNet,
+            paymentMethod: waitlistPaySp.paymentMethod,
+            paymentService: waitlistPaySp.paymentService,
+            cardReference: waitlistPaySp.cardReference,
             whatsAppFinanceNotifications: prevWaWl,
             whatsAppMessageHistory: prevHistWl,
             registrationComments: (() => {
@@ -18465,6 +18476,16 @@ function resolveEventName(eventId) {
     const idExistsAnywhere = await vnpPersonIdExistsInFirestore(finalVnpPersonId);
     const waitlistInstant = new Date();
     const waitlistIso = waitlistInstant.toISOString();
+    const waitlistPay = buildInitialRegistrationPaymentFields({
+      paid: entryPayload.paid,
+      paymentMethod: entryPayload.paymentMethod,
+      cardReference: entryPayload.cardReference,
+      paymentService: getAutoPaymentService(new Date(), loc),
+      commissionRate: getCardCommissionRate(),
+      registeredBy: currentUser?.username,
+      at: waitlistInstant,
+      cardAllowed: isCardPaymentAllowedForLocation(currentEvent, loc),
+    });
     const initialCampAssignment = currentEvent.eventType === 'Campa' && !isSiValue(entryPayload.isServer)
       ? (parseInt(entryPayload.age) < 18 ? 'Teens' : 'Jóvenes')
       : '';
@@ -18491,12 +18512,12 @@ function resolveEventName(eventId) {
       travelFrom: (entryPayload.travelFrom || loc),
       travelTo: (entryPayload.travelTo || loc),
       eventId: currentEvent.id,
-      paymentHistory: [],
-      paid: 0,
-      paidNet: 0,
-      paymentMethod: 'Efectivo',
-      paymentService: getAutoPaymentService(new Date(), loc),
-      cardReference: '',
+      paymentHistory: waitlistPay.paymentHistory,
+      paid: waitlistPay.paid,
+      paidNet: waitlistPay.paidNet,
+      paymentMethod: waitlistPay.paymentMethod,
+      paymentService: waitlistPay.paymentService,
+      cardReference: waitlistPay.cardReference,
       whatsAppFinanceNotifications: prevWlWaNotifications,
       whatsAppMessageHistory: prevWlWaHistory,
       registrationComments: (() => {
@@ -18727,7 +18748,11 @@ function resolveEventName(eventId) {
     const comentarioInicialEsperaLog = comentarioInicialEspera
       ? ` Comentario inicial: «${comentarioInicialEspera.length > 200 ? `${comentarioInicialEspera.slice(0, 200)}…` : comentarioInicialEspera}».`
       : '';
-    const _wlLog = `${previousWlData ? 'Actualizó lista de espera de' : 'Añadió a'} ${entryPayload.name} a la lista de espera en la sede ${loc}.${becaNote}${comentarioInicialEsperaLog}`;
+    const pagoInicialEsperaLog =
+      waitlistPay.initialPaidGross > 0
+        ? ` Pago inicial: $${waitlistPay.initialPaidGross} ${waitlistPay.paymentMethod === 'Tarjeta' ? `(Tarjeta, Neto: $${waitlistPay.initialPaidNet})` : '(Efectivo)'}.`
+        : '';
+    const _wlLog = `${previousWlData ? 'Actualizó lista de espera de' : 'Añadió a'} ${entryPayload.name} a la lista de espera en la sede ${loc}.${becaNote}${pagoInicialEsperaLog}${comentarioInicialEsperaLog}`;
     addLog(
       'Lista de Espera',
       _wlLog,
