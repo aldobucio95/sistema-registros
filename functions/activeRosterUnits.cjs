@@ -2,7 +2,14 @@
  * `activeRosterUnitsTotal` en `app_events` (Cloud Function al cambiar participantes).
  *
  * Campa / tipos simples: delta incremental (`FieldValue.increment`).
- * Bautizos (y lotes rápidos): recálculo completo con debounce por evento.
+ * Bautizos (y cualquier recálculo completo): await del recuento en la misma invocación.
+ *
+ * No usar setTimeout/debounce aquí: en Cloud Functions Gen 2 la CPU se recorta al
+ * terminar el handler, así que un recálculo programado a 800 ms a menudo nunca corre
+ * y el hub queda en 0 o en un total viejo.
+ *
+ * Recálculos concurrentes (p. ej. grupo Bautizos partido) usan `activeRosterUnitsComputedAt`
+ * para que una invocación más vieja no pise un total más reciente.
  */
 
 const admin = require('firebase-admin');
@@ -10,10 +17,6 @@ const {
   computeDashboardTodosRosterTotal,
   computeRowTodosUnitContribution,
 } = require('./lib/dashboardTodosRosterTotal.cjs');
-
-const FULL_RECOMPUTE_DEBOUNCE_MS = 800;
-/** @type {Map<string, ReturnType<typeof setTimeout>>} */
-const pendingFullRecompute = new Map();
 
 /**
  * @param {object[]} participantRows — { id, ...data } por participante
@@ -26,8 +29,9 @@ function computeDashboardTodosTotalForEvent(participantRows, eventRow) {
 /**
  * @param {FirebaseFirestore.Firestore} db
  * @param {string} eventId
+ * @param {number} [computedAtMs]
  */
-async function recomputeEventActiveRosterTotal(db, eventId) {
+async function recomputeEventActiveRosterTotal(db, eventId, computedAtMs) {
   const eid = String(eventId || '').trim();
   if (!eid) return;
   const evRef = db.collection('app_events').doc(eid);
@@ -36,28 +40,20 @@ async function recomputeEventActiveRosterTotal(db, eventId) {
   const eventData = { id: eid, ...evSnap.data() };
   const partsSnap = await db.collection('app_participants').where('eventId', '==', eid).get();
   const rows = partsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-  const total = computeDashboardTodosTotalForEvent(rows, eventData);
-  await evRef.update({ activeRosterUnitsTotal: Math.max(0, Math.floor(Number(total) || 0)) });
-}
+  const total = Math.max(0, Math.floor(Number(computeDashboardTodosTotalForEvent(rows, eventData)) || 0));
+  const computedAt = Number(computedAtMs);
+  const stamp = Number.isFinite(computedAt) && computedAt > 0 ? computedAt : Date.now();
 
-/**
- * @param {FirebaseFirestore.Firestore} db
- * @param {string} eventId
- */
-function scheduleFullRecomputeEventActiveRosterTotal(db, eventId) {
-  const eid = String(eventId || '').trim();
-  if (!eid) return;
-  const prev = pendingFullRecompute.get(eid);
-  if (prev) clearTimeout(prev);
-  pendingFullRecompute.set(
-    eid,
-    setTimeout(() => {
-      pendingFullRecompute.delete(eid);
-      recomputeEventActiveRosterTotal(db, eid).catch((e) => {
-        console.error('scheduleFullRecomputeEventActiveRosterTotal', eid, e);
-      });
-    }, FULL_RECOMPUTE_DEBOUNCE_MS)
-  );
+  await db.runTransaction(async (tx) => {
+    const fresh = await tx.get(evRef);
+    if (!fresh.exists) return;
+    const prevAt = Number(fresh.data()?.activeRosterUnitsComputedAt) || 0;
+    if (stamp < prevAt) return;
+    tx.update(evRef, {
+      activeRosterUnitsTotal: total,
+      activeRosterUnitsComputedAt: stamp,
+    });
+  });
 }
 
 /**
@@ -75,9 +71,10 @@ async function updateEventActiveRosterTotalFromWrite(db, eventId, before, after)
   if (!evSnap.exists) return;
   const eventData = { id: eid, ...evSnap.data() };
   const evType = String(eventData.eventType || '');
+  const computedAtMs = Date.now();
 
   if (evType === 'Bautizos') {
-    scheduleFullRecomputeEventActiveRosterTotal(db, eid);
+    await recomputeEventActiveRosterTotal(db, eid, computedAtMs);
     return;
   }
 
@@ -88,7 +85,7 @@ async function updateEventActiveRosterTotalFromWrite(db, eventId, before, after)
   const afterContrib = afterRow ? computeRowTodosUnitContribution(afterRow, eventData) : 0;
 
   if (beforeContrib === null || afterContrib === null) {
-    scheduleFullRecomputeEventActiveRosterTotal(db, eid);
+    await recomputeEventActiveRosterTotal(db, eid, computedAtMs);
     return;
   }
 
