@@ -43,6 +43,34 @@ export function isEventSingleDay(evOrDraft) {
 }
 
 /**
+ * Atajo de una sola fecha en el hub de eventos.
+ * El input muestra `ev.date` (fecha principal = fin del rango). No debe colapsar un
+ * rango existente ni vaciar fechas si el picker se limpia.
+ *
+ * @param {object} ev
+ * @param {string} newDateIso YYYY-MM-DD
+ * @returns {{ payload: { date: string, dateStart?: string, dateEnd: string } } | { skip: true } | { error: string }}
+ */
+export function buildHubEventDateUpdate(ev, newDateIso) {
+  const newVal = String(newDateIso || '').trim();
+  const currentPrimary = String(ev?.date || '').trim();
+  if (!newVal || newVal === currentPrimary) return { skip: true };
+
+  const start = getEventEffectiveStartDate(ev);
+  const end = getEventEffectiveEndDate(ev);
+  const isRange = Boolean(start && end && start !== end);
+
+  if (isRange) {
+    if (compareIsoDates(newVal, start) < 0) {
+      return { error: 'La fecha de fin no puede ser anterior al inicio del evento.' };
+    }
+    return { payload: { date: newVal, dateEnd: newVal } };
+  }
+
+  return { payload: { date: newVal, dateStart: newVal, dateEnd: newVal } };
+}
+
+/**
  * Tope para fechas de fases de pago: primero la fecha límite explícita, luego el fin del evento.
  * @param {object} ev
  * @param {object} [pricingFormLike] — puede incluir `paymentDeadlineDate` aún no guardada
