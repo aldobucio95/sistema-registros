@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { useAppShellBindings } from '../shellRuntime.js';
 import { EVENT_TYPES, SI_LABEL } from '../appConstants.js';
-import { formatEventDateRangeLabel } from '../eventDateHelpers.js';
+import { buildHubEventDateUpdate, formatEventDateRangeLabel } from '../eventDateHelpers.js';
 import { canViewSystemLogs, mergePanelSectionLayers } from '../rbac/permissions.js';
 import AdvancedUserPermissionsPanel from '../rbac/AdvancedUserPermissionsPanel.jsx';
 import { usernameToAuthEmail, AUTH_EMAIL_DOMAIN } from '../firebaseConfig.js';
@@ -787,12 +787,17 @@ export default function EventHubScreen() {
                               defaultValue={ev.date || ''}
                               onChange={async (e) => {
                                 const newVal = e.target.value;
-                                if (newVal !== (ev.date || '')) {
-                                  const payload = { date: newVal, dateStart: newVal, dateEnd: newVal };
-                                  if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
-                                  await updateDoc(getDocRef('app_events', ev.id), payload);
-                                  addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
+                                const result = buildHubEventDateUpdate(ev, newVal);
+                                if (result.skip) return;
+                                if (result.error) {
+                                  showToast(result.error);
+                                  e.target.value = ev.date || '';
+                                  return;
                                 }
+                                const payload = { ...result.payload };
+                                if (globalConfig?.isDebugMode) { payload._isDebug = true; payload._debugSessionId = globalConfig.debugSessionId; }
+                                await updateDoc(getDocRef('app_events', ev.id), payload);
+                                addLog('Gestión de Eventos', `Cambió fecha de evento "${ev.name}": "${ev.date || 'Sin fecha'}" -> "${newVal}"`, null, ev, { collectionName: 'app_events', docId: ev.id, action: 'update', previousData: ev });
                               }}
                               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer"
                             />
