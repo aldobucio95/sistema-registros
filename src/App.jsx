@@ -342,6 +342,7 @@ import {
   refundDisbursementPaymentHistoryId,
   resolveCancelledRefundSede,
 } from './cashCutRefunds.js';
+import { planPaymentHistoryRowEdit } from './paymentHistoryRowEdit.js';
 import { describeDashboardConfigDelta, EXPENSE_ACTIVITY_GENERIC } from './dashboardActivityLog.js';
 import { appendParticipantActivityEntry, fetchParticipantActivityEntries } from './participantActivityLog.js';
 import ScreenLoadingFallback from './screens/ScreenLoadingFallback.jsx';
@@ -23715,10 +23716,6 @@ function resolveEventName(eventId) {
     const commissionRate = getCardCommissionRate();
     const oldMethod = row.method || (person.paymentMethod === 'Tarjeta' ? 'Tarjeta' : 'Efectivo');
     const oldGrossAbs = Math.abs(oldAmount);
-    const oldNetAbs =
-      Number.isFinite(parseFloat(row.netAmount))
-        ? Math.abs(parseFloat(row.netAmount))
-        : (oldMethod === 'Tarjeta' ? (oldGrossAbs - (oldGrossAbs * commissionRate)) : oldGrossAbs);
     const newCommission = newMethod === 'Tarjeta' ? (newAmountAbs * commissionRate) : 0;
     const newNetAbs = newMethod === 'Tarjeta' ? (newAmountAbs - newCommission) : newAmountAbs;
     const nextReference = newMethod === 'Tarjeta' ? String(paymentMethodEditModal.cardReference || '').trim() : '';
@@ -23777,26 +23774,21 @@ function resolveEventName(eventId) {
       return;
     }
 
-    const newAmount = newAmountAbs;
-    const newNet = newNetAbs;
-
-    hist[idx] = {
-      ...row,
-      amount: newAmount,
-      method: newMethod,
-      netAmount: newNet,
-      commission: newCommission,
-      reference: nextReference,
-    };
-
-    const originalPaidGross = parseFloat(person.paid || 0) || 0;
-    const originalPaidNet = Number.isFinite(parseFloat(person.paidNet || 0)) ? parseFloat(person.paidNet || 0) : originalPaidGross;
-    const nextPaidGross = originalPaidGross + (newAmount - oldAmount);
-    const nextPaidNet = originalPaidNet + (newNet - oldNet);
+    const planned = planPaymentHistoryRowEdit({
+      row,
+      person,
+      newMethod,
+      newAmountAbs,
+      nextReference,
+      commissionRate,
+    });
+    const newAmount = planned.newAmount;
+    hist[idx] = planned.nextRow;
+    const nextPaidGross = planned.nextPaidGross;
     const payload = {
       paymentHistory: hist,
-      paid: nextPaidGross,
-      paidNet: nextPaidNet,
+      paid: planned.nextPaidGross,
+      paidNet: planned.nextPaidNet,
       ...(globalConfig?.isDebugMode ? { _isDebug: true, _debugSessionId: globalConfig.debugSessionId } : {}),
     };
 
@@ -23812,7 +23804,7 @@ function resolveEventName(eventId) {
       null,
       null,
       { collectionName: 'app_participants', docId: String(person.id), action: 'update', previousData: person },
-      { entityType: 'payment', entityId: String(person.id), status: LOG_STATUS.OK, snapshot: { kind: 'abono_editado', personId: String(person.id), personName: person.name, paymentHistory: hist, paidAfter: nextPaidGross, paidNetAfter: nextPaidNet } }
+      { entityType: 'payment', entityId: String(person.id), status: LOG_STATUS.OK, snapshot: { kind: 'abono_editado', personId: String(person.id), personName: person.name, paymentHistory: hist, paidAfter: nextPaidGross, paidNetAfter: planned.nextPaidNet } }
     );
     logParticipantActivity(String(person.id), 'finanzas', _pmEditLog);
     closePaymentMethodEditModal();
