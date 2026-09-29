@@ -99,6 +99,31 @@ export function enqueuePublicRegistrationOffline({ linkKey, eventId, loc, form }
 
 let flushTail = Promise.resolve();
 
+/**
+ * El flush trabaja con una copia tomada al inicio. Un alta encolada mientras hay
+ * `await` (otra persona, o el mismo formulario reenviado) escribe en localStorage
+ * con un id nuevo. Persistir solo la copia borraría ese alta.
+ * Los ids del snapshot que no van en `retainedItems` se descartan a propósito
+ * (éxito, duplicado, vencidos).
+ */
+function persistFlushRemainder(retainedItems, snapshotIds) {
+  const retained = Array.isArray(retainedItems) ? retainedItems : [];
+  const retainedIds = new Set(retained.map((it) => String(it?.id || '')).filter(Boolean));
+  const latest = loadBag().items || [];
+  const newcomers = latest.filter((it) => {
+    const id = String(it?.id || '');
+    if (!id || retainedIds.has(id) || snapshotIds.has(id)) return false;
+    return true;
+  });
+  saveBag({ v: QUEUE_VERSION, items: [...retained, ...newcomers] });
+}
+
+function queueItemStillStored(itemId) {
+  const id = String(itemId || '');
+  if (!id) return false;
+  return (loadBag().items || []).some((it) => String(it?.id || '') === id);
+}
+
 export function processPublicRegistrationOfflineQueue(authInstance) {
   flushTail = flushTail
     .then(() => processPublicRegistrationOfflineQueueBody(authInstance))
@@ -124,9 +149,13 @@ async function processPublicRegistrationOfflineQueueBody(authInstance) {
   let businessRejected = 0;
 
   const pending = [...bag.items].sort((a, b) => (a.enqueuedAt || 0) - (b.enqueuedAt || 0));
+  const snapshotIds = new Set(bag.items.map((it) => String(it?.id || '')).filter(Boolean));
 
   while (pending.length) {
     const item = pending.shift();
+    if (!queueItemStillStored(item.id)) {
+      continue;
+    }
     if (now - (item.enqueuedAt || 0) > MAX_ITEM_AGE_MS) {
       dropped++;
       continue;
@@ -142,7 +171,7 @@ async function processPublicRegistrationOfflineQueueBody(authInstance) {
       const snap = await fetchPublicRegistrationLinkSnapshot(item.linkKey);
       if (!snap.exists()) {
         item.attempts = (item.attempts || 0) + 1;
-        saveBag({ v: QUEUE_VERSION, items: [item, ...pending] });
+        persistFlushRemainder([item, ...pending], snapshotIds);
         failedRetriable++;
         return { processed, failedRetriable, dropped, businessRejected };
       }
@@ -160,6 +189,9 @@ async function processPublicRegistrationOfflineQueueBody(authInstance) {
       const globalSnapshot = linkDoc.globalSnapshot || {};
       const optionalVisibility = buildOptionalVisibilityFromPublicLinkDoc(linkDoc);
       const fresh = await fetchParticipantsForEvent(eventSnapshot.id);
+      if (!queueItemStillStored(item.id)) {
+        continue;
+      }
       const result = await submitPublicRegistration({
         rawEntry: item.form,
         loc: item.loc,
@@ -182,7 +214,7 @@ async function processPublicRegistrationOfflineQueueBody(authInstance) {
     } catch (err) {
       if (isLikelyRetriableNetworkFailure(err)) {
         item.attempts = (item.attempts || 0) + 1;
-        saveBag({ v: QUEUE_VERSION, items: [item, ...pending] });
+        persistFlushRemainder([item, ...pending], snapshotIds);
         failedRetriable++;
         return { processed, failedRetriable, dropped, businessRejected };
       }
@@ -191,13 +223,13 @@ async function processPublicRegistrationOfflineQueueBody(authInstance) {
         dropped++;
         emitGlobalSystemAlert('Cola offline: error no de red; elemento descartado.', { tone: 'danger', ms: 7000 });
       } else {
-        saveBag({ v: QUEUE_VERSION, items: [item, ...pending] });
+        persistFlushRemainder([item, ...pending], snapshotIds);
         failedRetriable++;
         return { processed, failedRetriable, dropped, businessRejected };
       }
     }
   }
 
-  saveBag({ v: QUEUE_VERSION, items: [] });
+  persistFlushRemainder([], snapshotIds);
   return { processed, failedRetriable, dropped, businessRejected };
 }
